@@ -37,6 +37,6 @@ Alkuperäisessä PC-ajossa C++-optimointi kesti 24 jaksolla noin 10–11 ms ja 1
 - Kalibroi rakennus, käyttövesivaraaja ja COP oikeilla mittauksilla; nykyiset luvut ovat synteettisen kokeen oletuksia.
 - Varmista, että optimoidut lämpötehon toimintatilat voidaan toteuttaa käytännössä valitun Panasonic/HeishaMon-yhdistelmän sallituilla asetusarvoilla. Nykyinen malli ohjaa ideaalista lämpötehoa, jota laite ei ole luvannut tarjota.
 - Lisää erilaisia hintaprofiileja, pumppujen teho- ja COP-käyriä, sulatus- ja minimikäyntiaikarajoja sekä vaikeita käyttövesitilanteita. Raportoi myös löydetyt tappiot ja epäkelvot tapaukset.
-- Testaa nyt käännetty paikallinen Nord Pool -hintojen haku ja välimuisti fyysisellä Ethernetillä; lisää FMI-sää, sopimuskohtainen kokonaishinta ja turvallinen varatilan integraatio ennen itsenäisen optimointikäytön testausta.
+- Testaa nyt käännetyt Nord Pool -hinta- ja FMI-säähakijat sekä välimuistit fyysisellä Ethernetillä; kytke FMI:n testattu 15 minuutin interpolointi, sopimuskohtainen kokonaishinta ja turvallinen varatilan integraatio itsenäiseen optimointikäyttöön.
 
 G1:n sarjaporttimittauksia on tehty, mutta G1:n verkkokuorma, G2:n laiteintegraatio ja G3:n tuotantotestit ovat tekemättä.

@@ -1,8 +1,9 @@
 idf_component_register(
-    SRCS "main.cpp" "market.cpp"
+    SRCS "main.cpp" "market.cpp" "weather.cpp"
          "../../physics/physics.cpp" "../../physics/calibration.cpp"
          "../../optimizer/optimizer.cpp" "../../forecast/pricing.cpp"
          "../../forecast/validity.cpp" "../../forecast/sources.cpp"
+         "../../forecast/fmi.cpp"
          "../../safety/supervisor.cpp"
          "../../pump/heishamon_adapter.cpp"
     INCLUDE_DIRS "../.."

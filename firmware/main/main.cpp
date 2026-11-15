@@ -20,6 +20,7 @@
 #include "safety/supervisor.hpp"
 #include "pump/heishamon_adapter.hpp"
 #include "market.hpp"
+#include "weather.hpp"
 
 namespace {
 constexpr char tag[] = "enevina_shadow";
@@ -129,14 +130,17 @@ esp_err_t status_handler(httpd_req_t* req) {
     const bool fresh=snapshot.valid && snapshot.received_utc>0 &&
         now>=snapshot.received_utc && now-snapshot.received_utc<=120;
     const auto market=enevina_firmware::market_status();
-    char body[550];
+    const auto weather=enevina_firmware::weather_status();
+    char body[700];
     std::snprintf(body,sizeof(body),
         "{\"mode\":\"shadow\",\"pump_connected\":%s,\"telemetry_utc\":%lld,"
         "\"inlet_c\":%.1f,\"outlet_c\":%.1f,\"outdoor_c\":%.1f,"
         "\"dhw_c\":%.1f,\"compressor_hz\":%.0f,\"defrosting\":%d,"
         "\"operating_mode\":%d,\"price_available\":%s,"
         "\"spot_eur_per_kwh\":%.6f,\"price_slots\":%u,"
-        "\"price_valid_until_utc\":%lld,\"forecast_status\":\"missing\","
+        "\"price_valid_until_utc\":%lld,\"weather_configured\":%s,"
+        "\"weather_available\":%s,\"forecast_outdoor_c\":%.1f,"
+        "\"weather_next_utc\":%lld,\"forecast_status\":\"missing\","
         "\"reason\":\"Ennuste ja asennuskohtainen kalibrointi puuttuvat\"}",
         fresh?"true":"false",static_cast<long long>(snapshot.received_utc),
         fresh?snapshot.inlet_c:0, fresh?snapshot.outlet_c:0,
@@ -146,7 +150,10 @@ esp_err_t status_handler(httpd_req_t* req) {
         market.current_price_valid?"true":"false",
         market.current_price_valid?market.current_spot_eur_per_kwh:0.0,
         static_cast<unsigned>(market.slots),
-        static_cast<long long>(market.valid_until_utc));
+        static_cast<long long>(market.valid_until_utc),
+        weather.configured?"true":"false",weather.available?"true":"false",
+        weather.available?weather.next_temperature_c:0.0,
+        static_cast<long long>(weather.next_utc));
     httpd_resp_set_type(req,"application/json; charset=utf-8");
     httpd_resp_set_hdr(req,"Cache-Control","no-store");
     return httpd_resp_sendstr(req,body);
@@ -187,6 +194,8 @@ grid-template-columns:1fr auto;gap:10px}dt,dd{margin:0}dd{font-weight:700}
 </dl></section><section><h2>Sähkön hinta</h2><p id="price">Ladataan…</p>
 <p>Spot-hinta ilman veroja ja sähkösopimuksen lisäkuluja.</p>
 <h3>Seuraavat tunnit</h3><ol id="future"><li>Hintatietoja ei vielä ole.</li></ol></section>
+<section><h2>Sääennuste</h2><p id="weather">Ladataan…</p>
+<p>Lähde: Ilmatieteen laitos, CC BY 4.0.</p></section>
 <section><h2>Optimointi</h2><p>Turvallinen varatila: pumpun oma ohjaus.</p>
 <p id="reason">Ennuste ja asennuskohtainen kalibrointi puuttuvat.</p></section>
 <script>async function update(){try{let r=await fetch('/api/status',{cache:'no-store'});
@@ -199,6 +208,11 @@ ok?(x.defrosting?'Käynnissä':'Ei'):'—';
 document.querySelector('#price').textContent=x.price_available?
 (x.spot_eur_per_kwh*100).toFixed(2)+' snt/kWh':'Hintaa ei saatavilla';
 document.querySelector('#reason').textContent=x.reason;
+document.querySelector('#weather').textContent=x.weather_available?
+'Seuraava ennuste: '+x.forecast_outdoor_c.toFixed(1)+' °C klo '+
+new Date(x.weather_next_utc*1000).toLocaleTimeString('fi-FI',
+{timeZone:'Europe/Helsinki',hour:'2-digit',minute:'2-digit'}):
+(x.weather_configured?'Sääennustetta ei ole saatavilla':'Sijaintia ei ole asetettu');
 let p=await (await fetch('/api/prices',{cache:'no-store'})).json();
 document.querySelector('#future').replaceChildren(...p.prices.map(v=>{
 let li=document.createElement('li');li.textContent=
@@ -270,6 +284,7 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(telemetry_mutex ? ESP_OK : ESP_ERR_NO_MEM);
     start_ethernet();
     enevina_firmware::start_market_reader();
+    enevina_firmware::start_weather_reader();
     start_web();
     xTaskCreate(poll_heishamon,"heishamon_read",6144,nullptr,4,nullptr);
     ESP_LOGW(tag,"read-only shadow firmware: no heat-pump write endpoint");

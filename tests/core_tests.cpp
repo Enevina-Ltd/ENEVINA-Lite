@@ -4,6 +4,7 @@
 #include "forecast/pricing.hpp"
 #include "forecast/validity.hpp"
 #include "forecast/sources.hpp"
+#include "forecast/fmi.hpp"
 #include "safety/supervisor.hpp"
 #include "pump/heishamon_adapter.hpp"
 #include <cmath>
@@ -192,6 +193,34 @@ int main() {
     require(!normalize_nordpool_fi(source_prices.data(),source_prices.size(),
             local_tariff,price_slots.data(),price_slots.size()),
             "missing or nonfinite Nord Pool price must never become zero");
+    const char* fmi_xml="<wfs:FeatureCollection>"
+        "<BsWfs:BsWfsElement><BsWfs:Time>2026-10-24T21:00:00Z</BsWfs:Time>"
+        "<BsWfs:ParameterName>temperature</BsWfs:ParameterName>"
+        "<BsWfs:ParameterValue>-3.5</BsWfs:ParameterValue></BsWfs:BsWfsElement>"
+        "<BsWfs:BsWfsElement><BsWfs:Time>2026-10-24T22:00:00Z</BsWfs:Time>"
+        "<BsWfs:ParameterName>temperature</BsWfs:ParameterName>"
+        "<BsWfs:ParameterValue>-4</BsWfs:ParameterValue></BsWfs:BsWfsElement>"
+        "</wfs:FeatureCollection>";
+    OutdoorPoint outdoor[4];
+    size_t outdoor_count=0;
+    require(parse_fmi_temperature(fmi_xml,outdoor,4,outdoor_count) &&
+            outdoor_count==2 && outdoor[0].timestamp_utc==start_utc &&
+            outdoor[1].temperature_c==-4,
+            "FMI hourly UTC temperatures must parse");
+    double quarter_hour[5];
+    require(interpolate_fmi_temperature(outdoor,outdoor_count,start_utc,
+            quarter_hour,5),"hourly FMI data must interpolate to 15 minutes");
+    close(quarter_hour[1],-3.625);
+    close(quarter_hour[4],-4);
+    require(!interpolate_fmi_temperature(outdoor,outdoor_count,start_utc-900,
+            quarter_hour,5),"missing first FMI slot must not be extrapolated");
+    const char* incomplete_fmi="<wfs:FeatureCollection>"
+        "<BsWfs:BsWfsElement><BsWfs:Time>2026-10-24T21:00:00Z</BsWfs:Time>"
+        "<BsWfs:ParameterName>temperature</BsWfs:ParameterName>"
+        "<BsWfs:ParameterValue>NaN</BsWfs:ParameterValue></BsWfs:BsWfsElement>"
+        "</wfs:FeatureCollection>";
+    require(!parse_fmi_temperature(incomplete_fmi,outdoor,4,outdoor_count),
+            "malformed FMI temperatures must fail closed");
     SafetyInputs health{};
     health.now_utc = start_utc;
     health.telemetry_utc = start_utc-10;

@@ -46,6 +46,16 @@ bool valid_prices(const PriceCache& candidate) {
     return ok;
 }
 
+bool same_prices(const PriceCache& a, const PriceCache& b) {
+    if(a.count!=b.count) return false;
+    for(size_t i=0;i<a.count;++i) {
+        if(a.prices[i].start_utc!=b.prices[i].start_utc ||
+           a.prices[i].end_utc!=b.prices[i].end_utc ||
+           a.prices[i].eur_per_mwh!=b.prices[i].eur_per_mwh) return false;
+    }
+    return true;
+}
+
 void load_cache() {
     nvs_handle_t handle;
     if(nvs_open("enevina_market",NVS_READONLY,&handle)!=ESP_OK) return;
@@ -146,6 +156,7 @@ void poll_prices(void*) {
     load_cache();
     while(true) {
         const time_t now=time(nullptr);
+        bool updated=false;
         if(now>1700000000) {
             auto* fresh=new(std::nothrow) PriceCache;
             if(fresh) {
@@ -163,16 +174,21 @@ void poll_prices(void*) {
                 }
                 if(today_ok && valid_prices(*fresh)) {
                     xSemaphoreTake(mutex,portMAX_DELAY);
+                    const bool changed=!same_prices(cache,*fresh);
                     cache=*fresh;
                     xSemaphoreGive(mutex);
-                    save_cache(*fresh);
+                    // Polling is frequent, but flash is written only for new data.
+                    if(changed) save_cache(*fresh);
+                    updated=true;
                     ESP_LOGI(tag,"validated %lu Finnish price slots",
                         static_cast<unsigned long>(fresh->count));
                 } else ESP_LOGW(tag,"price fetch incomplete; retaining validated cache");
                 delete fresh;
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(30*60*1000));
+        const int next_ms=updated ? 30*60*1000 :
+            (now>1700000000 ? 60*1000 : 5*1000);
+        vTaskDelay(pdMS_TO_TICKS(next_ms));
     }
 }
 }
