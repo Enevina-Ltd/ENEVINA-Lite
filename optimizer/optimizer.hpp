@@ -14,7 +14,7 @@ struct OptimizeResult {
     std::array<Action, max_periods> actions{};
 };
 
-// Bounded backward dynamic program. No network, device, or wall-clock calls.
+// Bounded deterministic forward search. No network, device, or wall-clock calls.
 OptimizeResult optimize(const Parameters& p, State initial,
                         const Period* periods, size_t count,
                         size_t max_grid_states = 8192);

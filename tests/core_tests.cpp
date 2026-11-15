@@ -3,6 +3,7 @@
 #include "physics/calibration.hpp"
 #include "forecast/pricing.hpp"
 #include "forecast/validity.hpp"
+#include "forecast/sources.hpp"
 #include "safety/supervisor.hpp"
 #include "pump/heishamon_adapter.hpp"
 #include <cmath>
@@ -160,6 +161,37 @@ int main() {
     require(inspect_forecast(autumn_day.data(),autumn_day.size(),start_utc+60,
             start_utc-172800,start_utc-3600,100)==ForecastStatus::StalePrice,
             "old prices must disable optimization");
+    int64_t parsed=0;
+    require(parse_utc_z("2026-10-24T21:00:00Z",parsed) && parsed==start_utc,
+            "UTC source timestamps must convert exactly");
+    require(parse_utc_z("2026-10-24T21:00:00.123Z",parsed) && parsed==start_utc,
+            "fractional source timestamps must convert exactly");
+    require(!parse_utc_z("2026-02-30T21:00:00Z",parsed) &&
+            !parse_utc_z("2026-10-24T21:00:00+03:00",parsed),
+            "invalid or non-UTC source timestamps must be rejected");
+    std::vector<MarketPrice> source_prices(100);
+    std::vector<PriceSlot> price_slots(100);
+    for(size_t i=0;i<source_prices.size();++i)
+        source_prices[i]={start_utc+static_cast<int64_t>(i)*900,
+            start_utc+static_cast<int64_t>(i+1)*900,i==1 ? -10.0 : 0.0};
+    Tariff local_tariff{};
+    local_tariff.margin_eur_per_kwh=0.01;
+    local_tariff.transfer_eur_per_kwh=0.05;
+    local_tariff.vat_rate=0.25;
+    require(normalize_nordpool_fi(source_prices.data(),source_prices.size(),
+            local_tariff,price_slots.data(),price_slots.size()),
+            "100 quarter-hour UTC prices must normalize across Finnish DST");
+    close(price_slots[0].total_eur_per_kwh,0.075);
+    close(price_slots[1].total_eur_per_kwh,0.0625);
+    source_prices[50].start_utc+=900;
+    require(!normalize_nordpool_fi(source_prices.data(),source_prices.size(),
+            local_tariff,price_slots.data(),price_slots.size()),
+            "a missing Nord Pool slot must fail closed");
+    source_prices[50].start_utc-=900;
+    source_prices[50].eur_per_mwh=std::numeric_limits<double>::quiet_NaN();
+    require(!normalize_nordpool_fi(source_prices.data(),source_prices.size(),
+            local_tariff,price_slots.data(),price_slots.size()),
+            "missing or nonfinite Nord Pool price must never become zero");
     SafetyInputs health{};
     health.now_utc = start_utc;
     health.telemetry_utc = start_utc-10;

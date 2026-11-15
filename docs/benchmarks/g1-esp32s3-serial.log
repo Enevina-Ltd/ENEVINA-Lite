@@ -1,0 +1,27 @@
+ENEVINA_BENCH chip=ESP32-S3 psram=8386279
+BENCH profile=0 slots=96 repetition=1 status=0 cost=4.341958 ms=378 internal_before=331304 internal_after=331304 internal_low_before=326176 internal_low_after=326144 psram_before=8386035 psram_after=8386035 psram_low_before=8386035 psram_low_after=7510031
+BENCH profile=0 slots=96 repetition=2 status=0 cost=4.341958 ms=377 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=7510031 psram_low_after=7510031
+BENCH profile=0 slots=96 repetition=3 status=0 cost=4.341958 ms=377 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=7510031 psram_low_after=7510031
+BENCH_SUMMARY profile=0 slots=96 average_ms=377.3 worst_ms=378
+BENCH profile=0 slots=192 repetition=1 status=0 cost=7.906268 ms=841 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=7510031 psram_low_after=6738575
+BENCH profile=0 slots=192 repetition=2 status=0 cost=7.906268 ms=841 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH profile=0 slots=192 repetition=3 status=0 cost=7.906268 ms=841 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH_SUMMARY profile=0 slots=192 average_ms=841.0 worst_ms=841
+BENCH profile=1 slots=96 repetition=1 status=0 cost=12.489946 ms=399 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH profile=1 slots=96 repetition=2 status=0 cost=12.489946 ms=399 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH profile=1 slots=96 repetition=3 status=0 cost=12.489946 ms=399 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH_SUMMARY profile=1 slots=96 average_ms=399.0 worst_ms=399
+BENCH profile=1 slots=192 repetition=1 status=0 cost=24.533524 ms=1101 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH profile=1 slots=192 repetition=2 status=0 cost=24.533524 ms=1101 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH profile=1 slots=192 repetition=3 status=0 cost=24.533524 ms=1101 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH_SUMMARY profile=1 slots=192 average_ms=1101.0 worst_ms=1101
+BENCH profile=2 slots=96 repetition=1 status=0 cost=7.149686 ms=466 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH profile=2 slots=96 repetition=2 status=0 cost=7.149686 ms=465 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH profile=2 slots=96 repetition=3 status=0 cost=7.149686 ms=465 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH_SUMMARY profile=2 slots=96 average_ms=465.3 worst_ms=466
+BENCH profile=2 slots=192 repetition=1 status=0 cost=13.737745 ms=1494 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH profile=2 slots=192 repetition=2 status=0 cost=13.737745 ms=1494 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH profile=2 slots=192 repetition=3 status=0 cost=13.737745 ms=1494 internal_before=331040 internal_after=331040 internal_low_before=325636 internal_low_after=325636 psram_before=8386035 psram_after=8386035 psram_low_before=6738575 psram_low_after=6738575
+BENCH_SUMMARY profile=2 slots=192 average_ms=1494.0 worst_ms=1494
+BENCH task_stack_min_free=20836
+ENEVINA_BENCH_DONE

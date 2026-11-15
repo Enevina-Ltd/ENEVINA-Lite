@@ -1,6 +1,8 @@
 # Laitevalinnan tarkistus
 
-V1:n kehityskortiksi valittiin **Waveshare ESP32-S3-ETH**, ei yleinen nimeämätön N16R8-kortti. [Valmistajan tuotetiedot](https://docs.waveshare.com/ESP32-S3-ETH) ilmoittavat ESP32-S3R8:n, 16 Mt Flashin, 8 Mt PSRAMin ja SPI-väyläisen W5500:n. [Valmistajan ESP-IDF-ohje](https://docs.waveshare.com/ESP32-S3-ETH/Development-Environment-Setup-ESP-IDF) antaa W5500-kytkennän:
+Core-koneeseen liitetty *fyysinen* laite tunnistettiin ESP32-S3 rev v0.2 -piiriksi, jossa on 16 Mt flash, 8 Mt PSRAM ja CH340-USB-silta. USB-tiedoista tai vanhan ohjelman binääristä ei voitu tunnistaa kortin valmistajaa, Ethernet-ohjainta tai pinoutia. Korttiin asennettiin vain erillinen, sarjaporttia käyttävä laskentatesti. Alla oleva Wavesharen kytkentä on firmware-lähdekoodin nykyinen oletus, **ei tunnistetun laitteen vahvistettu kytkentä**. [Fyysisen piirin mittaus](G1-report.md).
+
+Waveshare ESP32-S3-ETH on dokumentoitu mahdollinen kehityskortti. [Valmistajan tuotetiedot](https://docs.waveshare.com/ESP32-S3-ETH) ilmoittavat ESP32-S3R8:n, 16 Mt Flashin, 8 Mt PSRAMin ja SPI-väyläisen W5500:n. [Valmistajan ESP-IDF-ohje](https://docs.waveshare.com/ESP32-S3-ETH/Development-Environment-Setup-ESP-IDF) antaa W5500-kytkennän:
 
 | W5500 | ESP32-S3 GPIO |
 | --- | ---: |

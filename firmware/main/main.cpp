@@ -19,6 +19,7 @@
 #include "sdkconfig.h"
 #include "safety/supervisor.hpp"
 #include "pump/heishamon_adapter.hpp"
+#include "market.hpp"
 
 namespace {
 constexpr char tag[] = "enevina_shadow";
@@ -127,21 +128,47 @@ esp_err_t status_handler(httpd_req_t* req) {
     const int64_t now=static_cast<int64_t>(time(nullptr));
     const bool fresh=snapshot.valid && snapshot.received_utc>0 &&
         now>=snapshot.received_utc && now-snapshot.received_utc<=120;
-    char body[400];
+    const auto market=enevina_firmware::market_status();
+    char body[550];
     std::snprintf(body,sizeof(body),
         "{\"mode\":\"shadow\",\"pump_connected\":%s,\"telemetry_utc\":%lld,"
         "\"inlet_c\":%.1f,\"outlet_c\":%.1f,\"outdoor_c\":%.1f,"
         "\"dhw_c\":%.1f,\"compressor_hz\":%.0f,\"defrosting\":%d,"
-        "\"operating_mode\":%d,\"forecast_status\":\"missing\","
+        "\"operating_mode\":%d,\"price_available\":%s,"
+        "\"spot_eur_per_kwh\":%.6f,\"price_slots\":%u,"
+        "\"price_valid_until_utc\":%lld,\"forecast_status\":\"missing\","
         "\"reason\":\"Ennuste ja asennuskohtainen kalibrointi puuttuvat\"}",
         fresh?"true":"false",static_cast<long long>(snapshot.received_utc),
         fresh?snapshot.inlet_c:0, fresh?snapshot.outlet_c:0,
         fresh?snapshot.outdoor_c:0, fresh?snapshot.dhw_c:0,
         fresh?snapshot.compressor_hz:0, fresh?snapshot.defrosting:-1,
-        fresh?snapshot.operating_mode:-1);
+        fresh?snapshot.operating_mode:-1,
+        market.current_price_valid?"true":"false",
+        market.current_price_valid?market.current_spot_eur_per_kwh:0.0,
+        static_cast<unsigned>(market.slots),
+        static_cast<long long>(market.valid_until_utc));
     httpd_resp_set_type(req,"application/json; charset=utf-8");
     httpd_resp_set_hdr(req,"Cache-Control","no-store");
     return httpd_resp_sendstr(req,body);
+}
+
+esp_err_t prices_handler(httpd_req_t* req) {
+    enevina_firmware::PricePoint prices[16];
+    const size_t count=enevina_firmware::future_prices(prices,16);
+    httpd_resp_set_type(req,"application/json; charset=utf-8");
+    httpd_resp_set_hdr(req,"Cache-Control","no-store");
+    if(httpd_resp_send_chunk(req,"{\"prices\":[",11)!=ESP_OK) return ESP_FAIL;
+    for(size_t i=0;i<count;++i) {
+        char item[100];
+        const int n=std::snprintf(item,sizeof(item),
+            "%s{\"start_utc\":%lld,\"spot_eur_per_kwh\":%.6f}",
+            i?",":"",static_cast<long long>(prices[i].start_utc),
+            prices[i].spot_eur_per_kwh);
+        if(n<0 || n>=static_cast<int>(sizeof(item)) ||
+            httpd_resp_send_chunk(req,item,n)!=ESP_OK) return ESP_FAIL;
+    }
+    if(httpd_resp_send_chunk(req,"]}",2)!=ESP_OK) return ESP_FAIL;
+    return httpd_resp_send_chunk(req,nullptr,0);
 }
 
 constexpr char page[] = R"HTML(<!doctype html><html lang="fi"><meta charset="utf-8">
@@ -157,7 +184,10 @@ grid-template-columns:1fr auto;gap:10px}dt,dd{margin:0}dd{font-weight:700}
 <dt>Menovesi</dt><dd id="outlet">—</dd><dt>Paluuvesi</dt><dd id="inlet">—</dd>
 <dt>Ulkolämpötila</dt><dd id="outdoor">—</dd><dt>Käyttövesi</dt><dd id="dhw">—</dd>
 <dt>Kompressori</dt><dd id="compressor">—</dd><dt>Sulatus</dt><dd id="defrost">—</dd>
-</dl></section><section><h2>Optimointi</h2><p>Turvallinen varatila: pumpun oma ohjaus.</p>
+</dl></section><section><h2>Sähkön hinta</h2><p id="price">Ladataan…</p>
+<p>Spot-hinta ilman veroja ja sähkösopimuksen lisäkuluja.</p>
+<h3>Seuraavat tunnit</h3><ol id="future"><li>Hintatietoja ei vielä ole.</li></ol></section>
+<section><h2>Optimointi</h2><p>Turvallinen varatila: pumpun oma ohjaus.</p>
 <p id="reason">Ennuste ja asennuskohtainen kalibrointi puuttuvat.</p></section>
 <script>async function update(){try{let r=await fetch('/api/status',{cache:'no-store'});
 let x=await r.json();let ok=x.pump_connected;document.querySelector('#connection').textContent=
@@ -165,7 +195,16 @@ ok?'Mittaukset käytettävissä':'Lämpöpumpun mittaukset puuttuvat tai ovat va
 for(let k of ['outlet','inlet','outdoor','dhw'])document.querySelector('#'+k).textContent=
 ok?x[k+'_c'].toFixed(1)+' °C':'—';document.querySelector('#compressor').textContent=
 ok?x.compressor_hz+' Hz':'—';document.querySelector('#defrost').textContent=
-ok?(x.defrosting?'Käynnissä':'Ei'):'—';document.querySelector('#reason').textContent=x.reason;
+ok?(x.defrosting?'Käynnissä':'Ei'):'—';
+document.querySelector('#price').textContent=x.price_available?
+(x.spot_eur_per_kwh*100).toFixed(2)+' snt/kWh':'Hintaa ei saatavilla';
+document.querySelector('#reason').textContent=x.reason;
+let p=await (await fetch('/api/prices',{cache:'no-store'})).json();
+document.querySelector('#future').replaceChildren(...p.prices.map(v=>{
+let li=document.createElement('li');li.textContent=
+new Date(v.start_utc*1000).toLocaleTimeString('fi-FI',
+{timeZone:'Europe/Helsinki',hour:'2-digit',minute:'2-digit'})+
+' — '+(v.spot_eur_per_kwh*100).toFixed(2)+' snt/kWh';return li;}));
 }catch(e){document.querySelector('#connection').textContent='Yhteys laitteeseen katkesi';}}
 update();setInterval(update,10000);</script></main></html>)HTML";
 
@@ -184,8 +223,11 @@ void start_web() {
     httpd_uri_t root{}; root.uri="/"; root.method=HTTP_GET; root.handler=page_handler;
     httpd_uri_t status{}; status.uri="/api/status"; status.method=HTTP_GET;
     status.handler=status_handler;
+    httpd_uri_t prices{}; prices.uri="/api/prices"; prices.method=HTTP_GET;
+    prices.handler=prices_handler;
     ESP_ERROR_CHECK(httpd_register_uri_handler(server,&root));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server,&status));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server,&prices));
 }
 
 void start_ethernet() {
@@ -227,6 +269,7 @@ extern "C" void app_main(void) {
     telemetry_mutex=xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(telemetry_mutex ? ESP_OK : ESP_ERR_NO_MEM);
     start_ethernet();
+    enevina_firmware::start_market_reader();
     start_web();
     xTaskCreate(poll_heishamon,"heishamon_read",6144,nullptr,4,nullptr);
     ESP_LOGW(tag,"read-only shadow firmware: no heat-pump write endpoint");

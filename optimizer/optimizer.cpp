@@ -23,8 +23,8 @@ std::array<Action, 7> actions(const Parameters& p, double outdoor_c) {
              {Mode::Dhw, full, p.dhw_supply_c}}};
 }
 
-// Exact physical states are propagated forward; only near-identical states
-// are merged. This recovers trajectories that a rounded backward policy loses.
+// Float search states are merged into bounded bins. The chosen trajectory is
+// checked again using the double-precision physical model before acceptance.
 OptimizeResult forward_exact(const Parameters& p, State initial,
                              const Period* periods, size_t count,
                              size_t max_grid_states) {
@@ -36,46 +36,88 @@ OptimizeResult forward_exact(const Parameters& p, State initial,
     const size_t tank_count = static_cast<size_t>(std::ceil(
         (p.tank_capacity_kwh-p.tank_min_kwh)/forward_tank_bin_kwh))+1;
     if (!tank_count || room_count > max_grid_states/tank_count ||
-        room_count*tank_count > 500000/count ||
+        room_count*tank_count > 800000/count ||
         room_count*tank_count > UINT16_MAX) {
         result.status=OptimizeStatus::ResourceLimit; return result;
     }
     const size_t grid_size=room_count*tank_count;
-    auto bin = [&](State s) {
-        const size_t r=static_cast<size_t>(std::clamp(std::round(
-            (s.indoor_c-p.indoor_min_c)/forward_room_bin_c),0.0,double(room_count-1)));
-        const size_t w=static_cast<size_t>(std::clamp(std::round(
-            (s.tank_kwh-p.tank_min_kwh)/forward_tank_bin_kwh),0.0,double(tank_count-1)));
+    struct SearchState { float indoor_c; float tank_kwh; };
+    const float room_bin=static_cast<float>(forward_room_bin_c);
+    const float tank_bin=static_cast<float>(forward_tank_bin_kwh);
+    const float minimum_room=static_cast<float>(p.indoor_min_c);
+    const float maximum_room=static_cast<float>(p.indoor_max_c);
+    const float minimum_tank=static_cast<float>(p.tank_min_kwh);
+    const float maximum_tank=static_cast<float>(p.tank_capacity_kwh);
+    auto bin = [&](SearchState s) {
+        const size_t r=static_cast<size_t>(std::clamp(
+            (s.indoor_c-minimum_room)/room_bin+0.5f,0.0f,float(room_count-1)));
+        const size_t w=static_cast<size_t>(std::clamp(
+            (s.tank_kwh-minimum_tank)/tank_bin+0.5f,0.0f,float(tank_count-1)));
         return r*tank_count+w;
     };
-    struct Node { State state; double cost; uint16_t parent; uint8_t choice; };
+    struct Node { SearchState state; float cost; uint16_t parent; uint8_t choice; };
     struct Trace { uint16_t parent; uint8_t choice; };
     std::vector<Trace> traces;
     traces.reserve(count*grid_size);
     std::array<size_t,max_periods> offsets{};
-    std::vector<Node> frontier{{initial,0,0,255}};
+    std::vector<Node> frontier{{{static_cast<float>(initial.indoor_c),
+        static_cast<float>(initial.tank_kwh)},0,0,255}};
     std::vector<Node> best(grid_size);
-    std::vector<double> rank(grid_size);
+    std::vector<float> rank(grid_size);
     for (size_t t=0;t<count;++t) {
         std::fill(rank.begin(),rank.end(),infinity);
         for (auto& node:best) node.choice=255;
         const auto options=actions(p,periods[t].outdoor_c);
+        struct Effect { float space_kw; float dhw_kw; float cost_eur; };
+        std::array<Effect,7> effects{};
+        const double maximum=available_thermal_kw(p,periods[t].outdoor_c);
+        const double reference_indoor=(p.indoor_min_c+p.indoor_max_c)/2;
+        for(size_t a=0;a<options.size();++a) {
+            const Action& option=options[a];
+            double delivered=option.mode==Mode::Idle ? 0 :
+                std::min(std::max(0.0,option.requested_thermal_kw),maximum);
+            if(option.mode==Mode::Space)
+                delivered=std::min(delivered,p.emitter_kw_per_c*
+                    std::max(0.0,option.supply_c-reference_indoor));
+            const double electric=delivered>0 ?
+                delivered*step_hours/cop(p,periods[t].outdoor_c,option.supply_c) : 0;
+            effects[a]={static_cast<float>(option.mode==Mode::Space ? delivered : 0),
+                static_cast<float>(option.mode==Mode::Dhw ? delivered : 0),
+                static_cast<float>(electric*periods[t].total_price_eur_per_kwh)};
+        }
+        const float room_gain=static_cast<float>(periods[t].internal_gain_kw);
+        const float room_outdoor=static_cast<float>(periods[t].outdoor_c);
+        const float dhw_draw=static_cast<float>(periods[t].dhw_draw_kw);
+        const float room_loss=static_cast<float>(p.building_loss_kw_per_c);
+        const float room_capacity=static_cast<float>(p.building_capacity_kwh_per_c);
+        const float tank_loss=static_cast<float>(p.tank_loss_kw_per_kwh);
+        const float initial_room=static_cast<float>(initial.indoor_c);
+        const float initial_tank=static_cast<float>(initial.tank_kwh);
         for (size_t i=0;i<frontier.size();++i) {
             for (uint8_t a=0;a<options.size();++a) {
-                const Step step=advance(p,frontier[i].state,periods[t],options[a]);
-                if (!feasible(p,step.next)) continue;
-                if (t+1==count && (step.next.indoor_c < initial.indoor_c-1e-7 ||
-                                   step.next.tank_kwh < initial.tank_kwh-1e-7)) continue;
-                const double cost=frontier[i].cost+step.cost_eur;
-                const size_t k=bin(step.next);
+                const Effect& effect=effects[a];
+                const SearchState& state=frontier[i].state;
+                const SearchState next_state{
+                    state.indoor_c+0.25f*(effect.space_kw+room_gain-
+                        room_loss*(state.indoor_c-room_outdoor))/room_capacity,
+                    state.tank_kwh+0.25f*(effect.dhw_kw-dhw_draw-
+                        tank_loss*state.tank_kwh)};
+                if (!(next_state.indoor_c>=minimum_room-1e-5f &&
+                      next_state.indoor_c<=maximum_room+1e-5f &&
+                      next_state.tank_kwh>=minimum_tank-1e-5f &&
+                      next_state.tank_kwh<=maximum_tank+1e-5f)) continue;
+                if (t+1==count && (next_state.indoor_c < initial_room-1e-5f ||
+                                   next_state.tank_kwh < initial_tank-1e-5f)) continue;
+                const float cost=frontier[i].cost+effect.cost_eur;
+                const size_t k=bin(next_state);
                 // Preserve more stored heat within a bin when its small extra
                 // cost is below a conservative future replacement value.
-                const double stored=(step.next.indoor_c-p.indoor_min_c)*
-                    p.building_capacity_kwh_per_c+step.next.tank_kwh-p.tank_min_kwh;
-                const double score=cost-0.05*stored;
+                const float stored=(next_state.indoor_c-minimum_room)*
+                    room_capacity+next_state.tank_kwh-minimum_tank;
+                const float score=cost-0.05f*stored;
                 if (score < rank[k]) {
                     rank[k]=score;
-                    best[k]={step.next,cost,static_cast<uint16_t>(i),a};
+                    best[k]={next_state,cost,static_cast<uint16_t>(i),a};
                 }
             }
         }
@@ -100,6 +142,25 @@ OptimizeResult forward_exact(const Parameters& p, State initial,
         result.actions[t-1]=actions(p,periods[t-1].outdoor_c)[trace.choice];
         selected=trace.parent;
     }
+    State verified=initial;
+    double verified_cost=0;
+    for(size_t t=0;t<count;++t) {
+        const Step step=advance(p,verified,periods[t],result.actions[t]);
+        if(!feasible(p,step.next)) {
+            result.status=OptimizeStatus::Infeasible;
+            result.count=0;
+            return result;
+        }
+        verified=step.next;
+        verified_cost+=step.cost_eur;
+    }
+    if(verified.indoor_c<initial.indoor_c-1e-7 ||
+       verified.tank_kwh<initial.tank_kwh-1e-7) {
+        result.status=OptimizeStatus::Infeasible;
+        result.count=0;
+        return result;
+    }
+    result.cost_eur=verified_cost;
     return result;
 }
 }
@@ -115,82 +176,6 @@ OptimizeResult optimize(const Parameters& p, State initial,
             !std::isfinite(x.internal_gain_kw) ||
             !std::isfinite(x.dhw_draw_kw) || x.dhw_draw_kw < 0) return result;
     }
-    const size_t room_count = static_cast<size_t>(std::ceil(
-        (p.indoor_max_c - p.indoor_min_c) / room_bin_c)) + 1;
-    const size_t tank_count = static_cast<size_t>(std::ceil(
-        (p.tank_capacity_kwh - p.tank_min_kwh) / tank_bin_kwh)) + 1;
-    if (room_count == 0 || tank_count == 0 || room_count > max_grid_states /
-        tank_count) { result.status = OptimizeStatus::ResourceLimit; return result; }
-    const size_t grid_size = room_count * tank_count;
-    auto index = [tank_count](size_t room, size_t tank) { return room * tank_count + tank; };
-    auto discretize = [&](State s) {
-        const auto room = static_cast<size_t>(std::clamp(
-            std::round((s.indoor_c - p.indoor_min_c) / room_bin_c),
-            0.0, static_cast<double>(room_count - 1)));
-        const auto tank = static_cast<size_t>(std::clamp(
-            std::round((s.tank_kwh - p.tank_min_kwh) / tank_bin_kwh),
-            0.0, static_cast<double>(tank_count - 1)));
-        return index(room, tank);
-    };
-    // Policy is one byte per state and period; with the grid cap, <= 1.5 MiB.
-    std::vector<uint8_t> policy(count * grid_size, 255);
-    std::vector<double> next(grid_size, infinity), current(grid_size, infinity);
-    for (size_t r = 0; r < room_count; ++r) {
-        for (size_t w = 0; w < tank_count; ++w) {
-            State s{p.indoor_min_c + r * room_bin_c,
-                    p.tank_min_kwh + w * tank_bin_kwh};
-            if (feasible(p, s) && s.indoor_c >= initial.indoor_c + room_bin_c - 1e-7 &&
-                s.tank_kwh >= initial.tank_kwh + tank_bin_kwh - 1e-7) next[index(r,w)] = 0;
-        }
-    }
-    for (size_t reverse = count; reverse-- > 0;) {
-        std::fill(current.begin(), current.end(), infinity);
-        const auto choices = actions(p, periods[reverse].outdoor_c);
-        for (size_t r = 0; r < room_count; ++r) {
-            for (size_t w = 0; w < tank_count; ++w) {
-                State s{p.indoor_min_c + r * room_bin_c,
-                        p.tank_min_kwh + w * tank_bin_kwh};
-                if (!feasible(p, s)) continue;
-                const size_t here = index(r,w);
-                for (uint8_t a = 0; a < choices.size(); ++a) {
-                    const Step step = advance(p, s, periods[reverse], choices[a]);
-                    if (!feasible(p, step.next)) continue;
-                    const double tail = next[discretize(step.next)];
-                    const double value = step.cost_eur + tail;
-                    if (value < current[here]) {
-                        current[here] = value;
-                        policy[reverse * grid_size + here] = a;
-                    }
-                }
-            }
-        }
-        current.swap(next);
-    }
-    if (!std::isfinite(next[discretize(initial)])) {
-        return forward_exact(p,initial,periods,count,max_grid_states);
-    }
-    State actual = initial;
-    for (size_t t = 0; t < count; ++t) {
-        const uint8_t choice = policy[t * grid_size + discretize(actual)];
-        if (choice == 255) return forward_exact(p,initial,periods,count,max_grid_states);
-        const auto selected = actions(p, periods[t].outdoor_c)[choice];
-        const Step step = advance(p, actual, periods[t], selected);
-        if (!feasible(p, step.next)) {
-            return forward_exact(p,initial,periods,count,max_grid_states);
-        }
-        result.actions[t] = selected;
-        result.cost_eur += step.cost_eur;
-        actual = step.next;
-    }
-    if (actual.indoor_c < initial.indoor_c - 1e-7 ||
-        actual.tank_kwh < initial.tank_kwh - 1e-7) {
-        return forward_exact(p,initial,periods,count,max_grid_states);
-    }
-    result.status = OptimizeStatus::Ok;
-    result.count = count;
-    const auto exact = forward_exact(p,initial,periods,count,max_grid_states);
-    if (exact.status == OptimizeStatus::Ok && exact.cost_eur < result.cost_eur)
-        return exact;
-    return result;
+    return forward_exact(p,initial,periods,count,max_grid_states);
 }
 }

@@ -1,4 +1,5 @@
 /build/
+/build_forward/
 /firmware/build/
 /firmware/sdkconfig
 /firmware/sdkconfig.old

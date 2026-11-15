@@ -6,7 +6,7 @@
 
 `tools/reference_benchmark.py` muodostaa lievän, kylmän ja patterilämmityksen menoveden rajoittaman tilanteen 24, 48, 96 ja 192 neljännestunnin jaksolle. Kolmas tapaus käyttää erilaista pumpun tehoa, COP-parametreja ja vaihtelevaa hintaprofiilia. Jokaisessa tapauksessa neljä menetelmää käyttää samoja lähtötiloja, rakennuksen ja varaajan energiataseita, COP-yhtälöä, hintasarjaa, rajoja ja vaatimusta palauttaa loppulämpötila ja -varaustaso vähintään lähtötasolle.
 
-- **Lite:** C++:n rajattu, diskretoitu dynaaminen ohjelmointi ja tarkkoja tiloja kuljettava rajattu haku. Halvempi kelvollinen aikataulu valitaan.
+- **Lite:** C++:n rajattu eteenpäin etenevä dynaaminen haku yhdistää lähes samat tilat ja tarkistaa lopullisen aikataulun fysiikkamallilla. Alkuperäisessä G0-ajossa mukana oli myös taaksepäin etenevä haku, mutta sen poistaminen säilytti kaikkien 12 tapauksen kustannukset viiden desimaalin tarkkuudella ja nopeutti ESP-mittausta.
 - **MILP:** Pythonin SciPy/HiGHS ratkaisee erillisen binaaristen toimintatilojen mallin. Jokainen ratkaisu simuloidaan uudelleen Pythonin fysiikkamallilla.
 - **Sääkompensoitu perusohjaus:** menoveden tavoite nousee ulkolämpötilan laskiessa; huoneen ja käyttöveden lähtötavoitteita ylläpidetään ilman hintaennakointia. Tämä on yksinkertaistettu vertailu, ei Panasonicin todellisen säätimen mittaus.
 - **Hintaraja:** sama välitön mukavuuden ylläpito, mutta alle 0,15 €/kWh jaksoilla huonetta ja varaajaa esilämmitetään kiinteään puskuriin. Tämä on yksinkertainen hintarajaohjaus, ei MPC.
@@ -30,13 +30,13 @@ MILP:n `solver_status=1` tarkoittaa 60 sekunnin aikarajaa. Taulukon MILP-luku on
 
 Yksikään tämän aineiston Lite-tapaus ei hävinnyt sääkäyrälle tai hintarajalle. Patteritapauksessa ero MILP:hen oli 96 jaksolla 4,81 %, joten Lite ei aina saavuta vertailuratkaisua. Tutkimus ei kata kaikkia hintaprofiileja, laitteita tai rakennuksia, joten huonompia tapauksia ei voi sulkea pois.
 
-PC-koneella C++-optimointi kesti 24 jaksolla noin 10–11 ms ja 192 jaksolla noin 113–172 ms. Erillisprosessin mitattu huippukäyttömuisti oli 5,3–5,9 MiB; tämä sisältää myös Windows-prosessin muun muistin eikä kuvaa ESP32:n sisäistä heapia tai PSRAMia. **ESP32:n alle kahden sekunnin tavoitetta ei ole mitattu.**
+Alkuperäisessä PC-ajossa C++-optimointi kesti 24 jaksolla noin 10–11 ms ja 192 jaksolla noin 113–172 ms. Erillisprosessin mitattu huippukäyttömuisti oli 5,3–5,9 MiB; tämä sisältää myös Windows-prosessin muun muistin eikä kuvaa ESP32:n sisäistä heapia tai PSRAMia. Uudistetun ytimen [ESP-sarjaporttimittaus](G1-report.md) täytti alle kahden sekunnin tavoitteen testatuissa tapauksissa, mutta samanaikainen verkkokuorma on vielä testaamatta.
 
 ## Jäljellä ennen G0-porttia
 
 - Kalibroi rakennus, käyttövesivaraaja ja COP oikeilla mittauksilla; nykyiset luvut ovat synteettisen kokeen oletuksia.
 - Varmista, että optimoidut lämpötehon toimintatilat voidaan toteuttaa käytännössä valitun Panasonic/HeishaMon-yhdistelmän sallituilla asetusarvoilla. Nykyinen malli ohjaa ideaalista lämpötehoa, jota laite ei ole luvannut tarjota.
 - Lisää erilaisia hintaprofiileja, pumppujen teho- ja COP-käyriä, sulatus- ja minimikäyntiaikarajoja sekä vaikeita käyttövesitilanteita. Raportoi myös löydetyt tappiot ja epäkelvot tapaukset.
-- Toteuta paikalliset hintojen ja FMI-sään hakijat, välimuisti ja turvallinen varatilan integraatio ennen itsenäisen optimointikäytön testausta.
+- Testaa nyt käännetty paikallinen Nord Pool -hintojen haku ja välimuisti fyysisellä Ethernetillä; lisää FMI-sää, sopimuskohtainen kokonaishinta ja turvallinen varatilan integraatio ennen itsenäisen optimointikäytön testausta.
 
-G1:n laitemittauksia, G2:n laiteintegraatiota ja G3:n tuotantotestejä ei ole tehty.
+G1:n sarjaporttimittauksia on tehty, mutta G1:n verkkokuorma, G2:n laiteintegraatio ja G3:n tuotantotestit ovat tekemättä.
