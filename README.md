@@ -4,7 +4,34 @@
 
 Enevina Lite on Enevina Coresta erillinen, kevyt ohjain, jonka tavoitteena on minimoida lämpöpumpun lämmitys- ja käyttövesikustannukset turvallisesti. **Lite ei sisällä tekoälyä**, ei edellytä Home Assistantia eikä tarvitse Linuxia tai pilvipalvelua normaalissa käytössä.
 
-> Tila: suunnittelun lähtötaso. Tässä repositoriossa ei vielä ole toimivaa laiteohjelmistoa eikä todistettuja säästötuloksia.
+> Tila: PC:llä testattu G0-prototyyppi ja ESP32-S3:lle kääntyvä **vain luku** -laiteohjelmisto. G0–G3-hyväksyntäportit ovat edelleen auki; tuotantolaitetta ei saa ohjata tällä versiolla.
+
+## Nykyinen toteutus
+
+- `physics/`: rakennuksen ja käyttövesivaraajan energiatase, parametrinen COP, ulkolämpötilasta riippuva pumpun enimmäisteho ja rakennuksen deterministinen kalibrointi.
+- `optimizer/`: 15 minuutin, enintään 192 jakson yhteisoptimointi. Rajattu dynaaminen ohjelmointi ja tarkkoja tiloja kuljettava varahaku; molemmat simuloivat tuloksen uudelleen ennen hyväksyntää.
+- `forecast/`: kokonaishinnan verokäsittely sekä UTC-jaksojen jatkuvuuden ja tuoreuden tarkistus. Verkkohakuja ei ole vielä yhdistetty laiteohjelmistoon.
+- `safety/`: erillinen kirjoitusportin päätöslogiikka. Todellisia pumpun kirjoituksia ei ole toteutettu.
+- `firmware/`: Waveshare ESP32-S3-ETH:n W5500-Ethernet, HeishaMonin HTTP JSON -lukeminen ja suomenkielinen paikallinen tilasivu. Käynnistyy aina shadow-tilaan, eikä sisällä kirjoitusrajapintaa.
+- `tools/reference_benchmark.py`: riippumaton PC-MILP, sääkompensoitu perusohjaus ja mitattu vertailu. [Tulokset ja rajaukset](docs/G0-report.md).
+
+### PC-testit
+
+```text
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+python -m unittest discover -s tests -p test_reference.py -v
+python tools/reference_benchmark.py build/enevina_cli --output docs/benchmarks/g0-local.json
+```
+
+Windowsissa viimeisen komennon ohjelmapolku on `build/enevina_cli.exe`. MILP-vertailu tarvitsee SciPy 1.9+ ja NumPy. Raportin taulukko on ajettu Windowsissa Python 3.14 / SciPy 1.17.1 -ympäristössä.
+
+### Varjotilan firmware
+
+Asenna ESP-IDF 5.2.7, avaa sen ympäristö ja suorita `idf.py set-target esp32s3` sekä `idf.py build` hakemistossa `firmware/`. HeishaMonin osoite asetetaan ESP-IDF-valikossa `Enevina Lite shadow → HeishaMon base URL`; tyhjä arvo estää kyselyt. Osoite on paikallinen `http://`-osoite. Ohjelma ei vielä hae spot-hintoja tai sääennustetta, eikä paikallista sivua ole tarkoitettu Internetiin avattavaksi. **Älä flashaa tai kytke sitä todelliseen pumppuun osana tätä kehitysvaihetta.**
+
+Valittu kortti, pinout ja lähteet on kuvattu [laitemuistiossa](docs/hardware.md). Käännös ei todista Ethernetin, HeishaMonin, watchdogin tai käyttöliittymän toimintaa fyysisellä laitteella.
 
 ## V1:n rajaus
 
