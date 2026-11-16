@@ -73,3 +73,10 @@ Yhteyden heartbeat eteni 55:stä 140:een, mutta ilmastointitapahtumien ja kompre
 ## Julkaisupäätös
 
 **PR #7 pysyy draftina. PR #5, #6 ja #7 eivät yhdisty mainiin.** Kortti pysyy sisällä. Ei automaattista C3-ohjausta, ei alle 16 asteen Mitsubishin HEAT/OFF-pulssitusta, eikä mitään CN105:n tai Shellyn fyysistä kirjoitusta. OTA:n tuotantohyväksyntä, koko 24 h vakausnäyttö, CN105-lähdemittauksen tuoreus ja erillinen pihamökin pakkassuoja ovat avoimia.
+
+## Uusimman muistidiagnostiikan toinen USB-flash ja jälkitesti
+
+- Uusin paikalliskonfiguraatiolla käännetty diagnostiikkaversio kirjoitettiin **vain app0-osioon** USB:n kautta; esptool vahvisti `Hash of data verified` ja resetin. Flashatun kuvan SHA-256 paikallisessa testilokissa: `194d8987da470b23f3a51d5a8e83e507aa892f295fdd17a7ac1bf9c68e62ba1f`.
+- Uusi `observed_min_largest_internal` -kenttä näkyy fyysisessä HTTP-rajapinnassa. Käynnistysjakson näytteistetty suurimman yhtenäisen sisäisen muistilohkon minimi **49 140 B** ja sisäisen RAMin ilmoitettu minimi **54 836 B**. BLE, CN105 SSE, Shelly GET, Nord Pool, FMI ja käyttöliittymä toimivat statusmittauksissa; toiminnallista pitkää toistoa **ei vielä ajettu tästä uusimmasta buildista**.
+- RuuviTagin sidonta säilyi NVS:ssä ja uusia Ruuvi-mainoksia löydetään, mutta noin 145–185 s mittaisessa käynnistysjaksossa **sidottua anturia ei ollut saatu luettua**: `bound=true`, `sensor_fresh=false`, `sample_count=0`. Viimeksi havaittu mainostava anturi ei täsmännyt sidotun anturin tunnisteeseen (tunnisteita ei tallennettu raporttiin). Tämä on **avoin uusi laitehyväksynnän este** kunnes sidottu anturi nähdään ja oikea mittaus palautuu. Sidontaa ei poistettu eikä vaihdettu.
+- `ota_upload_enabled=false`, `ota_image_state=-1`: tämä on USB-flash eikä OTA-hyväksyntä. Ei fyysistä rollover/rollback-koetta, ei pidemmän muistitestin tulosta.
