@@ -4,14 +4,14 @@
 #include <cstdio>
 using namespace enevina::cottage;
 int main(){
-    assert(valid_cn105_events_url("http://192.168.20.143/events"));
+    assert(valid_cn105_events_url("http://example-cn105.local/events"));
     assert(valid_cn105_events_url("http://cottage-cn105.local:8080/events"));
-    assert(valid_shelly_base_url("http://192.168.20.139"));
+    assert(valid_shelly_base_url("http://example-shelly.local"));
     assert(valid_shelly_base_url("http://shelly.local:80"));
     for(const char* url:{
         "http://127.0.0.1/rpc/Switch.Set?id=0&on=false",
-        "http://192.168.20.139/events?mode=off",
-        "http://192.168.20.139/command",
+        "http://example-shelly.local/events?mode=off",
+        "http://example-shelly.local/command",
         "http://user:password@host/events",
         "http://host//events",
         "https://host/events",

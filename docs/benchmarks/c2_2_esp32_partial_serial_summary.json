@@ -1,0 +1,37 @@
+{
+  "source": "Physical standalone ESP32-S3 N16R8 USB serial",
+  "mode": "C2 shadow without Wi-Fi credentials",
+  "start_utc": "2026-11-16T13:33:47.277+00:00",
+  "last_utc": "2026-11-16T13:44:21.286+00:00",
+  "heartbeat_count_at_snapshot": 22,
+  "hazard_event_count_at_snapshot": 0,
+  "examples": [
+    {
+      "utc": "2026-11-16T13:33:51.071+00:00",
+      "message": "C2_SHADOW wifi=0 clock=0 cn105=0 shelly=0 ble=0 plan_slots=0 heap=234088 psram=8358071 psram_total=8386023 internal_low=233864 bad_reads=0"
+    },
+    {
+      "utc": "2026-11-16T13:34:21.082+00:00",
+      "message": "C2_SHADOW wifi=0 clock=0 cn105=0 shelly=0 ble=0 plan_slots=0 heap=234088 psram=8358071 psram_total=8386023 internal_low=233864 bad_reads=0"
+    },
+    {
+      "utc": "2026-11-16T13:34:51.092+00:00",
+      "message": "C2_SHADOW wifi=0 clock=0 cn105=0 shelly=0 ble=0 plan_slots=0 heap=234088 psram=8358071 psram_total=8386023 internal_low=233864 bad_reads=0"
+    },
+    {
+      "utc": "2026-11-16T13:43:21.265+00:00",
+      "message": "C2_SHADOW wifi=0 clock=0 cn105=0 shelly=0 ble=0 plan_slots=0 heap=234088 psram=8358071 psram_total=8386023 internal_low=233864 bad_reads=0"
+    },
+    {
+      "utc": "2026-11-16T13:43:51.276+00:00",
+      "message": "C2_SHADOW wifi=0 clock=0 cn105=0 shelly=0 ble=0 plan_slots=0 heap=234088 psram=8358071 psram_total=8386023 internal_low=233864 bad_reads=0"
+    },
+    {
+      "utc": "2026-11-16T13:44:21.286+00:00",
+      "message": "C2_SHADOW wifi=0 clock=0 cn105=0 shelly=0 ble=0 plan_slots=0 heap=234088 psram=8358071 psram_total=8386023 internal_low=233864 bad_reads=0"
+    }
+  ],
+  "observation_24h_complete": false,
+  "observation_48h_complete": false,
+  "notes": "Partial running 24 h test; not acceptance evidence until real duration elapsed."
+}

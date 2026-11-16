@@ -1,0 +1,36 @@
+{
+  "source": "Real devices read-only via developer PC, NOT ESP32 Wi-Fi",
+  "from_utc": "2026-11-16T13:23:24.986+00:00",
+  "to_utc": "2026-11-16T13:25:09.569+00:00",
+  "duration_s": 104.6,
+  "event_counts": {
+    "capture_start": 1,
+    "cn105_connect": 1,
+    "shelly": 11,
+    "nordpool": 1,
+    "cn105": 40
+  },
+  "cn105_climate_events": 1,
+  "cn105_compressor_events": 1,
+  "cn105_uptime_events": 38,
+  "cn105_uptime_interval_median_s": 2.83,
+  "climate_mode": "OFF",
+  "climate_indoor_c": 12.0,
+  "climate_setpoint_c": 21.0,
+  "compressor_hz": 0.0,
+  "shelly_reads": 11,
+  "shelly_relay_always_on": true,
+  "shelly_w_min": 165.4,
+  "shelly_w_max": 166.4,
+  "shelly_wh_delta": 4.606,
+  "shelly_rtt_ms_range": [
+    29.0,
+    116.4
+  ],
+  "spot_eur_per_kwh": 0.13987,
+  "limitations": [
+    "Not ESP32 connected",
+    "No independent cottage temperature sensor",
+    "Climate and compressor measurements emitted only in initial SSE snapshot"
+  ]
+}

@@ -40,5 +40,21 @@ class ShadowSurfaceTests(unittest.TestCase):
         self.assertIn("valid_temperature(ts,now)", self.main)
         self.assertIn("UnalignedStart", (ROOT / "cottage/forecast_bridge.hpp").read_text(encoding="utf8"))
 
+    def test_bridge_heartbeat_does_not_refresh_pump_data(self):
+        link = self.main.split('sensor/CN105 Connection Uptime',1)[1].split('cJSON_Delete(root);',1)[0]
+        self.assertIn("cn105_link_event_utc=now",link)
+        self.assertNotIn("copy.captured_utc",link)
+        self.assertNotIn("pump=copy",link)
+        self.assertIn("copy.captured_utc=climate_stamp&&compressor_stamp",self.main)
+
+    def test_c22_diagnostics_do_not_change_shadow_permissions(self):
+        for marker in ("sse_connections","sse_disconnects","shelly_reads_ok",
+                       "cn105_climate_utc","cn105_compressor_utc",
+                       "market_last_fetch_utc","weather_last_fetch_utc",
+                       "independent_freeze_protection_verified", "safety_reason"):
+            self.assertIn(marker,self.main)
+        self.assertIn('cJSON_AddBoolToObject(root,"physical_writes",false)',self.main)
+        self.assertIn('health.independent_freeze_protection_verified=false;',self.main)
+
 if __name__=="__main__":
     unittest.main()

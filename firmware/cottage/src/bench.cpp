@@ -46,7 +46,7 @@ static void wifi_http_probe(void*){
     while(running.load()){
         WiFiClient client;
         if(client.connect(WiFi.softAPIP(),80,1000)) {
-            client.print("GET /status HTTP/1.1\r\nHost: 192.168.4.1\r\nConnection: close\r\n\r\n");
+            client.print(String("GET /status HTTP/1.1\r\nHost: ")+WiFi.softAPIP().toString()+"\r\nConnection: close\r\n\r\n");
             const uint32_t deadline=millis()+1500;
             bool saw200=false;
             while(client.connected() && static_cast<int32_t>(deadline-millis())>0) {

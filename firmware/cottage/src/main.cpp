@@ -51,6 +51,17 @@ static uint32_t max_optimizer_ms=0;
 static size_t plan_count=0;
 static uint32_t free_heap=0,free_psram=0,stack_watermark=0;
 static std::atomic<uint32_t> failed_reads{0};
+static std::atomic<uint32_t> sse_connections{0},sse_disconnects{0};
+static std::atomic<uint32_t> sse_climate_events{0},sse_compressor_events{0};
+static std::atomic<uint32_t> sse_link_events{0};
+static std::atomic<bool> sse_stream_active{false};
+static std::atomic<int> sse_last_http_status{0};
+static std::atomic<uint32_t> shelly_reads_ok{0},shelly_reads_bad{0};
+static std::atomic<uint32_t> shelly_rtt_ms{0};
+static int64_t cn105_link_event_utc=0;
+static double cn105_link_uptime_s=0;
+static TaskHandle_t task_sse=nullptr,task_shelly=nullptr;
+static TaskHandle_t task_ruuvi=nullptr,task_optimizer=nullptr;
 static bool shelly_relay_on=false;
 static char reason_text[80]="Käynnistys";
 struct Row {
@@ -118,11 +129,23 @@ static void parse_sse_state(const char* raw) {
             else copy.mode=ObservedPumpMode::Other;
             copy.indoor_c=indoor;copy.setpoint_c=target;
             climate_stamp=now;changed=true;climate_event=true;
+            sse_climate_events.fetch_add(1);
         }
     } else if(strcmp(key->valuestring,"sensor/Compressor Frequency")==0) {
         double hz=0;
         if(number(cJSON_GetObjectItemCaseSensitive(root,"value"),hz,0,200)) {
             copy.compressor_hz=hz;compressor_stamp=now;changed=true;
+            sse_compressor_events.fetch_add(1);
+        }
+    } else if(strcmp(key->valuestring,"sensor/CN105 Connection Uptime")==0) {
+        double uptime_s=0;
+        if(number(cJSON_GetObjectItemCaseSensitive(root,"value"),uptime_s,0,1e10)) {
+            // Link heartbeat is NOT proof of a fresh pump-temperature read.
+            xSemaphoreTake(lock_data,portMAX_DELAY);
+            cn105_link_event_utc=now;
+            cn105_link_uptime_s=uptime_s;
+            xSemaphoreGive(lock_data);
+            sse_link_events.fetch_add(1);
         }
     }
     cJSON_Delete(root);
@@ -157,7 +180,10 @@ static void sse_worker(void*) {
         request.addHeader("Accept-Encoding","identity");
         static const char* headers[]={"Content-Type","Transfer-Encoding"};
         request.collectHeaders(headers,2);
-        if(request.begin(client,COTTAGE_CN105_URL) && request.GET()==200) {
+        const bool began=request.begin(client,COTTAGE_CN105_URL);
+        const int http_status=began?request.GET():0;
+        sse_last_http_status.store(http_status);
+        if(http_status==200) {
             const String content_type=request.header("Content-Type");
             const String transfer=request.header("Transfer-Encoding");
             const bool chunked=transfer.equalsIgnoreCase("chunked");
@@ -167,6 +193,8 @@ static void sse_worker(void*) {
                (!chunked && !plain)) {
                 failed_reads++;
             } else {
+                sse_stream_active.store(true);
+                sse_connections.fetch_add(1);
                 WiFiClient* stream=request.getStreamPtr();
                 HttpChunkDecoder decoder;
                 SseStateParser parser([](const char* json,void*) {
@@ -191,6 +219,8 @@ static void sse_worker(void*) {
                     if(produced) parser.feed(chunked?body:static_cast<uint8_t>(input));
                     if(chunked && decoder.finished())break;
                 }
+                sse_stream_active.store(false);
+                sse_disconnects.fetch_add(1);
             }
         } else { failed_reads++; }
         request.end();
@@ -209,6 +239,7 @@ static void shelly_worker(void*) {
         if(wifi_ok.load() && clock_ok() &&
            valid_shelly_base_url(COTTAGE_SHELLY_URL)) {
             String body;
+            const uint32_t req_begin_ms=millis();
             if(get_http(url,body)) {
                 cJSON* root=cJSON_Parse(body.c_str());
                 double watts=0,wh=0;
@@ -221,9 +252,11 @@ static void shelly_worker(void*) {
                     xSemaphoreTake(lock_data,portMAX_DELAY);consumption=next;
                     shelly_relay_on=cJSON_IsTrue(output);
                     xSemaphoreGive(lock_data);
-                } else failed_reads++;
+                    shelly_rtt_ms.store(static_cast<uint32_t>(millis()-req_begin_ms));
+                    shelly_reads_ok.fetch_add(1);
+                } else {failed_reads++;shelly_reads_bad.fetch_add(1);}
                 cJSON_Delete(root);
-            } else failed_reads++;
+            } else {failed_reads++;shelly_reads_bad.fetch_add(1);}
         }
         vTaskDelay(pdMS_TO_TICKS(15000));
     }
@@ -409,7 +442,9 @@ small{color:#64746d}table{border-collapse:collapse;width:100%}td,th{border-botto
 </style><main><h1>Enevina Lite – Pihamökki</h1>
 <p class="notice"><strong>VARJOTILA – EI OHJAA LÄMPÖPUMPPUA</strong></p>
 <section><h2>Tila ja mittaukset</h2><dl id="metrics"></dl><p id="reason"></p>
-<small>Pumpun oma lämpötila ei korvaa riippumatonta jäätymissuoja-anturia.</small></section>
+<small>Pumpun oma lämpötila ei korvaa riippumatonta jäätymissuoja-anturia.
+CN105-yhteyden uptime ei tee vanhoista pumpun mittauksista tuoreita.
+Synteettinen lämpömalli ei ole kalibrointi eikä säästötodiste.</small></section>
 <section><h2>Laskettu aikataulu</h2><p id="result">Ei laskelmaa</p>
 <table><thead><tr><th>Aika</th><th>Ehdotus</th><th>Ennuste °C</th><th>kWh</th><th>€</th></tr></thead>
 <tbody id="rows"></tbody></table>
@@ -422,7 +457,23 @@ const shown=[['CN105',s.cn105],['Pumppu',s.pump_mode],['Pumpun sisälämpö °C'
 ['Sääennuste °C',s.weather_c],['Kokonaishinnan arvio €/kWh',s.total_price],
 ['MPC tila',s.mpc_status],['MPC aika ms',s.mpc_ms],['Pahin aika ms',s.mpc_worst_ms],
 ['Laskettu UTC',s.optimized_utc],['Vapaa RAM B',s.free_heap],
-['Vapaa PSRAM B',s.free_psram],['Pinon vapaa alaraja B',s.stack_free_bytes]];
+['Vapaa PSRAM B',s.free_psram],['Pinon vapaa alaraja B',s.stack_free_bytes],
+['SSE-yhteys aktiivinen',s.sse_connected],['SSE HTTP',s.sse_http_status],
+['SSE-yhdistämisiä',s.sse_connections],['SSE-katkoja',s.sse_disconnects],
+['Pumpun lämpötilatapahtumia',s.sse_climate_events],
+['Kompressoritaajuustapahtumia',s.sse_compressor_events],
+['CN105-yhteyden heartbeat-lukuja',s.sse_link_events],
+['Pumpun viimeisin lämpötapahtuma UTC',s.cn105_climate_utc?new Date(s.cn105_climate_utc*1000).toISOString():'Ei mittausta'],
+['Kompressorin viimeisin tapahtuma UTC',s.cn105_compressor_utc?new Date(s.cn105_compressor_utc*1000).toISOString():'Ei mittausta'],
+['CN105-yhteyden uptime s',s.cn105_link_uptime_s],
+['Shelly lukuja OK/virhe',s.shelly_reads_ok+'/'+s.shelly_reads_bad],
+['Shelly viimeisin vaste ms',s.shelly_rtt_ms],
+['Shelly viimeisin UTC',s.shelly_last_read_utc?new Date(s.shelly_last_read_utc*1000).toISOString():'Ei mittausta'],
+['Nord Pool jaksoja',s.market_slots],['Nord Pool päivitetty UTC',s.market_last_fetch_utc?new Date(s.market_last_fetch_utc*1000).toISOString():'Ei mittausta'],
+['FMI pisteitä',s.weather_points],['FMI päivitetty UTC',s.weather_last_fetch_utc?new Date(s.weather_last_fetch_utc*1000).toISOString():'Ei mittausta'],
+['Supervisor tila/syy',s.safety_mode+'/'+s.safety_reason],
+['Lämpömalli kalibroitu',s.model_calibrated],
+['Riippumaton pakkassuoja',s.independent_freeze_protection_verified]];
 document.querySelector('#metrics').replaceChildren(...shown.flatMap(([k,v])=>{
 let dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=k;dd.textContent=v??'Ei mittausta';return[dt,dd]}));
 document.querySelector('#reason').textContent=s.reason;
@@ -439,13 +490,20 @@ x.heat?'HEAT 16 °C':'OFF',x.indoor_c.toFixed(2),x.kwh.toFixed(3),x.eur.toFixed(
 refresh();setInterval(refresh,15000);</script></main></html>)HTML";
 static void status_endpoint() {
     CN105Telemetry cp;ShellyTelemetry st;TemperatureSample te;
-    BridgeStatus bs;MpcResult plan;int64_t optimized=0;
+    BridgeStatus bs;MpcResult plan;Decision current_safety;
+    int64_t optimized=0,climate_time=0,compressor_time=0,link_time=0;
+    double link_uptime_s=0;
     bool relay_on=false;
     char reason[80];
     uint32_t ms,worst,heap,psram,stack;
     xSemaphoreTake(lock_data,portMAX_DELAY);
     cp=pump;st=consumption;te=temperature;bs=bridge_status;
     relay_on=shelly_relay_on;
+    current_safety=safety;
+    climate_time=climate_utc;
+    compressor_time=compressor_utc;
+    link_time=cn105_link_event_utc;
+    link_uptime_s=cn105_link_uptime_s;
     plan=last_plan;optimized=last_optimized_utc;
     strlcpy(reason,reason_text,sizeof(reason));
     ms=optimizer_ms;worst=max_optimizer_ms;heap=free_heap;psram=free_psram;
@@ -496,6 +554,50 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"stack_free_bytes",stack);
     cJSON_AddStringToObject(root,"reason",reason);
     cJSON_AddNumberToObject(root,"bad_reads",failed_reads.load());
+    cJSON_AddBoolToObject(root,"model_calibrated",false);
+    cJSON_AddBoolToObject(root,"independent_freeze_protection_verified",false);
+    cJSON_AddNumberToObject(root,"safety_mode",static_cast<int>(current_safety.mode));
+    cJSON_AddNumberToObject(root,"safety_reason",static_cast<int>(current_safety.reason));
+    cJSON_AddBoolToObject(root,"sse_connected",sse_stream_active.load());
+    cJSON_AddNumberToObject(root,"sse_http_status",sse_last_http_status.load());
+    cJSON_AddNumberToObject(root,"sse_connections",sse_connections.load());
+    cJSON_AddNumberToObject(root,"sse_disconnects",sse_disconnects.load());
+    cJSON_AddNumberToObject(root,"sse_climate_events",sse_climate_events.load());
+    cJSON_AddNumberToObject(root,"sse_compressor_events",sse_compressor_events.load());
+    cJSON_AddNumberToObject(root,"sse_link_events",sse_link_events.load());
+    // Device link uptime cannot make a stale climate/compressor reading fresh.
+    cJSON_AddNumberToObject(root,"cn105_climate_utc",static_cast<double>(climate_time));
+    cJSON_AddNumberToObject(root,"cn105_compressor_utc",static_cast<double>(compressor_time));
+    cJSON_AddNumberToObject(root,"cn105_link_event_utc",static_cast<double>(link_time));
+    cJSON_AddNumberToObject(root,"cn105_link_uptime_s",link_uptime_s);
+    cJSON_AddNumberToObject(root,"shelly_last_read_utc",static_cast<double>(st.captured_utc));
+    cJSON_AddNumberToObject(root,"shelly_total_wh",st.total_wh);
+    cJSON_AddNumberToObject(root,"shelly_reads_ok",shelly_reads_ok.load());
+    cJSON_AddNumberToObject(root,"shelly_reads_bad",shelly_reads_bad.load());
+    cJSON_AddNumberToObject(root,"shelly_rtt_ms",shelly_rtt_ms.load());
+    cJSON_AddNumberToObject(root,"market_last_fetch_utc",
+                            static_cast<double>(price.last_fetch_utc));
+    cJSON_AddNumberToObject(root,"market_slots",price.slots);
+    cJSON_AddNumberToObject(root,"weather_last_fetch_utc",
+                            static_cast<double>(weather.fetched_utc));
+    cJSON_AddNumberToObject(root,"weather_points",weather.points);
+    cJSON_AddNumberToObject(root,"uptime_ms",millis());
+    cJSON_AddNumberToObject(root,"free_internal_heap",
+                            heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    cJSON_AddNumberToObject(root,"min_free_internal_heap",
+                            heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+    cJSON_AddNumberToObject(root,"min_free_psram",
+                            heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
+    cJSON_AddNumberToObject(root,"sse_stack_free",
+                            task_sse?uxTaskGetStackHighWaterMark(task_sse):0);
+    cJSON_AddNumberToObject(root,"shelly_stack_free",
+                            task_shelly?uxTaskGetStackHighWaterMark(task_shelly):0);
+    cJSON_AddNumberToObject(root,"ruuvi_stack_free",
+                            task_ruuvi?uxTaskGetStackHighWaterMark(task_ruuvi):0);
+    cJSON_AddNumberToObject(root,"optimizer_stack_free",
+                            task_optimizer?uxTaskGetStackHighWaterMark(task_optimizer):0);
+    if(WiFi.status()==WL_CONNECTED)cJSON_AddNumberToObject(root,"wifi_rssi_dbm",WiFi.RSSI());
+    else cJSON_AddNullToObject(root,"wifi_rssi_dbm");
     char* serialized=cJSON_PrintUnformatted(root);
     web.sendHeader("Cache-Control","no-store");
     web.send(200,"application/json; charset=utf-8",serialized?serialized:"{}");
@@ -581,10 +683,11 @@ void setup() {
     enableLoopWDT(); // Arduino ESP32 loop-task hardware watchdog.
     enevina_firmware::start_market_reader();
     enevina_firmware::start_weather_reader();
-    xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",8192,nullptr,2,nullptr,0);
-    xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,nullptr,0);
-    xTaskCreatePinnedToCore(ruuvi_worker,"cottage_ruuvi",8192,nullptr,1,nullptr,0);
-    xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,nullptr,1);
+    xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",8192,nullptr,2,&task_sse,0);
+    xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,&task_shelly,0);
+    if(strlen(COTTAGE_RUUVI_MAC))
+        xTaskCreatePinnedToCore(ruuvi_worker,"cottage_ruuvi",8192,nullptr,1,&task_ruuvi,0);
+    xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
     Serial.println("ENEVINA LITE C2 SHADOW: NO ACTUATOR PATH");
 }
 void loop() {
