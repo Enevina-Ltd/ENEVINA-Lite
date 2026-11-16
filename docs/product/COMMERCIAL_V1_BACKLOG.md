@@ -2,7 +2,7 @@
 
 **Lähde:** Enevina Oy:n 16.11.2026 antama 25 kohdan tehtävätaulukko. Tekstit on säilytetty tehtävien, syiden/komponenttien, testimenetelmien, hyväksymiskriteerien ja riippuvuuksien tasolla.
 
-**Uusin tuotelinjaus:** Ensin tehdään Enevina Lite oikeasti toimivaksi, mukaan lukien telemetria, optimointi ja ohjauspolun kehitys. Ei monitoring-only-lukitusta eikä ohjauskoodin poistoa. Kaupallisen toimituksen vaatimukset ja lopulliset versiot ratkaistaan toimivuuden todentamisen jälkeen. Aiemmat V1.1/V2-nimet ovat suunnitteluluokkia, eivät este kehittyneempien ominaisuuksien toteutukselle.
+**Uusin tuotelinjaus:** Ensin tehdään monimerkkinen Enevina Lite oikeasti toimivaksi, mukaan lukien telemetria, optimointi ja ohjauspolun kehitys. Mitsubishi on ensimmäinen fyysinen pilotti, ei yleisen ohjaimen rajaus. Yhteinen ydin ei saa kovakoodata merkkiä; mallikohtaiset adapterit ilmoittavat tuetut ominaisuudet ja lähdemittausten laadun. Yksi pumppu per Lite-laite on nykyinen erillinen määräraja. Ei monitoring-only-lukitusta eikä ohjauskoodin poistoa. Kaupallisen toimituksen vaatimukset ja lopulliset versiot ratkaistaan toimivuuden todentamisen jälkeen. Aiemmat V1.1/V2-nimet ovat suunnitteluluokkia, eivät este kehittyneempien ominaisuuksien toteutukselle.
 
 > Tämä dokumentti on työlista, ei valmistumisraportti. Avoimet PR #5–#7 ovat kehitystä, eivät main-haaran tai asiakastuotteen hyväksyntää. L01–L25:n tila on aluksi TODENNETTAVA; aiempia toteutuksia ei tehdä uudelleen ennen tarkastusta.
 
@@ -14,10 +14,10 @@ Nämä ovat **välitön kehitysprioriteetti**. L01–L25:n P0/P1/P2 tarkoittavat
 |---|---|---|
 | F01 | ESP32 käyntiin, Wi-Fi, HTTP/API, UI | Yhteys sekä käynnistyksen jälkeinen toiminta |
 | F02 | Mökin RuuviTagin BLE lämpötila/kosteus ja tuoreus | Oikean anturin mittaus ja ikä |
-| F03 | CN105:n oikeat pumpun mittaukset ja lähteen ikä | Mittauskatko/reconnect, ei pelkkä SSE-heartbeat |
+| F03 | Valmistajariippumaton pumpun mittausten tuoreus; CN105 ensimmäinen adapteritesti | Lähde- ja vastaanottoajan ero, stale ja reconnect; SSE-heartbeat ei todista pumpun mittausta |
 | F04 | Shellyn kulutuslukema ja mittauskohde | API ja kohteen todellinen mittaus |
 | F05 | Nord Pool 15 min, FMI, aikaleima ja katkot | Hintojen/sään oikea jakso ja lähteen tila |
-| F06 | Yhtenäinen UI, historia ja hälytykset | API:n ja käyttöliittymän tiedot täsmäävät |
+| F06 | Valmistajariippumaton UI, historia, kyvykkyydet ja hälytykset | API:n ja käyttöliittymän tiedot täsmäävät, tuntemattomia kyvykkyyksiä ei keksitä |
 | F07 | Rakennusfysiikka ja deterministinen MPC | End-to-end ja riippumaton referenssivertailu |
 | F08 | Ohjauspolku, Supervisor, komennon kuittaus | Host/mock/testipenkki; oikean pumpun kirjoitus vain erikseen hyväksyttynä |
 | F09 | Olemassa olevan allekirjoitetun OTA:n toimivuus | A/B, rollback ja toistettu bugikorjaus |
@@ -42,7 +42,7 @@ Nämä ovat **välitön kehitysprioriteetti**. L01–L25:n P0/P1/P2 tarkoittavat
 | **L12 P0** | Pinnaa työkalut ja riippuvuudet, tuota SBOM ja lisenssit | Build ei saa muuttua huomaamatta; platformio.ini, CMake, julkaisu | Kaksi puhdasta buildia, dependency- ja notice-katselmus | Versiot ja alkuperä todettu, erot selitetty; ei tuntematonta koodilisenssiä | Hyväksytty SDK/bootloader |
 | **L13 P0** | Tee pilottierän yksilöprovisiointi ja tuotantotestijigi | Laitekanta ei saa jakaa salaisuutta; uusi manufacturing-paketti | 10 laitetta, ristikkäinen sarjanumero/QR ja väärä firmware | 10/10 jäljitettäviä; väärä laite tai bundle hylätään | L04, L11, L12, lopullinen levy |
 | **L14 P0** | Kokoa riskit, FI/SV-ohjeet, tekninen tiedosto ja vaatimustenmukaisuusnäyttö | Myynti ei ala prototyyppimerkinnällä; docs/product, uusi compliance | Liitteen C matriisin sulkeminen ja G3-katselmus | Kaikki soveltuvat velvoitteet osoitettu, DoC ja merkinnät oikealle versiolle | L01–L13 ja laboratoriotulokset |
-| **L15 P1** | Todista CN105:n mittauskohtainen lähdetuoreus tai poista lähde V1:stä | SSE-vastaanotto ei todista UART-lukua; adapteri ja upstream-silta | Väylä irti, silta jäässä, muuttumaton arvo ja reconnect | Lähdemittauksen laskuri/ikä todentuu; muuten ominaisuus ei kuulu toimitukseen | Upstream-sopimus; ennen V2:ta ehdoton |
+| **L15 P1** | Todista ensimmäisen CN105-adapterin mittauskohtainen lähdetuoreus tai rajaa kyseinen mittaus pois toimituksesta | SSE-vastaanotto ei todista UART-lukua; yleinen laatu- ja aikaleimamalli sekä mallikohtainen upstream-silta | Väylä irti, silta jäässä, muuttumaton arvo ja reconnect | Lähdemittauksen laskuri/ikä todentuu; muuten ominaisuus ei kuulu toimitukseen | Upstream-sopimus; ennen V2:ta ehdoton |
 | **L16 P1** | Yksilöi Shelly-yhteensopivuus ja mittauskohde | Nykydata on koko mökistä; Shelly-adapteri, UI | Tuetut mallit/fw:t, nollaus/ylivuoto, väärä piiri ja offline | Pumpun säästöä ei lasketa koko mökin mittauksesta; asennettu lähde selvästi nimetty | L08, todellinen mittauskohde |
 | **L17 P1** | Toteuta historian eheys, CSV-vienti ja turvallinen omistajanvaihto | Käyttöikä, tietosuoja ja asiakkaan data; storage/UI/NVS | 30 vrk aineisto, katko kirjoituksessa, kaksi anturia, reset ja tokenin peruutus | Sovittu säilytys toteutuu, ei sekoittumista; edellisen omistajan käyttö päättyy | L06–L09 |
 | **L18 P1** | Tuotteista valinnainen etäilmoitus ja katoavan laitteen hälytys | LAN-sivu ei hälytä etäällä; uusi remote-adapteri | Push/email katkolla, heartbeat puuttuu, tilaus päättyy | Katko näkyy erillisenä tilana; paikallistoiminnot jatkuvat; asiakkaiden data ei sekoitu | L06, L08, GDPR-roolit ja palveluehdot |
