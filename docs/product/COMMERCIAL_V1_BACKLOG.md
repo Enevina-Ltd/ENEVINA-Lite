@@ -2,15 +2,33 @@
 
 **Lähde:** Enevina Oy:n 16.11.2026 antama 25 kohdan tehtävätaulukko. Tekstit on säilytetty tehtävien, syiden/komponenttien, testimenetelmien, hyväksymiskriteerien ja riippuvuuksien tasolla.
 
-**Tuotejako:** V1 = monitoring-only, V1.1 = energianeuvonta ilman fyysisiä kirjoituksia, V2 = erikseen hyväksyttävä lämpöpumpun ohjaus. Enevina Lite on Enevina Oy:n ensimmäiseksi kaupalliseksi tuotteeksi suunniteltu tuote.
+**Uusin tuotelinjaus:** Ensin tehdään Enevina Lite oikeasti toimivaksi, mukaan lukien telemetria, optimointi ja ohjauspolun kehitys. Ei monitoring-only-lukitusta eikä ohjauskoodin poistoa. Kaupallisen toimituksen vaatimukset ja lopulliset versiot ratkaistaan toimivuuden todentamisen jälkeen. Aiemmat V1.1/V2-nimet ovat suunnitteluluokkia, eivät este kehittyneempien ominaisuuksien toteutukselle.
 
 > Tämä dokumentti on työlista, ei valmistumisraportti. Avoimet PR #5–#7 ovat kehitystä, eivät main-haaran tai asiakastuotteen hyväksyntää. L01–L25:n tila on aluksi TODENNETTAVA; aiempia toteutuksia ei tehdä uudelleen ennen tarkastusta.
+
+## Ensin toimiva kokonaisuus – F01–F09
+
+Nämä ovat **välitön kehitysprioriteetti**. L01–L25:n P0/P1/P2 tarkoittavat kaupallisen julkaisun riskiä, eivät pakkoa tehdä kaikki turvallisuusasiakirjat ennen toimivaa prototyyppiä.
+
+| ID | Työ | Hyväksytty näyttö |
+|---|---|---|
+| F01 | ESP32 käyntiin, Wi-Fi, HTTP/API, UI | Yhteys sekä käynnistyksen jälkeinen toiminta |
+| F02 | Mökin RuuviTagin BLE lämpötila/kosteus ja tuoreus | Oikean anturin mittaus ja ikä |
+| F03 | CN105:n oikeat pumpun mittaukset ja lähteen ikä | Mittauskatko/reconnect, ei pelkkä SSE-heartbeat |
+| F04 | Shellyn kulutuslukema ja mittauskohde | API ja kohteen todellinen mittaus |
+| F05 | Nord Pool 15 min, FMI, aikaleima ja katkot | Hintojen/sään oikea jakso ja lähteen tila |
+| F06 | Yhtenäinen UI, historia ja hälytykset | API:n ja käyttöliittymän tiedot täsmäävät |
+| F07 | Rakennusfysiikka ja deterministinen MPC | End-to-end ja riippumaton referenssivertailu |
+| F08 | Ohjauspolku, Supervisor, komennon kuittaus | Host/mock/testipenkki; oikean pumpun kirjoitus vain erikseen hyväksyttynä |
+| F09 | Olemassa olevan allekirjoitetun OTA:n toimivuus | A/B, rollback ja toistettu bugikorjaus |
+
+**Ei uusia turhia watchdogeja, reboot-silmukoita tai automaattisia reset-kerroksia.** Selvitä nykyisen vian juurisyy ja korjaa se. Toimivia perusteltuja suojia ei poisteta summittaisesti.
 
 ## Työlista
 
 | ID ja prioriteetti | Mitä tehdään | Miksi ja komponentti | Testimenetelmä | Hyväksymiskriteeri | Edellytys |
 |---|---|---|---|---|---|
-| **L01 P0** | Lukitse V1 monitoring-only -build ja poista ohjauspolut toimituskuvasta | V1:n tuoteturvallisuus; cottage/supervisor.*, build-profiili | Rajapinta-/linkitystesti ja komentojen kaappaus mock-pumpulla | UI, HTTP, sarjaportti ja pilvi eivät voi tuottaa CN105-kirjoitusta | V1-tuotemäärittely |
+| **L01 P0** | Varmenna toimiva Enevina Lite -kokonaisuus ja erottele kaupallinen release tarvittaessa; älä poista ohjauskoodia | Toimivuus ensin; cottage/supervisor.*, build, CN105, UI, fysiikka ja optimointi | API, UI, Ruuvi, Shelly, sää, hinnat, MPC ja mock-pumpun komennot sekä linkitys | Telemetria ja optimointi toimivat; ohjausketju säilyy kehitettävänä ja on mock-testattu; oikean pumpun kirjoitus vasta erillisen laitekohtaisen kokeen jälkeen | F01–F09 ja nykyisten PR:ien tila |
 | **L02 P0** | Tee OTA-kyvykkyydestä pakollinen release-ehto | Päivitettävyys voi kadota; cottage_secure_ota.cpp, main.cpp, tools/cottage_ota_publish.py | Oikein allekirjoitettu kuva ilman OTA-tehtävää/avaimia; kaksi peräkkäistä päivitystä | Virhekuva hylätään tai rollback; hyväksytty kuva pystyy seuraavaan päivitykseen | Release-identiteetin sopimus |
 | **L03 P0** | Toteuta OTA/NVS-tilan keskeytyksestä palautuva täsmäytys | Väärä good/pending/bad-kirjanpito; samat OTA-tiedostot | NVS-virhe ja reset/katko jokaisessa tilasiirtymässä | Running-kuva, boot-tila ja digest täsmäävät; hyvä ei joudu väärään karanteeniin | L02, tilakonemäärittely |
 | **L04 P0** | Lukitse bootloader ja jaa tehdas-/app-asennus turvallisiksi poluiksi | USB-upload voi korvata suojan; platformio.ini, bootloader-rollback-idf55, uusi flashausjigi | Generoidun kirjoituslistan tarkistus; varakortin hashit ennen/jälkeen ja rollback | App-asennus ei kirjoita bootloaderia/osiota/otadataa; tehdasbundle on kokonaan hyväksytty | Hyväksytty layout ja bootloader |
@@ -18,7 +36,7 @@
 | **L06 P0** | Lisää omistajan todennus ja tilakohtainen hallinnan suoja | CSRF-token ei ole omistajatodennus; cottage_air_service.cpp, WebServer | Luvaton lähiverkkokäyttäjä, CSRF/Origin/Host, session vanheneminen ja brute force | Vain oikea omistaja muuttaa rajoja, sidontaa ja OTA-asetuksia | Uhkamalli ja laiteidentiteetti |
 | **L07 P0** | Korvaa build-headerin WLAN-asetukset turvallisella provisioinnilla | Asiakas ei muokkaa koodia; cottage_local_config, UI ja NVS | Viisi uutta käyttäjää, iOS/Android, piiloverkko, väärä salasana, verkkovaihto | 5/5 peruspolkua alle 15 min ilman kehittäjää; ei salaisuuksia lokiin | L06, yksilökohtainen käyttöönottoavain |
 | **L08 P0** | Tee yhtenäinen tuoreus- ja laatumalli kaikille V1-lähteille | Vanha arvo ei saa näyttää tuoreelta; cottage/telemetry.*, BLE/Shelly-adapterit | Puuttuva anturi, stale, replay, kellohyppy ja väärä yksikkö | UI, historia ja hälytys käyttävät samaa laatua; stale ei tuota uutta päätelmää | Tietomallin rajat |
-| **L09 P0** | Varmenna watchdog, offline-tila ja NVS:n vikasietoisuus | Mökkiverkot katkeavat; RTOS-tehtävät, asetukset ja tallennus | Task jumissa, 24 h verkko poikki, rikki/täysi NVS, reboot ja migraation katko | Paikallinen seuranta palautuu; ei bootloopia, väärää aikaa tai hiljaista asetusten nollausta | L08, asetusskeema |
+| **L09 P0** | Selvitä offline-/NVS-vikojen ja nykyisten resetien syyt; älä lisää uusia watchdogeja | Mökkiverkon katkot, RTOS, asetukset ja NVS; korjaa juurisyy | 24 h offline, NVS täysi/rikki, migraatiokatko ja todettujen reset-syiden analyysi, ilman uutta vahtikerrosta | Laite palautuu normaalisti; ei bootloopia eikä hiljaista asetusten nollausta; nolla uutta tarpeetonta watchdogia | L08, asetusskeema ja toistettu vika |
 | **L10 P0** | Aja lukitun kokonaisversion 72 h kuorma ja 30 vrk kenttäjakso | Uusimman kokonaisuuden vakaus puuttuu; main.cpp, muisti, BLE/TLS/UI | G1:n yhtäaikainen kuorma ja vikainjektiot; yksi binary+bootloader | G1:n saatavuus, muistimarginaalit ja toipumisrajat täyttyvät; ei selittämättömiä resettejä | L02–L09 |
 | **L11 P0** | Erota tuotanto/testi/kehitysavaimet ja toteuta avainpalautusharjoitus | Asiakaskuvaan ei väärää avainta; tools/cottage_ota_provision.py, signer, CI | Väärän kanavan allekirjoitus, avaimen vaihto, varakopion palautus ja peruutus | Tuotantolaite hylkää testikuvan; päivitys jatkuu hyväksytyn rotaation jälkeen | L04, avainpolitiikka |
 | **L12 P0** | Pinnaa työkalut ja riippuvuudet, tuota SBOM ja lisenssit | Build ei saa muuttua huomaamatta; platformio.ini, CMake, julkaisu | Kaksi puhdasta buildia, dependency- ja notice-katselmus | Versiot ja alkuperä todettu, erot selitetty; ei tuntematonta koodilisenssiä | Hyväksytty SDK/bootloader |
@@ -38,20 +56,20 @@
 
 ## Etenemisjärjestys ja riippuvuudet
 
-- Aloitus: **L01**, **L04**, **L02**, **L03**. Ensimmäiseksi lukitaan V1:n toimitussisältö, release-identiteetti, flash-layout ja rollback-bootloader. L03 seuraa L02:n tilakonemäärittelyä.
+- Ensimmäinen prioriteetti on **F01–F09: toimiva laite, todelliset mittaukset, UI, hinnat/sää, MPC ja mock-testattu ohjaus**. L01 todentaa sen eikä lukitse tai poista toimintoja. Kaupallisen jakelun L02–L05 korjataan osoitettujen vikojen mukaan.
 - **L05** aloitetaan vasta L02–L04:n jälkeen: 100 keskeytystä kolmella erillisellä laiteyksilöllä; yhden uuden testikortin tulos on vain osatulos.
 - **L06 → L07**: omistajan todennus ennen WLAN-provisiointia. **L08 → L09**: tuoreus- ja laatumalli ennen pitkäaikaisen offline- ja NVS-käytöksen vahvistusta.
-- **L10** vasta L02–L09:n yhteisellä lukitulla sovelluskuvalla ja bootloaderilla; 72 tunnin kuorma sekä 30 vuorokauden kenttäjakso on dokumentoitava täysimääräisinä.
+- **L10** on kaupallisen julkaisun vakaustesti lukitulla ohjelmisto-/bootloader-kokoonpanolla; sitä ei vaadita jokaisen F01–F09-kehityskokeen aloitusehdoksi.
 - **L11/L12 → L13 → L14**: avainten elinkaari, toistettavat buildit ja SBOM, yksilöprovisiointi ja valmistus, lopuksi soveltuvat vaatimustenmukaisuusarviot.
 - **L15–L21** täydentävät V1:n toimitettavia ominaisuuksia, käytettävyyttä, asiakastukea ja lupia. CN105 vain jos sen mittauskohtainen tuoreus voidaan todistaa; muuten jätetään V1-toimituksesta pois.
-- **L22** on V1.1; **L23–L25** ovat V2-ohjaus, jota ei saa aktivoida V1:n tuotantobinaarissa tai kenttäpilotissa.
+- **L22–L25:n** fysiikkaa, optimointia ja kirjoittavaa adapteria saa kehittää jo nyt hostissa, mockilla ja hyväksytyssä testipenkissä; V1.1/V2-nimikkeet eivät lukitse kehitystä. Oikeaan pumppuun kirjoittaminen vaatii erillisen laitekohtaisen hyväksynnän.
 
 ## Kaupallistamisen päätösportit G0–G5
 
 | Portti | GO / pakollinen näyttö | NO-GO |
 |---|---|---|
-| **G0 – Tekninen perusta** | L01–L05: V1-tuotebinaarissa ei fyysisiä kirjoituksia; pakollinen OTA, NVS-tila, bootloader ja virhetestaus todennettu | P0-turvavika, todentamaton rollback tai saavutettava pumpun kirjoituspolku |
-| **G1 – Kenttäpilotti** | L06–L10: toimiva paikallishallinta ja onboarding, lähdetuoreus, offline/valvonta; 72 h kuorma ja 30 vrk kenttätesti samasta lukitusta binääristä | Keskeytynyt testi tai selittämättömät resetit eivät ole PASS |
+| **G0 – Tekninen perusta** | Toimiva F01–F09 ja L01–L05; OTA/NVS/bootloaderin toiminta ja rajattu, mock-testattu ohjaus todennettu | P0-vika tai hyväksymätön fyysinen kirjoitus estää asiakasjulkaisun, ei kehitystyötä |
+| **G1 – Kenttäpilotti** | Toimiva paikallinen UI ja valvonta, tuoreet mittaukset, offline/NVS, 72 h kuorma ja 30 vrk kenttätesti samalla validoidulla versiolla | Selittämätön reset tai keskeytynyt testi ei ole PASS; älä peitä ongelmaa uudella watchdogilla |
 | **G2 – Tuotearkkitehtuuri** | Vakioitu laitteisto, flash/layout ja releaseketju, SBOM, 10 yksilön valmistusjigi ja yksilölliset identiteetit (L11–L13) | Kehityskortin yksittäinen toimiva build ei riitä |
 | **G3 – Vaatimustenmukaisuus** | L14: soveltuvien vaatimusten testit, riskien arviointi, FI/SV-ohjeet, tekniset asiakirjat, asianmukaiset merkinnät ja EU DoC | CE-/muu vaatimustenmukaisuusväite ilman laiteversiokohtaista näyttöä |
 | **G4 – Pilottierä** | Sovittu laite-erä, laitekohtaiset testit, jäljitettävyys, L21:n käytettävyys-/hälytysnäyttö ja valmistuslaatu | Yhteiset salaisuudet, puutteellinen jäljitettävyys tai puuttuvat testit |
@@ -62,7 +80,7 @@
 ## Agentin Definition of Done – jokaiselle tehtävälle
 
 1. Tunnista olemassa oleva toteutus, main ja avoimien PR:ien HEAD:t, riippuvuudet, aiemmat testiraportit ja todelliset puutteet.
-2. Määritä ennen muutosta fail-closed-virhepolku, hyväksymiskriteeri, laite- ja ohjelmistoversiot. V1:n fyysiset kirjoitukset kielletään.
+2. Määritä todellinen vika, toistotapa ja hyväksymiskriteeri. Ohjausta saa kehittää ja testata mockilla; oikean pumpun kirjoitus edellyttää erillistä laitekohtaista hyväksyntää.
 3. Toteuta rajattu muutos erillisessä haarassa. Lisää virheeseen kohdistuva regressiotesti, älä vain tekstihaku-asserttia.
 4. Ilmoita erikseen host/mock, C++ Debug/Release, Python, käännös, HIL, fyysinen ja kenttätesti. Liitä run ID, SHA, ohjelmiston ja bootloaderin hashit, käyttö- ja olosuhdejakso, tulos sekä avoimet riskit.
 5. Kriittistä P0-työtä ei kuitata ilman toistettavaa testinäyttöä ja riippumatonta katselmointia; PR pidetään draftina siihen asti.
