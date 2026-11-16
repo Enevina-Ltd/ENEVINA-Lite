@@ -10,7 +10,7 @@ Tämän pilotin toteutus ohittaa aiemman Panasonic/HeishaMon-ensimmäisyyden, mu
 - Mökin haluttu talvinen ylläpitolämpö **noin +5 °C**, mutta aiemmin sovittu **ennakoivan ohjauksen turvamarginaali +8 °C**. Sisälämpö **ei saa suunnitelmassa alittaa +5 °C**. Älä lupaa tätä ilman riippumatonta suojausta ja reaaliaikaista validointia.
 - Pumpun pienin lämmityksen asetusarvo on **+16 °C**. Tämä on **pumpun sallittu käyntitilan asetusarvo**, ei koko ajan käytettävä mökin tavoite. +5 °C ylläpitolämmitys edellyttää hallittua **HEAT 16 °C / OFF** -jaksotusta, ei 5 °C:n asetusarvokomentoa pumpulle.
 - Pihamökissä on erillinen **Shelly Plus 1PM**, jonka rele on pidettävä päällä; sen tehtävä on mitata mökin **kokonaissähkönkulutusta**, ei katkaista kompressorin tai pumpun syöttösähköä. Shellyn mittaus sisältää mahdolliset muut mökin kuormat ja on siksi vain **approksimaatio** lämpöpumpun teholle.
-- Aiemmissa keskusteluissa suunniteltiin **ESP32-S3:n paikallista Wi-Fi-yhteyttä** Mitsubishi Electricin **CN105**-sarjaporttiin. **Varmista toimiva CN105 fyysisestä kortista ja telemetriasta ennen ohjauskomentoja.** Älä oleta, että aiemmasta IP-osoitteesta seuraa toimiva yhteys tai vahvistettu johdotus.
+- **Aiemmissa 22.10. ja 26.10.2026 keskusteluissa todellista CN105-yhteyttä käytettiin onnistuneesti:** ESP32-S3/Wi-Fi-ohjain, firmwareksi ilmoitettu 2026.5.2, paikallinen `/events`-SSE-telemetria (HTTP 200) ja sisälämpötilan, asetuksen, kompressoritaajuuden sekä käyntitilan read-only-luku. Lokissa nähtiin esimerkiksi HEAT, sisä 12 °C, pyynti 16 °C, kompressori 19–20 Hz, sekä myöhemmin OFF/0 Hz. **Ohjauskomentoja ei testattu.** Aiemmat mittaustulokset ovat historiallisia: varmista yhteyden nykyinen tila ennen Liten integrointia. Älä ohita nykyisen toimivan ohjaimen firmwarea tai OTA-asetuksia.
 - **Ei tekoälyä, ei HA:n, Coren tai pilven jatkuvaa riippuvuutta.** Hinnan ja FMI-sään lataus paikalliselle Lite-ohjaimelle, paikallinen fallback.
 - **Laiteosoitteita tai tunnuksia ei tallenneta julkisiin Git-tiedostoihin**; ne kuuluvat paikalliseen konfiguraatioon.
 
@@ -23,7 +23,7 @@ Tämän pilotin toteutus ohittaa aiemman Panasonic/HeishaMon-ensimmäisyyden, mu
 
 ## Ohjausarkkitehtuuri ja prioriteetit
 
-1. **MitsubishiCN105Adapter** (ensisijainen): todellinen tila, huoneanturin arvo, HEAT 16 °C / OFF -komennot, komennon kuittaus tai havaittu tila. Anturin tila ja laitteen kyvykkyydet validoitava.
+1. **MitsubishiCN105Adapter** (ensisijainen): hyödynnä aiemmin toiminutta read-only `/events`-SSE-rajapintaa ja nykyistä firmwarea alkuvaiheen **ulkoisena datalähteenä** ilman uudelleenflashausta. Lopullisessa yhden ESP:n Lite-firmwaressa CN105-protokollan voi toteuttaa suoraan vasta erillisen yhteensopivuus-/turvatestauksen jälkeen. HEAT 16 °C / OFF -komennot, kuittaus tai havaittu tila on testattava erikseen; aiemmin on osoitettu vain telemetrian toiminta.
 2. **MitsubishiIRAdapter** (valinnainen varajärjestelmä): vain jos CN105 ei toimi ja kyseisen kaukosäätimen komennot voidaan toistaa luotettavasti; IR:llä ei aina saada palautetta, joten suljettua ohjausta ei saa teeskennellä vahvistetuksi.
 3. **CottageTemperatureProvider**: pumpun ilmoittaman sisälämmön lisäksi ensisijaisesti **riippumaton** mökin lämpötila-anturi jäätymisriskin arviointiin. Telemetrian tuoreus on pakollinen.
 4. **ShellyPowerObserver**: vain sähkön mittaus, ei `switch`/`relay`-kirjoituksia eikä laitteen syöttövirran katkaisua.
@@ -44,7 +44,7 @@ Tämän pilotin toteutus ohittaa aiemman Panasonic/HeishaMon-ensimmäisyyden, mu
 
 **C0 — PC-simulaatio:** oma C++ `CottagePhysics` ja `CottageMPC` / safety-moduuli; testaa 16 °C ON / OFF, hystereesi, alarajat, jaksotus, viiveet, sähkönhinnan puuttuminen, virheelliset sensorit, 24–48 h lämpötilan ennuste, kompressorirajoitukset ja samat alku-/lopputilat MILP-vertailussa. Ei pumpun kirjoituksia.
 
-**C1 — Laitteen kyvykkyydet:** todenna oikean MSZ-FD25VA:n CN105-lukemien saatavuus ja adapterin sähköinen yhteensopivuus, erillisen sisäanturin olemassaolo ja Shellyn mittausten saatavuus. Ei ohjauskomentoja.
+**C1 — Laitteen kyvykkyydet:** aiemmat lokakuun 2026 CN105- ja Shelly-lukukokeet antavat lähtönäytön; tarkista **nykyinen** `/events`-SSE-telemetria, kuormitustietojen oikeellisuus, ESP:n firmware/pinout, erillisen sisäanturin olemassaolo sekä tietojen tuoreus. Ei ohjauskomentoja eikä vanhan firmwareversion korvaamista.
 
 **C2 — Varjotilan integrointi:** kaikki datalähteet ja lokalisoitu UI ESP32:ssa, jatkuva seuranta, valvotut virhetilat ja simuloidut komennot; yhteyskatko-, kellonajan-, watchdog- ja huoneen jäähtymistestit.
 
