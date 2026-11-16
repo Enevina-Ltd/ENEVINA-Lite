@@ -279,6 +279,7 @@ void c23_ble_worker(void*) {
         enevina_firmware::NetworkBudgetLease lease(0,96*1024,24*1024);
         if(lease.held()) {
             scan->start(4,false);
+            enevina_firmware::network_budget_sample();
             scan->clearResults();
         } else {
             low_heap_skips++;
