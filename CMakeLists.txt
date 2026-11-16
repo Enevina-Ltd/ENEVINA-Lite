@@ -45,6 +45,11 @@ add_executable(market_cache_tests tests/market_cache_tests.cpp)
 target_link_libraries(market_cache_tests PRIVATE enevina_core)
 add_test(NAME market_cache_tests COMMAND market_cache_tests)
 
+# Manufacturer-independent source/receive timestamp quality regression.
+add_executable(pump_measurement_quality_tests tests/pump_measurement_quality_tests.cpp)
+target_include_directories(pump_measurement_quality_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME pump_measurement_quality_tests COMMAND pump_measurement_quality_tests)
+
 # Pump-origin serial freshness policy: HTTP transport alone is not proof.
 add_executable(pump_freshness_tests tests/pump_freshness_tests.cpp)
 target_include_directories(pump_freshness_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -95,6 +100,7 @@ if(MSVC)
   target_compile_options(market_cache_tests PRIVATE /UNDEBUG)
   target_compile_options(optimizer_regression_tests PRIVATE /UNDEBUG)
   target_compile_options(pump_freshness_tests PRIVATE /UNDEBUG)
+  target_compile_options(pump_measurement_quality_tests PRIVATE /UNDEBUG)
   target_compile_options(weather_cache_tests PRIVATE /UNDEBUG)
 else()
   target_compile_options(core_tests PRIVATE -UNDEBUG)
@@ -111,6 +117,7 @@ else()
   target_compile_options(market_cache_tests PRIVATE -UNDEBUG)
   target_compile_options(optimizer_regression_tests PRIVATE -UNDEBUG)
   target_compile_options(pump_freshness_tests PRIVATE -UNDEBUG)
+  target_compile_options(pump_measurement_quality_tests PRIVATE -UNDEBUG)
   target_compile_options(weather_cache_tests PRIVATE -UNDEBUG)
 endif()
 
