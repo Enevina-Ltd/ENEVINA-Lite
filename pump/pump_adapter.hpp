@@ -1,4 +1,5 @@
 #pragma once
+#include "pump/measurement_quality.hpp"
 
 namespace enevina {
 struct PumpTelemetry {
@@ -9,6 +10,8 @@ struct PumpTelemetry {
     double compressor_hz=0;
     bool defrosting=false;
     int operating_mode=-1;
+    // Generic provenance; adapters report Unknown until source-side proof exists.
+    MeasurementEvidence evidence{};
 };
 
 // V1 is deliberately read-only. A future command interface must be gated by
