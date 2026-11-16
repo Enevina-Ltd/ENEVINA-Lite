@@ -22,6 +22,7 @@ int main(){
     h.independent_freeze_protection_verified=true;
     h.price_fresh=true;h.weather_fresh=true;
     h.pump={true,h.now_utc,9.0,16.0,30,ObservedPumpMode::Heat};
+    h.pump.evidence={h.now_utc,h.now_utc,true}; // mock source proof
     h.independent_temperature={true,h.now_utc,9.2};
     h.mpc_ready=true;h.plan.status=MpcStatus::Ok;h.plan.count=96;
     h.plan.minimum_c=8.5;h.plan.heat_16_c[0]=0;
@@ -82,6 +83,7 @@ int main(){
     fallback.calibrated=true;
     fallback.independent_freeze_protection_verified=true;
     fallback.pump={true,fallback.now_utc,12.2,16.0,0,ObservedPumpMode::Off};
+    fallback.pump.evidence={fallback.now_utc,fallback.now_utc,true};
     fallback.independent_temperature={true,fallback.now_utc,12.2};
     d=supervise(raised,fallback);
     check(d.mode==ControlMode::Shadow &&
