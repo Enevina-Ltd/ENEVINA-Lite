@@ -83,6 +83,14 @@ def solve(d, time_limit):
     lower[:n+1]=d['minimum_c'];upper[:n+1]=d['maximum_c']
     lower[0]=upper[0]=d['initial_c'];lower[n]=max(lower[n],d['initial_c'])
     integer=np.zeros(dim,dtype=int);integer[n+1:]=1
+    # Honor the initial mode's remaining dwell time. The transition
+    # constraints alone cover only changes initiated inside the horizon.
+    initial_mode=int(bool(d['initial_on']))
+    required=d['min_heat_min'] if initial_mode else d['min_off_min']
+    remaining=max(0, required-d['initial_minutes'])
+    locked_slots=min(n, math.ceil(remaining/15))
+    for i in range(locked_slots):
+        lower[on(i)]=upper[on(i)]=initial_mode
     rows=[];cols=[];values=[];lhs=[];rhs=[]
     def constrain(terms,low,high):
         row=len(lhs);lhs.append(low);rhs.append(high)
@@ -124,7 +132,7 @@ def solve(d, time_limit):
     outcome=replay(d,actions)
     outcome.update(status=int(sol.status),seconds=duration,
         mip_gap=float(sol.mip_gap) if sol.mip_gap is not None else None,
-        feasible=not outcome['violations'],objective=float(sol.fun))
+        feasible=not outcome['violations'],objective=float(sol.fun),actions=actions)
     return outcome
 
 def main():
