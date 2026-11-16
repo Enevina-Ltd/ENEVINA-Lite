@@ -59,5 +59,42 @@ int main(){
     assert(cmd.mode==ObservedPumpMode::Heat && cmd.setpoint_c==16);
     cmd=simulation_only_command(false);
     assert(cmd.mode==ObservedPumpMode::Off && cmd.setpoint_c==0);
+    // Codex regression: a configurable 12 C floor must not inherit the
+    // old hardcoded 8.5/9.5 C fallback. The independent RC model shows
+    // why OFF at 12.2 C with -5 C outside would violate the 12 C floor.
+    auto raised=p;
+    raised.planning_min_c=12;
+    raised.planning_uncertainty_c=0.2;
+    assert(valid(raised));
+    const State original{12.2,false,180};
+    const Period frost{-5,0.1,0,1};
+    assert(advance(raised,original,frost,false).next.indoor_c<12);
+    Health fallback{};
+    fallback.now_utc=h.now_utc;
+    fallback.watchdog_ok=true;
+    fallback.calibrated=true;
+    fallback.independent_freeze_protection_verified=true;
+    fallback.pump={true,fallback.now_utc,12.2,16.0,0,ObservedPumpMode::Off};
+    fallback.independent_temperature={true,fallback.now_utc,12.2};
+    d=supervise(raised,fallback);
+    assert(d.mode==ControlMode::Shadow &&
+        d.proposed_mode==ControlMode::NormalHeating &&
+        d.reason==Reason::ForecastUnavailable &&
+        d.simulated_heat_16_c && !d.physical_writes_allowed);
+    // Configured uncertainty shifts the fallback start as well.
+    fallback.independent_temperature.indoor_c=12.6;
+    d=supervise(raised,fallback);
+    assert(d.simulated_heat_16_c && !d.physical_writes_allowed);
+    fallback.independent_temperature.indoor_c=12.8;
+    d=supervise(raised,fallback);
+    assert(!d.simulated_heat_16_c);
+    fallback.pump.mode=ObservedPumpMode::Heat;
+    fallback.pump.compressor_hz=30;
+    d=supervise(raised,fallback);
+    assert(d.simulated_heat_16_c &&
+        d.proposed_mode==ControlMode::NormalHeating);
+    fallback.independent_temperature.indoor_c=13.8;
+    d=supervise(raised,fallback);
+    assert(!d.simulated_heat_16_c && !d.physical_writes_allowed);
     std::puts("PASS all telemetry, read-only, and supervisor fault/fallback tests");
 }
