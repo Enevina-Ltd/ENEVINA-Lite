@@ -1,5 +1,6 @@
 #ifdef ARDUINO
 #include "tls_roots.hpp"
+#include "esp_heap_caps.h"
 #endif
 #include "market.hpp"
 #include "market_cache.hpp"
@@ -102,7 +103,14 @@ bool fetch_day(const char* date, enevina::MarketPrice* output, size_t capacity,
         esp_http_client_fetch_headers(client);
         if(esp_http_client_get_status_code(client)==200) {
             constexpr size_t limit=48000;
+            #ifdef ARDUINO
+            // Share scarce internal RAM with C2.3 BLE. Large downloads
+            // use external PSRAM; fail closed if unavailable.
+            body=static_cast<char*>(heap_caps_malloc(
+                limit+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+            #else
             body=static_cast<char*>(std::malloc(limit+1));
+            #endif
             if(body) {
                 size_t used=0;
                 int read=0;
