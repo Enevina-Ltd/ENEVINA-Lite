@@ -20,6 +20,7 @@
 #include "cottage_config.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
+#include "cottage_secure_ota.hpp"
 #include "cottage/physics.hpp"
 #include "cottage/mpc.hpp"
 #include "cottage/telemetry.hpp"
@@ -31,6 +32,11 @@
 #include "cottage/sse_transport.hpp"
 #include "../../main/market.hpp"
 #include "../../main/weather.hpp"
+
+// Arduino ESP32 initArduino() calls verifyOta() and marks a PENDING_VERIFY
+// firmware valid by default BEFORE setup(). Override its documented weak
+// hook so only Enevina's own post-boot health gate commits a new image.
+extern "C" bool verifyRollbackLater() { return true; }
 
 using namespace enevina::cottage;
 static WebServer web(80);
@@ -65,6 +71,7 @@ static int64_t cn105_link_event_utc=0;
 static double cn105_link_uptime_s=0;
 static TaskHandle_t task_sse=nullptr,task_shelly=nullptr;
 static TaskHandle_t task_ruuvi=nullptr,task_optimizer=nullptr;
+static TaskHandle_t task_ota=nullptr;
 static bool shelly_relay_on=false;
 static char reason_text[80]="Käynnistys";
 struct Row {
@@ -92,15 +99,28 @@ static void verify_new_ota_boot() {
     if(!running || esp_ota_get_state_partition(running,&state)!=ESP_OK ||
        state!=ESP_OTA_IMG_PENDING_VERIFY) return;
     const uint32_t elapsed=millis()-boot_validation_started_ms;
+#ifdef ENEVINA_OTA_TEST_RESET_BEFORE_CONFIRM
+    // Explicitly gated physical regression test: simulate sudden app reset
+    // while the new OTA image is pending. Only enable in a special signed
+    // fault-test release, never in the field/production firmware.
+    if(elapsed>=15000) {
+        Serial.println("C24_OTA_TEST: restarting before confirmation");
+        Serial.flush();
+        esp_restart();
+    }
+#endif
     if(elapsed<60000) return; // allow BLE, WebServer, RTOS to settle
-    const bool healthy=boot_ui_started && c23_ble_initialized() &&
+    const bool healthy=boot_ui_started && wifi_ok.load() &&
+        c23_ble_initialized() &&
         ESP.getPsramSize()>=7*1024*1024 &&
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>=64*1024 &&
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>=16*1024 &&
         task_sse!=nullptr && task_shelly!=nullptr && task_optimizer!=nullptr;
     if(healthy) {
-        if(esp_ota_mark_app_valid_cancel_rollback()==ESP_OK)
+        if(esp_ota_mark_app_valid_cancel_rollback()==ESP_OK) {
+            cottage_ota_confirm_boot();
             ota_boot_confirmed=true;
+        }
         else Serial.println("C24_OTA_ERROR: boot validation could not commit");
     } else if(elapsed>120000) {
         Serial.println("C24_OTA_REJECT: boot self-test failed; requesting rollback");
@@ -795,6 +815,10 @@ static void status_endpoint() {
                             has_ota_state?static_cast<int>(image_state):-1);
     cJSON_AddBoolToObject(root,"ota_boot_confirmed",ota_boot_confirmed);
     cJSON_AddBoolToObject(root,"ota_upload_enabled",false);
+    cJSON_AddBoolToObject(root,"ota_signed_pull_enabled",cottage_ota_configured());
+    cJSON_AddNumberToObject(root,"ota_signed_good_version",cottage_ota_good_version());
+    cJSON_AddNumberToObject(root,"ota_signed_candidate",cottage_ota_last_candidate());
+    cJSON_AddNumberToObject(root,"ota_signed_status",cottage_ota_status());
     cJSON_AddNumberToObject(root,"free_internal_heap",
                             heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(root,"min_free_internal_heap",
@@ -899,6 +923,7 @@ void setup() {
     cJSON_InitHooks(&hooks); // Once, before any reader/task starts.
     setup_model();
     c23_initialize(); // NVS mode + persistent explicit Ruuvi bonding
+    cottage_ota_initialize(); // Persist successful signed release + reject failed candidate
     // Avoid device contact without explicit local configuration.
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
@@ -927,6 +952,8 @@ void setup() {
     xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,&task_shelly,0);
     // BLE already running. No physical actuator command is ever sent.
     xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
+    if(cottage_ota_configured())
+        xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota",16384,nullptr,1,&task_ota,1);
     Serial.println("ENEVINA LITE C2 SHADOW: NO ACTUATOR PATH");
 }
 void loop() {
