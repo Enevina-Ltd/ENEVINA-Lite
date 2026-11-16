@@ -27,8 +27,21 @@ std::array<Action, 7> actions(const Parameters& p, double outdoor_c) {
 // checked again using the double-precision physical model before acceptance.
 OptimizeResult forward_exact(const Parameters& p, State initial,
                              const Period* periods, size_t count,
-                             size_t max_grid_states) {
+                             size_t max_grid_states, const OptimizeRunControls& controls) {
     OptimizeResult result{};
+    size_t work_remaining=controls.max_work_units;
+    auto check_interrupt=[&]() -> OptimizeStatus {
+        if(controls.cancel_requested &&
+           controls.cancel_requested(controls.cancel_context))
+            return OptimizeStatus::Cancelled;
+        if(work_remaining==0) return OptimizeStatus::WorkLimit;
+        --work_remaining;
+        return OptimizeStatus::Ok;
+    };
+    if(const auto stop=check_interrupt();stop!=OptimizeStatus::Ok) {
+        result.status=stop;
+        return result;
+    }
     constexpr double forward_room_bin_c=room_bin_c/2;
     constexpr double forward_tank_bin_kwh=tank_bin_kwh/2;
     const size_t room_count = static_cast<size_t>(std::ceil(
@@ -95,6 +108,10 @@ OptimizeResult forward_exact(const Parameters& p, State initial,
         const float initial_tank=static_cast<float>(initial.tank_kwh);
         for (size_t i=0;i<frontier.size();++i) {
             for (uint8_t a=0;a<options.size();++a) {
+                if(const auto stop=check_interrupt();stop!=OptimizeStatus::Ok) {
+                    result.status=stop;
+                    return result;
+                }
                 const Effect& effect=effects[a];
                 const SearchState& state=frontier[i].state;
                 const SearchState next_state{
@@ -114,7 +131,9 @@ OptimizeResult forward_exact(const Parameters& p, State initial,
                 // cost is below a conservative future replacement value.
                 const float stored=(next_state.indoor_c-minimum_room)*
                     room_capacity+next_state.tank_kwh-minimum_tank;
-                const float score=cost-0.05f*stored;
+                // No future demand remains at the terminal layer: prefer
+                // the genuinely cheapest feasible candidate in each bin.
+                const float score=(t+1==count) ? cost : cost-0.05f*stored;
                 if (score < rank[k]) {
                     rank[k]=score;
                     best[k]={next_state,cost,static_cast<uint16_t>(i),a};
@@ -124,49 +143,84 @@ OptimizeResult forward_exact(const Parameters& p, State initial,
         std::vector<Node> next;
         next.reserve(grid_size);
         offsets[t]=traces.size();
-        for (const auto& node:best) if (node.choice!=255) {
-            next.push_back(node);
-            traces.push_back({node.parent,node.choice});
+        for (const auto& node:best) {
+            if(const auto stop=check_interrupt();stop!=OptimizeStatus::Ok) {
+                result.status=stop;
+                return result;
+            }
+            if(node.choice!=255) {
+                next.push_back(node);
+                traces.push_back({node.parent,node.choice});
+            }
         }
         if (next.empty()) { result.status=OptimizeStatus::Infeasible; return result; }
         frontier.swap(next);
     }
-    size_t selected=0;
-    for (size_t i=1;i<frontier.size();++i)
-        if (frontier[i].cost<frontier[selected].cost) selected=i;
-    result.cost_eur=frontier[selected].cost;
-    result.count=count;
-    result.status=OptimizeStatus::Ok;
-    for (size_t t=count;t>0;--t) {
-        const Trace trace=traces[offsets[t-1]+selected];
-        result.actions[t-1]=actions(p,periods[t-1].outdoor_c)[trace.choice];
-        selected=trace.parent;
-    }
-    State verified=initial;
-    double verified_cost=0;
-    for(size_t t=0;t<count;++t) {
-        const Step step=advance(p,verified,periods[t],result.actions[t]);
-        if(!feasible(p,step.next)) {
-            result.status=OptimizeStatus::Infeasible;
-            result.count=0;
-            return result;
-        }
-        verified=step.next;
-        verified_cost+=step.cost_eur;
-    }
-    if(verified.indoor_c<initial.indoor_c-1e-7 ||
-       verified.tank_kwh<initial.tank_kwh-1e-7) {
-        result.status=OptimizeStatus::Infeasible;
-        result.count=0;
+    // Sort only the final frontier in-place: no terminal-index allocation.
+    // Earlier trace layers retain their original indices, and each final Node
+    // already carries its own predecessor and action.
+    if(const auto stop=check_interrupt();stop!=OptimizeStatus::Ok) {
+        result.status=stop;
         return result;
     }
-    result.cost_eur=verified_cost;
+    std::sort(frontier.begin(),frontier.end(),[](const Node& a,const Node& b) {
+        if(a.cost!=b.cost) return a.cost<b.cost;
+        if(a.parent!=b.parent) return a.parent<b.parent;
+        return a.choice<b.choice;
+    });
+    for(const Node& terminal:frontier) {
+        if(const auto stop=check_interrupt();stop!=OptimizeStatus::Ok) {
+            result.status=stop;
+            return result;
+        }
+        OptimizeResult candidate{};
+        candidate.count=count;
+        candidate.actions[count-1]=actions(p,periods[count-1].outdoor_c)[terminal.choice];
+        size_t selected=terminal.parent;
+        for(size_t t=count-1;t>0;--t) {
+            if(const auto stop=check_interrupt();stop!=OptimizeStatus::Ok) {
+                result.status=stop;
+                return result;
+            }
+            const Trace trace=traces[offsets[t-1]+selected];
+            candidate.actions[t-1]=actions(p,periods[t-1].outdoor_c)[trace.choice];
+            selected=trace.parent;
+        }
+        State verified=initial;
+        double verified_cost=0;
+        bool exact_feasible=true;
+        for(size_t t=0;t<count;++t) {
+            if(const auto stop=check_interrupt();stop!=OptimizeStatus::Ok) {
+                result.status=stop;
+                return result;
+            }
+            const Step step=advance(p,verified,periods[t],candidate.actions[t]);
+            if(!feasible(p,step.next)) {
+                exact_feasible=false;
+                break;
+            }
+            verified=step.next;
+            verified_cost+=step.cost_eur;
+        }
+        if(!exact_feasible || verified.indoor_c<initial.indoor_c-1e-7 ||
+           verified.tank_kwh<initial.tank_kwh-1e-7)
+            continue;
+        if(const auto stop=check_interrupt();stop!=OptimizeStatus::Ok) {
+            result.status=stop;
+            return result;
+        }
+        candidate.status=OptimizeStatus::Ok;
+        candidate.cost_eur=verified_cost;
+        return candidate;
+    }
+    result.status=OptimizeStatus::Infeasible;
     return result;
 }
 }
 
 OptimizeResult optimize(const Parameters& p, State initial,
-                        const Period* periods, size_t count, size_t max_grid_states) {
+                        const Period* periods, size_t count, size_t max_grid_states,
+                        const OptimizeRunControls& controls) {
     OptimizeResult result{};
     if (!valid(p) || !feasible(p, initial) || !periods || count == 0 ||
         count > max_periods || max_grid_states == 0) return result;
@@ -176,6 +230,6 @@ OptimizeResult optimize(const Parameters& p, State initial,
             !std::isfinite(x.internal_gain_kw) ||
             !std::isfinite(x.dhw_draw_kw) || x.dhw_draw_kw < 0) return result;
     }
-    return forward_exact(p,initial,periods,count,max_grid_states);
+    return forward_exact(p,initial,periods,count,max_grid_states,controls);
 }
 }

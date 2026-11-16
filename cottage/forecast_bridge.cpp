@@ -1,4 +1,5 @@
 #include "cottage/forecast_bridge.hpp"
+#include "cottage/finnish_tariff.hpp"
 #include <cmath>
 #include <ctime>
 namespace enevina::cottage {
@@ -28,12 +29,10 @@ BridgeResult join_forecast_two_tariffs(int64_t now,int64_t price_fetch,int64_t w
             }
         }
         if(!found) {result.status=BridgeStatus::Gap;return result;}
-        const time_t timestamp=static_cast<time_t>(ts);
-        struct tm local{};
-        if(!localtime_r(&timestamp,&local)) {
+        bool day=false;
+        if(!finnish_day_transfer(ts,day)) {
             result.status=BridgeStatus::BadClock;return result;
         }
-        const bool day=local.tm_hour>=7 && local.tm_hour<22;
         enevina::Tariff t=day?day_tariff:night_tariff;
         t.spot_eur_per_kwh=spot;
         double total=0;

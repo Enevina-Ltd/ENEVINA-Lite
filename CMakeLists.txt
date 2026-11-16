@@ -33,3 +33,37 @@ target_link_libraries(cottage_url_guard_tests PRIVATE enevina_cottage enevina_co
 add_test(NAME cottage_url_guard_tests COMMAND cottage_url_guard_tests)
 add_executable(cottage_cli tools/cottage_cli.cpp)
 target_link_libraries(cottage_cli PRIVATE enevina_cottage enevina_core)
+
+# Platform-independent P0 regressions, including ESP weather-cache format.
+add_executable(optimizer_regression_tests tests/optimizer_regression_tests.cpp)
+target_link_libraries(optimizer_regression_tests PRIVATE enevina_core)
+add_test(NAME optimizer_regression_tests COMMAND optimizer_regression_tests)
+add_executable(weather_cache_tests tests/weather_cache_tests.cpp)
+target_include_directories(weather_cache_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME weather_cache_tests COMMAND weather_cache_tests)
+add_executable(market_cache_tests tests/market_cache_tests.cpp)
+target_link_libraries(market_cache_tests PRIVATE enevina_core)
+add_test(NAME market_cache_tests COMMAND market_cache_tests)
+
+# Pump-origin serial freshness policy: HTTP transport alone is not proof.
+add_executable(pump_freshness_tests tests/pump_freshness_tests.cpp)
+target_include_directories(pump_freshness_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME pump_freshness_tests COMMAND pump_freshness_tests)
+
+# Deterministic MPC timeout, cancellation and safe supervisor fallback.
+add_executable(cottage_deadline_tests tests/cottage_deadline_tests.cpp)
+target_link_libraries(cottage_deadline_tests PRIVATE enevina_cottage)
+add_test(NAME cottage_deadline_tests COMMAND cottage_deadline_tests)
+add_executable(cottage_bin_tests tests/cottage_bin_tests.cpp)
+target_link_libraries(cottage_bin_tests PRIVATE enevina_cottage)
+add_test(NAME cottage_bin_tests COMMAND cottage_bin_tests)
+
+# Confirmed HEAT/OFF dwell age from the CN105 stream, reset on loss.
+add_executable(cottage_mode_timing_tests tests/cottage_mode_timing_tests.cpp)
+target_link_libraries(cottage_mode_timing_tests PRIVATE enevina_cottage)
+add_test(NAME cottage_mode_timing_tests COMMAND cottage_mode_timing_tests)
+
+# UTC-based Finnish transfer tariff and spring/autumn DST regression.
+add_executable(finnish_tariff_tests tests/finnish_tariff_tests.cpp)
+target_link_libraries(finnish_tariff_tests PRIVATE enevina_cottage)
+add_test(NAME finnish_tariff_tests COMMAND finnish_tariff_tests)

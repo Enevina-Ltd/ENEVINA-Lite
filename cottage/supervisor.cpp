@@ -16,7 +16,10 @@ Decision supervise(const Parameters& p,const Health& h) {
         return out;
     }
     out.observed_temperature_c=h.independent_temperature.indoor_c;
-    if(!valid_cn105(h.pump,h.now_utc)) {
+    if(!valid_cn105(h.pump,h.now_utc) ||
+       (h.pump.mode!=ObservedPumpMode::Heat &&
+        h.pump.mode!=ObservedPumpMode::Off)) {
+        // COOL/DRY/FAN and unrecognised modes are not OFF.
         out.mode=ControlMode::Fault;
         out.reason=Reason::PumpUnavailable;
         return out;
@@ -50,12 +53,21 @@ Decision supervise(const Parameters& p,const Health& h) {
         out.reason=Reason::PriceReady;
         return out;
     }
-    // Hysteresis in forecast-unavailable fallback: heat below 8.5,
-    // continue heat until 9.5. Never send a command; only simulate.
+    // Fallback is relative to the configured floor, including the model
+    // uncertainty allowance. The 0.5 C early-start and 1.0 C hysteresis
+    // margins prevent an OFF recommendation just above a raised floor.
+    // No weather forecast means this cannot guarantee freeze protection.
+    const double floor_c=p.planning_min_c+p.planning_uncertainty_c;
+    const double start_heat_below_c=floor_c+0.5;
+    const double stop_heat_above_c=start_heat_below_c+1.0;
     out.proposed_mode=ControlMode::NormalHeating;
-    out.simulated_heat_16_c=out.observed_temperature_c<8.5 ||
-        (h.pump.mode==ObservedPumpMode::Heat && out.observed_temperature_c<9.5);
-    out.reason=Reason::ForecastUnavailable;
+    out.simulated_heat_16_c=out.observed_temperature_c<start_heat_below_c ||
+        (h.pump.mode==ObservedPumpMode::Heat &&
+         out.observed_temperature_c<stop_heat_above_c);
+    out.reason=(h.plan.status==MpcStatus::Timeout ||
+        h.plan.status==MpcStatus::Cancelled ||
+        (h.mpc_ready && h.plan.status!=MpcStatus::Ok)) ?
+        Reason::MpcUnavailable : Reason::ForecastUnavailable;
     return out;
 }
 } // namespace enevina::cottage

@@ -7,6 +7,7 @@
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 #include <esp_task_wdt.h>
+#include <esp_timer.h>
 #include <cJSON.h>
 #include <array>
 #include <algorithm>
@@ -25,6 +26,7 @@
 #include "cottage/forecast_bridge.hpp"
 #include "cottage/ruuvi.hpp"
 #include "cottage/url_guard.hpp"
+#include "cottage/mode_timing.hpp"
 #include "../../main/market.hpp"
 #include "../../main/weather.hpp"
 
@@ -34,6 +36,7 @@ static SemaphoreHandle_t lock_data=nullptr;
 static std::atomic<bool> wifi_ok{false};
 static std::atomic<uint32_t> web_loop_heartbeat_ms{0};
 static CN105Telemetry pump{};
+static ObservedModeDuration observed_mode_duration{};
 static ShellyTelemetry consumption{};
 static TemperatureSample temperature{};
 static int64_t climate_utc=0,compressor_utc=0;
@@ -96,7 +99,7 @@ static void parse_sse_state(const char* raw) {
     if(!cJSON_IsString(key)||!now) {cJSON_Delete(root);return;}
     CN105Telemetry copy;
     xSemaphoreTake(lock_data,portMAX_DELAY);copy=pump;xSemaphoreGive(lock_data);
-    bool changed=false;
+    bool changed=false,climate_event=false;
     int64_t climate_stamp=climate_utc,compressor_stamp=compressor_utc;
     if(strcmp(key->valuestring,"climate/Mitsubishi Electric MSZ-FD25VA")==0) {
         const cJSON* mode=cJSON_GetObjectItemCaseSensitive(root,"mode");
@@ -108,7 +111,7 @@ static void parse_sse_state(const char* raw) {
             else if(strcmp(mode->valuestring,"HEAT")==0) copy.mode=ObservedPumpMode::Heat;
             else copy.mode=ObservedPumpMode::Other;
             copy.indoor_c=indoor;copy.setpoint_c=target;
-            climate_stamp=now;changed=true;
+            climate_stamp=now;changed=true;climate_event=true;
         }
     } else if(strcmp(key->valuestring,"sensor/Compressor Frequency")==0) {
         double hz=0;
@@ -119,6 +122,12 @@ static void parse_sse_state(const char* raw) {
     cJSON_Delete(root);
     if(changed) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
+        if(climate_event) {
+            const bool continuous=climate_utc>0 && now>=climate_utc &&
+                now-climate_utc<=180;
+            observed_mode_duration.observe(copy.mode,
+                static_cast<uint64_t>(esp_timer_get_time()/1000),continuous);
+        }
         climate_utc=climate_stamp;compressor_utc=compressor_stamp;
         copy.captured_utc=climate_stamp&&compressor_stamp?
             std::min(climate_stamp,compressor_stamp):0;
@@ -141,14 +150,18 @@ static void sse_worker(void*) {
         if(request.begin(client,COTTAGE_CN105_URL) && request.GET()==200) {
             WiFiClient* stream=request.getStreamPtr();
             char line[1536]={};size_t len=0;
-            char event[20]={};uint32_t until=millis()+30000;
-            while(wifi_ok.load() && static_cast<int32_t>(until-millis())>0 &&
-                  client.connected()) {
+            char event[20]={};
+            uint32_t last_activity_ms=millis();
+            // Keep the SSE stream up while healthy. A forced 30s reconnect
+            // destroys our evidence of elapsed HEAT/OFF mode duration.
+            while(wifi_ok.load() && client.connected() &&
+                  static_cast<uint32_t>(millis()-last_activity_ms)<180000u) {
                 if(!stream->available()) {
                     vTaskDelay(pdMS_TO_TICKS(20));continue;
                 }
                 const int byte=stream->read();
                 if(byte<0) continue;
+                last_activity_ms=millis();
                 if(byte=='\r') continue;
                 if(byte=='\n') {
                     if(len==0) {
@@ -170,6 +183,11 @@ static void sse_worker(void*) {
             }
         } else { failed_reads++; }
         request.end();
+        // The mode could have changed while the SSE stream was down.
+        // Resume conservatively with zero confirmed dwell age.
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        observed_mode_duration.invalidate();
+        xSemaphoreGive(lock_data);
         vTaskDelay(pdMS_TO_TICKS(1500));
     }
 }
@@ -236,6 +254,14 @@ static enevina::Tariff tariff(bool night=false) {
     t.vat_rate=COTTAGE_VAT_RATE;
     return t;
 }
+// Use 64-bit monotonic ESP timer for an actual deadline (not post-hoc wall time).
+static uint64_t cottage_now_ms(void*) {
+    return static_cast<uint64_t>(esp_timer_get_time()/1000);
+}
+static bool cottage_cancel(void*) {
+    return !wifi_ok.load() ||
+        static_cast<uint32_t>(millis()-web_loop_heartbeat_ms.load())>5000u;
+}
 static void optimizer_worker(void*) {
     auto* prices=new enevina_firmware::PricePoint[200];
     auto* weather=new enevina::OutdoorPoint[64];
@@ -246,8 +272,13 @@ static void optimizer_worker(void*) {
         const int64_t now=time(nullptr);
         if(wifi_ok.load() && clock_ok() && prices && weather && aligned && bridge && rows) {
             CN105Telemetry cp;TemperatureSample ts;
+            unsigned observed_mode_minutes=0;
             xSemaphoreTake(lock_data,portMAX_DELAY);
-            cp=pump;ts=temperature;xSemaphoreGive(lock_data);
+            cp=pump;ts=temperature;
+            observed_mode_minutes=observed_mode_duration.minutes(
+                cp.mode,static_cast<uint64_t>(esp_timer_get_time()/1000),
+                valid_cn105(cp,now));
+            xSemaphoreGive(lock_data);
             const auto ms=enevina_firmware::market_status();
             const auto ws=enevina_firmware::weather_status();
             const size_t pc=enevina_firmware::future_prices(prices,200);
@@ -267,11 +298,18 @@ static void optimizer_worker(void*) {
             xSemaphoreGive(lock_data);
             if(bridge->status==BridgeStatus::Ready &&
                valid_cn105(cp,now) && valid_temperature(ts,now) &&
+               (cp.mode==ObservedPumpMode::Off ||
+                cp.mode==ObservedPumpMode::Heat) &&
                COTTAGE_SYNTHETIC_TEST_MODEL && valid(model)) {
-                const State initial{ts.indoor_c,cp.mode==ObservedPumpMode::Heat,0};
+                const State initial{ts.indoor_c,
+                    cp.mode==ObservedPumpMode::Heat,observed_mode_minutes};
                 const uint32_t begun=millis();
+                MpcRunControls limits{};
+                limits.runtime_budget_ms=1800;
+                limits.monotonic_now_ms=cottage_now_ms;
+                limits.cancel_requested=cottage_cancel;
                 const MpcResult result=optimize(model,initial,bridge->periods.data(),
-                    bridge->count);
+                    bridge->count,3*1024*1024,limits);
                 const uint32_t elapsed=millis()-begun;
                 optimizer_ms=elapsed;max_optimizer_ms=std::max(max_optimizer_ms,elapsed);
                 std::fill(rows,rows+max_horizon_slots,Row{});
@@ -303,6 +341,8 @@ static void optimizer_worker(void*) {
                     "Rakennusmalli ei ole kalibroitu":
                     !valid_temperature(ts,now)?"Riippumaton anturi puuttuu / vanha":
                     !valid_cn105(cp,now)?"CN105 vanha tai puuttuu":
+                    cp.mode!=ObservedPumpMode::Off &&
+                    cp.mode!=ObservedPumpMode::Heat?"CN105 tila ei tue optimointia":
                     "Ennuste puuttuu / vanhentunut");
                 xSemaphoreTake(lock_data,portMAX_DELAY);
                 plan_count=0;last_plan.status=MpcStatus::InvalidInput;
