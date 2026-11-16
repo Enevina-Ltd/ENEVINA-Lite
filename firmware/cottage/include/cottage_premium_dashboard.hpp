@@ -189,7 +189,7 @@ function showHistory(){
   const note=document.createElement('p');note.className='tiny muted';note.textContent='Näkyvät lämpötilat: '+fmt(min)+'–'+fmt(max)+' °C · '+vals.length+' tuntipistettä';host.append(note);
 }
 async function fetchJSON(path){const r=await fetch(path,{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);return r.json();}
-async function reloadStatus(){try{state.status=await fetchJSON('/api/status');showStatus();}catch(e){text('connection','Yhteys poikki');$('connection-dot').className='dot bad';}}
+async function reloadStatus(){try{state.status=await fetchJSON('/api/status');showStatus();}catch(e){state.status=null;state.plan={valid:false};text('connection','Yhteys poikki');$('connection-dot').className='dot bad';text('home-temp','Ei yhteyttä');text('home-sensor','Mittaukset eivät päivity');text('home-rh','—');text('home-price','—');text('home-total','—');text('home-watts','—');text('price-now','—');text('home-air-status','Yhteys poikki');showPlan();$('save-mode').disabled=true;document.querySelectorAll('[data-mode]').forEach(b=>b.disabled=true);}}
 async function reloadPrices(){try{state.prices=await fetchJSON('/api/prices');showPrices();}catch(e){state.prices={valid:false,slots:[]};showPrices();}}
 async function reloadPlan(){try{state.plan=await fetchJSON('/api/plan');showPlan();}catch(e){state.plan={valid:false};showPlan();}}
 async function reloadHistory(){try{state.history=await fetchJSON('/api/air/history');showHistory();}catch(e){state.history={hours:[]};showHistory();}}
@@ -205,8 +205,12 @@ $('save-mode').addEventListener('click',async()=>{
     text('feedback','Asetukset tallennettu. Lämpöpumpulle ei lähetetty käskyä.');await reloadStatus();
   }catch(e){text('feedback','Tallennus ei onnistunut.');}finally{btn.disabled=false;}
 });
-reloadStatus();reloadPrices();reloadPlan();reloadHistory();
-setInterval(reloadStatus,15000);setInterval(reloadPrices,60000);setInterval(reloadPlan,60000);setInterval(reloadHistory,180000);
+// One request at a time on first load: avoid opening four TCP connections to ESP32.
+async function initialRefresh(){await reloadStatus();await reloadPrices();await reloadPlan();await reloadHistory();}
+initialRefresh();
+setInterval(reloadStatus,15000);
+setInterval(async()=>{await reloadPrices();await reloadPlan();},60000);
+setInterval(reloadHistory,180000);
 </script>
 </body>
 </html>)ENEVINA_UI";
