@@ -510,12 +510,21 @@ void c23_register_routes(WebServer& web) {
         if(!unbind && !parse_ruuvi_mac(value.c_str(),mac)) {
             web.send(400,"text/plain","Bad MAC");return;
         }
+        bool cleared_indoor_history=false;
         lock();
         if(kind=="indoor") {
-            if(unbind) indoor_binding.unbind();
-            else indoor_binding.bind(mac);
-            has_indoor=false;indoor_utc=0;indoor_air={};
-            alarm_engine=MoistureMonitor(warning_limits);
+            const bool binding_changed=unbind?indoor_binding.bound():
+                (!indoor_binding.bound()||indoor_binding.mac()!=mac);
+            if(binding_changed) {
+                if(unbind) indoor_binding.unbind();
+                else indoor_binding.bind(mac);
+                has_indoor=false;indoor_utc=0;indoor_air={};
+                alarm_engine=MoistureMonitor(warning_limits);
+                history=AirHistory{}; // never mix two sensors in one series
+                history_changed=false;
+                last_store_ms=uptime_ms();
+                cleared_indoor_history=true;
+            }
         } else {
             if(unbind)outdoor_binding.unbind();
             else outdoor_binding.bind(mac);
@@ -523,6 +532,21 @@ void c23_register_routes(WebServer& web) {
         }
         log_event(4,kind=="indoor"?0:1);
         unlock();
+        if(cleared_indoor_history) {
+            // New binding must not be persisted if old sensor history cannot
+            // be cleared from NVS first (prevents mixing after reboot).
+            Preferences p;
+            bool purged=false;
+            if(p.begin("cottage_hist",false)) {
+                purged=p.getBytesLength("hourly_v1")==0 ||
+                       p.remove("hourly_v1");
+                p.end();
+            }
+            if(!purged) {
+                web.send(500,"text/plain","History NVS purge failed");
+                return;
+            }
+        }
         const bool saved=save_config();
         web.send(saved?200:500,"application/json",
                  saved?"{\"saved\":true,\"physical_writes\":false}":

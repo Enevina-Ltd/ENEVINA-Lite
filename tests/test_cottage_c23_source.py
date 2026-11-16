@@ -41,6 +41,11 @@ class C23SourceTests(unittest.TestCase):
         self.assertIn('prefs.putBytes("hourly_v1"',SERVICE)
         self.assertIn("6ULL*3600*1000",SERVICE)
 
+    def test_sensor_rebinding_does_not_mix_history(self):
+        self.assertIn("history=AirHistory{}",SERVICE)
+        self.assertIn('p.remove("hourly_v1")',SERVICE)
+        self.assertIn("binding_changed",SERVICE)
+
     def test_ui_settings_only(self):
         self.assertIn('web.on("/api/air/config",HTTP_POST',SERVICE)
         self.assertIn('web.on("/api/air/thresholds",HTTP_POST',SERVICE)
