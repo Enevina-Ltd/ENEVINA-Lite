@@ -34,6 +34,10 @@ Korjaus PR #5:een:
 | Suojaukset | `physical_writes=false`, `model_calibrated=false`, `independent_freeze_protection_verified=false`; ei hyväksyttyä lämmityssuunnitelmaa |
 | Laitemuisti | Sisäinen vapaa heap noin 217–220 kt, vapaa PSRAM noin 8,36 Mt; HTTPS-yhteyksien hetkellinen sisäisen heapin alaraja noin 112 kt |
 
+### Uusin seurantahavainto: CN105:n mittaus vanheni
+
+Alkukäynnistyksessä `cn105=true`, mutta noin kuuden minuutin yhtäjaksoisessa seurannassa `cn105=false`, vaikka SSE-yhteys pysyi auki. Näin 180 sekunnin mittaustuoreusportti toimii oikein: linkin aktiivisuus ei ole todiste uudesta pumpun mittausvastauksesta. Tätä ei saa kiertää keksityllä aikaleimalla eikä pelkällä SSE-uudelleenyhdistämisellä. CN105:n varsinaisen sarjaväylämittauksen tuoreus on avoin tiedonlaatuongelma. Samaan aikaan Shelly, Nord Pool ja FMI säilyivät saatavilla. Käyttöliittymän `reason`-kenttä voi myös näyttää vanhentunutta alkuperäistä Wi-Fi-tekstiä seuraavaan neljännestunnin suunnittelusyklin alkuun; tämä ei tarkoita Wi-Fi-yhteyden katkeamista.
+
 ## Auki olevat esteet
 
 1. Riippumaton pihamökin lämpöanturi ja erillinen jäätymissuoja eivät ole vahvistettuja; BLE-lukija ei vielä mittaa mökin anturia.
