@@ -18,6 +18,7 @@
 #include <string>
 #include "cottage_config.hpp"
 #include "cottage_air_service.hpp"
+#include "cottage_network_budget.hpp"
 #include "cottage/physics.hpp"
 #include "cottage/mpc.hpp"
 #include "cottage/telemetry.hpp"
@@ -72,6 +73,12 @@ struct Row {
 static std::array<Row,max_horizon_slots> plan_rows{};
 static Parameters model{};
 
+// All cJSON nodes and serialized HTTP JSON are allocated in PSRAM.
+// Never fall back to scarce internal RAM on allocation failure.
+static void* json_alloc_psram(size_t n) {
+    return heap_caps_malloc(n,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+}
+static void json_free_psram(void* p) {heap_caps_free(p);}
 static bool clock_ok() {return time(nullptr)>1700000000;}
 static bool number(const cJSON* item,double& output,double min,double max) {
     if(!item) return false;
@@ -755,6 +762,11 @@ static void status_endpoint() {
                             heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(root,"min_free_psram",
                             heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
+    cJSON_AddNumberToObject(root,"largest_free_internal_heap",
+                            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(root,"network_budget_denials",
+                            enevina_firmware::network_budget_denials());
+    cJSON_AddBoolToObject(root,"ble_initialized",c23_ble_initialized());
     cJSON_AddNumberToObject(root,"sse_stack_free",
                             task_sse?uxTaskGetStackHighWaterMark(task_sse):0);
     cJSON_AddNumberToObject(root,"shelly_stack_free",
@@ -836,6 +848,14 @@ void setup() {
         Serial.println("C2_SHADOW_FATAL: expected >=7MB PSRAM unavailable");
         while(true) { delay(1000); }
     }
+    if(!enevina_firmware::network_budget_init()) {
+        Serial.println("C24_FATAL: memory guard allocation failed");
+        while(true) delay(1000);
+    }
+    cJSON_Hooks hooks{};
+    hooks.malloc_fn=json_alloc_psram;
+    hooks.free_fn=json_free_psram;
+    cJSON_InitHooks(&hooks); // Once, before any reader/task starts.
     setup_model();
     c23_initialize(); // NVS mode + persistent explicit Ruuvi bonding
     // Avoid device contact without explicit local configuration.
@@ -852,13 +872,17 @@ void setup() {
     web.onNotFound([](){web.send(404,"text/plain","Ei löydy");});
     web.begin();
     enableLoopWDT(); // Arduino ESP32 loop-task hardware watchdog.
+    // Initialize BLE before starting memory-heavy HTTPS workers.
+    xTaskCreatePinnedToCore(c23_ble_worker,"cottage_ruuvi",10240,nullptr,1,&task_ruuvi,0);
+    for(int i=0;i<150 && !c23_ble_initialized();++i)
+        delay(20);
+    if(!c23_ble_initialized())
+        Serial.println("C24_WARN: BLE initialization not confirmed");
     enevina_firmware::start_market_reader();
     enevina_firmware::start_weather_reader();
     xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",8192,nullptr,2,&task_sse,0);
     xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,&task_shelly,0);
-    // Start BLE even before a tag is bound: discovery + explicit pairing
-    // must work when local compile-time MAC is empty or NVS restores a tag.
-    xTaskCreatePinnedToCore(c23_ble_worker,"cottage_ruuvi",10240,nullptr,1,&task_ruuvi,0);
+    // BLE already running. No physical actuator command is ever sent.
     xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
     Serial.println("ENEVINA LITE C2 SHADOW: NO ACTUATOR PATH");
 }
