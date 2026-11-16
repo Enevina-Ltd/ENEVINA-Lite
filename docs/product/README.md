@@ -2,10 +2,16 @@
 
 Enevina Lite suunnitellaan **Enevina Oy:n ensimmäiseksi kaupalliseksi tuotteeksi**.
 
-**Tuoteversiot**
-- **V1 – Monitoring-only:** mökin/rakennuksen paikallinen olosuhde- ja energiavalvonta ilman pumpun tai Shelly-releen ohjauskirjoituksia.
-- **V1.1 – Energy Advisory:** mitattuun laatuun perustuvat energia- ja lämpömallin neuvot; ei fyysisiä komentoja.
-- **V2 – Intelligent Heating Control:** erillinen tuotteistamis-, turva- ja laitekohtainen hyväksyntä ennen lämpöpumpun ohjausta.
+**Kehityslinja – käyttäjän uusin päätös**
+
+**Tärkeintä on saada Enevina Lite ensin toimimaan.** V1:tä ei lukita monitoring-only-tilaan eikä jo kehitettyä lämmityksen ohjaus-/optimointikoodia poisteta. Aiemmat V1/V1.1/V2-nimet kuvaavat kaupallistamisen suunnittelua, mutta eivät rajoita turvallista host-/mock-kehitystä. Oikean pumpun uudet kirjoitukset edellyttävät erillistä laitekohtaista hyväksyntää.
+
+**Ei uusia turhia watchdogeja tai reset-silmukoita.** Mitataan vian todellinen syy ja korjataan koodi; säilytetään nykyiset perustellut suojat.
+
+**Aiemmat suunnitellut tuoteversiot (ei kehityslukitusta)**
+- **V1 – ensimmäinen kaupallinen julkaisu:** tarkka ominaisuussisältö päätetään toimivan pilotin ja turvallisen tuotantovalidoinnin jälkeen; ei valmiiksi asetettua monitoring-only-pakkoa.
+- **Energianeuvonta ja MPC:** niiden kehitys aloitetaan jo nyt, eikä niitä siirretä versiorajan vuoksi myöhemmäksi.
+- **Fyysinen lämpöpumpun ohjaus:** kehitetään hostissa/mockissa/testipenkissä jo nyt; todellisen pumpun komennot hyväksytään erillisellä mallikohtaisella koesuunnitelmalla ja mahdollinen asiakasjulkaisu vasta todennuksen jälkeen.
 
 ## Käsikirjat
 
@@ -15,14 +21,14 @@ Enevina Lite suunnitellaan **Enevina Oy:n ensimmäiseksi kaupalliseksi tuotteeks
 
 ## Ensimmäinen toteutusjärjestys
 
-**L01 → L04/L02 → L03 → L05**, samalla voidaan valmistella L06, L08, L11 ja L12. Käyttöönotto L07 vasta L06:n jälkeen; L09 L08:n jälkeen; pitkä 72 h + 30 vrk lukittu kenttätesti L10 vasta L02–L09:n jälkeen. Valmistusketjun L13 ja vaatimustenmukaisuuden L14 hyväksyntä estävät kaupallisen myynnin ennen näyttöä.
+**F01–F09 ensin: käynnistys, BLE, CN105, Shelly, hinnat/sää, UI, MPC, mock-ohjaus ja OTA.** Sen jälkeen kaupallistamisen L01–L25-portit toteutetaan todellisten puutteiden mukaan. Käyttöönotto L07 vasta L06:n jälkeen; L09 L08:n jälkeen; pitkä 72 h + 30 vrk lukittu kenttätesti L10 vasta L02–L09:n jälkeen. Valmistusketjun L13 ja vaatimustenmukaisuuden L14 hyväksyntä estävät kaupallisen myynnin ennen näyttöä.
 
 ## Todenmukainen tilanne ja laiterajat
 
 - **Main-haara** ei automaattisesti sisällä pinottujen draft-PR:ien #5, #6 ja #7 toteutusta; jokainen agentti tarkistaa todelliset HEAD:t ennen työn aloittamista.
 - **Pihamökissä oleva ESP32-S3** on erillinen kenttäpilotti. Tätä laitetta ei flashata, resetoida eikä kuormiteta pelkän dokumentaatiotehtävän vuoksi.
 - **Core-koneen uusi ESP32-S3 N16R8** on regressiotesteihin tarkoitettu kortti, mutta sen bootloader/NVS:n muokkaaminen edellyttää palautussuunnitelmaa ja erillistä hyväksyntää.
-- V1:stä ei saa sanoa kaupallisesti valmista, CE-vaatimustenmukaista tai turvalliseksi hyväksyttyä ilman porttikohtaista näyttöä.
+- Kaupallista laitetta ei saa sanoa CE-vaatimustenmukaiseksi tai myyntivalmiiksi ilman porttikohtaista näyttöä. Tämä ei estä toiminnallisen laitteen kehitystä.
 - Tässä dokumentaatiomuutoksessa ei asenneta firmwarea, käynnistetä fyysistä ohjausta eikä yhdistetä PR #5–#7:ää.
 
 **Dokumentaation laatiminen ei merkitse L01–L25:n hyväksyntää tai V1:n kaupallista julkaisua.**
