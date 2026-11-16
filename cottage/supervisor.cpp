@@ -55,7 +55,10 @@ Decision supervise(const Parameters& p,const Health& h) {
     out.proposed_mode=ControlMode::NormalHeating;
     out.simulated_heat_16_c=out.observed_temperature_c<8.5 ||
         (h.pump.mode==ObservedPumpMode::Heat && out.observed_temperature_c<9.5);
-    out.reason=Reason::ForecastUnavailable;
+    out.reason=(h.plan.status==MpcStatus::Timeout ||
+        h.plan.status==MpcStatus::Cancelled ||
+        (h.mpc_ready && h.plan.status!=MpcStatus::Ok)) ?
+        Reason::MpcUnavailable : Reason::ForecastUnavailable;
     return out;
 }
 } // namespace enevina::cottage

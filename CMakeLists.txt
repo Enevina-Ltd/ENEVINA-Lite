@@ -27,3 +27,7 @@ target_link_libraries(cottage_safety_tests PRIVATE enevina_cottage)
 add_test(NAME cottage_safety_tests COMMAND cottage_safety_tests)
 add_executable(cottage_cli tools/cottage_cli.cpp)
 target_link_libraries(cottage_cli PRIVATE enevina_cottage)
+
+add_executable(cottage_deadline_tests tests/cottage_deadline_tests.cpp)
+target_link_libraries(cottage_deadline_tests PRIVATE enevina_cottage)
+add_test(NAME cottage_deadline_tests COMMAND cottage_deadline_tests)
