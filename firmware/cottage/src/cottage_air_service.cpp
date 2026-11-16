@@ -276,7 +276,8 @@ void c23_ble_worker(void*) {
     for(;;) {
         // BLE must not overlap the Nord Pool/FMI TLS handshake; the old
         // esp_get_free_heap_size() check included PSRAM and was insufficient.
-        enevina_firmware::NetworkBudgetLease lease(0,96*1024,24*1024);
+        enevina_firmware::NetworkBudgetLease lease(0,
+            ble_scan_min_internal_bytes,ble_scan_min_contiguous_bytes);
         if(lease.held()) {
             scan->start(4,false);
             enevina_firmware::network_budget_sample();
