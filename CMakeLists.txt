@@ -35,6 +35,9 @@ add_test(NAME optimizer_regression_tests COMMAND optimizer_regression_tests)
 add_executable(weather_cache_tests tests/weather_cache_tests.cpp)
 target_include_directories(weather_cache_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME weather_cache_tests COMMAND weather_cache_tests)
+add_executable(market_cache_tests tests/market_cache_tests.cpp)
+target_link_libraries(market_cache_tests PRIVATE enevina_core)
+add_test(NAME market_cache_tests COMMAND market_cache_tests)
 
 # Deterministic MPC timeout, cancellation and safe supervisor fallback.
 add_executable(cottage_deadline_tests tests/cottage_deadline_tests.cpp)

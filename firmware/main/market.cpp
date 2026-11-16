@@ -1,4 +1,5 @@
 #include "market.hpp"
+#include "market_cache.hpp"
 #include "forecast/sources.hpp"
 
 #include <algorithm>
@@ -23,14 +24,8 @@
 namespace enevina_firmware {
 namespace {
 constexpr char tag[]="enevina_market";
-constexpr size_t max_slots=200; // Two Finnish calendar days, including DST.
-constexpr uint32_t cache_version=1;
-struct PriceCache {
-    uint32_t version=cache_version;
-    uint32_t count=0;
-    int64_t fetched_utc=0;
-    std::array<enevina::MarketPrice,max_slots> prices{};
-};
+constexpr size_t max_slots=price_cache_max_slots;
+constexpr uint32_t cache_version=price_cache_version;
 PriceCache cache;
 SemaphoreHandle_t mutex=nullptr;
 
@@ -174,14 +169,20 @@ void poll_prices(void*) {
                 }
                 if(today_ok && valid_prices(*fresh)) {
                     xSemaphoreTake(mutex,portMAX_DELAY);
-                    const bool changed=!same_prices(cache,*fresh);
-                    cache=*fresh;
+                    // A successful today fetch is not proof that yesterday's
+                    // validated tomorrow prices have disappeared. Keep any
+                    // contiguous future tail if tomorrow is unavailable.
+                    preserve_future_price_tail(cache,*fresh);
+                    const bool accepted=valid_prices(*fresh);
+                    const bool changed=accepted && !same_prices(cache,*fresh);
+                    if(accepted) cache=*fresh;
                     xSemaphoreGive(mutex);
-                    // Polling is frequent, but flash is written only for new data.
-                    if(changed) save_cache(*fresh);
-                    updated=true;
-                    ESP_LOGI(tag,"validated %lu Finnish price slots",
+                    // Do not erase valid future prices from NVS on a partial fetch.
+                    if(accepted && changed) save_cache(*fresh);
+                    updated=accepted;
+                    if(accepted) ESP_LOGI(tag,"validated %lu Finnish price slots",
                         static_cast<unsigned long>(fresh->count));
+                    else ESP_LOGW(tag,"partial price refresh invalid; cache retained");
                 } else ESP_LOGW(tag,"price fetch incomplete; retaining validated cache");
                 delete fresh;
             }
