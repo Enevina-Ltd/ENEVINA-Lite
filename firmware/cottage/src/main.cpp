@@ -752,7 +752,8 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"mpc_worst_ms",worst);
     cJSON_AddNumberToObject(root,"optimized_utc",static_cast<double>(optimized));
     cJSON_AddNumberToObject(root,"free_heap",heap);
-    cJSON_AddNumberToObject(root,"free_psram",psram);
+    cJSON_AddNumberToObject(root,"free_psram",
+                            heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     cJSON_AddNumberToObject(root,"stack_free_bytes",stack);
     cJSON_AddStringToObject(root,"reason",reason);
     cJSON_AddNumberToObject(root,"bad_reads",failed_reads.load());
@@ -805,6 +806,8 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"network_budget_denials",
                             enevina_firmware::network_budget_denials());
     cJSON_AddBoolToObject(root,"ble_initialized",c23_ble_initialized());
+    cJSON_AddNumberToObject(root,"observed_min_largest_internal",
+                            enevina_firmware::network_budget_min_largest_internal());
     cJSON_AddNumberToObject(root,"sse_stack_free",
                             task_sse?uxTaskGetStackHighWaterMark(task_sse):0);
     cJSON_AddNumberToObject(root,"shelly_stack_free",
