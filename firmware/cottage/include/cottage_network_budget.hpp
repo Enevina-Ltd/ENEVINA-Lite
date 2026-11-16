@@ -12,6 +12,8 @@ bool network_budget_acquire(uint32_t wait_ms, size_t min_internal_bytes,
                             size_t min_contiguous_bytes);
 void network_budget_release();
 uint32_t network_budget_denials();
+void network_budget_sample();
+uint32_t network_budget_min_largest_internal();
 
 class NetworkBudgetLease final {
 public:
