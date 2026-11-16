@@ -908,6 +908,7 @@ static void prices_endpoint() {
     web.send(200,"application/json; charset=utf-8","");
     web.sendContent(count?"{\"valid\":true,\"slots\":[":"{\"valid\":false,\"slots\":[");
     char line[192];
+    size_t emitted=0;
     for(size_t i=0;i<count;++i) {
         const auto& price=points[i];
         if(!std::isfinite(price.spot_eur_per_kwh)) continue;
@@ -924,7 +925,7 @@ static void prices_endpoint() {
         else strlcpy(total_buf,"null",sizeof(total_buf));
         snprintf(line,sizeof(line),
             "%s{\"utc\":%lld,\"spot\":%.8f,\"total\":%s}",
-            i?",":"",static_cast<long long>(price.start_utc),
+            emitted++?",":"",static_cast<long long>(price.start_utc),
             price.spot_eur_per_kwh,total_buf);
         web.sendContent(line);
         if(i%16==15) delay(1);
