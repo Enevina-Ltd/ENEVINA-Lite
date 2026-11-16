@@ -28,6 +28,15 @@ add_test(NAME cottage_safety_tests COMMAND cottage_safety_tests)
 add_executable(cottage_cli tools/cottage_cli.cpp)
 target_link_libraries(cottage_cli PRIVATE enevina_cottage)
 
+# Platform-independent P0 regressions, including ESP weather-cache format.
+add_executable(optimizer_regression_tests tests/optimizer_regression_tests.cpp)
+target_link_libraries(optimizer_regression_tests PRIVATE enevina_core)
+add_test(NAME optimizer_regression_tests COMMAND optimizer_regression_tests)
+add_executable(weather_cache_tests tests/weather_cache_tests.cpp)
+target_include_directories(weather_cache_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME weather_cache_tests COMMAND weather_cache_tests)
+
+# Deterministic MPC timeout, cancellation and safe supervisor fallback.
 add_executable(cottage_deadline_tests tests/cottage_deadline_tests.cpp)
 target_link_libraries(cottage_deadline_tests PRIVATE enevina_cottage)
 add_test(NAME cottage_deadline_tests COMMAND cottage_deadline_tests)

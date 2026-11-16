@@ -131,36 +131,44 @@ OptimizeResult forward_exact(const Parameters& p, State initial,
         if (next.empty()) { result.status=OptimizeStatus::Infeasible; return result; }
         frontier.swap(next);
     }
-    size_t selected=0;
-    for (size_t i=1;i<frontier.size();++i)
-        if (frontier[i].cost<frontier[selected].cost) selected=i;
-    result.cost_eur=frontier[selected].cost;
-    result.count=count;
-    result.status=OptimizeStatus::Ok;
-    for (size_t t=count;t>0;--t) {
-        const Trace trace=traces[offsets[t-1]+selected];
-        result.actions[t-1]=actions(p,periods[t-1].outdoor_c)[trace.choice];
-        selected=trace.parent;
-    }
-    State verified=initial;
-    double verified_cost=0;
-    for(size_t t=0;t<count;++t) {
-        const Step step=advance(p,verified,periods[t],result.actions[t]);
-        if(!feasible(p,step.next)) {
-            result.status=OptimizeStatus::Infeasible;
-            result.count=0;
-            return result;
+    // Sort only the final frontier in-place: no terminal-index allocation.
+    // Earlier trace layers retain their original indices, and each final Node
+    // already carries its own predecessor and action.
+    std::sort(frontier.begin(),frontier.end(),[](const Node& a,const Node& b) {
+        if(a.cost!=b.cost) return a.cost<b.cost;
+        if(a.parent!=b.parent) return a.parent<b.parent;
+        return a.choice<b.choice;
+    });
+    for(const Node& terminal:frontier) {
+        OptimizeResult candidate{};
+        candidate.count=count;
+        candidate.actions[count-1]=actions(p,periods[count-1].outdoor_c)[terminal.choice];
+        size_t selected=terminal.parent;
+        for(size_t t=count-1;t>0;--t) {
+            const Trace trace=traces[offsets[t-1]+selected];
+            candidate.actions[t-1]=actions(p,periods[t-1].outdoor_c)[trace.choice];
+            selected=trace.parent;
         }
-        verified=step.next;
-        verified_cost+=step.cost_eur;
+        State verified=initial;
+        double verified_cost=0;
+        bool exact_feasible=true;
+        for(size_t t=0;t<count;++t) {
+            const Step step=advance(p,verified,periods[t],candidate.actions[t]);
+            if(!feasible(p,step.next)) {
+                exact_feasible=false;
+                break;
+            }
+            verified=step.next;
+            verified_cost+=step.cost_eur;
+        }
+        if(!exact_feasible || verified.indoor_c<initial.indoor_c-1e-7 ||
+           verified.tank_kwh<initial.tank_kwh-1e-7)
+            continue;
+        candidate.status=OptimizeStatus::Ok;
+        candidate.cost_eur=verified_cost;
+        return candidate;
     }
-    if(verified.indoor_c<initial.indoor_c-1e-7 ||
-       verified.tank_kwh<initial.tank_kwh-1e-7) {
-        result.status=OptimizeStatus::Infeasible;
-        result.count=0;
-        return result;
-    }
-    result.cost_eur=verified_cost;
+    result.status=OptimizeStatus::Infeasible;
     return result;
 }
 }
