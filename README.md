@@ -1,10 +1,10 @@
 # Enevina Lite
 
-**Yhden lämpöpumpun paikallinen optimointiohjain.**
+**Monimerkkinen, yhden lämpöpumpun paikallinen optimointiohjain.**
 
-Enevina Lite on Enevina Coresta erillinen, kevyt ohjain, jonka tavoitteena on minimoida lämpöpumpun lämmityskustannukset ja soveltuvilla laitteilla myös käyttöveden kustannukset turvallisesti. **Lite ei sisällä tekoälyä**, ei edellytä Home Assistantia eikä tarvitse Linuxia tai pilvipalvelua normaalissa käytössä.
+Enevina Lite on Enevina Coresta erillinen, valmistajariippumattoman ytimen ja mallikohtaisten adapterien varaan rakentuva kevyt ohjain, jonka tavoitteena on minimoida lämpöpumpun lämmityskustannukset ja soveltuvilla laitteilla myös käyttöveden kustannukset turvallisesti. **Lite ei sisällä tekoälyä**, ei edellytä Home Assistantia eikä tarvitse Linuxia tai pilvipalvelua normaalissa käytössä.
 
-> **Uusi ensimmäinen pilotti (16.11.2026):** pihamökin **Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA**. ESP32-S3 Wi-Fi + lokakuussa 2026 read-only-tilassa toiminut CN105; uusi Lite-kytkentä ja ohjauskomennot vielä testaamatta. Shelly Plus 1PM vain kulutusmittaukseen. Mökin tavoiteltu ylläpitolämpö noin +5 °C, ennakoiva turvamarginaali +8 °C; pumpun alin lämmityspyynti +16 °C, joten suunniteltu ohjaus on HEAT 16 °C / OFF. **Tämä ilma–ilmapumppu ei käytä menoveden tai käyttöveden optimointia.** Katso [pilottisuunnitelma](docs/cottage-mitsubishi-fd25va.md). Oikeaa laitetta ei vielä ohjata.
+> **Ensimmäinen pilotti, ei tuotteen valmistajarajaus (16.11.2026):** pihamökin **Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA**. ESP32-S3 Wi-Fi + lokakuussa 2026 read-only-tilassa toiminut CN105; uusi Lite-kytkentä ja ohjauskomennot vielä testaamatta. Shelly Plus 1PM vain kulutusmittaukseen. Mökin tavoiteltu ylläpitolämpö noin +5 °C, ennakoiva turvamarginaali +8 °C; pumpun alin lämmityspyynti +16 °C, joten suunniteltu ohjaus on HEAT 16 °C / OFF. **Tämä ilma–ilmapumppu ei käytä menoveden tai käyttöveden optimointia.** Katso [pilottisuunnitelma](docs/cottage-mitsubishi-fd25va.md). Oikeaa laitetta ei vielä ohjata.
 
 > Tila: PC:llä testattu G0-prototyyppi, fyysisellä ESP32-S3:lla mitattu laskentaydin ja ESP32-S3:lle kääntyvä **vain luku** -laiteohjelmisto. G0–G3-hyväksyntäportit ovat edelleen auki; tuotantolaitetta ei saa ohjata tällä versiolla.
 
@@ -46,18 +46,18 @@ Valittu kortti, pinout ja lähteet on kuvattu [laitemuistiossa](docs/hardware.md
 - Tilalämmityksen ja käyttöveden yhteinen optimointi, laiterajapinnan ja pumpun toimintarajojen sallimissa puitteissa.
 - Paikallinen selainkäyttöliittymä, konfiguroitavat lämpötilarajat, lokit ja OTA-päivitykset.
 - Paikallinen toiminta väliaikaisissa verkkokatkoissa; ennusteiden ja hintojen välimuisti.
-- Ensimmäinen todellinen kohde: Mitsubishi Electric FD25VA -ilmalämpöpumppu; Panasonic/HeishaMon ja muut merkit myöhempinä adaptereina.
+- Ensimmäinen todellinen kohde on Mitsubishi Electric FD25VA -ilmalämpöpumppu. Yhteinen ydin tukee mallikohtaista laajentamista esimerkiksi Panasonic/HeishaMoniin, NIBE/Modbusiin ja muihin dokumentoituihin paikallisiin rajapintoihin. Niiden yhteensopivuutta ei vielä ole varmennettu; langaton toiminta edellyttää kyseisen pumpun tai yhdyskäytävän soveltuvaa yhteyttä.
 
 ## Suunniteltu ohjelmistorakenne
 
 | Osa | Tehtävä |
 | --- | --- |
-| **PumpAdapter** | Mallikohtainen mittausten luku, kyvykkyydet ja turvalliset asetusarvokirjoitukset |
+| **PumpAdapter** | Valmistaja- ja mallikohtainen protokolla, mittaukset lähde- ja vastaanottoaikoineen, kyvykkyydet ja rajat; tulevat komennot kulkevat Supervisorin kautta vain erikseen hyväksyttynä |
 | **Forecast** | 15 min hintasarjat, sääennuste, puuttuvien tietojen käsittely |
 | **Physics** | Rakennuksen kevyt lämpömalli, lämpöpumpun COP- ja tehorajat, varaajan malli |
 | **Optimizer** | Rajausten mukainen ennakoiva ohjausaikataulu; ensin rajattu haku / dynaaminen optimointi |
 | **Supervisor** | Turvarajat, tietojen tuoreus, fail-safe, watchdog ja päivitysten valvonta |
-| **Web UI** | Paikalliset asetukset, tilatiedot ja optimoinnin selitys |
+| **Web UI** | Valmistajariippumaton paikallinen UI: merkki/malli, todelliset kyvykkyydet, mittausten laatu, hinnat, ennuste ja optimoinnin selitys |
 
 ## Optimoinnin periaatteet
 
