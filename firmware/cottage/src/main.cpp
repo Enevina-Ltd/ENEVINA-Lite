@@ -6,6 +6,7 @@
 #include <esp_task_wdt.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
+#include <esp_ota_ops.h>
 #include <cJSON.h>
 #include <array>
 #include <algorithm>
@@ -49,6 +50,9 @@ static uint32_t optimizer_ms=0;
 static uint32_t max_optimizer_ms=0;
 static size_t plan_count=0;
 static uint32_t free_heap=0,free_psram=0,stack_watermark=0;
+static uint32_t boot_validation_started_ms=0;
+static bool boot_ui_started=false;
+static bool ota_boot_confirmed=false;
 static std::atomic<uint32_t> failed_reads{0};
 static std::atomic<uint32_t> sse_connections{0},sse_disconnects{0};
 static std::atomic<uint32_t> sse_climate_events{0},sse_compressor_events{0};
@@ -79,6 +83,30 @@ static void* json_alloc_psram(size_t n) {
     return heap_caps_malloc(n,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
 }
 static void json_free_psram(void* p) {heap_caps_free(p);}
+// A/B OTA boot verification: no new image is confirmed immediately merely
+// because the bootloader reached setup(). With an ESP-IDF rollback-capable
+// bootloader, a boot failure or reset before confirmation falls back safely.
+static void verify_new_ota_boot() {
+    const esp_partition_t* running=esp_ota_get_running_partition();
+    esp_ota_img_states_t state=ESP_OTA_IMG_UNDEFINED;
+    if(!running || esp_ota_get_state_partition(running,&state)!=ESP_OK ||
+       state!=ESP_OTA_IMG_PENDING_VERIFY) return;
+    const uint32_t elapsed=millis()-boot_validation_started_ms;
+    if(elapsed<60000) return; // allow BLE, WebServer, RTOS to settle
+    const bool healthy=boot_ui_started && c23_ble_initialized() &&
+        ESP.getPsramSize()>=7*1024*1024 &&
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>=64*1024 &&
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>=16*1024 &&
+        task_sse!=nullptr && task_shelly!=nullptr && task_optimizer!=nullptr;
+    if(healthy) {
+        if(esp_ota_mark_app_valid_cancel_rollback()==ESP_OK)
+            ota_boot_confirmed=true;
+        else Serial.println("C24_OTA_ERROR: boot validation could not commit");
+    } else if(elapsed>120000) {
+        Serial.println("C24_OTA_REJECT: boot self-test failed; requesting rollback");
+        esp_ota_mark_app_invalid_rollback_and_reboot();
+    }
+}
 static bool clock_ok() {return time(nullptr)>1700000000;}
 static bool number(const cJSON* item,double& output,double min,double max) {
     if(!item) return false;
@@ -756,6 +784,16 @@ static void status_endpoint() {
                             static_cast<double>(weather.fetched_utc));
     cJSON_AddNumberToObject(root,"weather_points",weather.points);
     cJSON_AddNumberToObject(root,"uptime_ms",millis());
+    cJSON_AddStringToObject(root,"firmware_version","c2.4-dev");
+    const esp_partition_t* active=esp_ota_get_running_partition();
+    cJSON_AddStringToObject(root,"ota_partition",active?active->label:"unknown");
+    esp_ota_img_states_t image_state=ESP_OTA_IMG_UNDEFINED;
+    const bool has_ota_state=active &&
+        esp_ota_get_state_partition(active,&image_state)==ESP_OK;
+    cJSON_AddNumberToObject(root,"ota_image_state",
+                            has_ota_state?static_cast<int>(image_state):-1);
+    cJSON_AddBoolToObject(root,"ota_boot_confirmed",ota_boot_confirmed);
+    cJSON_AddBoolToObject(root,"ota_upload_enabled",false);
     cJSON_AddNumberToObject(root,"free_internal_heap",
                             heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(root,"min_free_internal_heap",
@@ -871,6 +909,8 @@ void setup() {
     c23_register_routes(web); // mode/config persistence, NO actuator writes
     web.onNotFound([](){web.send(404,"text/plain","Ei löydy");});
     web.begin();
+    boot_ui_started=true;
+    boot_validation_started_ms=millis();
     enableLoopWDT(); // Arduino ESP32 loop-task hardware watchdog.
     // Initialize BLE before starting memory-heavy HTTPS workers.
     xTaskCreatePinnedToCore(c23_ble_worker,"cottage_ruuvi",10240,nullptr,1,&task_ruuvi,0);
@@ -890,6 +930,7 @@ void loop() {
     wifi_ok.store(WiFi.status()==WL_CONNECTED);
     web_loop_heartbeat_ms.store(millis());
     web.handleClient();
+    verify_new_ota_boot();
     c23_tick(); // local BLE/mode/alarm history works with wifi=0
     // Serial evidence is useful during fully isolated cold-boot tests.
     // Never print access tokens, Wi-Fi passwords or raw device addresses.
