@@ -8,6 +8,7 @@
 #include <BLEAdvertisedDevice.h>
 #include <esp_task_wdt.h>
 #include <esp_timer.h>
+#include <esp_heap_caps.h>
 #include <cJSON.h>
 #include <array>
 #include <algorithm>
@@ -558,6 +559,12 @@ void setup() {
     Serial.begin(115200);
     lock_data=xSemaphoreCreateMutex();
     if(!lock_data) abort();
+    if(ESP.getPsramSize()<7*1024*1024) {
+        // Board calibration and firmware memory setup differ.
+        // This is a test-card firmware; refuse to start live readers.
+        Serial.println("C2_SHADOW_FATAL: expected >=7MB PSRAM unavailable");
+        while(true) { delay(1000); }
+    }
     setup_model();
     // Avoid device contact without explicit local configuration.
     WiFi.mode(WIFI_STA);
@@ -584,6 +591,27 @@ void loop() {
     wifi_ok.store(WiFi.status()==WL_CONNECTED);
     web_loop_heartbeat_ms.store(millis());
     web.handleClient();
+    // Serial evidence is useful during fully isolated cold-boot tests.
+    // Never print access tokens, Wi-Fi passwords or raw device addresses.
+    static uint32_t last_serial_ms=0;
+    if(static_cast<uint32_t>(millis()-last_serial_ms)>=30000u) {
+        last_serial_ms=millis();
+        CN105Telemetry cp;ShellyTelemetry sh;TemperatureSample temp;
+        size_t count=0;
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        cp=pump;sh=consumption;temp=temperature;count=plan_count;
+        xSemaphoreGive(lock_data);
+        const int64_t now=time(nullptr);
+        Serial.printf("C2_SHADOW wifi=%d clock=%d cn105=%d shelly=%d ble=%d "
+            "plan_slots=%u heap=%u psram=%u psram_total=%u internal_low=%u bad_reads=%u\n",
+            static_cast<int>(wifi_ok.load()),static_cast<int>(clock_ok()),
+            static_cast<int>(valid_cn105(cp,now)),
+            static_cast<int>(valid_shelly(sh,now)),
+            static_cast<int>(valid_temperature(temp,now)),
+            static_cast<unsigned>(count),ESP.getFreeHeap(),ESP.getFreePsram(),
+            ESP.getPsramSize(),heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+            static_cast<unsigned>(failed_reads.load()));
+    }
     delay(15);
 }
 

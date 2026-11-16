@@ -11,8 +11,10 @@ namespace {
 constexpr double quantum_c=0.10;
 constexpr uint16_t no_parent=65535;
 struct Node {
-    double objective=std::numeric_limits<double>::infinity();
-    double temperature=0;
+    // Search only: ESP32-S3 has hardware FP32 but software-emulated FP64.
+    // Final trajectory still uses double-precision physics::advance().
+    float objective=std::numeric_limits<float>::infinity();
+    float temperature=0;
 };
 size_t key(size_t bin, bool on, size_t age, size_t age_dimension) {
     return (bin*2+(on?1u:0u))*age_dimension+age;
@@ -46,11 +48,14 @@ MpcResult optimize(const Parameters& p, const State& initial,
     uint64_t last_tick=started;
     size_t checks=0,unchanged_ticks=0;
     auto check_interrupt=[&](bool force_clock=false)->MpcStatus {
+        // Poll both cancellation and monotonic deadline every 32
+        // expansions, and at every forced boundary. This preserves
+        // sub-millisecond cancellation latency at our bounded state
+        // count without performing a FreeRTOS/millis call per candidate.
+        if(!force_clock && (++checks%32)!=0) return MpcStatus::Ok;
         if(controls.cancel_requested &&
            controls.cancel_requested(controls.cancel_context))
             return MpcStatus::Cancelled;
-        // Check clock during expansion, not only between horizon slots.
-        if(!force_clock && (++checks%32)!=0) return MpcStatus::Ok;
         const uint64_t now=clock(controls.clock_context);
         // A backwards jump (including a wrapped 32-bit provider) fails closed.
         if(now<last_tick || now<started) return MpcStatus::Timeout;
@@ -94,13 +99,18 @@ MpcResult optimize(const Parameters& p, const State& initial,
     }
     const size_t states=bins*age_multiplier*age_dim;
     const size_t bytes_per_state=count*sizeof(uint16_t)+
-        2*sizeof(Node)+sizeof(uint16_t);
+        2*sizeof(Node)+3*sizeof(uint16_t); // terminal + 2 active frontiers
     if(states>=no_parent || states>memory_budget_bytes/bytes_per_state) {
         result.status=MpcStatus::ResourceLimit;
         return result;
     }
-    const auto bin_of=[&](double t)->size_t {
-        const auto b=static_cast<long>(std::lround((t-grid_min)/quantum_c));
+    const float grid_min_f=static_cast<float>(grid_min);
+    const float inverse_bin=1.0f/static_cast<float>(quantum_c);
+    const auto bin_of=[&](float t)->size_t {
+        // All admitted temperatures are >= critical_c > grid_min.
+        // Half-up rounding matches lround() for these nonnegative bins.
+        const float scaled=(t-grid_min_f)*inverse_bin;
+        const auto b=static_cast<long>(scaled+0.5f);
         return static_cast<size_t>(std::clamp(b,0L,static_cast<long>(bins-1)));
     };
     std::vector<Node> current(states), next(states);
@@ -109,27 +119,43 @@ MpcResult optimize(const Parameters& p, const State& initial,
         initial.minutes_in_mode/slot_minutes,age_max);
     const size_t first=representatives*key(bin_of(initial.indoor_c),
         initial.heat_requested,initial_age,age_dim);
-    current[first]={0.0,initial.indoor_c};
+    current[first]={0.0f,static_cast<float>(initial.indoor_c)};
+    // Traverse only reachable quantized states; a full-grid sweep
+    // was the dominant runtime cost for cold/price-spike 48h cases.
+    std::vector<uint16_t> active,next_active;
+    active.reserve(states);
+    next_active.reserve(states);
+    active.push_back(static_cast<uint16_t>(first));
     // State-independent physics precomputed once per forecast period.
     // Exact replay below still runs the unmodified advance() model.
-    const double alpha=std::exp(-p.loss_kw_per_c*slot_hours/
-                                p.thermal_mass_kwh_per_c);
-    const double beta=(1.0-alpha)/p.loss_kw_per_c;
-    const double startup_fraction=1.0-p.startup_delay_minutes/slot_minutes;
+    const double exact_alpha=std::exp(-p.loss_kw_per_c*slot_hours/
+                                      p.thermal_mass_kwh_per_c);
+    const float alpha=static_cast<float>(exact_alpha);
+    const float beta=static_cast<float>((1.0-exact_alpha)/p.loss_kw_per_c);
+    const float startup_fraction=static_cast<float>(
+        1.0-p.startup_delay_minutes/slot_minutes);
+    const float standby_heat=static_cast<float>(p.heat_standby_kw);
+    const float standby_off=static_cast<float>(p.off_standby_kw);
+    const float startup_electric=static_cast<float>(p.startup_electric_kwh);
+    const float switching_penalty=static_cast<float>(p.switching_penalty_eur);
+    const float search_min=static_cast<float>(min_c);
+    const float search_max=static_cast<float>(p.maximum_indoor_c);
     for(size_t t=0;t<count;t++) {
         if(const auto stop=check_interrupt(true);stop!=MpcStatus::Ok)
             return interrupted(stop);
         const auto& period=periods[t];
-        const double input=period.outdoor_c*(1.0-alpha) +
-            beta*period.internal_gain_kw;
-        const double thermal_max=heat_capacity_kw(p,period.outdoor_c) *
-            period.defrost_capacity_factor;
-        const double thermal_to_electric=slot_hours/
-            heat_cop(p,period.outdoor_c);
-        const double price=period.total_price_eur_per_kwh;
+        const float input=static_cast<float>(period.outdoor_c)*(1.0f-alpha) +
+            beta*static_cast<float>(period.internal_gain_kw);
+        const float thermal_max=static_cast<float>(
+            heat_capacity_kw(p,period.outdoor_c)*period.defrost_capacity_factor);
+        const float thermal_to_electric=static_cast<float>(
+            slot_hours/heat_cop(p,period.outdoor_c));
+        const float price=static_cast<float>(period.total_price_eur_per_kwh);
         std::fill(next.begin(),next.end(),Node{});
+        next_active.clear();
         bool any=false;
-        for(size_t from=0;from<states;from++) {
+        for(const uint16_t from_index:active) {
+            const size_t from=from_index;
             if(const auto stop=check_interrupt();stop!=MpcStatus::Ok)
                 return interrupted(stop);
             const Node node=current[from];
@@ -144,57 +170,66 @@ MpcResult optimize(const Parameters& p, const State& initial,
                 const bool changed=on!=prior_on;
                 if(changed && age<(prior_on?min_on:min_off)) continue;
                 const bool starting=on && !prior_on;
-                double thermal=on ? thermal_max*(starting?startup_fraction:1.0) : 0;
-                if(on && node.temperature>=16.0) thermal=0;
-                else if(on && node.temperature>15.5)
-                    thermal*=(16.0-node.temperature)/0.5;
-                const double temp=alpha*node.temperature+input+beta*thermal;
+                float thermal=on ? thermal_max*(starting?startup_fraction:1.0f) : 0.0f;
+                if(on && node.temperature>=16.0f) thermal=0.0f;
+                else if(on && node.temperature>15.5f)
+                    thermal*=(16.0f-node.temperature)/0.5f;
+                const float temp=alpha*node.temperature+input+beta*thermal;
+                // Small FP32 search tolerance only. Exact FP64 replay below
+                // rejects out-of-bounds candidates before returning Ok.
                 if(!std::isfinite(temp) ||
-                   temp<min_c-1e-9 || temp>p.maximum_indoor_c+1e-9)
+                   temp<search_min-1e-4f || temp>search_max+1e-4f)
                     continue;
                 const size_t new_age=changed?1:std::min(age+1,age_max);
                 const size_t to=representatives*key(bin_of(temp),on,new_age,age_dim);
-                const double electricity=slot_hours *
-                    (on?p.heat_standby_kw:p.off_standby_kw) +
-                    (on?thermal*thermal_to_electric:0.0) +
-                    (starting?p.startup_electric_kwh:0.0);
-                const double objective=node.objective+electricity*price+
-                    (changed?p.switching_penalty_eur:0.0);
+                const float electricity=static_cast<float>(slot_hours) *
+                    (on?standby_heat:standby_off) +
+                    (on?thermal*thermal_to_electric:0.0f) +
+                    (starting?startup_electric:0.0f);
+                const float objective=node.objective+electricity*price+
+                    (changed?switching_penalty:0.0f);
                 if(!std::isfinite(objective)) continue;
                 auto retain=[&](size_t slot) {
+                    if(!std::isfinite(next[slot].objective))
+                        next_active.push_back(static_cast<uint16_t>(slot));
                     next[slot]={objective,temp};
                     parent[t*states+slot]=static_cast<uint16_t>(from);
                     any=true;
                 };
                 // The first slot prioritizes cost; temperature breaks ties.
                 if(!std::isfinite(next[to].objective) ||
-                   objective<next[to].objective-1e-10 ||
-                   (std::abs(objective-next[to].objective)<=1e-10 &&
+                   objective<next[to].objective-1e-6f ||
+                   (std::abs(objective-next[to].objective)<=1e-6f &&
                     temp>next[to].temperature))
                     retain(to);
                 // The second slot prioritizes a feasible thermal margin,
                 // breaking equal temperatures by the lower objective.
                 if(!std::isfinite(next[to+1].objective) ||
-                   temp>next[to+1].temperature+1e-10 ||
-                   (std::abs(temp-next[to+1].temperature)<=1e-10 &&
-                    objective<next[to+1].objective-1e-10))
+                   temp>next[to+1].temperature+1e-5f ||
+                   (std::abs(temp-next[to+1].temperature)<=1e-5f &&
+                    objective<next[to+1].objective-1e-6f))
                     retain(to+1);
             }
         }
         if(const auto stop=check_interrupt(true);stop!=MpcStatus::Ok)
             return interrupted(stop);
         if(!any) {result.status=MpcStatus::Infeasible;return result;}
+        // Preserve the original ascending-index visit order so all DP
+        // tie breaks (and therefore benchmark costs) remain identical.
+        std::sort(next_active.begin(),next_active.end());
         current.swap(next);
+        active.swap(next_active);
     }
     const double end_min=std::max(min_c,initial.indoor_c)-1e-8;
+    const float search_end_min=static_cast<float>(end_min)-1e-4f;
     std::vector<uint16_t> terminals;
     terminals.reserve(states);
-    for(size_t i=0;i<states;i++) {
+    for(const uint16_t i:active) {
         if(const auto stop=check_interrupt();stop!=MpcStatus::Ok)
             return interrupted(stop);
         if(std::isfinite(current[i].objective) &&
-           current[i].temperature>=end_min)
-            terminals.push_back(static_cast<uint16_t>(i));
+           current[i].temperature>=search_end_min)
+            terminals.push_back(i);
     }
     if(terminals.empty()) {result.status=MpcStatus::Infeasible;return result;}
     std::sort(terminals.begin(),terminals.end(),[&](uint16_t a,uint16_t b) {
