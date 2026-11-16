@@ -8,3 +8,4 @@
 #include "../../../forecast/pricing.cpp"
 #include "../../../forecast/sources.cpp"
 #include "../../../forecast/fmi.cpp"
+#include "../../../cottage/url_guard.cpp"

@@ -48,6 +48,11 @@ actuator write command exists in code.
 - Supervisor and telemetry: stale/malformed readings, watchdog failure,
   low-temperature safety recommendation, no physical write permissions
   — **PASS** on Linux PC. Simulated command output is not a transport.
+- **Misconfiguration guard**: a native C++ allowlist rejects any CN105
+  path other than exact GET `/events` and any Shelly base with a path,
+  query, userinfo, fragment or non-HTTP scheme. Redirect following is
+  explicitly disabled. URL guard test suite: **PASS**. This prevents an
+  accidentally configured `Switch.Set` GET path from reaching a relay.
 - `CottageForecast`/Ruuvi: 192 UTC slots across Finnish DST, negative spot,
   VAT and marginal costs, price gaps, stale dates, NaNs, RAWv5 temperature
   and unavailable measurement sentinel — **PASS** on Linux PC.
@@ -66,7 +71,7 @@ actuator write command exists in code.
   targeted algorithmic optimization; no costs or constraints changed.
 - ESP32-S3 PlatformIO **compile and link PASS**. Arduino ESP32 2.0.17,
   platform espressif32 7.0.1, 16 MB flash and OPI PSRAM selected; RAM
-  static utilization ~59,972 B; flash static utilization ~959,105 B.
+  static utilization ~59,972 B; flash static utilization ~980,985 B after safety URL allowlist.
   **These build values are not a physical ESP32 peak-memory or timing test.**
 - Prior C1 verified CN105 SSE and Shelly RPC GET on the live LAN
   (see [C1 evidence](C1-cottage-probe.md)). No commands were transmitted.
@@ -160,3 +165,15 @@ Physical bench install affected **only** a USB-connected development
 ESP32-S3. The working cottage CN105 bridge and Shelly were not flashed,
 configured or sent commands. Source-level write suppression is still
 not a substitute for C3's independent fail-safe hardware verification.
+
+
+## Current source-level hardening
+
+The firmware now validates CN105/Shelly URLs against an exact allowlist,
+disables redirects and uses a web-loop heartbeat in the supervisor.
+Arduino `enableLoopWDT()` is compiled for the Wi-Fi firmware. The watchdog
+and failover behavior have **not** been verified on the full, connected
+firmware; the serial bench ran a distinct minimal build.
+
+The full firmware was recompiled after these changes: PASS; approximately
+60,076 B static RAM and 980,985 B flash reported by the build system.

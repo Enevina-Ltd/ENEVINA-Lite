@@ -24,6 +24,7 @@
 #include "cottage/supervisor.hpp"
 #include "cottage/forecast_bridge.hpp"
 #include "cottage/ruuvi.hpp"
+#include "cottage/url_guard.hpp"
 #include "../../main/market.hpp"
 #include "../../main/weather.hpp"
 
@@ -77,6 +78,7 @@ static bool get_http(const char* url,String& result,unsigned timeout_ms=4000) {
     if(!url||strncmp(url,"http://",7)!=0||WiFi.status()!=WL_CONNECTED) return false;
     WiFiClient client;
     HTTPClient request;
+    request.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     request.setTimeout(timeout_ms);
     request.setConnectTimeout(1500);
     if(!request.begin(client,url)) return false;
@@ -128,13 +130,13 @@ static void parse_sse_state(const char* raw) {
 }
 static void sse_worker(void*) {
     for(;;) {
-        if(!wifi_ok.load() || !clock_ok() || !strlen(COTTAGE_CN105_URL) ||
-           strncmp(COTTAGE_CN105_URL,"http://",7)!=0) {
+        if(!wifi_ok.load() || !clock_ok() || !valid_cn105_events_url(COTTAGE_CN105_URL)) {
             vTaskDelay(pdMS_TO_TICKS(1000));continue;
         }
         WiFiClient client;
         HTTPClient request;
         request.setConnectTimeout(2000);
+        request.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
         request.setTimeout(2500);
         if(request.begin(client,COTTAGE_CN105_URL) && request.GET()==200) {
             WiFiClient* stream=request.getStreamPtr();
@@ -175,8 +177,8 @@ static void shelly_worker(void*) {
     char url[192];
     snprintf(url,sizeof(url),"%s/rpc/Switch.GetStatus?id=0",COTTAGE_SHELLY_URL);
     for(;;) {
-        if(wifi_ok.load() && clock_ok() && strlen(COTTAGE_SHELLY_URL)>0 &&
-           strncmp(COTTAGE_SHELLY_URL,"http://",7)==0) {
+        if(wifi_ok.load() && clock_ok() &&
+           valid_shelly_base_url(COTTAGE_SHELLY_URL)) {
             String body;
             if(get_http(url,body)) {
                 cJSON* root=cJSON_Parse(body.c_str());
