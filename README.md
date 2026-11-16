@@ -102,3 +102,25 @@ The **default** synthetic-physics flag is 0, which *disables computed price plan
 until the installation has a validated thermal model and independent temperature
 sensor. Enabling the test model on a separate bench must not be mistaken for
 calibrated safety or economic results.
+
+## Mitsubishi C2.3: RuuviTag ja pihamökin kuivanapidon varjotila
+
+[**C2.3 käyttö-, turvallisuus- ja testiraportti**](docs/C2_3_RUUVI_HUMIDITY_2026-11-16.md).
+
+C2.3 lisää erillisen RuuviTag RAWv2 (Data Format 5) BLE-anturisidonnan,
+lämpö-/RH-/paine-/paristo-/RSSI-mittaukset, kastepisteen ja absoluuttisen
+kosteuden, viikon tuntihistorian sekä Kylmillään-, Kuivanapito- ja
+Ylläpitolämpö-laskentatilat. Valinta on **vain simulointiasetus**. +12 °C:n
+suunnittelutavoitetta ei lähetetä Mitsubishiin, jonka normaali alin
+lämmitysasetus on +16 °C. Ei CN105-kirjoituksia eikä Shelly-releen
+kirjoituksia.
+
+Erillisen ESP32-S3:n firmware: \`firmware/cottage\`. Paikallisen
+\`cottage_local_config.hpp\`-tiedoston MAC- ja Wi-Fi-tiedot eivät kuulu
+GitHubiin. Sensori voidaan sitoa paikallisesta sivusta vasta, kun anturin
+tunniste on fyysisesti tarkistettu. BLE-keruu ja kuivanapidon
+laskenta toimivat myös ilman Wi-Fiä, mutta ilman UTC-aikaa
+historia on vain käynnistyshetkestä laskettua RAM-historiaa.
+
+**24 h C2.2-laitevakauskoe jätettiin koskematta**; C2.3 ristiinkäännettiin,
+mutta sitä ei flashattu kortille tämän kokeen aikana.

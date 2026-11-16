@@ -3,9 +3,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
-#include <BLEDevice.h>
-#include <BLEScan.h>
-#include <BLEAdvertisedDevice.h>
 #include <esp_task_wdt.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
@@ -20,6 +17,7 @@
 #include <cstring>
 #include <string>
 #include "cottage_config.hpp"
+#include "cottage_air_service.hpp"
 #include "cottage/physics.hpp"
 #include "cottage/mpc.hpp"
 #include "cottage/telemetry.hpp"
@@ -261,35 +259,6 @@ static void shelly_worker(void*) {
         vTaskDelay(pdMS_TO_TICKS(15000));
     }
 }
-class RuuviCollector final : public BLEAdvertisedDeviceCallbacks {
-    void onResult(BLEAdvertisedDevice scanned) override {
-        if(!strlen(COTTAGE_RUUVI_MAC))return;
-        std::string mac=scanned.getAddress().toString();
-        if(strcasecmp(mac.c_str(),COTTAGE_RUUVI_MAC)!=0 ||
-           !scanned.haveManufacturerData())return;
-        std::string payload=scanned.getManufacturerData();
-        double t=0;
-        if(decode_ruuvi_rawv5_temperature(
-            reinterpret_cast<const uint8_t*>(payload.data()),payload.size(),t) &&
-            clock_ok()) {
-            const TemperatureSample sample{true,time(nullptr),t};
-            xSemaphoreTake(lock_data,portMAX_DELAY);temperature=sample;
-            xSemaphoreGive(lock_data);
-        }
-    }
-};
-static void ruuvi_worker(void*) {
-    if(!strlen(COTTAGE_RUUVI_MAC)) {vTaskDelete(nullptr);return;}
-    BLEDevice::init("EnevinaLiteShadow");
-    BLEScan* scan=BLEDevice::getScan();
-    scan->setAdvertisedDeviceCallbacks(new RuuviCollector(),false);
-    scan->setActiveScan(false);
-    while(true) {
-        scan->start(4,false);
-        scan->clearResults();
-        vTaskDelay(pdMS_TO_TICKS(12000));
-    }
-}
 static enevina::Tariff tariff(bool night=false) {
     enevina::Tariff t;
     t.margin_eur_per_kwh=COTTAGE_SPOT_MARGIN;
@@ -318,11 +287,12 @@ static void optimizer_worker(void*) {
             CN105Telemetry cp;TemperatureSample ts;
             unsigned observed_mode_minutes=0;
             xSemaphoreTake(lock_data,portMAX_DELAY);
-            cp=pump;ts=temperature;
+            cp=pump;
             observed_mode_minutes=observed_mode_duration.minutes(
                 cp.mode,static_cast<uint64_t>(esp_timer_get_time()/1000),
                 valid_cn105(cp,now));
             xSemaphoreGive(lock_data);
+            ts=c23_temperature_sample();
             const auto ms=enevina_firmware::market_status();
             const auto ws=enevina_firmware::weather_status();
             const size_t pc=enevina_firmware::future_prices(prices,200);
@@ -487,7 +457,203 @@ for(let v of [new Date(x.utc*1000).toLocaleString('fi-FI',{timeZone:'Europe/Hels
 x.heat?'HEAT 16 °C':'OFF',x.indoor_c.toFixed(2),x.kwh.toFixed(3),x.eur.toFixed(3)])
 {let td=document.createElement('td');td.textContent=v;tr.append(td)}return tr}));
 }catch(e){document.querySelector('#reason').textContent='Selain ei saa mittauksia'}}
-refresh();setInterval(refresh,15000);</script></main></html>)HTML";
+refresh();setInterval(refresh,15000);</script>
+<section id="air-panel">
+<h2>Pihamökki – sisäilma ja kuivanapito</h2>
+<p class="notice"><strong>VAIN VARJOTILA</strong> – tila tai tavoite ei ohjaa Mitsubishiä.
++16 °C on pumpun normaali alin lämmitysasetus. Rakenteen kosteus- tai
+jäätymisturvallisuutta ei voi vahvistaa pelkällä huoneilman anturilla.</p>
+<dl id="air-metrics"><dt>RuuviTag</dt><dd>Ei mittausta</dd></dl>
+<h3>Toimintatila – vain laskenta</h3>
+<form id="air-config">
+<label for="air-mode">Toimintatila</label>
+<select id="air-mode"><option value="0">Kylmillään</option>
+<option value="1">Kuivanapito</option><option value="2">Ylläpitolämpö</option></select>
+<label for="air-hold">Ylläpitolämmön tavoite °C</label>
+<input id="air-hold" type="number" step="0.5" min="5" max="24" value="12">
+<label for="air-delta">Kuivanapidon ulkolämpötilaero °C (kokeellinen)</label>
+<input id="air-delta" type="number" step="0.5" min="3" max="5" value="4">
+<button type="submit">Tallenna laskennallinen tila</button>
+</form>
+<p id="air-mode-status">Ei laskennallista ohjausta</p>
+<h3>RuuviTagin tunnistus ja sitominen</h3>
+<p>Anturin tunnistetta ei valita automaattisesti. Varmista fyysisesti,
+että tunniste on juuri pihamökin anturista. Sitominen tallentuu
+vain tähän laitteeseen; muut anturit hylätään.</p>
+<form id="air-bond"><label for="air-role">Anturi</label>
+<select id="air-role"><option value="indoor">Mökin sisäilma</option>
+<option value="outdoor">Vapaaehtoinen ulkoilma</option></select>
+<label for="air-mac">Ruuvi RAWv2 MAC (XX:XX:XX:XX:XX:XX) tai "none"</label>
+<input id="air-mac" type="text" maxlength="17" autocomplete="off" placeholder="XX:XX:XX:XX:XX:XX">
+<button type="submit">Sido anturi varjotilaan</button></form>
+<p id="air-settings-status"></p>
+<h3>Kosteuden seuranta ja hälytykset</h3>
+<form id="air-thresholds">
+<label for="air-rh70">Pitkän RH-seurannan raja % (6 tuntia)</label>
+<input type="number" min="55" max="80" step="1" id="air-rh70" value="70">
+<label for="air-rh80">Korkean RH:n tarkistushälytys % (24 tuntia)</label>
+<input type="number" min="75" max="95" step="1" id="air-rh80" value="80">
+<label for="air-battery">Paristojännitteen varoitusraja V</label>
+<input type="number" min="2.0" max="3.2" step="0.05" id="air-battery" value="2.5">
+<button type="submit">Tallenna varoitusrajat</button></form>
+<ul id="air-alerts"><li>Ei mittausta</li></ul>
+<small>70 % / 80 % RH ovat suuntaa-antavia pitkäaikaisseurannan rajoja,
+eivät yleispäteviä rakenteen home- tai kondensaatiorajoja.
+Lämmittäminen ei korvaa ilmanvaihtoa.</small>
+<h3>Mittaus- ja tapahtumahistoria</h3>
+<div style="overflow-x:auto"><table><thead><tr><th>Aika</th><th>°C</th>
+<th>RH %</th><th>Kaste °C</th><th>g/m³</th></tr></thead>
+<tbody id="air-history"></tbody></table></div>
+<ul id="air-events"></ul>
+</section>
+<style>
+#air-panel form{display:grid;gap:9px;max-width:430px;margin:12px 0 24px}
+#air-panel input,#air-panel select,#air-panel button{
+ font:inherit;min-height:42px;padding:7px;border-radius:7px;border:1px solid #7c948b}
+#air-panel button{background:#e7f3ea;cursor:pointer}
+#air-panel ul{padding-left:23px}
+</style>
+<script>
+let c23token='',c23initialized=false,c23lastHistory=0;
+const fmt2=v=>typeof v==='number' && Number.isFinite(v)?v.toFixed(2):'Ei mittausta';
+const airNames=['Pitkä RH >70 %','RH >80 % pitkään plusasteissa',
+'RuuviTag ei ole tuore','RuuviTag-paristo heikko','Sisäilma pakkasen puolella'];
+const modes=['Kylmillään','Kuivanapito','Ylläpitolämpö'];
+const notes=['Ei lämmitystä','Anturi puuttuu tai ei tuore','RH:n pitkäaikaisseurantaa',
+'Mahdollinen kuivanapidon tarve','Laskennallinen lämmitystarve',
+'Alle 16 °C ei toteudu pumpun suoralla asetuksella',
+'Ulkolämpötila puuttuu; kuivanapidon tavoite ei kelpaa'];
+async function airPost(url,fields){
+ const body=new URLSearchParams({...fields,token:c23token});
+ const result=await fetch(url,{method:'POST',
+ headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
+ if(!result.ok)throw Error('Virhe '+result.status);
+ return result.json();
+}
+document.getElementById('air-config').addEventListener('submit',async e=>{
+ e.preventDefault();
+ try{
+ await airPost('/api/air/config',{
+ mode:document.getElementById('air-mode').value,
+ hold:document.getElementById('air-hold').value,
+ delta:document.getElementById('air-delta').value});
+ document.getElementById('air-settings-status').textContent='Laskennallinen tila tallennettu. Ei laiteohjausta.';
+ }catch(err){document.getElementById('air-settings-status').textContent=err.message;}
+});
+document.getElementById('air-thresholds').addEventListener('submit',async e=>{
+ e.preventDefault();
+ try{
+ await airPost('/api/air/thresholds',{
+ rh70:document.getElementById('air-rh70').value,
+ rh80:document.getElementById('air-rh80').value,
+ battery:document.getElementById('air-battery').value});
+ document.getElementById('air-settings-status').textContent='Seurantakynnykset tallennettu, ei ohjausta.';
+ }catch(err){document.getElementById('air-settings-status').textContent=err.message;}
+});
+document.getElementById('air-bond').addEventListener('submit',async e=>{
+ e.preventDefault();
+ try{
+ await airPost('/api/air/bind',{
+ which:document.getElementById('air-role').value,
+ mac:document.getElementById('air-mac').value.trim()});
+ document.getElementById('air-settings-status').textContent='Anturisidonta tallennettu; odotetaan tuoretta mittausta.';
+ }catch(err){document.getElementById('air-settings-status').textContent=err.message;}
+});
+async function airRefresh(){
+ try{
+ const s=await (await fetch('/api/status',{cache:'no-store'})).json();
+ const a=s.air;if(!a)return;
+ c23token=a.config_token||'';
+ if(!c23initialized){
+ document.getElementById('air-mode').value=String(a.mode);
+ document.getElementById('air-hold').value=a.hold_target_c;
+ document.getElementById('air-delta').value=a.drying_delta_c;
+ document.getElementById('air-rh70').value=a.warning_rh70;
+ document.getElementById('air-rh80').value=a.warning_rh80;
+ document.getElementById('air-battery').value=a.warning_battery_v;
+ c23initialized=true;
+ }
+ const rows=[
+ ['Tila (laskennallinen)',modes[a.mode]||'Tuntematon'],
+ ['Sidottu RuuviTag',a.bound_mac||'Ei sidottua anturia'],
+ ['Läheltä löytynyt RuuviTag',a.discovered_mac||'Ei havaintoa'],
+ ['Anturi tuore',a.sensor_fresh],
+ ['Viimeisen mittauksen ikä s',fmt2(a.age_s)],
+ ['Lämpötila °C',fmt2(a.temperature_c)],['RH %',fmt2(a.rh_pct)],
+ ['Kastepiste °C',fmt2(a.dewpoint_c)],
+ ['Absoluuttinen kosteus g/m³',fmt2(a.absolute_gm3)],
+ ['Vesihöyryn osapaine Pa',fmt2(a.vapour_pressure_pa)],
+ ['Ilmanpaine Pa',fmt2(a.pressure_pa)],
+ ['Paristojännite V',fmt2(a.battery_v)],
+ ['BLE-signaali dBm',fmt2(a.rssi_dbm)],
+ ['Ulkolämpötila °C',fmt2(a.outside_temperature_c)],
+ ['Ulkolämpötila lähde',a.outside_temp_source==='FMI_FORECAST'?'FMI:n ennuste':
+ a.outside_temp_source==='RUUVI_RAWV2'?'Erillinen RuuviTag':'Puuttuu'],
+ ['Ulkoanturi RH %',fmt2(a.outside_rh_pct)],
+ ['Sisä–ulko °C',fmt2(a.inside_outside_c)],
+ ['Sisä–ulko kosteus g/m³',fmt2(a.drying_potential_gm3)],
+ ['Mahdollinen tuuletuksen kuivauspotentiaali',a.outside_sensor_fresh?
+   (a.possible_ventilation_drying?'Suuntaa-antavasti kyllä':'Ei osoitettua potentiaalia'):'Ulko-RH puuttuu'],
+ ['RH:n 6 h muutos, prosenttiyksikköä',fmt2(a.rh_6h_change_pct)],
+ ['Absoluuttisen kosteuden 6 h muutos g/m³',fmt2(a.absolute_6h_change_gm3)],
+ ['RH yli 70 % yhtäjaksoisesti h',fmt2(a.rh70_duration_h)],
+ ['RH yli 80 % yhtäjaksoisesti h',fmt2(a.rh80_duration_h)],
+ ['Hyväksytyt/duplikaatit/hylätyt',a.sample_count+'/'+a.duplicate_count+'/'+a.rejected_count],
+ ['Tuntihistorian pisteet',a.history_hours],['NVS-tallennukset',a.nvs_checkpoints],
+ ['Alhaisen heapin takia väliin jääneet BLE-skannaukset',a.low_heap_scan_skips]];
+ document.getElementById('air-metrics').replaceChildren(...rows.flatMap(([key,val])=>{
+ let dt=document.createElement('dt'),dd=document.createElement('dd');
+ dt.textContent=key;dd.textContent=val===null||val===undefined?'Ei mittausta':String(val);
+ return [dt,dd]}));
+ const target=a.target_available?fmt2(a.target_c)+' °C':'Ei kelvollista tavoitetta';
+ document.getElementById('air-mode-status').textContent=
+ 'Laskettu tavoite: '+target+'. '+(notes[a.advisory]||'')+
+ '. Lämmitystarvearvio: '+(a.advisory_heat_needed?'kyllä':'ei')+
+ '. Todellinen pumpun tila: '+(s.pump_mode||'ei tietoa')+
+ '. '+(a.target_below_16?'Tavoite alle +16 °C ei ole suora Mitsubishi-asetus. ':'')+
+ 'Vain varjotila; fyysisiä ohjauksia ei ole.';
+ const alerts=document.getElementById('air-alerts');
+ alerts.replaceChildren();
+ for(const item of a.alerts||[]){
+ if(!item.active)continue;
+ const li=document.createElement('li');
+ li.textContent=(airNames[item.kind]||'Hälytys')+(item.ack?' (kuitattu)':' (aktiivinen) ');
+ if(!item.ack){
+ const button=document.createElement('button');button.textContent='Kuittaa';
+ button.addEventListener('click',async()=>{
+ try{await airPost('/api/air/ack',{alert:String(item.kind)});airRefresh();}
+ catch(err){document.getElementById('air-settings-status').textContent=err.message;}});
+ li.appendChild(button);}
+ alerts.appendChild(li);
+ }
+ if(!alerts.children.length){const li=document.createElement('li');
+ li.textContent='Ei aktiivisia hälytyksiä; tämä ei todista rakenteen turvallisuutta.';
+ alerts.appendChild(li);}
+ const log=document.getElementById('air-events');
+ log.replaceChildren(...(a.events||[]).slice(0,8).map(item=>{
+ const li=document.createElement('li');
+ li.textContent=(item.ts_utc?new Date(item.ts_utc*1000).toLocaleString('fi-FI'):'Aika ei synkronoitu')+
+ ' · tapahtumatyyppi '+item.kind+' / '+item.code;
+ return li;}));
+ if(Date.now()-c23lastHistory>60000){
+ c23lastHistory=Date.now();
+ const h=await(await fetch('/api/air/history',{cache:'no-store'})).json();
+ const tbody=document.getElementById('air-history');tbody.replaceChildren();
+ for(const entry of (h.hours||[]).slice(-48)){
+ const tr=document.createElement('tr');
+ const hour=entry.clock_valid?
+ new Date(entry.hour*3600000).toLocaleString('fi-FI'):
+ 'Käynnistyksen tunti '+(entry.hour-2147483648);
+ for(const value of [hour,fmt2(entry.temp),fmt2(entry.rh),fmt2(entry.dew),fmt2(entry.abs)]){
+ const td=document.createElement('td');td.textContent=value;tr.appendChild(td);}
+ tbody.appendChild(tr);}
+ }
+ }catch(err){
+ document.getElementById('air-settings-status').textContent='Sisäilman tilaa ei saada: '+err.message;
+ }
+}
+airRefresh();setInterval(airRefresh,15000);
+</script></main></html>)HTML";
 static void status_endpoint() {
     CN105Telemetry cp;ShellyTelemetry st;TemperatureSample te;
     BridgeStatus bs;MpcResult plan;Decision current_safety;
@@ -497,7 +663,7 @@ static void status_endpoint() {
     char reason[80];
     uint32_t ms,worst,heap,psram,stack;
     xSemaphoreTake(lock_data,portMAX_DELAY);
-    cp=pump;st=consumption;te=temperature;bs=bridge_status;
+    cp=pump;st=consumption;/* C2.3 temperature read outside lock */bs=bridge_status;
     relay_on=shelly_relay_on;
     current_safety=safety;
     climate_time=climate_utc;
@@ -509,6 +675,7 @@ static void status_endpoint() {
     ms=optimizer_ms;worst=max_optimizer_ms;heap=free_heap;psram=free_psram;
     stack=stack_watermark;
     xSemaphoreGive(lock_data);
+    te=c23_temperature_sample();
     const int64_t now=time(nullptr);
     const auto price=enevina_firmware::market_status();
     const auto weather=enevina_firmware::weather_status();
@@ -598,6 +765,7 @@ static void status_endpoint() {
                             task_optimizer?uxTaskGetStackHighWaterMark(task_optimizer):0);
     if(WiFi.status()==WL_CONNECTED)cJSON_AddNumberToObject(root,"wifi_rssi_dbm",WiFi.RSSI());
     else cJSON_AddNullToObject(root,"wifi_rssi_dbm");
+    c23_append_status(root);
     char* serialized=cJSON_PrintUnformatted(root);
     web.sendHeader("Cache-Control","no-store");
     web.send(200,"application/json; charset=utf-8",serialized?serialized:"{}");
@@ -609,10 +777,11 @@ static void plan_endpoint() {
     const size_t n=plan_count;
     const int64_t computed_utc=last_optimized_utc;
     const CN105Telemetry cp=pump;
-    const TemperatureSample ts=temperature;
+    // The independent Ruuvi sample is acquired outside the main mutex.
     std::unique_ptr<Row[]> rows(new(std::nothrow) Row[max_horizon_slots]);
     if(rows) std::copy(plan_rows.begin(),plan_rows.end(),rows.get());
     xSemaphoreGive(lock_data);
+    const TemperatureSample ts=c23_temperature_sample();
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.sendHeader("Cache-Control","no-store");
     web.send(200,"application/json; charset=utf-8","");
@@ -668,6 +837,7 @@ void setup() {
         while(true) { delay(1000); }
     }
     setup_model();
+    c23_initialize(); // NVS mode + persistent explicit Ruuvi bonding
     // Avoid device contact without explicit local configuration.
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
@@ -678,6 +848,7 @@ void setup() {
     web.on("/",HTTP_GET,[](){web.send(200,"text/html; charset=utf-8",html);});
     web.on("/api/status",HTTP_GET,status_endpoint);
     web.on("/api/plan",HTTP_GET,plan_endpoint);
+    c23_register_routes(web); // mode/config persistence, NO actuator writes
     web.onNotFound([](){web.send(404,"text/plain","Ei löydy");});
     web.begin();
     enableLoopWDT(); // Arduino ESP32 loop-task hardware watchdog.
@@ -685,8 +856,9 @@ void setup() {
     enevina_firmware::start_weather_reader();
     xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",8192,nullptr,2,&task_sse,0);
     xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,&task_shelly,0);
-    if(strlen(COTTAGE_RUUVI_MAC))
-        xTaskCreatePinnedToCore(ruuvi_worker,"cottage_ruuvi",8192,nullptr,1,&task_ruuvi,0);
+    // Start BLE even before a tag is bound: discovery + explicit pairing
+    // must work when local compile-time MAC is empty or NVS restores a tag.
+    xTaskCreatePinnedToCore(c23_ble_worker,"cottage_ruuvi",10240,nullptr,1,&task_ruuvi,0);
     xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
     Serial.println("ENEVINA LITE C2 SHADOW: NO ACTUATOR PATH");
 }
@@ -694,6 +866,7 @@ void loop() {
     wifi_ok.store(WiFi.status()==WL_CONNECTED);
     web_loop_heartbeat_ms.store(millis());
     web.handleClient();
+    c23_tick(); // local BLE/mode/alarm history works with wifi=0
     // Serial evidence is useful during fully isolated cold-boot tests.
     // Never print access tokens, Wi-Fi passwords or raw device addresses.
     static uint32_t last_serial_ms=0;
@@ -702,8 +875,9 @@ void loop() {
         CN105Telemetry cp;ShellyTelemetry sh;TemperatureSample temp;
         size_t count=0;
         xSemaphoreTake(lock_data,portMAX_DELAY);
-        cp=pump;sh=consumption;temp=temperature;count=plan_count;
+        cp=pump;sh=consumption;count=plan_count;
         xSemaphoreGive(lock_data);
+        temp=c23_temperature_sample();
         const int64_t now=time(nullptr);
         Serial.printf("C2_SHADOW wifi=%d clock=%d cn105=%d shelly=%d ble=%d "
             "plan_slots=%u heap=%u psram=%u psram_total=%u internal_low=%u bad_reads=%u\n",

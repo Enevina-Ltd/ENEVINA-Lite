@@ -16,7 +16,7 @@ if(WIN32)
 endif()
 
 # Mitsubishi FD25VA: independent air-to-air engine. Read-only/no device writers.
-add_library(enevina_cottage cottage/physics.cpp cottage/mpc.cpp cottage/telemetry.cpp cottage/supervisor.cpp cottage/forecast_bridge.cpp cottage/ruuvi.cpp cottage/url_guard.cpp)
+add_library(enevina_cottage cottage/physics.cpp cottage/mpc.cpp cottage/telemetry.cpp cottage/supervisor.cpp cottage/forecast_bridge.cpp cottage/ruuvi.cpp cottage/url_guard.cpp cottage/ruuvi_v5.cpp cottage/air_humidity.cpp)
 target_include_directories(enevina_cottage PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(enevina_cottage PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(cottage_tests tests/cottage_tests.cpp)
@@ -106,3 +106,13 @@ else()
   target_compile_options(pump_freshness_tests PRIVATE -UNDEBUG)
   target_compile_options(weather_cache_tests PRIVATE -UNDEBUG)
 endif()
+
+
+add_executable(cottage_climate_tests tests/cottage_climate_tests.cpp)
+target_link_libraries(cottage_climate_tests PRIVATE enevina_cottage)
+if(MSVC)
+    target_compile_options(cottage_climate_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(cottage_climate_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME cottage_climate_tests COMMAND cottage_climate_tests)
