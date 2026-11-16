@@ -19,6 +19,7 @@
 #include "sdkconfig.h"
 #include "safety/supervisor.hpp"
 #include "pump/heishamon_adapter.hpp"
+#include "pump/serial_freshness.hpp"
 #include "market.hpp"
 #include "weather.hpp"
 
@@ -28,6 +29,7 @@ std::atomic<bool> ethernet_ready{false};
 SemaphoreHandle_t telemetry_mutex;
 struct Telemetry {
     bool valid=false;
+    bool http_reachable=false;
     float inlet_c=NAN;
     float outlet_c=NAN;
     float outdoor_c=NAN;
@@ -104,14 +106,22 @@ void poll_heishamon(void*) {
             enevina::PumpTelemetry reading{};
             const bool ok=adapter.poll(reading);
             Telemetry next;
-            next.valid=ok;
-            if (next.valid) {
+            next.http_reachable=ok;
+            // HeishaMon /json?topic= returns cached actData without an
+            // originating pump timestamp or successful-read counter. It
+            // cannot prove the serial bus has delivered a NEW measurement.
+            // No verified counter source is configured in this HTTP-only
+            // shadow build: report transport health separately and never
+            // promote cached data to fresh pump telemetry.
+            next.valid=enevina::confirmed_pump_serial_update({ok,false,0,0});
+            if (ok) {
                 next.inlet_c=reading.inlet_c; next.outlet_c=reading.outlet_c;
                 next.outdoor_c=reading.outdoor_c; next.dhw_c=reading.dhw_c;
                 next.compressor_hz=reading.compressor_hz;
                 next.defrosting=reading.defrosting?1:0;
                 next.operating_mode=reading.operating_mode;
-                next.received_utc=static_cast<int64_t>(time(nullptr));
+                if(next.valid)
+                    next.received_utc=static_cast<int64_t>(time(nullptr));
             }
             xSemaphoreTake(telemetry_mutex,portMAX_DELAY);
             telemetry=next;
@@ -131,9 +141,11 @@ esp_err_t status_handler(httpd_req_t* req) {
         now>=snapshot.received_utc && now-snapshot.received_utc<=120;
     const auto market=enevina_firmware::market_status();
     const auto weather=enevina_firmware::weather_status();
-    char body[700];
+    char body[820];
     std::snprintf(body,sizeof(body),
-        "{\"mode\":\"shadow\",\"pump_connected\":%s,\"telemetry_utc\":%lld,"
+        "{\"mode\":\"shadow\",\"pump_connected\":%s,"
+        "\"heishamon_http_reachable\":%s,\"pump_freshness_verified\":%s,"
+        "\"telemetry_utc\":%lld,"
         "\"inlet_c\":%.1f,\"outlet_c\":%.1f,\"outdoor_c\":%.1f,"
         "\"dhw_c\":%.1f,\"compressor_hz\":%.0f,\"defrosting\":%d,"
         "\"operating_mode\":%d,\"price_available\":%s,"
@@ -142,7 +154,9 @@ esp_err_t status_handler(httpd_req_t* req) {
         "\"weather_available\":%s,\"forecast_outdoor_c\":%.1f,"
         "\"weather_next_utc\":%lld,\"forecast_status\":\"missing\","
         "\"reason\":\"Ennuste ja asennuskohtainen kalibrointi puuttuvat\"}",
-        fresh?"true":"false",static_cast<long long>(snapshot.received_utc),
+        fresh?"true":"false",snapshot.http_reachable?"true":"false",
+        snapshot.valid?"true":"false",
+        static_cast<long long>(snapshot.received_utc),
         fresh?snapshot.inlet_c:0, fresh?snapshot.outlet_c:0,
         fresh?snapshot.outdoor_c:0, fresh?snapshot.dhw_c:0,
         fresh?snapshot.compressor_hz:0, fresh?snapshot.defrosting:-1,
@@ -288,4 +302,6 @@ extern "C" void app_main(void) {
     start_web();
     xTaskCreate(poll_heishamon,"heishamon_read",6144,nullptr,4,nullptr);
     ESP_LOGW(tag,"read-only shadow firmware: no heat-pump write endpoint");
+    ESP_LOGW(tag,"HeishaMon HTTP topics have no pump-side freshness evidence; "
+                 "pump_connected remains false until a verified source exists");
 }
