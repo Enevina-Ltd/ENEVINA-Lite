@@ -1,0 +1,13 @@
+menu "Enevina Lite shadow"
+    config ENEVINA_HEISHAMON_BASE_URL
+        string "HeishaMon base URL (e.g. http://192.168.1.50; empty disables polling)"
+        default ""
+        help
+            Read-only HTTP JSON polling. No command endpoint exists in this build.
+    config ENEVINA_FMI_LATLON
+        string "FMI forecast location as latitude,longitude (empty disables weather)"
+        default ""
+        help
+            Finnish WGS84 coordinates, for example 60.17,24.94.
+            The location is compiled into this shadow firmware build.
+endmenu

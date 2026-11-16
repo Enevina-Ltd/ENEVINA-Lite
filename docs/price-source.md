@@ -1,0 +1,9 @@
+# Suomen spot-hintojen lähde
+
+Käyttäjä ei käytä ENTSO-E API-tunnusta. Enevina Coren `nordpool.py` käyttää ensisijaisesti Nord Pool Data Portalin päiväkohtaista `DayAheadPrices`-rajapintaa parametreilla `currency=EUR`, `market=DayAhead`, `deliveryArea=FI` ja `date=YYYY-MM-DD`. Lite käyttää samaa julkista HTTPS-osoitetta, mutta ei tarvitse Corea eikä sen tunnuksia.
+
+Tämän työn aikana päivän 2026-11-15 FI-kysely palautti HTTP 200:n sekä 15 minuutin UTC-jaksot. Data tulee muodossa `multiAreaEntries[].deliveryStart`, `deliveryEnd` ja `entryPerArea.FI`. Lähdearvo on EUR/MWh ilman arvonlisäveroa. Laiteohjelmisto hakee Suomen paikallisen päivän ja seuraavan päivän, tarkistaa UTC-jaksojen 15 minuutin pituuden, jatkuvuuden ja numeeriset arvot sekä tallentaa vain hyväksytyn sarjan NVS-muistiin. Negatiivinen ja nollahinta ovat kelvollisia arvoja. Puuttuvaa huomisen sarjaa ei korvata tekaistulla arvolla. Sivulla näkyy vain kuluvan jakson spot-hinta ilman sopimuskohtaisia veroja ja maksuja; sitä ei vielä käytetä pumpun ohjaukseen.
+
+Kello synkronoidaan SNTP:llä. Ennen luotettavaa aikaa hintaa ei näytetä kelvollisena. Verkkokatkon aikana validoitu välimuisti voi palvella vain siinä olevia, vielä voimassa olevia jaksoja. Hintasarjan verkkohaku, TLS ja välimuistin palautuminen on käännetty, mutta niitä ei ole vielä testattu fyysisellä Ethernet-kytkennällä. Avoimen rajapinnan tekninen saatavuus ei yksin osoita tuotteen kaupallista käyttöoikeutta; tarkista Nord Poolin datan käyttöehdot ennen myyntiä.
+
+Core-lähde: <https://github.com/linkki79-pixel/Kaelion-Core/blob/main/nordpool.py>. Nord Poolin [vuoden 2026 markkinadatan hinnasto](https://www.nordpoolgroup.com/4a7b5e/globalassets/trading-and-services/nord-pool-fee-schedule-2026-market-data---data-portal.pdf) kuvaa erillisiä datatuotteita ja ehtoja.

@@ -1,0 +1,5 @@
+ENEVINA_BENCH chip=ESP32-S3 psram=8386279
+BENCH slots=96 status=0 cost=2.26421 ms=384 internal_before=331288 internal_after=331288 internal_low_before=326160 internal_low_after=326128 psram_before=8386035 psram_after=8386035 psram_low_before=8386035 psram_low_after=7082751
+BENCH slots=192 status=0 cost=4.45783 ms=809 internal_before=331024 internal_after=331024 internal_low_before=325644 internal_low_after=325644 psram_before=8386035 psram_after=8386035 psram_low_before=7082751 psram_low_after=5934975
+BENCH task_stack_min_free=25572
+ENEVINA_BENCH_DONE
