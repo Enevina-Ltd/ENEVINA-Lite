@@ -111,11 +111,17 @@ bool fetch_weather(WeatherCache& next) {
 }
 
 void poll_weather(void*) {
-    load_cache();
+    bool cache_load_attempted=false;
     while(true) {
         const time_t now=time(nullptr);
         bool updated=false;
         if(now>1700000000) {
+            // A cold boot may have no trusted UTC yet. Do not reject the
+            // persisted cache until the clock has synchronized.
+            if(should_load_weather_cache(cache_load_attempted,now)) {
+                load_cache();
+                cache_load_attempted=true;
+            }
             auto* next=new(std::nothrow) WeatherCache;
             if(next) {
                 next->fetched_utc=now;

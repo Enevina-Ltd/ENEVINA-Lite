@@ -55,6 +55,9 @@ inline uint32_t weather_checksum(const WeatherCache& data) {
     }
     return hash;
 }
+inline bool should_load_weather_cache(bool attempted,int64_t now_utc) {
+    return !attempted && now_utc>1700000000;
+}
 inline bool valid_weather_cache(const WeatherCache& data,
     WeatherLocation configured_location,int64_t now_utc) {
     if(data.version!=weather_cache_version ||
