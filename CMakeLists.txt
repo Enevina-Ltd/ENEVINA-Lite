@@ -39,6 +39,11 @@ add_executable(market_cache_tests tests/market_cache_tests.cpp)
 target_link_libraries(market_cache_tests PRIVATE enevina_core)
 add_test(NAME market_cache_tests COMMAND market_cache_tests)
 
+# Manufacturer-independent adapter identity and capability regression.
+add_executable(pump_capabilities_tests tests/pump_capabilities_tests.cpp)
+target_include_directories(pump_capabilities_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME pump_capabilities_tests COMMAND pump_capabilities_tests)
+
 # Pump-origin serial freshness policy: HTTP transport alone is not proof.
 add_executable(pump_freshness_tests tests/pump_freshness_tests.cpp)
 target_include_directories(pump_freshness_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
