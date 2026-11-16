@@ -14,6 +14,8 @@
 #include <string>
 #include "cottage_config.hpp"
 #include "cottage_air_service.hpp"
+#include "cottage_network_budget.hpp"
+#include <atomic>
 #include "cottage/ruuvi_v5.hpp"
 #include "cottage/air_humidity.hpp"
 #include "../../main/weather.hpp"
@@ -35,6 +37,7 @@ bool has_indoor=false,has_outdoor=false,have_discovered=false;
 bool history_changed=false;
 uint32_t samples_ok=0,samples_rejected=0,samples_duplicate=0,stores=0;
 uint32_t low_heap_skips=0;
+std::atomic<bool> ble_initialized{false};
 char csrf_token[24]={};
 struct AirEvent {
     int64_t utc=0;
@@ -269,16 +272,21 @@ void c23_ble_worker(void*) {
     BLEScan* scan=BLEDevice::getScan();
     scan->setAdvertisedDeviceCallbacks(new OnAdvertisement(),true);
     scan->setActiveScan(false);
+    ble_initialized.store(true);
     for(;;) {
-        // Scanning runs on its own low-priority task and never holds the
-        // sensor mutex across the scan or Wi-Fi/SSE network operation.
-        if(esp_get_free_heap_size()>70000)
+        // BLE must not overlap the Nord Pool/FMI TLS handshake; the old
+        // esp_get_free_heap_size() check included PSRAM and was insufficient.
+        enevina_firmware::NetworkBudgetLease lease(0,96*1024,24*1024);
+        if(lease.held()) {
             scan->start(4,false);
-        else low_heap_skips++;
-        scan->clearResults();
+            scan->clearResults();
+        } else {
+            low_heap_skips++;
+        }
         vTaskDelay(pdMS_TO_TICKS(12000));
     }
 }
+bool c23_ble_initialized() {return ble_initialized.load();}
 void c23_tick() {
     if(!guard)return;
     const uint64_t ms=uptime_ms();
