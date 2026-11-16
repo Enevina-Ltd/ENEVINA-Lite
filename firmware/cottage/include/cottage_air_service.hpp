@@ -6,6 +6,7 @@ class WebServer;
 namespace enevina::cottage {
 void c23_initialize();
 void c23_ble_worker(void*);
+bool c23_ble_initialized();
 void c23_tick();
 TemperatureSample c23_temperature_sample();
 void c23_append_status(cJSON* root);
