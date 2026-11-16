@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "pump/measurement_quality.hpp"
 namespace enevina::cottage {
 enum class ObservedPumpMode : uint8_t { Unknown, Off, Heat, Other };
 struct CN105Telemetry {
@@ -9,6 +10,7 @@ struct CN105Telemetry {
     double setpoint_c=0;
     double compressor_hz=0;
     ObservedPumpMode mode=ObservedPumpMode::Unknown;
+    enevina::MeasurementEvidence evidence{};
 };
 struct ShellyTelemetry {
     bool received=false;
