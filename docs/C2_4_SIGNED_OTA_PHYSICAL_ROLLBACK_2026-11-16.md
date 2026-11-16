@@ -52,8 +52,12 @@ OTA:n yllä kuvattu positiivinen, automaattisen rollbackin ja virheellisen allek
 1. Pitkä 24/48 h vakauskoe viimeisellä firmwaren, bootloaderin, Wi-Fi:n ja BLE:n yhdistelmällä. Vanhempi C2.4-24h koe keskeytyi OTA-testien vuoksi, eikä sitä saa kutsua läpäistyksi.
 2. BLE-anturi sijaitsee jo pihamökissä ja ESP32 sisällä: sisätiloista puuttuva `sensor_fresh` ei itsessään osoita firmwarevirhettä. Fyysinen BLE-kenttätesti on vielä tekemättä.
 3. CN105 SSE-heartbeat voi pysyä aktiivisena ilman varsinaisen pumpun mittauksen päivitystä. **180 sekunnin fail-closed-raja pysyy**. Ei tehty kirjoituksia.
-4. RAMin pahimman kuorman ja varauspiikkien toistettavuus, USB-virtakatkon testi kesken OTA-kirjoituksen, pysyvä versionpalautuksen estäminen sekä kaikki täydet Debug/Release/Python-regressiot on vielä arvioitava erikseen.
+4. RAMin pahimman kuorman ja varauspiikkien toistettavuus sekä USB-virtakatkon testi kesken OTA-kirjoituksen ovat edelleen avoimia. Allekirjoitetun version monotoniaportti ja hylättyjen testiversioiden karanteeni on toteutettu, mutta laitteistotason anti-rollback / eFuse-käsittelyä ei ole hyväksytty.
 5. Ei laitteistotason Secure Boot / eFuse -hyväksyntää. Yksityisiä avaimia ei ollut laitteessa eikä eFuseihin tehty muutoksia.
 6. PR #7 pysyy draftina, eikä C3-lämpöpumppuohjausta sallita.
 
 **Päätös:** paikallisen allekirjoitetun OTA:n ja automaattisen palautuksen toimivuus on fyysisesti osoitettu. Kortti pysyy kehityksessä sisällä, kunnes muut C2.4:n kenttähyväksymisehdot täyttyvät.
+
+## GitHub-commitin riippumaton uudelleentestaus
+
+Julkaistu `074097d` haettiin erilliseen kehitystyötilaan ja testattiin ilman GitHub CI:tä: **C++ Release CTest 16/16 PASS, C++ Debug CTest 16/16 PASS, Python unittest 32/32 PASS, ESP32-S3 PlatformIO firmware BUILD/LINK PASS.** Python-testit ajettiin riippuvuudet erilliseen väliaikaiseen hakemistoon asentaen; eivät käyttäjän maailmanlaajuisia Python-paketteja muuttaen. Valinnainen `cottage_ota_private.hpp` ei sisälly GitHubiin, joten yleisbuildin signed-pull pysyy luonnollisesti estettynä ilman paikallista provisiointia; fyysinen OTA-onnistuminen on todistettu Kaelion-koneen paikallisella luottamusankkurilla käännetystä firmwaresta.
