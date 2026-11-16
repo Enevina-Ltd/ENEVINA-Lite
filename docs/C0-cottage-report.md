@@ -78,7 +78,7 @@ transport integrations are claimed tested in this branch.
 
 ## C1/C2/C3 gates
 
-- **C1 unresolved:** locate current CN105 ESP32 IP/firmware; inspect raw
+- **C1 partially verified:** Current CN105 `/events` SSE HTTP 200 and Shelly Plus 1PM read-only RPC HTTP 200 confirmed on 2026-11-16 (see [C1 evidence](C1-cottage-probe.md)). Continue to inspect
   `/events` SSE payload and timestamps; verify packet semantics and pin
   electrical levels; observe real indoor temperature and compressor Hz.
   Verify Shelly Plus 1PM read-only Switch.GetStatus telemetry and separate
