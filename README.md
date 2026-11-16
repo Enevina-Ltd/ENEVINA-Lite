@@ -2,21 +2,23 @@
 
 **Yhden lämpöpumpun paikallinen optimointiohjain.**
 
-Enevina Lite on Enevina Coresta erillinen, kevyt ohjain, jonka tavoitteena on minimoida lämpöpumpun lämmitys- ja käyttövesikustannukset turvallisesti. **Lite ei sisällä tekoälyä**, ei edellytä Home Assistantia eikä tarvitse Linuxia tai pilvipalvelua normaalissa käytössä.
+Enevina Lite on Enevina Coresta erillinen, kevyt ohjain, jonka tavoitteena on minimoida lämpöpumpun lämmityskustannukset ja soveltuvilla laitteilla myös käyttöveden kustannukset turvallisesti. **Lite ei sisällä tekoälyä**, ei edellytä Home Assistantia eikä tarvitse Linuxia tai pilvipalvelua normaalissa käytössä.
+
+> **Uusi ensimmäinen pilotti (16.11.2026):** pihamökin **Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA**. ESP32-S3 Wi-Fi + mallikohtaisesti vahvistettava CN105, Shelly Plus 1PM vain kulutusmittaukseen. Mökin tavoiteltu ylläpitolämpö noin +5 °C, ennakoiva turvamarginaali +8 °C; pumpun alin lämmityspyynti +16 °C, joten suunniteltu ohjaus on HEAT 16 °C / OFF. **Tämä ilma–ilmapumppu ei käytä menoveden tai käyttöveden optimointia.** Katso [pilottisuunnitelma](docs/cottage-mitsubishi-fd25va.md). Oikeaa laitetta ei vielä ohjata.
 
 > Tila: suunnittelun lähtötaso. Tässä repositoriossa ei vielä ole toimivaa laiteohjelmistoa eikä todistettuja säästötuloksia.
 
 ## V1:n rajaus
 
 - **Yksi lämpöpumppu per laite**.
-- Ensisijainen laitealusta: **ESP32-S3 N16R8**, Ethernet-yhteydellä (yhteensopiva Ethernet-ohjain vaaditaan).
+- Ensisijainen laitealusta: **ESP32-S3 N16R8**, pihamökin pilotissa **2,4 GHz Wi-Fi**, muissa sovittimissa tarvittaessa Ethernet.
 - C++ / ESP-IDF; mahdollisimman paljon optimointilogiikasta alustariippumatonta C++-koodia.
 - 15 minuutin sähkönhintajakso; ennakointihorisontin tavoite 24–48 tuntia.
 - Fysiikkapohjainen, deterministinen MPC-optimointi, **ei AI/ML**.
 - Tilalämmityksen ja käyttöveden yhteinen optimointi, laiterajapinnan ja pumpun toimintarajojen sallimissa puitteissa.
 - Paikallinen selainkäyttöliittymä, konfiguroitavat lämpötilarajat, lokit ja OTA-päivitykset.
 - Paikallinen toiminta väliaikaisissa verkkokatkoissa; ennusteiden ja hintojen välimuisti.
-- Ensimmäinen sovitinkohde: Panasonic Aquarea / HeishaMon. Muut merkit omilla adaptereillaan myöhemmin.
+- Ensimmäinen todellinen kohde: Mitsubishi Electric FD25VA -ilmalämpöpumppu; Panasonic/HeishaMon ja muut merkit myöhempinä adaptereina.
 
 ## Suunniteltu ohjelmistorakenne
 
@@ -39,7 +41,7 @@ Enevina Lite on Enevina Coresta erillinen, kevyt ohjain, jonka tavoitteena on mi
 
 ## Ennen alustan lukitsemista
 
-- Toteuta siirrettävä C++-referenssiversio ja vertaa tuloksia tietokoneella laskettuun MILP-vertailuratkaisuun sekä tavalliseen lämmityskäyrään.
+- Toteuta siirrettävä C++-referenssiversio. Mitsubishi-pilotissa vertaa HEAT/OFF-ohjausta tavalliseen ylläpitolämmitykseen; vesikiertoisissa vertaa sääkäyrään ja MILP-referenssiin.
 - Mittaa ESP32-S3-laitteella **192 jakson / 48 tunnin** optimoinnin muistinkäyttö, suoritusaika ja vaikutus rinnakkaiseen ohjaukseen.
 - Tavoitteena alle 2 sekunnin optimointiaika; tämä **ei ole vielä todennettu tulos**.
 - Testaa käynnistys, verkkokatkot, epäkelvot anturitiedot, laiteyhteyden viiveet, sähkökatkon jälkeinen palautuminen ja watchdog.
