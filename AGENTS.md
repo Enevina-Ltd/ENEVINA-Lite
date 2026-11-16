@@ -9,8 +9,8 @@ Tämä tiedosto ohjaa kaikkia tässä repositoriossa työskenteleviä koodausage
 - **Tasan yksi lämpöpumppu per Lite-laite.** Älä lisää monen pumpun orkestrointia, keskitettyä ohjausta, energia-akkujen, aurinkosähkön, EV-latauksen tai koko talon EMS:n hallintaa.
 - **Ei tekoälyä.** Älä lisää koneoppimista, neuroverkkoja, LLM:iä, AI-palveluita, mallien koulutusta tai AI-riippuvuuksia. Deterministinen rakennus- ja lämpöpumppufysiikan laskenta sekä matemaattinen optimointi ovat sallittuja.
 - **Ei Linuxia, Raspberry Pi -vaatimusta, Dockeria, tietokantaa tai Home Assistant -riippuvuutta laitteeseen.** Myös internetin katkettua laitteen on kyettävä toimimaan turvallisesti paikallisesti.
-- Alustava laitevalinta: **ESP32-S3 N16R8** (16 Mt Flash, 8 Mt PSRAM), **Ethernet** sopivalla erillisellä Ethernet-ohjaimella. C++ ja ESP-IDF. Tämä on **testattava ehdokas, ei vielä todistetusti riittävä tuotantoalusta**.
-- Ensimmäinen lämpöpumppusovitin: **Panasonic Aquarea / HeishaMon**. Muut merkit vasta myöhemmissä erillisissä sovittimissa. Varmista käytettävän HeishaMon-version todelliset rajapinnat ja kyvykkyydet ennen toteutusta; älä oleta, että erillinen MQTT-brokeri tai Home Assistant on saatavilla.
+- Alustava laitevalinta: **ESP32-S3 N16R8** (16 Mt Flash, 8 Mt PSRAM), **2,4 GHz Wi-Fi ensimmäisessä Mitsubishi-pilotissa**, Ethernet muissa laiteversioissa tarvittaessa. C++ ja ESP-IDF; laitekokoonpano on varmistettava.
+- **Ensimmäinen todellinen pilotti: Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA, ilma–ilmapumppu**, ks. [pihamökin Mitsubishi-pilotti](docs/cottage-mitsubishi-fd25va.md). Panasonic/HeishaMon jää erilliseksi myöhemmäksi adapteriksi. CN105 on tarkistettava todellisesta pumpusta ennen komentoja.
 - Erottele Lite Enevina Coresta, Enevina Adaptive Intelligencestä, Finance-koneen tehtävistä sekä olemassa olevista tuotantojärjestelmistä. Älä muuta niiden repositoryja tai tuotantokonfiguraatioita.
 
 Jos ehdotus rikkoo näitä rajoja, älä toteuta sitä. Kerro ristiriita ja ehdota rajaukseen sopiva ratkaisu.
@@ -20,8 +20,8 @@ Jos ehdotus rikkoo näitä rajoja, älä toteuta sitä. Kerro ristiriita ja ehdo
 Laitteen pitää pystyä itsenäisesti:
 1. Lukemaan pumpun mittaukset, tilan ja sallitut ohjauskyvykkyydet.
 2. Hakemaan ja välimuistittamaan 15 minuutin sähkönhinnat ja sääennusteen luotettavasta lähteestä; käsittelemään puuttuvat, muuttuneet ja vanhentuneet tiedot.
-3. Laskemaan lämpöhäviön, sisälämpötilan kehityksen, menoveden tavoitteen, COP-arvion ja käyttöveden lämmitystarpeen.
-4. Optimoimaan tilalämmityksen ja käyttöveden kustannukset **yhdessä** niiden sallittujen rajojen puitteissa.
+3. Laskemaan lämpöhäviön, sisälämpötilan kehityksen ja COP:n. Menoveden ja käyttöveden laskenta koskee vain niitä laitteita, joissa ne ovat olemassa; ensimmäinen ilma–ilmapumppu käyttää 16 °C HEAT / OFF -ohjausta.
+4. Optimoimaan tilalämmityksen kustannukset turvallisesti; käyttövettä optimoidaan vain sitä tukeville pumpuille.
 5. Näyttämään tila, ennuste, seuraava ohjaus, perustelut, viimeisin onnistunut päivitys ja varatilaan siirtymisen syy paikallisessa selainkäyttöliittymässä.
 6. Säilyttämään asetukset turvallisesti ja jatkamaan toimintaa sähkö- tai verkkokatkon jälkeen.
 
@@ -31,7 +31,7 @@ Paikallinen käyttö ei saa edellyttää jatkuvaa pilviyhteyttä, tilausta tai u
 
 - Toteuta **alustariippumaton, deterministinen C++-ydin**, jota voi ajaa samoilla syötteillä PC:llä ja ESP32:ssa.
 - Käytä **15 minuutin aika-askelta**; tutki 24–48 tunnin ennustehorisontti (enintään 192 askelta). Älä kovakoodaa hintadatan vuorokausipituudeksi 96 jaksoa: kesä-/talviaikaan siirtyminen on käsiteltävä oikein.
-- Käytä ennustemallina ainakin rakennuksen kevyttä lämpömallia, lämpöpumpun tehon ja COP:n riippuvuutta olosuhteista sekä käyttöveden energiatasetta. Parametrit tulee pystyä kalibroimaan ilman AI:ta; älä keksi pumpun kapasiteetti- tai hyötysuhdekäyriä todellisten tietojen tilalle tuotantotilassa.
+- Käytä ennustemallina rakennuksen kevyttä lämpömallia ja lämpöpumpun tyypin mukaista teho- ja COP-mallia; käyttöveden energiatasetta vain niitä tukeville pumpuille. Parametrit tulee pystyä kalibroimaan ilman AI:ta; älä keksi pumpun kapasiteetti- tai hyötysuhdekäyriä todellisten tietojen tilalle tuotantotilassa.
 - Minimoi **kokonaiskustannus**, ei pelkkää spot-hintaa: huomioi konfiguroitavat sähköenergian, siirron, verojen ja muiden relevanttien maksujen ehdot; vältä kaksoislaskentaa. Hintayksiköt, verollisuus ja aikaleimat on määriteltävä eksplisiittisesti.
 - Optimointi huomioi sisälämpötilan mukavuusrajat, menoveden sallittujen muutosten rajat, käyttöveden tarpeen ja pumpun omat toimintarajoitukset. Mallinna kalliin esilämmityksen COP-haitta ja vältä tarpeettomia asetusarvopomppuja.
 - Ensimmäinen toteutus: **rajattu dynaaminen ohjelmointi tai muu muisti- ja aikarajattu deterministinen haku**. Täysimittainen MILP-ratkaisija ei ole oletus ESP32:ssa. PC:n MILP saa olla **vain riippumaton vertailuratkaisu**.
@@ -105,7 +105,7 @@ Tee ensin vain tarvittavat hakemistot ja rajapinnat. Koodi, mittayksiköt, versi
 
 ## 9. Ensimmäinen toteutustehtävä
 
-Aloita **G0-työstä**: rakenna PC:llä ajettava, puhdas C++-malli yhden pumpun lämmityksen ja käyttöveden 15 minuutin ennakoivaan optimointiin, turvallisuusrajoihin ja riippumattomaan referenssivertailuun. Ensimmäisessä vaiheessa **ei kirjoituksia todelliseen pumppuun**, ei AI:ta eikä tarpeetonta käyttöliittymä- tai pilvirakennetta.
+Uusi ensisijainen kehitystehtävä on [pihamökin Mitsubishi Electric FD25VA -pilotti](docs/cottage-mitsubishi-fd25va.md): rakenna PC:llä ajettava, puhdas C++-malli ilma–ilmapumpun 16 °C HEAT / OFF -jaksojen 15 minuutin ennakointiin, turvallisuusrajoihin ja riippumattomaan referenssivertailuun. Hydronisen lämpöpumpun G0:n tulokset säilytetään erillään. Ensimmäisessä vaiheessa **ei kirjoituksia todelliseen pumppuun**, ei AI:ta eikä tarpeetonta käyttöliittymä- tai pilvirakennetta.
 
 Päämittari: *todennettavasti alhaisemmat lämmityksen kokonaiskustannukset ilman mukavuus-, hygienia- tai turvallisuusrajojen rikkomista.*
 
@@ -123,3 +123,15 @@ Priorisoi ohjausreitit: (1) valmistajan dokumentoitu digitaalinen ohjaus, (2) va
 - Toteuta ensin pelkät simulaatio- ja yksikkötestit (käyrän inversio, rajat, anturikäyrä, vanhentunut oikea lämpötila, power-loss/rele-bypass, sensor fault, lämpötilamittausten sekoittuminen). Ei fyysistä anturi- tai relekytkentää ilman hyväksyttyä mallikohtaista suunnitelmaa.
 - **Varmista pumpun muun toiminnan riippuvuus anturista:** lämmityskausi-/kesätila, lisälämmitys, sulatus, jäätymisenesto, hälytykset ja käyttövesiprioriteetti. Jos jotakin turvallisuuden kannalta kriittistä riippuvuutta ei voi rajata pois, älä ota huijausta käyttöön.
 
+
+## 11. Pihamökin Mitsubishi Electric — ensisijainen kohde 16.11.2026
+
+Tämä on **nykyisen kehityksen korkein prioriteetti** ja **korvaa aikaisemman Panasonic-pilotin ensisijaisuuden**. Täsmävaatimukset, lähtötilan vahvistukset ja C0–C3-portit: [docs/cottage-mitsubishi-fd25va.md](docs/cottage-mitsubishi-fd25va.md).
+
+- Vain **yksi** Mitsubishi Electric **MSZ-FD25VA + MUZ-FD25VA** (ilma–ilmapumppu). Ei käyttövesivaraajaa, menoveden säätöä tai shunttia.
+- Pumpun alin lämmityspyynti **16 °C**. Mökin ylläpitotavoite **5 °C** ja ennakoiva turvamarginaali **8 °C**: ohjaus sallittujen lämmitys-/OFF-komentojen kautta, ei 5 °C:n asetusarvona. 5 °C:n suojaa ei saa väittää taatuksi ilman riippumatonta jäätymissuojausta.
+- **Shelly Plus 1PM mittaa vain sähkönkulutusta.** Sen releellä ei koskaan katkaista lämpöpumpun syöttöä.
+- Ensisijainen yhteys ESP32-S3:n paikallinen **Wi-Fi + CN105**, joka on validoitava mallikohtaisesti; alkuperäinen huoltomanuaali ei yksiselitteisesti näytä CN105:tä ja valmistajan yhteensopivuusluettelo vain tukee sen mahdollisuutta.
+- Optimointi: **15 min aika-askel, 24–48 h**, mutta älä kytke kompressoria päälle/pois jokaisella aika-askeleella. Minimi käynti-/seisonta-ajat, hystereesi, mittauksen tuoreus, pumpun tilakuittaukset ja turvamarginaali ovat ensisijaisia.
+- Ensin C0 offline-malli, C1 fyysisen rajapinnan vain luku -vahvistus, C2 shadow, C3 vasta erillisellä hyväksynnällä. **Älä flashaa tai ohjaa todellista laitetta tässä dokumentaatiovaiheessa.**
+- Vanhojen vesikiertoisten pumppujen Legacy Outdoor Sensor Control pysyy erillisenä myöhempänä sovittimena, ei tämän Mitsun anturihuijauksena.
