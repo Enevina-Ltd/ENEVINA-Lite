@@ -76,3 +76,12 @@ Valittu kortti, pinout ja lähteet on kuvattu [laitemuistiossa](docs/hardware.md
 ## Kehitystilan periaate
 
 Tämä repositorio on vain **Enevina Lite** -tuotetta varten. Enevina Core ja muut tuotantojärjestelmät pysyvät erillään. Ensimmäinen kehitysvaihe on simulaatio ja **shadow mode**, ilman kirjoituksia oikeaan lämpöpumppuun.
+
+## Mitsubishi FD25VA: C0 prototype
+
+The Mitsubishi cottage pilot uses a **separate** C++17 `cottage/` module.
+The only *simulated* actions are HEAT 16 °C and OFF. No hot water, supply-water control,
+thermistor emulation, device-writer or relay switching is implemented.
+The bounded optimizer, supervisor and typed read-only observers have repeatable PC tests;
+see [C0 cottage report](docs/C0-cottage-report.md) and `tools/cottage_reference.py`.
+**This is not a live CN105 integration, ESP32 performance result, or freeze-protection guarantee.**
