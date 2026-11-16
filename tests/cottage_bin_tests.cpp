@@ -1,8 +1,15 @@
 #include "cottage/mpc.hpp"
-#include <cassert>
+#include <cstdlib>
 #include <cmath>
 #include <cstdio>
 #include <vector>
+// Always-on safety checks: -DNDEBUG must not bypass validation.
+#define check(expression) do { \
+    if(!(expression)) { \
+        std::fprintf(stderr,"FAIL %s:%d %s\n",__FILE__,__LINE__,#expression); \
+        std::exit(1); \
+    } \
+} while(false)
 using namespace enevina::cottage;
 int main() {
     // Codex reproduction: all-HEAT is valid, but a cheaper trajectory with
@@ -28,26 +35,26 @@ int main() {
     p.min_off_minutes=30;
     const State initial{10.0,true,180};
     const std::vector<Period> periods(96,{-5,0.3,0,1});
-    assert(valid(p));
+    check(valid(p));
     State all_heat=initial;
     for(const auto& period:periods) {
         const auto step=advance(p,all_heat,period,true);
         all_heat=step.next;
-        assert(all_heat.indoor_c>=p.planning_min_c &&
+        check(all_heat.indoor_c>=p.planning_min_c &&
                all_heat.indoor_c<=p.maximum_indoor_c);
     }
-    assert(all_heat.indoor_c>=initial.indoor_c);
-    assert(std::abs(all_heat.indoor_c-10.011176)<0.0001);
+    check(all_heat.indoor_c>=initial.indoor_c);
+    check(std::abs(all_heat.indoor_c-10.011176)<0.0001);
     const auto solution=optimize(p,initial,periods.data(),periods.size());
-    assert(solution.status==MpcStatus::Ok && solution.count==periods.size());
+    check(solution.status==MpcStatus::Ok && solution.count==periods.size());
     State exact=initial;
     for(size_t i=0;i<solution.count;++i) {
         exact=advance(p,exact,periods[i],solution.heat_16_c[i]!=0).next;
-        assert(std::isfinite(exact.indoor_c));
-        assert(exact.indoor_c>=p.planning_min_c-1e-8);
-        assert(exact.indoor_c<=p.maximum_indoor_c+1e-8);
+        check(std::isfinite(exact.indoor_c));
+        check(exact.indoor_c>=p.planning_min_c-1e-8);
+        check(exact.indoor_c<=p.maximum_indoor_c+1e-8);
     }
-    assert(exact.indoor_c>=initial.indoor_c-1e-8);
-    assert(std::abs(exact.indoor_c-solution.final_c)<1e-7);
+    check(exact.indoor_c>=initial.indoor_c-1e-8);
+    check(std::abs(exact.indoor_c-solution.final_c)<1e-7);
     std::puts("PASS MPC retains terminal-feasible heating after grid bin merges");
 }
