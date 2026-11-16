@@ -16,6 +16,7 @@
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
 #include <atomic>
+#include "cottage/memory_policy.hpp"
 #include "cottage/ruuvi_v5.hpp"
 #include "cottage/air_humidity.hpp"
 #include "../../main/weather.hpp"
