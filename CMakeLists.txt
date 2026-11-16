@@ -72,6 +72,11 @@ add_executable(cottage_sse_transport_tests tests/cottage_sse_transport_tests.cpp
 target_link_libraries(cottage_sse_transport_tests PRIVATE enevina_cottage)
 add_test(NAME cottage_sse_transport_tests COMMAND cottage_sse_transport_tests)
 
+# C2.4: deterministic internal-heap threshold and fragmentation boundaries.
+add_executable(cottage_memory_policy_tests tests/test_c24_memory_policy.cpp)
+target_include_directories(cottage_memory_policy_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME cottage_memory_policy_tests COMMAND cottage_memory_policy_tests)
+
 
 
 # Test assertions stay active even when the executable is built as Release.
@@ -83,6 +88,7 @@ if(MSVC)
   target_compile_options(cottage_mode_timing_tests PRIVATE /UNDEBUG)
   target_compile_options(cottage_safety_tests PRIVATE /UNDEBUG)
   target_compile_options(cottage_sse_transport_tests PRIVATE /UNDEBUG)
+  target_compile_options(cottage_memory_policy_tests PRIVATE /UNDEBUG)
   target_compile_options(cottage_tests PRIVATE /UNDEBUG)
   target_compile_options(cottage_url_guard_tests PRIVATE /UNDEBUG)
   target_compile_options(finnish_tariff_tests PRIVATE /UNDEBUG)
@@ -98,6 +104,7 @@ else()
   target_compile_options(cottage_mode_timing_tests PRIVATE -UNDEBUG)
   target_compile_options(cottage_safety_tests PRIVATE -UNDEBUG)
   target_compile_options(cottage_sse_transport_tests PRIVATE -UNDEBUG)
+  target_compile_options(cottage_memory_policy_tests PRIVATE -UNDEBUG)
   target_compile_options(cottage_tests PRIVATE -UNDEBUG)
   target_compile_options(cottage_url_guard_tests PRIVATE -UNDEBUG)
   target_compile_options(finnish_tariff_tests PRIVATE -UNDEBUG)
