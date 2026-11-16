@@ -15,7 +15,20 @@ if(WIN32)
   target_link_libraries(enevina_cli PRIVATE psapi)
 endif()
 
-# Platform-independent P0 regression tests, including ESP weather-cache format.
+# Mitsubishi FD25VA: independent air-to-air engine. Read-only/no device writers.
+add_library(enevina_cottage cottage/physics.cpp cottage/mpc.cpp cottage/telemetry.cpp cottage/supervisor.cpp)
+target_include_directories(enevina_cottage PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(enevina_cottage PRIVATE -Wall -Wextra -Wpedantic)
+add_executable(cottage_tests tests/cottage_tests.cpp)
+target_link_libraries(cottage_tests PRIVATE enevina_cottage)
+add_test(NAME cottage_tests COMMAND cottage_tests)
+add_executable(cottage_safety_tests tests/cottage_safety_tests.cpp)
+target_link_libraries(cottage_safety_tests PRIVATE enevina_cottage)
+add_test(NAME cottage_safety_tests COMMAND cottage_safety_tests)
+add_executable(cottage_cli tools/cottage_cli.cpp)
+target_link_libraries(cottage_cli PRIVATE enevina_cottage)
+
+# Platform-independent P0 regressions, including ESP weather-cache format.
 add_executable(optimizer_regression_tests tests/optimizer_regression_tests.cpp)
 target_link_libraries(optimizer_regression_tests PRIVATE enevina_core)
 add_test(NAME optimizer_regression_tests COMMAND optimizer_regression_tests)
@@ -30,3 +43,11 @@ add_test(NAME market_cache_tests COMMAND market_cache_tests)
 add_executable(pump_freshness_tests tests/pump_freshness_tests.cpp)
 target_include_directories(pump_freshness_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME pump_freshness_tests COMMAND pump_freshness_tests)
+
+# Deterministic MPC timeout, cancellation and safe supervisor fallback.
+add_executable(cottage_deadline_tests tests/cottage_deadline_tests.cpp)
+target_link_libraries(cottage_deadline_tests PRIVATE enevina_cottage)
+add_test(NAME cottage_deadline_tests COMMAND cottage_deadline_tests)
+add_executable(cottage_bin_tests tests/cottage_bin_tests.cpp)
+target_link_libraries(cottage_bin_tests PRIVATE enevina_cottage)
+add_test(NAME cottage_bin_tests COMMAND cottage_bin_tests)
