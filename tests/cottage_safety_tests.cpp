@@ -30,6 +30,11 @@ int main(){
     check(d.mode==ControlMode::Shadow);
     check(d.proposed_mode==ControlMode::PriceOptimization);
     check(!d.physical_writes_allowed && !d.simulated_heat_16_c);
+    // Regression: fresh Wi-Fi/SSE receipt does NOT prove a new pump read.
+    h.pump.evidence.source_time_verified=false;
+    d=supervise(p,h);
+    check(d.reason==Reason::PumpUnavailable && !d.physical_writes_allowed);
+    h.pump.evidence.source_time_verified=true;
     h.independent_temperature.indoor_c=7.8;
     d=supervise(p,h);
     check(d.proposed_mode==ControlMode::FreezeProtection && d.simulated_heat_16_c);
@@ -57,6 +62,9 @@ int main(){
     h.independent_temperature.indoor_c=10.2;
     d=supervise(p,h);check(d.reason==Reason::ProtectionNotVerified);
     MitsubishiCN105Adapter mitsubishi;
+    auto unverified=h.pump;
+    unverified.evidence.source_time_verified=false;
+    check(!mitsubishi.accept_reading(unverified,h.now_utc));
     check(mitsubishi.accept_reading(h.pump,h.now_utc));
     check(!mitsubishi.accept_reading({true,h.now_utc-1000,10,16,0,ObservedPumpMode::Off},h.now_utc));
     ShellyPowerObserver shelly;
