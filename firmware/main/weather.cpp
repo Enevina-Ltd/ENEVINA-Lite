@@ -1,4 +1,5 @@
 #include "weather.hpp"
+#include "weather_cache.hpp"
 #include "forecast/fmi.hpp"
 
 #include <array>
@@ -21,15 +22,9 @@
 namespace enevina_firmware {
 namespace {
 constexpr char tag[]="enevina_weather";
-constexpr size_t max_points=64;
-constexpr uint32_t cache_version=1;
-struct WeatherCache {
-    uint32_t version=cache_version;
-    uint32_t count=0;
-    int64_t fetched_utc=0;
-    std::array<enevina::OutdoorPoint,max_points> points{};
-};
 WeatherCache cache;
+WeatherLocation current_location{};
+int64_t last_saved_utc=0;
 SemaphoreHandle_t mutex=nullptr;
 bool configured=false;
 double latitude=0,longitude=0;
@@ -46,47 +41,30 @@ bool parse_location(const char* text) {
         longitude>=19 && longitude<=32;
 }
 
-bool valid_cache(const WeatherCache& data) {
-    if(data.version!=cache_version || data.count<2 || data.count>max_points)
-        return false;
-    for(size_t i=0;i<data.count;++i) {
-        const auto& p=data.points[i];
-        if(p.timestamp_utc<=0 || p.timestamp_utc%3600!=0 ||
-           !std::isfinite(p.temperature_c) || p.temperature_c < -60 ||
-           p.temperature_c>60 ||
-           (i>0 && p.timestamp_utc-data.points[i-1].timestamp_utc!=3600))
-            return false;
-    }
-    return true;
-}
-
-bool same_points(const WeatherCache& a, const WeatherCache& b) {
-    if(a.count!=b.count) return false;
-    for(size_t i=0;i<a.count;++i)
-        if(a.points[i].timestamp_utc!=b.points[i].timestamp_utc ||
-           a.points[i].temperature_c!=b.points[i].temperature_c) return false;
-    return true;
-}
-
 void load_cache() {
     nvs_handle_t handle;
     if(nvs_open("enevina_weather",NVS_READONLY,&handle)!=ESP_OK) return;
     auto* saved=new(std::nothrow) WeatherCache;
     if(saved) {
         size_t size=sizeof(*saved);
-        if(nvs_get_blob(handle,"weather_v1",saved,&size)==ESP_OK &&
-           size==sizeof(*saved) && valid_cache(*saved)) cache=*saved;
+        if(nvs_get_blob(handle,"weather_v2",saved,&size)==ESP_OK &&
+           size==sizeof(*saved) &&
+           valid_weather_cache(*saved,current_location,time(nullptr))) {
+            cache=*saved;
+            last_saved_utc=cache.fetched_utc;
+        }
         delete saved;
     }
     nvs_close(handle);
 }
 
-void save_cache(const WeatherCache& data) {
+bool save_cache(const WeatherCache& data) {
     nvs_handle_t handle;
-    if(nvs_open("enevina_weather",NVS_READWRITE,&handle)!=ESP_OK) return;
-    if(nvs_set_blob(handle,"weather_v1",&data,sizeof(data))==ESP_OK)
-        nvs_commit(handle);
+    if(nvs_open("enevina_weather",NVS_READWRITE,&handle)!=ESP_OK) return false;
+    const bool saved=nvs_set_blob(handle,"weather_v2",&data,sizeof(data))==ESP_OK &&
+        nvs_commit(handle)==ESP_OK;
     nvs_close(handle);
+    return saved;
 }
 
 bool fetch_weather(WeatherCache& next) {
@@ -128,7 +106,8 @@ bool fetch_weather(WeatherCache& next) {
     }
     std::free(body);
     esp_http_client_cleanup(client);
-    return ok && valid_cache(next);
+    if(ok) next.checksum=weather_checksum(next);
+    return ok && valid_weather_cache(next,current_location,time(nullptr));
 }
 
 void poll_weather(void*) {
@@ -140,12 +119,17 @@ void poll_weather(void*) {
             auto* next=new(std::nothrow) WeatherCache;
             if(next) {
                 next->fetched_utc=now;
+                next->location=current_location;
                 if(fetch_weather(*next)) {
                     xSemaphoreTake(mutex,portMAX_DELAY);
-                    const bool changed=!same_points(cache,*next);
+                    const bool changed=!same_weather_points(cache,*next);
                     cache=*next;
                     xSemaphoreGive(mutex);
-                    if(changed) save_cache(*next);
+                    // Persist a refreshed age at most every six hours if
+                    // the forecast points have not changed.
+                    if((changed || last_saved_utc<=0 ||
+                        now-last_saved_utc>=6*3600) && save_cache(*next))
+                        last_saved_utc=now;
                     updated=true;
                     ESP_LOGI(tag,"validated %lu hourly forecast points",
                         static_cast<unsigned long>(next->count));
@@ -166,6 +150,7 @@ void start_weather_reader() {
         ESP_LOGW(tag,"FMI location missing or invalid; weather reader disabled");
         return;
     }
+    current_location=normalized_location(latitude,longitude);
     mutex=xSemaphoreCreateMutex();
     if(!mutex) { ESP_LOGE(tag,"weather mutex allocation failed"); return; }
     if(xTaskCreate(poll_weather,"weather_read",8192,nullptr,3,nullptr)!=pdPASS)
@@ -178,12 +163,10 @@ WeatherStatus weather_status() {
     const time_t now=time(nullptr);
     if(!mutex || now<=1700000000) return result;
     xSemaphoreTake(mutex,portMAX_DELAY);
-    result.points=cache.count;
-    result.fetched_utc=cache.fetched_utc;
-    if(cache.count>0) result.valid_until_utc=cache.points[cache.count-1].timestamp_utc;
-    if(cache.fetched_utc>0 && now>=cache.fetched_utc &&
-       now-cache.fetched_utc<=12*3600 &&
-       result.valid_until_utc>now) {
+    if(valid_weather_cache(cache,current_location,now)) {
+        result.points=cache.count;
+        result.fetched_utc=cache.fetched_utc;
+        result.valid_until_utc=cache.points[cache.count-1].timestamp_utc;
         for(size_t i=0;i<cache.count;++i) {
             if(cache.points[i].timestamp_utc>=now) {
                 result.available=true;

@@ -14,3 +14,11 @@ target_link_libraries(enevina_cli PRIVATE enevina_core)
 if(WIN32)
   target_link_libraries(enevina_cli PRIVATE psapi)
 endif()
+
+# Platform-independent P0 regression tests, including ESP weather-cache format.
+add_executable(optimizer_regression_tests tests/optimizer_regression_tests.cpp)
+target_link_libraries(optimizer_regression_tests PRIVATE enevina_core)
+add_test(NAME optimizer_regression_tests COMMAND optimizer_regression_tests)
+add_executable(weather_cache_tests tests/weather_cache_tests.cpp)
+target_include_directories(weather_cache_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME weather_cache_tests COMMAND weather_cache_tests)
