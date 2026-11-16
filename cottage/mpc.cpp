@@ -81,14 +81,20 @@ MpcResult optimize(const Parameters& p, const State& initial,
     const double grid_min=p.critical_c-1.0;
     const size_t bins=static_cast<size_t>(
         std::ceil((p.maximum_indoor_c-grid_min)/quantum_c))+2;
-    // Guard integer multiplication before allocation, even for a huge budget.
-    if(age_dim==0 || age_dim>no_parent/2 ||
-       bins>=no_parent/(2*age_dim)) {
+    // Keep two representatives per quantized bin/mode/dwell state:
+    // minimum cost and maximum actual temperature. A cheaper colder state
+    // alone can destroy the only exact terminal-feasible trajectory.
+    // All allocations, including terminal indexes, obey the byte budget.
+    constexpr size_t representatives=2;
+    const size_t age_multiplier=2*representatives;
+    if(age_dim==0 || age_dim>=no_parent/age_multiplier ||
+       bins>=no_parent/(age_multiplier*age_dim)) {
         result.status=MpcStatus::ResourceLimit;
         return result;
     }
-    const size_t states=bins*2*age_dim;
-    const size_t bytes_per_state=count*sizeof(uint16_t)+2*sizeof(Node);
+    const size_t states=bins*age_multiplier*age_dim;
+    const size_t bytes_per_state=count*sizeof(uint16_t)+
+        2*sizeof(Node)+sizeof(uint16_t);
     if(states>=no_parent || states>memory_budget_bytes/bytes_per_state) {
         result.status=MpcStatus::ResourceLimit;
         return result;
@@ -101,7 +107,7 @@ MpcResult optimize(const Parameters& p, const State& initial,
     std::vector<uint16_t> parent(count*states,no_parent);
     const size_t initial_age=std::min<size_t>(
         initial.minutes_in_mode/slot_minutes,age_max);
-    const size_t first=key(bin_of(initial.indoor_c),
+    const size_t first=representatives*key(bin_of(initial.indoor_c),
         initial.heat_requested,initial_age,age_dim);
     current[first]={0.0,initial.indoor_c};
     for(size_t t=0;t<count;t++) {
@@ -113,101 +119,131 @@ MpcResult optimize(const Parameters& p, const State& initial,
             if(const auto stop=check_interrupt();stop!=MpcStatus::Ok)
                 return interrupted(stop);
             const Node node=current[from];
-            if (!std::isfinite(node.objective)) continue;
-            const size_t age=from%age_dim;
-            const bool prior_on=((from/age_dim)%2)!=0;
+            if(!std::isfinite(node.objective)) continue;
+            const size_t physical_state=from/representatives;
+            const size_t age=physical_state%age_dim;
+            const bool prior_on=((physical_state/age_dim)%2)!=0;
             for(unsigned choice=0;choice<2;choice++) {
                 if(const auto stop=check_interrupt();stop!=MpcStatus::Ok)
                     return interrupted(stop);
-                const bool on=(choice!=0);
-                const bool changed=(on!=prior_on);
-                if (changed && age < (prior_on?min_on:min_off)) continue;
+                const bool on=choice!=0;
+                const bool changed=on!=prior_on;
+                if(changed && age<(prior_on?min_on:min_off)) continue;
                 const State source{node.temperature,prior_on,
                     static_cast<unsigned>(age*slot_minutes)};
                 const Step step=advance(p,source,periods[t],on);
                 const double temp=step.next.indoor_c;
-                if (!std::isfinite(temp) ||
-                    temp < min_c-1e-9 || temp > p.maximum_indoor_c+1e-9)
+                if(!std::isfinite(temp) ||
+                   temp<min_c-1e-9 || temp>p.maximum_indoor_c+1e-9)
                     continue;
                 const size_t new_age=changed?1:std::min(age+1,age_max);
-                const size_t to=key(bin_of(temp),on,new_age,age_dim);
+                const size_t to=representatives*key(bin_of(temp),on,new_age,age_dim);
                 const double objective=node.objective+step.cost_eur+
                     (changed?p.switching_penalty_eur:0.0);
-                // Deterministic tie-break; preserve temperature for terminal margin.
-                if (objective < next[to].objective-1e-10 ||
-                    (std::abs(objective-next[to].objective)<=1e-10 &&
-                     temp>next[to].temperature)) {
-                    next[to]={objective,temp};
-                    parent[t*states+to]=static_cast<uint16_t>(from);
+                if(!std::isfinite(objective)) continue;
+                auto retain=[&](size_t slot) {
+                    next[slot]={objective,temp};
+                    parent[t*states+slot]=static_cast<uint16_t>(from);
                     any=true;
-                }
+                };
+                // The first slot prioritizes cost; temperature breaks ties.
+                if(!std::isfinite(next[to].objective) ||
+                   objective<next[to].objective-1e-10 ||
+                   (std::abs(objective-next[to].objective)<=1e-10 &&
+                    temp>next[to].temperature))
+                    retain(to);
+                // The second slot prioritizes a feasible thermal margin,
+                // breaking equal temperatures by the lower objective.
+                if(!std::isfinite(next[to+1].objective) ||
+                   temp>next[to+1].temperature+1e-10 ||
+                   (std::abs(temp-next[to+1].temperature)<=1e-10 &&
+                    objective<next[to+1].objective-1e-10))
+                    retain(to+1);
             }
         }
         if(const auto stop=check_interrupt(true);stop!=MpcStatus::Ok)
             return interrupted(stop);
-        if(!any) { result.status=MpcStatus::Infeasible; return result; }
+        if(!any) {result.status=MpcStatus::Infeasible;return result;}
         current.swap(next);
     }
     const double end_min=std::max(min_c,initial.indoor_c)-1e-8;
-    size_t best=states;
+    std::vector<uint16_t> terminals;
+    terminals.reserve(states);
     for(size_t i=0;i<states;i++) {
         if(const auto stop=check_interrupt();stop!=MpcStatus::Ok)
             return interrupted(stop);
-        if(current[i].temperature < end_min ||
-           !std::isfinite(current[i].objective)) continue;
-        if(best==states || current[i].objective <
-            current[best].objective-1e-10 ||
-           (std::abs(current[i].objective-current[best].objective)<=1e-10 &&
-            current[i].temperature>current[best].temperature)) best=i;
+        if(std::isfinite(current[i].objective) &&
+           current[i].temperature>=end_min)
+            terminals.push_back(static_cast<uint16_t>(i));
     }
-    if(best==states) {result.status=MpcStatus::Infeasible;return result;}
-    result.count=count;
-    for(size_t t=count;t>0;t--) {
+    if(terminals.empty()) {result.status=MpcStatus::Infeasible;return result;}
+    std::sort(terminals.begin(),terminals.end(),[&](uint16_t a,uint16_t b) {
+        if(current[a].objective!=current[b].objective)
+            return current[a].objective<current[b].objective;
+        if(current[a].temperature!=current[b].temperature)
+            return current[a].temperature>current[b].temperature;
+        return a<b;
+    });
+    // An approximate DP survivor is not accepted without exact replay.
+    // If the cheapest survivor fails, try the next one in cost order.
+    for(const uint16_t finalist:terminals) {
         if(const auto stop=check_interrupt();stop!=MpcStatus::Ok)
             return interrupted(stop);
-        result.heat_16_c[t-1]=static_cast<uint8_t>((best/age_dim)%2);
-        const auto prev=parent[(t-1)*states+best];
-        if(prev==no_parent) {result.status=MpcStatus::ReplayFailed;return result;}
-        best=prev;
-    }
-    // Exact, unquantized replay: DP bins must never manufacture thermal energy.
-    State replay=initial;
-    double lowest=initial.indoor_c, cost=0, electric=0;
-    unsigned starts=0;
-    for(size_t t=0;t<count;t++) {
-        if(const auto stop=check_interrupt();stop!=MpcStatus::Ok)
-            return interrupted(stop);
-        const bool on=result.heat_16_c[t]!=0;
-        if(on!=replay.heat_requested) {
-            const unsigned required=replay.heat_requested ?
-                p.min_heat_minutes:p.min_off_minutes;
-            if(replay.minutes_in_mode<required) {
-                result.status=MpcStatus::ReplayFailed;return result;
+        MpcResult candidate{};
+        candidate.count=count;
+        size_t at=finalist;
+        bool replayable=true;
+        for(size_t t=count;t>0;t--) {
+            if(const auto stop=check_interrupt();stop!=MpcStatus::Ok)
+                return interrupted(stop);
+            const size_t physical_state=at/representatives;
+            candidate.heat_16_c[t-1]=
+                static_cast<uint8_t>((physical_state/age_dim)%2);
+            const auto prev=parent[(t-1)*states+at];
+            if(prev==no_parent) {replayable=false;break;}
+            at=prev;
+        }
+        if(!replayable) continue;
+        State replay=initial;
+        double lowest=initial.indoor_c,cost=0,electric=0;
+        unsigned starts=0;
+        for(size_t t=0;t<count;t++) {
+            if(const auto stop=check_interrupt();stop!=MpcStatus::Ok)
+                return interrupted(stop);
+            const bool on=candidate.heat_16_c[t]!=0;
+            if(on!=replay.heat_requested) {
+                const unsigned required=replay.heat_requested ?
+                    p.min_heat_minutes:p.min_off_minutes;
+                if(replay.minutes_in_mode<required) {
+                    replayable=false;
+                    break;
+                }
+                if(on) starts++;
             }
-            if(on) starts++;
+            const auto step=advance(p,replay,periods[t],on);
+            replay=step.next;
+            lowest=std::min(lowest,replay.indoor_c);
+            electric+=step.electric_kwh;
+            cost+=step.cost_eur;
+            if(!std::isfinite(replay.indoor_c) ||
+               replay.indoor_c<min_c-1e-8 ||
+               replay.indoor_c>p.maximum_indoor_c+1e-8) {
+                replayable=false;
+                break;
+            }
         }
-        const auto step=advance(p,replay,periods[t],on);
-        replay=step.next;
-        lowest=std::min(lowest,replay.indoor_c);
-        electric+=step.electric_kwh;
-        cost+=step.cost_eur;
-        if(!std::isfinite(replay.indoor_c) ||
-            replay.indoor_c<min_c-1e-8 ||
-            replay.indoor_c>p.maximum_indoor_c+1e-8) {
-            result.status=MpcStatus::ReplayFailed;return result;
-        }
+        if(!replayable || replay.indoor_c<end_min-1e-8) continue;
+        if(const auto stop=check_interrupt(true);stop!=MpcStatus::Ok)
+            return interrupted(stop);
+        candidate.status=MpcStatus::Ok;
+        candidate.cost_eur=cost;
+        candidate.electric_kwh=electric;
+        candidate.minimum_c=lowest;
+        candidate.final_c=replay.indoor_c;
+        candidate.starts=starts;
+        return candidate;
     }
-    if(replay.indoor_c<end_min-1e-8) {
-        result.status=MpcStatus::ReplayFailed;return result;
-    }
-    if(const auto stop=check_interrupt(true);stop!=MpcStatus::Ok)
-        return interrupted(stop);
-    result.status=MpcStatus::Ok;
-    result.cost_eur=cost;
-    result.electric_kwh=electric;
-    result.minimum_c=lowest;
-    result.final_c=replay.indoor_c;
-    result.starts=starts;
+    result.status=MpcStatus::ReplayFailed;
     return result;
 }
 } // namespace enevina::cottage

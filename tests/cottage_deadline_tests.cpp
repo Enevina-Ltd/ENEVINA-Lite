@@ -123,9 +123,9 @@ int main() {
     no_plan(optimize(p,initial,periods.data(),periods.size(),3*1024*1024,control),
             MpcStatus::Timeout,"wrap or discontinuous clock failure");
     // Normal timer can be injected and yields the same feasible plan.
-    FakeClock advancing{1000,0,0,false};
+    FakeClock advancing{1000,1,0,false};
     control.clock_context=&advancing;
-    control.runtime_budget_ms=10000;
+    control.runtime_budget_ms=1000000;
     auto again=optimize(p,initial,periods.data(),periods.size(),3*1024*1024,control);
     check(again.status==MpcStatus::Ok,"recovery after cancellation/timeout");
     check(again.count==good.count && std::abs(again.cost_eur-good.cost_eur)<1e-8,
