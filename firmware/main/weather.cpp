@@ -119,6 +119,9 @@ bool fetch_weather(WeatherCache& next) {
                 int read=0;
                 while(used<limit && (read=esp_http_client_read(client,body+used,
                     static_cast<int>(limit-used)))>0) used+=static_cast<size_t>(read);
+#ifdef COTTAGE_SHARED_MEMORY_GUARD
+                network_budget_sample();
+#endif
                 if(read==0 && used>0) {
                     body[used]='\0';
                     size_t count=0;
