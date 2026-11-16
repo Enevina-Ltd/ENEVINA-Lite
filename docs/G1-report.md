@@ -8,6 +8,20 @@ Käyttäjän sallimalla ESP:llä korvattiin vanha ohjelma erillisellä `firmware
 
 Eteenpäinhaun lämpöpumpun teho, COP ja jakson sähkökustannus lasketaan nyt kerran jaksoa kohti. Sisäinen haku käyttää 32-bittisiä liukulukuja, mutta rekonstruoitu aikataulu simuloidaan uudelleen alkuperäisellä kaksinkertaisen tarkkuuden fysiikkamallilla. Kaikki 12 G0:n PC-tapausta säilyttivät aiemman kelvollisuuden ja kustannuksen viiden desimaalin tarkkuudella. Alkuperäisen G0:n MILP-aineiston taloudelliset luvut ovat edelleen kyseisen ajon tuloksia; uutta MILP-ajoa ei ole tehty.
 
+## Versioned benchmark environment (P0 review correction)
+
+On 16 November 2026 the original Core benchmark host still had PlatformIO
+`espressif32 7.0.1`, Arduino framework package
+`3.20017.241212+sha.dcc1105b` and ESP32-S3 Xtensa toolchain
+`8.4.0+2021r2-patch5` installed. These exact versions are now pinned in
+`firmware/bench/platformio.ini`. The historical G1 serial log did **not**
+record its package versions, so that log alone does not prove the same
+versions were in use during the original measurement. Treat the old G1
+numbers as historical, **not a freshly reproduced or certified benchmark**.
+Rebenchmark the serial-only test with an authorized isolated test board
+before releasing performance claims; do not flash any board as part of
+this correction.
+
 ## Mitattu ajoaika
 
 Jokainen profiili ja horisontti ajettiin kolme kertaa 240 MHz:n ESP32-S3:lla. Profiilit ja lähtöarvot vastaavat `tools/reference_benchmark.py`-testin lievää, kylmää ja patterilämmitystä. `status=0` tarkoittaa kelvollista ratkaisua. [Sarjaportin raakaloki](benchmarks/g1-esp32s3-serial.log) sisältää yksittäiset ajat, kustannukset ja muistitiedot.
