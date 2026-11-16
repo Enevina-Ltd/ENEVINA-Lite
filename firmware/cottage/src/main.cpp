@@ -205,16 +205,20 @@ static void parse_sse_state(const char* raw) {
     if(changed) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
         if(climate_event) {
-            const bool continuous=climate_utc>0 && now>=climate_utc &&
-                now-climate_utc<=180;
-            observed_mode_duration.observe(copy.mode,
-                static_cast<uint64_t>(esp_timer_get_time()/1000),continuous);
+            // A CN105 SSE snapshot is not proof of a new pump-side read.
+            // Do not accumulate confirmed compressor dwell from a cached state.
+            observed_mode_duration.invalidate();
         }
         climate_utc=climate_stamp;compressor_utc=compressor_stamp;
         copy.captured_utc=climate_stamp&&compressor_stamp?
             std::min(climate_stamp,compressor_stamp):0;
         copy.received=(copy.captured_utc>0 &&
             now>=copy.captured_utc && now-copy.captured_utc<=180);
+        // This bridge supplies only event receipt time, NOT a documented
+        // pump-side timestamp or advancing successful UART-read sequence.
+        // A source-aware adapter may set verified proof after validation;
+        // the current SSE payload must remain UNVERIFIED_SOURCE.
+        copy.evidence={now,0,false};
         pump=copy;
         xSemaphoreGive(lock_data);
     }
@@ -476,7 +480,11 @@ Synteettinen lämpömalli ei ole kalibrointi eikä säästötodiste.</small></se
 <small>Laskelmat synteettisellä mallilla eivät osoita todellisia säästöjä.</small></section>
 <script>async function refresh(){try{
 const s=await (await fetch('/api/status',{cache:'no-store'})).json();
-const shown=[['CN105',s.cn105],['Pumppu',s.pump_mode],['Pumpun sisälämpö °C',s.pump_indoor_c],
+const shown=[['CN105, lähdemittaus varmennettu',s.cn105],['Pumppu',s.pump_mode],
+['Pumpun lähteen laatu',s.pump_source_quality],
+['Lähteen aikaleima varmennettu',s.pump_source_time_verified],
+['Pumpun vastaanotto UTC',s.pump_received_utc?new Date(s.pump_received_utc*1000).toISOString():'Ei vastaanottoa'],
+['Pumpun lähde-UTC',s.pump_source_utc?new Date(s.pump_source_utc*1000).toISOString():'Ei todennettua lähdeaikaa'],['Pumpun sisälämpö °C',s.pump_indoor_c],
 ['Riippumaton anturi °C',s.independent_c],['Kompressori Hz',s.compressor_hz],
 ['Shelly mökin kokonaisteho W',s.shelly_w],['Shellyn rele päällä',s.shelly_relay_on],['Spot €/kWh',s.spot],
 ['Sääennuste °C',s.weather_c],['Kokonaishinnan arvio €/kWh',s.total_price],
@@ -488,8 +496,8 @@ const shown=[['CN105',s.cn105],['Pumppu',s.pump_mode],['Pumpun sisälämpö °C'
 ['Pumpun lämpötilatapahtumia',s.sse_climate_events],
 ['Kompressoritaajuustapahtumia',s.sse_compressor_events],
 ['CN105-yhteyden heartbeat-lukuja',s.sse_link_events],
-['Pumpun viimeisin lämpötapahtuma UTC',s.cn105_climate_utc?new Date(s.cn105_climate_utc*1000).toISOString():'Ei mittausta'],
-['Kompressorin viimeisin tapahtuma UTC',s.cn105_compressor_utc?new Date(s.cn105_compressor_utc*1000).toISOString():'Ei mittausta'],
+['Lämpötapahtuman vastaanotto UTC (ei lähdemittaus)',s.cn105_climate_utc?new Date(s.cn105_climate_utc*1000).toISOString():'Ei mittausta'],
+['Kompressoritapahtuman vastaanotto UTC (ei lähdemittaus)',s.cn105_compressor_utc?new Date(s.cn105_compressor_utc*1000).toISOString():'Ei mittausta'],
 ['CN105-yhteyden uptime s',s.cn105_link_uptime_s],
 ['Shelly lukuja OK/virhe',s.shelly_reads_ok+'/'+s.shelly_reads_bad],
 ['Shelly viimeisin vaste ms',s.shelly_rtt_ms],
@@ -745,8 +753,16 @@ static void status_endpoint() {
     cJSON* root=cJSON_CreateObject();
     cJSON_AddStringToObject(root,"mode","VARJOTILA_EI_KOMENTOJA");
     cJSON_AddBoolToObject(root,"physical_writes",false);
+    const auto pump_quality=enevina::assess_measurement(cp.evidence,now,180);
     cJSON_AddBoolToObject(root,"cn105",valid_cn105(cp,now));
-    cJSON_AddStringToObject(root,"pump_mode",cp.mode==ObservedPumpMode::Heat?
+    cJSON_AddStringToObject(root,"pump_source_quality",enevina::quality_name(pump_quality));
+    cJSON_AddBoolToObject(root,"pump_source_time_verified",cp.evidence.source_time_verified);
+    cJSON_AddNumberToObject(root,"pump_received_utc",static_cast<double>(cp.evidence.received_utc));
+    if(cp.evidence.source_time_verified && cp.evidence.source_utc>0)
+        cJSON_AddNumberToObject(root,"pump_source_utc",static_cast<double>(cp.evidence.source_utc));
+    else cJSON_AddNullToObject(root,"pump_source_utc");
+    cJSON_AddStringToObject(root,"pump_mode",!valid_cn105(cp,now)?
+        "EI VAHVISTETTU":cp.mode==ObservedPumpMode::Heat?
         "HEAT":cp.mode==ObservedPumpMode::Off?"OFF":"MUU/EI");
     if(valid_cn105(cp,now)) {
         cJSON_AddNumberToObject(root,"pump_indoor_c",cp.indoor_c);
