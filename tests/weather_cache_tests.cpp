@@ -19,6 +19,14 @@ int main() {
     for(size_t i=0;i<cache.count;++i)
         cache.points[i]={hour+3600*static_cast<int64_t>(i+1),-12.5+double(i)};
     cache.checksum=weather_checksum(cache);
+    check(!should_load_weather_cache(false,0),
+          "unsynchronized boot must defer NVS cache read");
+    check(should_load_weather_cache(false,now),
+          "first synchronized clock iteration must restore NVS cache");
+    check(!should_load_weather_cache(true,now),
+          "successful clock synchronization must not reread NVS repeatedly");
+    check(!valid_weather_cache(cache,loc,0),
+          "forecast unavailable before trustworthy clock");
     check(valid_weather_cache(cache,loc,now),"same location cache accepted");
     check(!valid_weather_cache(cache,different,now),
           "different configured location rejects cached weather after failed fetch");
