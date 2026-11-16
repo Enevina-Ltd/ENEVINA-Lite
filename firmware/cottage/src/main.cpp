@@ -18,6 +18,7 @@
 #include <cstring>
 #include <string>
 #include "cottage_config.hpp"
+#include "cottage_premium_dashboard.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
 #include "cottage_secure_ota.hpp"
@@ -882,6 +883,56 @@ static void plan_endpoint() {
     web.sendContent("]}");
     web.sendContent("");
 }
+// C2.5: Small, read-only 15-minute price feed for the local premium dashboard.
+// Do not manufacture price points when the clock or market data is stale.
+static void prices_endpoint() {
+    const auto market=enevina_firmware::market_status();
+    if(!market.clock_trusted || !market.current_price_valid) {
+        web.sendHeader("Cache-Control","no-store");
+        web.send(200,"application/json; charset=utf-8",
+                 "{\"valid\":false,\"slots\":[]}");
+        return;
+    }
+    constexpr size_t kMaxPriceSlots=192;
+    auto* points=static_cast<enevina_firmware::PricePoint*>(
+        heap_caps_malloc(sizeof(enevina_firmware::PricePoint)*kMaxPriceSlots,
+                         MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    if(!points) {
+        web.send(503,"application/json; charset=utf-8",
+                 "{\"valid\":false,\"slots\":[]}");
+        return;
+    }
+    const size_t count=enevina_firmware::future_prices(points,kMaxPriceSlots);
+    web.sendHeader("Cache-Control","no-store");
+    web.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    web.send(200,"application/json; charset=utf-8","");
+    web.sendContent(count?"{\"valid\":true,\"slots\":[":"{\"valid\":false,\"slots\":[");
+    char line[192];
+    for(size_t i=0;i<count;++i) {
+        const auto& price=points[i];
+        if(!std::isfinite(price.spot_eur_per_kwh)) continue;
+        const time_t utc=static_cast<time_t>(price.start_utc);
+        struct tm local{};
+        localtime_r(&utc,&local); // Finland local day/night tariff, including DST
+        enevina::Tariff t=tariff(local.tm_hour<7||local.tm_hour>=22);
+        t.spot_eur_per_kwh=price.spot_eur_per_kwh;
+        double total=0;
+        const bool has_total=enevina::calculate_total_price(t,total) &&
+                             std::isfinite(total);
+        char total_buf[36];
+        if(has_total) snprintf(total_buf,sizeof(total_buf),"%.8f",total);
+        else strlcpy(total_buf,"null",sizeof(total_buf));
+        snprintf(line,sizeof(line),
+            "%s{\"utc\":%lld,\"spot\":%.8f,\"total\":%s}",
+            i?",":"",static_cast<long long>(price.start_utc),
+            price.spot_eur_per_kwh,total_buf);
+        web.sendContent(line);
+        if(i%16==15) delay(1);
+    }
+    web.sendContent("]}");
+    web.sendContent("");
+    heap_caps_free(points);
+}
 static void setup_model() {
     // Explicit test-only values. Real cottage data are not yet calibrated.
     if(!COTTAGE_SYNTHETIC_TEST_MODEL) return;
@@ -931,9 +982,23 @@ void setup() {
     setenv("TZ","EET-2EEST,M3.5.0/3,M10.5.0/4",1);
     tzset();
     configTime(0,0,"pool.ntp.org","time.google.com");
-    web.on("/",HTTP_GET,[](){web.send(200,"text/html; charset=utf-8",html);});
+    web.on("/",HTTP_GET,[](){
+        web.sendHeader("Cache-Control","no-store");
+        web.sendHeader("X-Content-Type-Options","nosniff");
+        web.sendHeader("Content-Security-Policy",
+            "default-src 'self'; connect-src 'self'; img-src 'self' data:; "
+            "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+            "frame-ancestors 'none'; base-uri 'none'");
+        web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html);
+    });
+    // Preserve the original full diagnostics page unchanged.
+    web.on("/diagnostics",HTTP_GET,[](){
+        web.sendHeader("Cache-Control","no-store");
+        web.send(200,"text/html; charset=utf-8",html);
+    });
     web.on("/api/status",HTTP_GET,status_endpoint);
     web.on("/api/plan",HTTP_GET,plan_endpoint);
+    web.on("/api/prices",HTTP_GET,prices_endpoint);
     c23_register_routes(web); // mode/config persistence, NO actuator writes
     web.onNotFound([](){web.send(404,"text/plain","Ei löydy");});
     web.begin();
