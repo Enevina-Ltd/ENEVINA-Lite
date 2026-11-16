@@ -1,3 +1,6 @@
+#ifdef ARDUINO
+#include "tls_roots.hpp"
+#endif
 #include "market.hpp"
 #include "market_cache.hpp"
 #include "forecast/sources.hpp"
@@ -87,7 +90,7 @@ bool fetch_day(const char* date, enevina::MarketPrice* output, size_t capacity,
     cfg.url=url;
     cfg.timeout_ms=10000;
     #ifdef ARDUINO
-    cfg.crt_bundle_attach=arduino_esp_crt_bundle_attach;
+    cfg.cert_pem=enevina_firmware::nordpool_ca_pem;
     #else
     cfg.crt_bundle_attach=esp_crt_bundle_attach;
     #endif

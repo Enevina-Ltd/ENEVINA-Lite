@@ -1,3 +1,6 @@
+#ifdef ARDUINO
+#include "tls_roots.hpp"
+#endif
 #include "weather.hpp"
 #include "weather_cache.hpp"
 #include "forecast/fmi.hpp"
@@ -79,7 +82,7 @@ bool fetch_weather(WeatherCache& next) {
     cfg.url=url;
     cfg.timeout_ms=12000;
     #ifdef ARDUINO
-    cfg.crt_bundle_attach=arduino_esp_crt_bundle_attach;
+    cfg.cert_pem=enevina_firmware::fmi_ca_pem;
     #else
     cfg.crt_bundle_attach=esp_crt_bundle_attach;
     #endif
