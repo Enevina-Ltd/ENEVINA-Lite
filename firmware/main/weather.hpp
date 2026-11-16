@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include "forecast/fmi.hpp"
 
 namespace enevina_firmware {
 struct WeatherStatus {
@@ -14,4 +15,5 @@ struct WeatherStatus {
 };
 void start_weather_reader();
 WeatherStatus weather_status();
+size_t future_weather(enevina::OutdoorPoint* output,size_t capacity);
 }

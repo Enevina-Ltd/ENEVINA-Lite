@@ -1,0 +1,10 @@
+// Reuse the *same* portable C++ source as PC tests; no duplicate algorithm.
+#include "../../../cottage/physics.cpp"
+#include "../../../cottage/mpc.cpp"
+#include "../../../cottage/telemetry.cpp"
+#include "../../../cottage/supervisor.cpp"
+#include "../../../cottage/forecast_bridge.cpp"
+#include "../../../cottage/ruuvi.cpp"
+#include "../../../forecast/pricing.cpp"
+#include "../../../forecast/sources.cpp"
+#include "../../../forecast/fmi.cpp"

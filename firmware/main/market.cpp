@@ -14,7 +14,9 @@
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#ifndef ARDUINO
 #include "esp_netif_sntp.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -89,7 +91,11 @@ bool fetch_day(const char* date, enevina::MarketPrice* output, size_t capacity,
     esp_http_client_config_t cfg{};
     cfg.url=url;
     cfg.timeout_ms=10000;
+    #ifdef ARDUINO
+    cfg.crt_bundle_attach=arduino_esp_crt_bundle_attach;
+    #else
     cfg.crt_bundle_attach=esp_crt_bundle_attach;
+    #endif
     esp_http_client_handle_t client=esp_http_client_init(&cfg);
     if(!client) return false;
     bool ok=false;
@@ -151,8 +157,10 @@ void poll_prices(void*) {
     // Finland's civil dates are needed only for the API query. Slots remain UTC.
     setenv("TZ","EET-2EEST,M3.5.0/3,M10.5.0/4",1);
     tzset();
+    #ifndef ARDUINO
     esp_sntp_config_t sntp=ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
     esp_netif_sntp_init(&sntp);
+    #endif
     load_cache();
     while(true) {
         const time_t now=time(nullptr);

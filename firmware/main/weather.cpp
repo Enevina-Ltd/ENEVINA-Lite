@@ -100,7 +100,11 @@ bool fetch_weather(WeatherCache& next) {
     esp_http_client_config_t cfg{};
     cfg.url=url;
     cfg.timeout_ms=12000;
+    #ifdef ARDUINO
+    cfg.crt_bundle_attach=arduino_esp_crt_bundle_attach;
+    #else
     cfg.crt_bundle_attach=esp_crt_bundle_attach;
+    #endif
     esp_http_client_handle_t client=esp_http_client_init(&cfg);
     if(!client) return false;
     bool ok=false;
@@ -195,5 +199,19 @@ WeatherStatus weather_status() {
     }
     xSemaphoreGive(mutex);
     return result;
+}
+}
+
+namespace enevina_firmware {
+size_t future_weather(enevina::OutdoorPoint* output,size_t capacity) {
+    if(!output || !mutex || !capacity) return 0;
+    const time_t now=time(nullptr);
+    if(now<=1700000000) return 0;
+    size_t n=0;
+    xSemaphoreTake(mutex,portMAX_DELAY);
+    if(cache.fetched_utc>0 && now>=cache.fetched_utc && now-cache.fetched_utc<=6*3600)
+        for(size_t i=0;i<cache.count && n<capacity;++i) output[n++]=cache.points[i];
+    xSemaphoreGive(mutex);
+    return n;
 }
 }
