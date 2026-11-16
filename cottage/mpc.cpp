@@ -59,7 +59,22 @@ MpcResult optimize(const Parameters& p, const State& initial,
     const size_t first=key(bin_of(initial.indoor_c),
         initial.heat_requested,initial_age,age_dim);
     current[first]={0.0,initial.indoor_c};
+    // Period-constant physics is intentionally precomputed; repeated exp(),
+    // COP, capacity and validation inside the grid search were too slow on ESP32.
+    // Exact physics::advance() replays and rejects every proposed schedule.
+    const double alpha=std::exp(-p.loss_kw_per_c*slot_hours/
+                                p.thermal_mass_kwh_per_c);
+    const double beta=(1.0-alpha)/p.loss_kw_per_c;
+    const double startup_fraction=1.0-p.startup_delay_minutes/slot_minutes;
     for(size_t t=0;t<count;t++) {
+        const auto& period=periods[t];
+        const double input=period.outdoor_c*(1.0-alpha) +
+            beta*period.internal_gain_kw;
+        const double thermal_max=heat_capacity_kw(p,period.outdoor_c) *
+            period.defrost_capacity_factor;
+        const double thermal_to_electric=slot_hours/
+            heat_cop(p,period.outdoor_c);
+        const double price=period.total_price_eur_per_kwh;
         std::fill(next.begin(),next.end(),Node{});
         bool any=false;
         for(size_t from=0;from<states;from++) {
@@ -71,16 +86,22 @@ MpcResult optimize(const Parameters& p, const State& initial,
                 const bool on=(choice!=0);
                 const bool changed=(on!=prior_on);
                 if (changed && age < (prior_on?min_on:min_off)) continue;
-                const State source{node.temperature,prior_on,
-                    static_cast<unsigned>(age*slot_minutes)};
-                const Step step=advance(p,source,periods[t],on);
-                const double temp=step.next.indoor_c;
+                const bool starting=on && !prior_on;
+                double thermal=on ? thermal_max*(starting?startup_fraction:1.0) : 0;
+                if(on && node.temperature>=16.0) thermal=0;
+                else if(on && node.temperature>15.5)
+                    thermal*=(16.0-node.temperature)/0.5;
+                const double temp=alpha*node.temperature+input+beta*thermal;
                 if (!std::isfinite(temp) ||
                     temp < min_c-1e-9 || temp > p.maximum_indoor_c+1e-9)
                     continue;
                 const size_t new_age=changed?1:std::min(age+1,age_max);
                 const size_t to=key(bin_of(temp),on,new_age,age_dim);
-                const double objective=node.objective+step.cost_eur+
+                const double electricity=slot_hours *
+                    (on?p.heat_standby_kw:p.off_standby_kw) +
+                    (on?thermal*thermal_to_electric:0.0) +
+                    (starting?p.startup_electric_kwh:0.0);
+                const double objective=node.objective+electricity*price+
                     (changed?p.switching_penalty_eur:0.0);
                 // Deterministic tie-break; preserve temperature for terminal margin.
                 if (objective < next[to].objective-1e-10 ||

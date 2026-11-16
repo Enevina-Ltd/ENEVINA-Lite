@@ -1,9 +1,12 @@
 # C2 — Mitsubishi FD25VA read-only Wi-Fi shadow, implementation report (2026-11-16)
 
-**C2 STATUS: NOT APPROVED FOR LIVE PILOT.** Firmware compiled successfully for
-ESP32-S3 with PlatformIO/Arduino, but it has **not yet been flashed on a
-confirmed standalone development board or tested with all live network
-services concurrently**. No physical actuator write command exists in code.
+**C2 STATUS: BENCH PASSED; LIVE INTEGRATION NOT APPROVED.** The full
+ESP32-S3 Wi-Fi shadow firmware cross-compiled, and the **separate serial-only
+bench image** was flashed to a physically identified ESP32-S3 (16 MB flash,
+8 MB PSRAM) on the Core development host. The bench ran optimizer + Wi-Fi
+access point + self-generated HTTP requests, **but did NOT connect to the real
+CN105, Shelly, Nord Pool, FMI or an independent cottage sensor**. No physical
+actuator write command exists in code.
 
 ## What was implemented
 
@@ -48,6 +51,19 @@ services concurrently**. No physical actuator write command exists in code.
 - `CottageForecast`/Ruuvi: 192 UTC slots across Finnish DST, negative spot,
   VAT and marginal costs, price gaps, stale dates, NaNs, RAWv5 temperature
   and unavailable measurement sentinel — **PASS** on Linux PC.
+- **Physical ESP32-S3 bench**: six synthetic scenarios 6/6 feasible with
+  identical exact replays. After precomputing period-constant COP,
+  thermal power and RC factors the optimized real-device times were:
+  96 slots **261, 354, 355 ms**; 192 slots **630, 780, 799 ms**.
+  Max 799 ms satisfies the 2 s target for this **bench-only** network
+  load. ESP32-S3 240 MHz with 8 MB PSRAM. Internal minimum free heap
+  245,444 bytes; minimum free PSRAM 7,920,123 bytes; optimizer task
+  stack high-water free about 30,244 **bytes** (ESP-IDF units).
+  Local Wi-Fi AP and 3 successfully served HTTP requests ran concurrently.
+  See [serial evidence](benchmarks/c2-esp32s3-bench-optimized.log).
+  The **unoptimized** reference had 96-slot worst 1,326 ms and
+  192-slot worst 3,015 ms, so the original 2s target FAILED before
+  targeted algorithmic optimization; no costs or constraints changed.
 - ESP32-S3 PlatformIO **compile and link PASS**. Arduino ESP32 2.0.17,
   platform espressif32 7.0.1, 16 MB flash and OPI PSRAM selected; RAM
   static utilization ~59,972 B; flash static utilization ~959,105 B.
@@ -75,11 +91,12 @@ demonstrate real savings, and none are Mitsubishi manufacturer COP values.
 
 ## Known blockers and follow-up test requirements
 
-1. **Not physically verified:** standalone ESP32-S3 Wi-Fi firmware flash,
-   real device network traffic, simultaneous CN105 SSE + Shelly + price +
-   FMI + web + BLE + MPC, 96/192 runtime and PSRAM/internal heap/stack
-   on the device. Requires an identified spare ESP32, not the
-   currently working CN105 bridge.
+1. **Not yet validated end-to-end:** the full standalone Wi-Fi shadow
+   firmware has NOT been flashed; only the isolated synthetic bench
+   variant has been flashed to the test board. CN105 SSE, Shelly,
+   Nord Pool, FMI, BLE, actual NVS recovery and the real Web UI have not
+   been tested simultaneously on hardware. The bench's Wi-Fi+HTTP
+   traffic does NOT substitute for this full workload.
 2. **No independent cottage sensor confirmed.** Main-house Ruuvi sensors
    cannot be presumed to measure the cottage. Validate a sensor in
    the coldest at-risk room and its BLE reception and timestamping.
@@ -129,3 +146,17 @@ local values outside version control before **spare-board-only** tests.
 **Approval gates:** C0 PC model PASS limited to synthetic scope; C1
 independent temperature unverified; C2 firmware builds but integrated
 device test pending; C3 physical actuation fully prohibited.
+
+## Subsequent bench optimization details
+
+The old MPC evaluated exact `advance()` and exp/COP/available-power
+calculations for each candidate at every horizon step, even when those
+values were constant for that step. The revised forward search
+precomputes the constant RC and COP terms outside the state loop
+without relaxing limits, and exact replay still calls the original
+`advance()`. Native 96/192 tests and ESP32 serial bench all passed.
+
+Physical bench install affected **only** a USB-connected development
+ESP32-S3. The working cottage CN105 bridge and Shelly were not flashed,
+configured or sent commands. Source-level write suppression is still
+not a substitute for C3's independent fail-safe hardware verification.

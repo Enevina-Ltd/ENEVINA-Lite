@@ -1,3 +1,4 @@
+#ifndef COTTAGE_BENCH_MODE
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -30,6 +31,7 @@ using namespace enevina::cottage;
 static WebServer web(80);
 static SemaphoreHandle_t lock_data=nullptr;
 static std::atomic<bool> wifi_ok{false};
+static std::atomic<uint32_t> web_loop_heartbeat_ms{0};
 static CN105Telemetry pump{};
 static ShellyTelemetry consumption{};
 static TemperatureSample temperature{};
@@ -307,7 +309,8 @@ static void optimizer_worker(void*) {
             Health health;
             health.now_utc=now;
             health.pump=cp;health.independent_temperature=ts;
-            health.watchdog_ok=true;health.calibrated=false;
+            health.watchdog_ok=(millis()-web_loop_heartbeat_ms.load()<5000);
+            health.calibrated=false;
             health.independent_freeze_protection_verified=false;
             health.price_fresh=ms.current_price_valid;
             health.weather_fresh=ws.available;
@@ -356,7 +359,7 @@ const shown=[['CN105',s.cn105],['Pumppu',s.pump_mode],['Pumpun sisälämpö °C'
 ['Sääennuste °C',s.weather_c],['Kokonaishinnan arvio €/kWh',s.total_price],
 ['MPC tila',s.mpc_status],['MPC aika ms',s.mpc_ms],['Pahin aika ms',s.mpc_worst_ms],
 ['Laskettu UTC',s.optimized_utc],['Vapaa RAM B',s.free_heap],
-['Vapaa PSRAM B',s.free_psram],['Pinon alaraja B',s.stack_words*4]];
+['Vapaa PSRAM B',s.free_psram],['Pinon vapaa alaraja B',s.stack_free_bytes]];
 document.querySelector('#metrics').replaceChildren(...shown.flatMap(([k,v])=>{
 let dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=k;dd.textContent=v??'Ei mittausta';return[dt,dd]}));
 document.querySelector('#reason').textContent=s.reason;
@@ -427,7 +430,7 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"optimized_utc",static_cast<double>(optimized));
     cJSON_AddNumberToObject(root,"free_heap",heap);
     cJSON_AddNumberToObject(root,"free_psram",psram);
-    cJSON_AddNumberToObject(root,"stack_words",stack);
+    cJSON_AddNumberToObject(root,"stack_free_bytes",stack);
     cJSON_AddStringToObject(root,"reason",reason);
     cJSON_AddNumberToObject(root,"bad_reads",failed_reads.load());
     char* serialized=cJSON_PrintUnformatted(root);
@@ -499,6 +502,7 @@ void setup() {
     web.on("/api/plan",HTTP_GET,plan_endpoint);
     web.onNotFound([](){web.send(404,"text/plain","Ei löydy");});
     web.begin();
+    enableLoopWDT(); // Arduino ESP32 loop-task hardware watchdog.
     enevina_firmware::start_market_reader();
     enevina_firmware::start_weather_reader();
     xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",8192,nullptr,2,nullptr,0);
@@ -509,6 +513,9 @@ void setup() {
 }
 void loop() {
     wifi_ok.store(WiFi.status()==WL_CONNECTED);
+    web_loop_heartbeat_ms.store(millis());
     web.handleClient();
     delay(15);
 }
+
+#endif // COTTAGE_BENCH_MODE
