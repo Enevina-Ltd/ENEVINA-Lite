@@ -25,6 +25,12 @@ int main(){
         prices.size(),weather.data(),weather.size(),t,192);
     assert(good.status==BridgeStatus::Ready && good.count==192);
     assert(good.first_utc==t0);
+    const auto near=join_forecast(t0+40,t0-30,t0-30,prices.data(),
+        prices.size(),weather.data(),weather.size(),t,96);
+    assert(near.status==BridgeStatus::Ready && near.first_utc==t0);
+    assert(join_forecast(t0+300,t0-30,t0-30,prices.data(),
+        prices.size(),weather.data(),weather.size(),t,96).status==
+        BridgeStatus::UnalignedStart);
     assert(good.periods[0].total_price_eur_per_kwh<0.03);
     assert(good.periods[1].total_price_eur_per_kwh>0.14);
     assert(good.periods[0].outdoor_c==-5);

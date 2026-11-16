@@ -27,6 +27,7 @@
 #include "cottage/ruuvi.hpp"
 #include "cottage/url_guard.hpp"
 #include "cottage/mode_timing.hpp"
+#include "cottage/sse_transport.hpp"
 #include "../../main/market.hpp"
 #include "../../main/weather.hpp"
 
@@ -86,10 +87,14 @@ static bool get_http(const char* url,String& result,unsigned timeout_ms=4000) {
     request.setConnectTimeout(1500);
     if(!request.begin(client,url)) return false;
     int status=request.GET();
-    bool ok=status==200;
+    // Shelly Gen2 supplies Content-Length. Never request an unbounded
+    // response body, even if the local device is misconfigured.
+    const int body_size=request.getSize();
+    const bool ok=status==200 && body_size>0 && body_size<=4096 &&
+        request.header("Transfer-Encoding").length()==0;
     if(ok) result=request.getString();
     request.end();
-    return ok && result.length()<16384;
+    return ok && result.length()==static_cast<unsigned>(body_size);
 }
 static void parse_sse_state(const char* raw) {
     cJSON* root=cJSON_Parse(raw);
@@ -147,38 +152,43 @@ static void sse_worker(void*) {
         request.setConnectTimeout(2000);
         request.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
         request.setTimeout(2500);
+        request.addHeader("Accept","text/event-stream");
+        request.addHeader("Accept-Encoding","identity");
+        static const char* headers[]={"Content-Type","Transfer-Encoding"};
+        request.collectHeaders(headers,2);
         if(request.begin(client,COTTAGE_CN105_URL) && request.GET()==200) {
-            WiFiClient* stream=request.getStreamPtr();
-            char line[1536]={};size_t len=0;
-            char event[20]={};
-            uint32_t last_activity_ms=millis();
-            // Keep the SSE stream up while healthy. A forced 30s reconnect
-            // destroys our evidence of elapsed HEAT/OFF mode duration.
-            while(wifi_ok.load() && client.connected() &&
-                  static_cast<uint32_t>(millis()-last_activity_ms)<180000u) {
-                if(!stream->available()) {
-                    vTaskDelay(pdMS_TO_TICKS(20));continue;
-                }
-                const int byte=stream->read();
-                if(byte<0) continue;
-                last_activity_ms=millis();
-                if(byte=='\r') continue;
-                if(byte=='\n') {
-                    if(len==0) {
-                        event[0]=0;
-                    } else {
-                        line[len]=0;
-                        if(strncmp(line,"event: ",7)==0)
-                            strlcpy(event,line+7,sizeof(event));
-                        else if(strcmp(event,"state")==0 &&
-                                strncmp(line,"data: ",6)==0)
-                            parse_sse_state(line+6);
+            const String content_type=request.header("Content-Type");
+            const String transfer=request.header("Transfer-Encoding");
+            const bool chunked=transfer.equalsIgnoreCase("chunked");
+            const bool plain=transfer.length()==0 ||
+                transfer.equalsIgnoreCase("identity");
+            if(content_type.indexOf("text/event-stream")<0 ||
+               (!chunked && !plain)) {
+                failed_reads++;
+            } else {
+                WiFiClient* stream=request.getStreamPtr();
+                HttpChunkDecoder decoder;
+                SseStateParser parser([](const char* json,void*) {
+                    parse_sse_state(json);
+                },nullptr);
+                uint32_t last_activity_ms=millis();
+                while(wifi_ok.load() && client.connected() &&
+                      static_cast<uint32_t>(millis()-last_activity_ms)<180000u) {
+                    if(!stream->available()) {
+                        vTaskDelay(pdMS_TO_TICKS(20));continue;
                     }
-                    len=0;
-                } else if(len<sizeof(line)-1) {
-                    line[len++]=static_cast<char>(byte);
-                } else {
-                    len=0;event[0]=0; // reject oversize SSE event
+                    const int input=stream->read();
+                    if(input<0)continue;
+                    last_activity_ms=millis();
+                    uint8_t body=0;
+                    bool produced=!chunked;
+                    if(chunked && !decoder.feed(static_cast<uint8_t>(input),
+                                                body,produced)) {
+                        failed_reads++;
+                        break;
+                    }
+                    if(produced) parser.feed(chunked?body:static_cast<uint8_t>(input));
+                    if(chunked && decoder.finished())break;
                 }
             }
         } else { failed_reads++; }
@@ -286,7 +296,10 @@ static void optimizer_worker(void*) {
             for(size_t i=0;i<pc;i++) aligned[i]={prices[i].start_utc,
                 prices[i].spot_eur_per_kwh};
             *bridge=BridgeResult{};
-            if(pc&&wc) {
+            // A fresh indoor measurement is not a forecast for an entire
+            // unfinished quarter-hour. Only optimize near the UTC boundary.
+            const bool near_slot_start=(now%900<=60);
+            if(near_slot_start && pc&&wc) {
                 *bridge=join_forecast_two_tariffs(now,ms.last_fetch_utc,ws.fetched_utc,
                     aligned,pc,weather,wc,tariff(false),tariff(true),192);
                 if(bridge->status!=BridgeStatus::Ready)
@@ -294,9 +307,9 @@ static void optimizer_worker(void*) {
                         aligned,pc,weather,wc,tariff(false),tariff(true),96);
             }
             xSemaphoreTake(lock_data,portMAX_DELAY);
-            bridge_status=bridge->status;
+            if(near_slot_start) bridge_status=bridge->status;
             xSemaphoreGive(lock_data);
-            if(bridge->status==BridgeStatus::Ready &&
+            if(near_slot_start && bridge->status==BridgeStatus::Ready &&
                valid_cn105(cp,now) && valid_temperature(ts,now) &&
                (cp.mode==ObservedPumpMode::Off ||
                 cp.mode==ObservedPumpMode::Heat) &&
@@ -336,7 +349,7 @@ static void optimizer_worker(void*) {
                     "Vain synteettinen testimalli":"MPC infeasible / virhe",
                     sizeof(reason_text));
                 xSemaphoreGive(lock_data);
-            } else {
+            } else if(near_slot_start) {
                 set_reason(!COTTAGE_SYNTHETIC_TEST_MODEL?
                     "Rakennusmalli ei ole kalibroitu":
                     !valid_temperature(ts,now)?"Riippumaton anturi puuttuu / vanha":
@@ -346,6 +359,13 @@ static void optimizer_worker(void*) {
                     "Ennuste puuttuu / vanhentunut");
                 xSemaphoreTake(lock_data,portMAX_DELAY);
                 plan_count=0;last_plan.status=MpcStatus::InvalidInput;
+                xSemaphoreGive(lock_data);
+            }
+            if(!valid_cn105(cp,now) || !valid_temperature(ts,now) ||
+               !ms.current_price_valid || !ws.available) {
+                xSemaphoreTake(lock_data,portMAX_DELAY);
+                plan_count=0;
+                last_plan.status=MpcStatus::InvalidInput;
                 xSemaphoreGive(lock_data);
             }
             Health health;
@@ -484,6 +504,9 @@ static void plan_endpoint() {
     xSemaphoreTake(lock_data,portMAX_DELAY);
     const MpcResult p=last_plan;
     const size_t n=plan_count;
+    const int64_t computed_utc=last_optimized_utc;
+    const CN105Telemetry cp=pump;
+    const TemperatureSample ts=temperature;
     std::unique_ptr<Row[]> rows(new(std::nothrow) Row[max_horizon_slots]);
     if(rows) std::copy(plan_rows.begin(),plan_rows.end(),rows.get());
     xSemaphoreGive(lock_data);
@@ -491,7 +514,11 @@ static void plan_endpoint() {
     web.sendHeader("Cache-Control","no-store");
     web.send(200,"application/json; charset=utf-8","");
     char buf[220];
-    const bool ok=rows && p.status==MpcStatus::Ok && n>0 && n<=192;
+    const int64_t current_utc=time(nullptr);
+    const bool ok=rows && p.status==MpcStatus::Ok && n>0 && n<=192 &&
+        current_utc>=computed_utc && current_utc-computed_utc<900 &&
+        valid_cn105(cp,current_utc) && valid_temperature(ts,current_utc) &&
+        COTTAGE_SYNTHETIC_TEST_MODEL;
     snprintf(buf,sizeof(buf),
       "{\"valid\":%s,\"count\":%u,\"cost_eur\":%.8f,\"minimum_c\":%.5f,\"slots\":[",
       ok?"true":"false",static_cast<unsigned>(ok?n:0),ok?p.cost_eur:0,ok?p.minimum_c:0);

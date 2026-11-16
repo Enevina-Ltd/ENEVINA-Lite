@@ -12,7 +12,7 @@ struct Spot15 {
 };
 enum class BridgeStatus : uint8_t {
     Ready, BadClock, StalePrices, StaleWeather, Gap, BadPrice,
-    BadWeather, Invalid
+    BadWeather, Invalid, UnalignedStart
 };
 struct BridgeResult {
     BridgeStatus status=BridgeStatus::Invalid;

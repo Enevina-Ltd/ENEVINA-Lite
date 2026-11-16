@@ -17,7 +17,13 @@ BridgeResult join_forecast_two_tariffs(int64_t now,int64_t price_fetch,int64_t w
         result.status=BridgeStatus::StaleWeather;return result;
     }
     // Always plan at a UTC quarter-hour boundary; caller triggers after boundary.
-    const int64_t start=((now+899)/900)*900;
+    // Initial measured temperature is at the current UTC quarter-hour.
+    const int64_t start=(now/900)*900;
+    // An indoor reading near the END of an interval cannot be projected
+    // as if it were measured at the interval START. Fail closed.
+    if(now-start>60) {
+        result.status=BridgeStatus::UnalignedStart;return result;
+    }
     for(size_t i=0;i<slots;++i) {
         const int64_t ts=start+static_cast<int64_t>(i)*900;
         double spot=0;
