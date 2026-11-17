@@ -8,7 +8,6 @@ static ControlSnapshot base() {
     s.temperature_fresh=s.market_fresh=true;
     s.cn105_link_fresh=s.bridge_get_ok=true;
     s.current_heat=false;s.current_setpoint_c=21;
-    s.now_ms=10000000;
     s.proposal.action=BootstrapAction::HeatSetpoint;
     s.proposal.heat_setpoint_c=18.5;
     return s;
@@ -40,13 +39,9 @@ int main() {
     assert(choose_mitsubishi_control(s).gate==ControlBlock::AlreadyApplied);
     s.current_heat=true;
     assert(choose_mitsubishi_control(s).step==ControlStep::SetOff);
-    s.has_confirmed_mode_change=true;s.last_mode_change_ms=s.now_ms-3599999;
-    assert(choose_mitsubishi_control(s).gate==ControlBlock::ModeDwell);
-    s.last_mode_change_ms=s.now_ms-3600000;
-    assert(choose_mitsubishi_control(s).step==ControlStep::SetOff);
-    s=base();s.has_last_command=true;s.last_command_ms=s.now_ms-59999;
-    assert(choose_mitsubishi_control(s).gate==ControlBlock::RateLimited);
-    s.last_command_ms=s.now_ms-60000;
+    // No invented 60-minute dwell or 15-minute retry ban:
+    // only real device capabilities and valid input constrain commands.
+    s=base();
     assert(choose_mitsubishi_control(s).step==ControlStep::Setpoint);
     s=base();s.current_setpoint_c=std::numeric_limits<double>::quiet_NaN();
     assert(choose_mitsubishi_control(s).step==ControlStep::Setpoint);
