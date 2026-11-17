@@ -22,10 +22,11 @@ class OccupiedModeTests(unittest.TestCase):
         self.assertIn('mode_s!="2"&&mode_s!="3"', SERVICE)
 
     def test_connected_to_optimizer_and_actuator_selection(self):
-        self.assertIn("mode.mode==CottageMode::Occupied?", MAIN)
-        self.assertIn("mode.occupied_target_c", MAIN)
+        self.assertIn("const CottageModePlan target_plan=c23_current_mode_plan()", MAIN)
+        self.assertIn("input.desired_room_c=target_plan.target_c", MAIN)
         self.assertIn("candidate.heating_mode", MAIN)
-        self.assertIn("mode.mode!=CottageMode::Occupied", MAIN)
+        self.assertIn("mode.mode==CottageMode::Occupied", MAIN)
+        self.assertIn("c23_current_mode_plan()", MAIN)
         self.assertIn("c23_config_generation()!=config_generation", MAIN)
         self.assertIn("cottage_control_tick()", MAIN)
         self.assertNotIn('static const char html[] PROGMEM', MAIN)
