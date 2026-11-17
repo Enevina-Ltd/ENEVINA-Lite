@@ -49,6 +49,11 @@ int main() {
     in.desired_room_c=24.0;in.indoor_c=15.0;
     d=bootstrap_price_decision(in);
     assert(d.action==BootstrapAction::HeatSetpoint && near(d.heat_setpoint_c,26.0));
+    in.desired_room_c=26.0;in.indoor_c=20.0;
+    d=bootstrap_price_decision(in);
+    assert(d.action==BootstrapAction::HeatSetpoint && near(d.heat_setpoint_c,26.0));
+    in.desired_room_c=26.5;
+    assert(bootstrap_price_decision(in).reason==BootstrapReason::MissingTemperature);
     in.desired_room_c=5.0;in.indoor_c=3.0;
     d=bootstrap_price_decision(in);
     assert(d.action==BootstrapAction::HeatSetpoint && near(d.heat_setpoint_c,16.0));
