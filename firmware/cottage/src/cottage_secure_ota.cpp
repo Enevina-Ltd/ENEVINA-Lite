@@ -28,6 +28,11 @@
 // Volatile access prevents the compiler from eliding the ROM evidence.
 static const volatile char signed_pull_marker[] =
     "ENEVINA_C24_SIGNED_PULL_OTA_CAPABLE_V1";
+#ifndef COTTAGE_OTA_CHANNEL_MARKER
+#error "Signed OTA requires a channel-bound generated cottage_ota_private.hpp"
+#endif
+// Retain the full public trust/endpoint fingerprint in the application image.
+static const volatile char signed_channel_marker[] = COTTAGE_OTA_CHANNEL_MARKER;
 #endif
 
 namespace {
@@ -215,7 +220,7 @@ bool update_app(const Release& release) {
 }
 bool cottage_ota_configured(){
 #if ENEVINA_SIGNED_OTA_AVAILABLE
-    return signed_pull_marker[0]=='E';
+    return signed_pull_marker[0]=='E' && signed_channel_marker[0]=='E';
 #else
     return false;
 #endif
