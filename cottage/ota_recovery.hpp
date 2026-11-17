@@ -12,6 +12,19 @@ enum class ImageState : uint8_t {
     Undefined = 0, New = 1, PendingVerify = 2, Valid = 3,
     Invalid = 4, Aborted = 5
 };
+// ESP-IDF's esp_ota_img_states_t values are NOT our portable enum:
+// NEW=0, PENDING=1, VALID=2, INVALID=3, ABORTED=4,
+// UNDEFINED=0xffffffff. Never use static_cast<ImageState>(raw).
+inline ImageState decode_esp_idf_image_state(uint32_t raw) {
+    switch(raw) {
+    case 0u:return ImageState::New;
+    case 1u:return ImageState::PendingVerify;
+    case 2u:return ImageState::Valid;
+    case 3u:return ImageState::Invalid;
+    case 4u:return ImageState::Aborted;
+    default:return ImageState::Undefined;
+    }
+}
 struct Transaction {
     uint32_t magic = kTxnMagic;
     uint32_t format = kTxnFormat;
