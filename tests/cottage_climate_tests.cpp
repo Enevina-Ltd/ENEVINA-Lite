@@ -79,6 +79,24 @@ int main() {
     }
     assert(!moisture_gate.valid(1000+600001ULL));
     assert(moisture_gate.age_ms(1000+600001ULL)==600001ULL);
+    // Codex P2: a stale bound sensor may reboot its sequence on battery
+    // replacement. Never reset on one old/replayed frame; accept only
+    // two advancing restart frames after the previous value has expired.
+    RuuviBinding restart_gate;
+    restart_gate.bind(a.mac);
+    RuuviV5 before_restart=a;before_restart.sequence=10000;
+    assert(restart_gate.accept(before_restart,1000)==RuuviAccept::Accepted);
+    RuuviV5 restarted=before_restart;restarted.sequence=0;
+    assert(restart_gate.accept(restarted,400000)==RuuviAccept::OldSequence);
+    assert(restart_gate.valid(400000));
+    assert(restart_gate.accept(restarted,700001)==RuuviAccept::OldSequence);
+    assert(!restart_gate.valid(700001));
+    restarted.sequence=1;
+    assert(restart_gate.accept(restarted,701001)==RuuviAccept::Accepted);
+    assert(restart_gate.valid(701001));
+    assert(restart_gate.accept(restarted,701500)==RuuviAccept::Duplicate);
+    restarted.sequence=0;
+    assert(restart_gate.accept(restarted,702000)==RuuviAccept::OldSequence);
     gate.unbind();
     assert(!gate.valid(2100));
     assert(!parse_ruuvi_mac("FF:FF:FF:FF:FF:FF",official_mac));
@@ -109,6 +127,19 @@ int main() {
     assert(restored.restore(dump));
     assert(restored.count()==hist.count());
     assert(restored.newest(0).hour_utc==hist.newest(0).hour_utc);
+    // Codex P2: an unsynchronised reboot MUST NOT overwrite NVS-restored
+    // UTC history with boot-relative hours, even before NTP arrives.
+    AirHistory persisted_history;
+    for(int i=0;i<48;i++)
+        assert(persisted_history.add(air,1700000000LL+i*3600LL));
+    AirHistory recovered_history;
+    assert(recovered_history.restore(persisted_history.dump()));
+    assert(recovered_history.count()==48);
+    assert(!recovered_history.add_offline(air,3600000));
+    assert(recovered_history.count()==48);
+    assert(recovered_history.add(air,1700000000LL+48*3600LL));
+    assert(recovered_history.count()==49);
+    assert(recovered_history.newest(48).hour_utc==1700000000LL/3600);
     dump.checksum++;
     assert(!restored.restore(dump));
     assert(restored.count()==2);
