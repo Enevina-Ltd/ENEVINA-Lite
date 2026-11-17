@@ -33,10 +33,26 @@ Legacy `pending` is migrated only if the bootloader independently proves
 a PENDING_VERIFY candidate; otherwise it is cleaned conservatively
 without claiming a failed boot.
 
+## ESP-IDF OTA-state compatibility P1
+
+The independent Codex review of `0ba46e9` found that the
+`esp_ota_img_states_t` numeric values are **NEW=0, PENDING_VERIFY=1,
+VALID=2, INVALID=3, ABORTED=4, UNDEFINED=0xffffffff** in the installed
+Arduino 2.0.17 / ESP-IDF SDK. A raw cast to the portable `ImageState`
+previously treated a real pending image as NEW and could cause a false
+rollback/lockout.
+
+The new `decode_esp_idf_image_state(uint32_t)` explicitly maps these
+values, and the embedded source asserts their values from its actual
+ESP-IDF headers at compile-time. The portable test verifies all six
+native numeric values and checks that native PENDING and VALID reach
+the expected recovery decision. Rebuilt Debug 17/17, Release 17/17
+and ESP32-S3 firmware (BUILD+LINK) successfully after the fix.
+
 ## Regression evidence (Core machine, isolated workspace)
 
 Tested code branch: `feat/cottage-c24-memory-ota-safety-20261116`.
-Release identity for the change series up to `6d1b4f36a510`.
+Release identity for the change series up to `8bc6f8c4ceb5` (updated with the ESP-IDF P1 fix).
 Workspace: `/home/kaelion/enevina-lite-pr7-nvs-fault-20261117`.
 Test logs: `/tmp/pr7_strict_dbgtest.log`,
 `/tmp/pr7_strict_reltest.log`, `/tmp/pr7_strict_pio.log`,
@@ -53,7 +69,7 @@ Test logs: `/tmp/pr7_strict_dbgtest.log`,
 - BLE mutex release regression: **1/1 PASS**.
 - Idle HTTPS handshake regression: **1/1 PASS**.
 - ESP32-S3 PlatformIO build+link: **PASS**, 84,948 B static RAM,
-  1,629,553 B firmware.
+  1,629,617 B firmware.
 - Real PlatformIO upload target, dummy port `/dev/null`:
   **BLOCKED** with `ENEVINA_LITE_USB_UPLOAD_BLOCKED`, exit code 5.
   This was a prevention test, not physical flash.
