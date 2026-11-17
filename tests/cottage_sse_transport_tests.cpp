@@ -87,10 +87,18 @@ int main() {
     const std::string unicode_injection="event: state\ndata: "+unicode_nul+"\n\n";
     assert(parse(unicode_injection,false).empty());
     assert(parse(chunks(unicode_injection,7),true).empty());
-    // The literal characters \u0000 (escaped backslash) are harmless.
+
+    // The CN105 proof is JSON inside an outer JSON string. Two wire
+    // backslashes become one after cJSON's first decoding stage.
+    const std::string nested_proof=R"({"id":"text_sensor/Enevina CN105 Verified Snapshot","value":"{\"schema\":1,\"mode\":\"HEAT\\u0000bad\"}"})";
+    const std::string nested_injection="event: state\ndata: "+nested_proof+"\n\n";
+    assert(parse(nested_injection,false).empty());
+    assert(parse(chunks(nested_injection,3),true).empty());
+    // Even a literal first-level escape is blocked: nested proof JSON may
+    // decode it again into a NUL in a security-sensitive field.
     const std::string literal_escape=R"({"id":"probe","value":"ok\\u0000"})";
     const auto literal_events=parse("event: state\ndata: "+literal_escape+"\n\n",false);
-    assert(literal_events.size()==1 && literal_events[0]==literal_escape);
+    assert(literal_events.empty());
     // Invalid hex framing and impossible chunk lengths fail closed.
     HttpChunkDecoder malformed;
     uint8_t b=0;bool emitted=false;
