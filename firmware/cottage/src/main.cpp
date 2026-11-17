@@ -19,6 +19,7 @@
 #include <cstring>
 #include <string>
 #include "cottage_config.hpp"
+#include "cottage_premium_dashboard.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
 #include "cottage_secure_ota.hpp"
@@ -47,6 +48,8 @@ static std::atomic<bool> wifi_ok{false};
 static std::atomic<uint32_t> web_loop_heartbeat_ms{0};
 static CN105Telemetry pump{};
 static ObservedModeDuration observed_mode_duration{};
+// Protected by lock_data. Reject MPC results computed before an SSE mode change.
+static uint32_t observed_mode_generation=0;
 static ShellyTelemetry consumption{};
 static TemperatureSample temperature{};
 static int64_t climate_utc=0,compressor_utc=0;
@@ -106,32 +109,53 @@ static void verify_new_ota_boot() {
     const esp_partition_t* running=esp_ota_get_running_partition();
     esp_ota_img_states_t state=ESP_OTA_IMG_UNDEFINED;
     if(!running || esp_ota_get_state_partition(running,&state)!=ESP_OK ||
-       state!=ESP_OTA_IMG_PENDING_VERIFY) return;
+       (state!=ESP_OTA_IMG_PENDING_VERIFY && state!=ESP_OTA_IMG_VALID))return;
+    const bool boot_pending=state==ESP_OTA_IMG_PENDING_VERIFY;
     const uint32_t elapsed=millis()-boot_validation_started_ms;
+    if(!cottage_ota_confirmation_pending()) {
+        // Legacy NVS migration or transaction read may have failed.
+        // Do not accept the candidate without a durable release identity.
+        if(boot_pending && elapsed>120000)
+            esp_ota_mark_app_invalid_rollback_and_reboot();
+        return;
+    }
 #ifdef ENEVINA_OTA_TEST_RESET_BEFORE_CONFIRM
     // Explicitly gated physical regression test: simulate sudden app reset
     // while the new OTA image is pending. Only enable in a special signed
     // fault-test release, never in the field/production firmware.
-    if(elapsed>=15000) {
+    if(boot_pending && elapsed>=15000) {
         Serial.println("C24_OTA_TEST: restarting before confirmation");
         Serial.flush();
         esp_restart();
     }
 #endif
     if(elapsed<60000) return; // allow BLE, WebServer, RTOS to settle
-    const bool healthy=boot_ui_started && wifi_ok.load() &&
+    // Never confirm a candidate that cannot receive the next signed OTA.
+    const bool healthy=cottage_ota_configured() &&
+        boot_ui_started && wifi_ok.load() &&
         c23_ble_initialized() &&
         ESP.getPsramSize()>=7*1024*1024 &&
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>=64*1024 &&
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>=16*1024 &&
-        task_sse!=nullptr && task_shelly!=nullptr && task_optimizer!=nullptr;
+        task_sse!=nullptr && task_shelly!=nullptr &&
+        task_optimizer!=nullptr && task_ota!=nullptr;
     if(healthy) {
-        if(esp_ota_mark_app_valid_cancel_rollback()==ESP_OK) {
-            cottage_ota_confirm_boot();
-            ota_boot_confirmed=true;
+        // Power loss can occur after bootloader VALID and before NVS good.
+        // Retry the same durable NVS transaction on both PENDING and VALID
+        // boots. Never claim success after a failed NVS put/remove.
+        if(boot_pending && esp_ota_mark_app_valid_cancel_rollback()!=ESP_OK) {
+            Serial.println("C24_OTA_ERROR: boot validation could not commit");
+            return;
         }
-        else Serial.println("C24_OTA_ERROR: boot validation could not commit");
-    } else if(elapsed>120000) {
+        if(cottage_ota_confirm_boot())ota_boot_confirmed=true;
+        else {
+            static uint32_t last_nvs_error_ms=0;
+            if(millis()-last_nvs_error_ms>=30000u){
+                last_nvs_error_ms=millis();
+                Serial.println("C24_OTA_ERROR: NVS confirmation failed; retrying");
+            }
+        }
+    } else if(boot_pending && elapsed>120000) {
         Serial.println("C24_OTA_REJECT: boot self-test failed; requesting rollback");
         esp_ota_mark_app_invalid_rollback_and_reboot();
     }
@@ -311,19 +335,31 @@ static void parse_sse_state(const char* raw) {
     if(changed) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
         if(climate_event) {
-            // A CN105 SSE snapshot is not proof of a new pump-side read.
-            // Do not accumulate confirmed compressor dwell from a cached state.
-            observed_mode_duration.invalidate();
+            const bool continuous=climate_utc>0 && now>=climate_utc &&
+                now-climate_utc<=180;
+            // The MPC snapshot assumes both its original pump mode AND
+            // confirmed uninterrupted dwell age. A gap >180s or a clock
+            // discontinuity resets dwell even when HEAT/OFF is unchanged.
+            // Change generation under lock_data so a concurrently running
+            // optimizer cannot publish a schedule built on stale dwell.
+            if(copy.mode!=pump.mode || !continuous) {
+                ++observed_mode_generation;
+                plan_count=0;
+                last_plan.status=MpcStatus::InvalidInput;
+            }
+            observed_mode_duration.observe(copy.mode,
+                static_cast<uint64_t>(esp_timer_get_time()/1000),continuous);
         }
         climate_utc=climate_stamp;compressor_utc=compressor_stamp;
-        copy.captured_utc=climate_stamp&&compressor_stamp?
-            std::min(climate_stamp,compressor_stamp):0;
-        copy.received=(copy.captured_utc>0 &&
-            now>=copy.captured_utc && now-copy.captured_utc<=180);
-        // This bridge supplies only event receipt time, NOT a documented
-        // pump-side timestamp or advancing successful UART-read sequence.
-        // A source-aware adapter may set verified proof after validation;
-        // the current SSE payload must remain UNVERIFIED_SOURCE.
+        // /events may replay cached climate and compressor snapshots after
+        // a reconnect. climate_utc/compressor_utc above record SSE RECEIPT
+        // time only, not a proven pump UART read or source sequence. Until
+        // the CN105 bridge supplies verifiable pump-origin freshness, fail
+        // closed: never make receipt time look like fresh pump telemetry.
+        copy.captured_utc=0;
+        copy.received=false;
+        // The legacy CN105 bridge exposes only SSE receipt time. Explicit
+        // unverified provenance must never turn cached SSE into pump freshness.
         copy.evidence={now,0,false};
         pump=copy;
         xSemaphoreGive(lock_data);
@@ -400,8 +436,14 @@ static void sse_worker(void*) {
         // Resume conservatively with zero confirmed dwell age.
         xSemaphoreTake(lock_data,portMAX_DELAY);
         observed_mode_duration.invalidate();
+        // A disconnected SSE stream is neither a fresh pump read nor
+        // evidence of unchanged dwell. Revoke both freshness and all
+        // cached/in-flight optimizer plans under the same data lock.
         pump.received=false;
         pump.evidence.source_time_verified=false;
+        ++observed_mode_generation;
+        plan_count=0;
+        last_plan.status=MpcStatus::InvalidInput;
         xSemaphoreGive(lock_data);
         vTaskDelay(pdMS_TO_TICKS(1500));
     }
@@ -462,8 +504,10 @@ static void optimizer_worker(void*) {
         if(wifi_ok.load() && clock_ok() && prices && weather && aligned && bridge && rows) {
             CN105Telemetry cp;TemperatureSample ts;
             unsigned observed_mode_minutes=0;
+            uint32_t optimizer_mode_generation=0;
             xSemaphoreTake(lock_data,portMAX_DELAY);
             cp=pump;
+            optimizer_mode_generation=observed_mode_generation;
             observed_mode_minutes=observed_mode_duration.minutes(
                 cp.mode,static_cast<uint64_t>(esp_timer_get_time()/1000),
                 valid_cn105(cp,now));
@@ -517,15 +561,27 @@ static void optimizer_worker(void*) {
                     }
                 }
                 xSemaphoreTake(lock_data,portMAX_DELAY);
-                last_plan=result;last_optimized_utc=now;
-                if(result.status==MpcStatus::Ok && elapsed<=2000) {
+                // The optimization ran without holding lock_data. An SSE
+                // mode transition may have invalidated its input snapshot
+                // while the solver was busy; never publish that old plan,
+                // even if HEAT -> OFF -> HEAT returned to the same mode.
+                const bool mode_changed=optimizer_mode_generation!=
+                    observed_mode_generation || cp.mode!=pump.mode;
+                last_optimized_utc=now;
+                if(mode_changed) {
+                    plan_count=0;
+                    last_plan.status=MpcStatus::InvalidInput;
+                } else if(result.status==MpcStatus::Ok && elapsed<=2000) {
+                    last_plan=result;
                     std::copy(rows,rows+max_horizon_slots,plan_rows.begin());
                     plan_count=result.count;
                 } else {
                     plan_count=0;
                     last_plan.status=MpcStatus::ResourceLimit;
                 }
-                strlcpy(reason_text,result.status==MpcStatus::Ok && elapsed<=2000?
+                strlcpy(reason_text,mode_changed?
+                    "CN105 tila vaihtui laskennan aikana":
+                    result.status==MpcStatus::Ok && elapsed<=2000?
                     "Vain synteettinen testimalli":"MPC infeasible / virhe",
                     sizeof(reason_text));
                 xSemaphoreGive(lock_data);
@@ -542,6 +598,7 @@ static void optimizer_worker(void*) {
                 xSemaphoreGive(lock_data);
             }
             if(!valid_cn105(cp,now) || !valid_temperature(ts,now) ||
+               (cp.mode!=ObservedPumpMode::Heat && cp.mode!=ObservedPumpMode::Off) ||
                !ms.current_price_valid || !ws.available) {
                 xSemaphoreTake(lock_data,portMAX_DELAY);
                 plan_count=0;
@@ -597,11 +654,7 @@ Synteettinen lämpömalli ei ole kalibrointi eikä säästötodiste.</small></se
 <small>Laskelmat synteettisellä mallilla eivät osoita todellisia säästöjä.</small></section>
 <script>async function refresh(){try{
 const s=await (await fetch('/api/status',{cache:'no-store'})).json();
-const shown=[['CN105, lähdemittaus varmennettu',s.cn105],['Pumppu',s.pump_mode],
-['Pumpun lähteen laatu',s.pump_source_quality],
-['Lähteen aikaleima varmennettu',s.pump_source_time_verified],
-['Pumpun vastaanotto UTC',s.pump_received_utc?new Date(s.pump_received_utc*1000).toISOString():'Ei vastaanottoa'],
-['Pumpun lähde-UTC',s.pump_source_utc?new Date(s.pump_source_utc*1000).toISOString():'Ei todennettua lähdeaikaa'],['Pumpun sisälämpö °C',s.pump_indoor_c],
+const shown=[['CN105',s.cn105],['Pumppu',s.pump_mode],['Pumpun sisälämpö °C',s.pump_indoor_c],
 ['Riippumaton anturi °C',s.independent_c],['Kompressori Hz',s.compressor_hz],
 ['Shelly mökin kokonaisteho W',s.shelly_w],['Shellyn rele päällä',s.shelly_relay_on],['Spot €/kWh',s.spot],
 ['Sääennuste °C',s.weather_c],['Kokonaishinnan arvio €/kWh',s.total_price],
@@ -613,8 +666,8 @@ const shown=[['CN105, lähdemittaus varmennettu',s.cn105],['Pumppu',s.pump_mode]
 ['Pumpun lämpötilatapahtumia',s.sse_climate_events],
 ['Kompressoritaajuustapahtumia',s.sse_compressor_events],
 ['CN105-yhteyden heartbeat-lukuja',s.sse_link_events],
-['Lämpötapahtuman vastaanotto UTC (ei lähdemittaus)',s.cn105_climate_utc?new Date(s.cn105_climate_utc*1000).toISOString():'Ei mittausta'],
-['Kompressoritapahtuman vastaanotto UTC (ei lähdemittaus)',s.cn105_compressor_utc?new Date(s.cn105_compressor_utc*1000).toISOString():'Ei mittausta'],
+['CN105-SSE lämpöviesti vastaanotettu UTC (ei pumpun lähdeaika)',s.cn105_climate_utc?new Date(s.cn105_climate_utc*1000).toISOString():'Ei mittausta'],
+['CN105-SSE kompressoriviesti vastaanotettu UTC (ei lähdeaika)',s.cn105_compressor_utc?new Date(s.cn105_compressor_utc*1000).toISOString():'Ei mittausta'],
 ['CN105-yhteyden uptime s',s.cn105_link_uptime_s],
 ['Shelly lukuja OK/virhe',s.shelly_reads_ok+'/'+s.shelly_reads_bad],
 ['Shelly viimeisin vaste ms',s.shelly_rtt_ms],
@@ -872,11 +925,19 @@ static void status_endpoint() {
     cJSON_AddBoolToObject(root,"physical_writes",false);
     const auto pump_quality=enevina::assess_measurement(cp.evidence,now,180);
     cJSON_AddBoolToObject(root,"cn105",valid_cn105(cp,now));
-    cJSON_AddStringToObject(root,"pump_source_quality",enevina::quality_name(pump_quality));
-    cJSON_AddBoolToObject(root,"pump_source_time_verified",cp.evidence.source_time_verified);
-    cJSON_AddNumberToObject(root,"pump_received_utc",static_cast<double>(cp.evidence.received_utc));
+    // Distinguish network message receipt from a proven pump-side read.
+    // The present bridge has NO verified UART-read source contract.
+    cJSON_AddBoolToObject(root,"cn105_source_verified",false);
+    cJSON_AddStringToObject(root,"cn105_measurement_quality","UNVERIFIED_SOURCE");
+    cJSON_AddStringToObject(root,"pump_source_quality",
+                            enevina::quality_name(pump_quality));
+    cJSON_AddBoolToObject(root,"pump_source_time_verified",
+                          cp.evidence.source_time_verified);
+    cJSON_AddNumberToObject(root,"pump_received_utc",
+                            static_cast<double>(cp.evidence.received_utc));
     if(cp.evidence.source_time_verified && cp.evidence.source_utc>0)
-        cJSON_AddNumberToObject(root,"pump_source_utc",static_cast<double>(cp.evidence.source_utc));
+        cJSON_AddNumberToObject(root,"pump_source_utc",
+                                static_cast<double>(cp.evidence.source_utc));
     else cJSON_AddNullToObject(root,"pump_source_utc");
     cJSON_AddStringToObject(root,"pump_mode",!valid_cn105(cp,now)?
         "EI VAHVISTETTU":cp.mode==ObservedPumpMode::Heat?
@@ -1003,6 +1064,7 @@ static void plan_endpoint() {
     const bool ok=rows && p.status==MpcStatus::Ok && n>0 && n<=192 &&
         current_utc>=computed_utc && current_utc-computed_utc<900 &&
         valid_cn105(cp,current_utc) && valid_temperature(ts,current_utc) &&
+        (cp.mode==ObservedPumpMode::Heat || cp.mode==ObservedPumpMode::Off) &&
         COTTAGE_SYNTHETIC_TEST_MODEL;
     snprintf(buf,sizeof(buf),
       "{\"valid\":%s,\"count\":%u,\"cost_eur\":%.8f,\"minimum_c\":%.5f,\"slots\":[",
@@ -1017,6 +1079,57 @@ static void plan_endpoint() {
     }
     web.sendContent("]}");
     web.sendContent("");
+}
+// C2.5: Small, read-only 15-minute price feed for the local premium dashboard.
+// Do not manufacture price points when the clock or market data is stale.
+static void prices_endpoint() {
+    const auto market=enevina_firmware::market_status();
+    if(!market.clock_trusted || !market.current_price_valid) {
+        web.sendHeader("Cache-Control","no-store");
+        web.send(200,"application/json; charset=utf-8",
+                 "{\"valid\":false,\"slots\":[]}");
+        return;
+    }
+    constexpr size_t kMaxPriceSlots=192;
+    auto* points=static_cast<enevina_firmware::PricePoint*>(
+        heap_caps_malloc(sizeof(enevina_firmware::PricePoint)*kMaxPriceSlots,
+                         MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    if(!points) {
+        web.send(503,"application/json; charset=utf-8",
+                 "{\"valid\":false,\"slots\":[]}");
+        return;
+    }
+    const size_t count=enevina_firmware::future_prices(points,kMaxPriceSlots);
+    web.sendHeader("Cache-Control","no-store");
+    web.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    web.send(200,"application/json; charset=utf-8","");
+    web.sendContent(count?"{\"valid\":true,\"slots\":[":"{\"valid\":false,\"slots\":[");
+    char line[192];
+    size_t emitted=0;
+    for(size_t i=0;i<count;++i) {
+        const auto& price=points[i];
+        if(!std::isfinite(price.spot_eur_per_kwh)) continue;
+        const time_t utc=static_cast<time_t>(price.start_utc);
+        struct tm local{};
+        localtime_r(&utc,&local); // Finland local day/night tariff, including DST
+        enevina::Tariff t=tariff(local.tm_hour<7||local.tm_hour>=22);
+        t.spot_eur_per_kwh=price.spot_eur_per_kwh;
+        double total=0;
+        const bool has_total=enevina::calculate_total_price(t,total) &&
+                             std::isfinite(total);
+        char total_buf[36];
+        if(has_total) snprintf(total_buf,sizeof(total_buf),"%.8f",total);
+        else strlcpy(total_buf,"null",sizeof(total_buf));
+        snprintf(line,sizeof(line),
+            "%s{\"utc\":%lld,\"spot\":%.8f,\"total\":%s}",
+            emitted++?",":"",static_cast<long long>(price.start_utc),
+            price.spot_eur_per_kwh,total_buf);
+        web.sendContent(line);
+        if(i%16==15) delay(1);
+    }
+    web.sendContent("]}");
+    web.sendContent("");
+    heap_caps_free(points);
 }
 static void setup_model() {
     // Explicit test-only values. Real cottage data are not yet calibrated.
@@ -1069,9 +1182,23 @@ void setup() {
     setenv("TZ","EET-2EEST,M3.5.0/3,M10.5.0/4",1);
     tzset();
     configTime(0,0,"pool.ntp.org","time.google.com");
-    web.on("/",HTTP_GET,[](){web.send(200,"text/html; charset=utf-8",html);});
+    web.on("/",HTTP_GET,[](){
+        web.sendHeader("Cache-Control","no-store");
+        web.sendHeader("X-Content-Type-Options","nosniff");
+        web.sendHeader("Content-Security-Policy",
+            "default-src 'self'; connect-src 'self'; img-src 'self' data:; "
+            "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+            "frame-ancestors 'none'; base-uri 'none'");
+        web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html);
+    });
+    // Preserve the original full diagnostics page unchanged.
+    web.on("/diagnostics",HTTP_GET,[](){
+        web.sendHeader("Cache-Control","no-store");
+        web.send(200,"text/html; charset=utf-8",html);
+    });
     web.on("/api/status",HTTP_GET,status_endpoint);
     web.on("/api/plan",HTTP_GET,plan_endpoint);
+    web.on("/api/prices",HTTP_GET,prices_endpoint);
     c23_register_routes(web); // mode/config persistence, NO actuator writes
     web.onNotFound([](){web.send(404,"text/plain","Ei löydy");});
     web.begin();
@@ -1090,8 +1217,12 @@ void setup() {
     xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,&task_shelly,0);
     // BLE already running. No physical actuator command is ever sent.
     xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
-    if(cottage_ota_configured())
-        xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota",16384,nullptr,1,&task_ota,1);
+    if(cottage_ota_configured() &&
+        xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota",
+                                16384,nullptr,1,&task_ota,1)!=pdPASS) {
+        task_ota=nullptr;
+        Serial.println("C24_OTA_ERROR: signed OTA task creation failed");
+    }
     Serial.println("ENEVINA LITE C2 SHADOW: NO ACTUATOR PATH");
 }
 void loop() {

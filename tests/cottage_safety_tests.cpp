@@ -61,6 +61,12 @@ int main(){
     check(d.reason==Reason::ProtectionNotVerified); // fail closed without independent protection
     h.independent_temperature.indoor_c=10.2;
     d=supervise(p,h);check(d.reason==Reason::ProtectionNotVerified);
+    // Replayed /events snapshots may have recent SSE receive timestamps,
+    // but no verified UART-origin time. Never treat them as a fresh pump read.
+    CN105Telemetry replay{false,0,9.0,16.0,30.0,ObservedPumpMode::Heat};
+    check(!valid_cn105(replay,h.now_utc));
+    replay.received=true; // a receive flag alone is not source evidence
+    check(!valid_cn105(replay,h.now_utc));
     MitsubishiCN105Adapter mitsubishi;
     auto unverified=h.pump;
     unverified.evidence.source_time_verified=false;

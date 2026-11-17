@@ -56,6 +56,11 @@ bool AirHistory::add(const AirMoisture& air,int64_t utc) {
 }
 bool AirHistory::add_offline(const AirMoisture& air,uint64_t ms) {
     if(!air.valid)return false;
+    // NVS may have restored real UTC hours before NTP is available.
+    // Unknown boot-relative time must never enter that same UTC series
+    // and erase it when the clock subsequently synchronizes.
+    if(count_ && !(newest(0).hour_utc&0x80000000u))
+        return false;
     return add_hour(air,0x80000000u |
                   static_cast<uint32_t>((ms/3600000)%0x7fffffffu));
 }
@@ -200,8 +205,10 @@ CottageModePlan evaluate_cottage_mode(const CottageModeConfig& cfg,
         }
         p.target_c=std::clamp(outside+cfg.drying_delta_c,5.0,20.0);
         p.has_target=true;
-        if(elevated_rh_ms < 6ULL*3600000 ||
-           indoor.rh_pct<70) {
+        // elevated_rh_ms is already gated by MoistureMonitor's adjustable
+        // RH threshold and 5 %-point clear hysteresis. Rechecking the
+        // instantaneous RH against 70 would defeat that hysteresis.
+        if(elevated_rh_ms < 6ULL*3600000) {
             p.advisory=ModeAdvisory::MonitoringHumidity;
             return p; // never heat on a single high RH sample.
         }

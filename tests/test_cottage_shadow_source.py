@@ -45,7 +45,24 @@ class ShadowSurfaceTests(unittest.TestCase):
         self.assertIn("cn105_link_event_utc=now",link)
         self.assertNotIn("copy.captured_utc",link)
         self.assertNotIn("pump=copy",link)
-        self.assertIn("copy.captured_utc=climate_stamp&&compressor_stamp",self.main)
+        self.assertIn("copy.captured_utc=0;",self.main)
+        self.assertIn("copy.received=false;",self.main)
+        self.assertIn('cJSON_AddBoolToObject(root,"cn105_source_verified",false)',self.main)
+        self.assertIn('"UNVERIFIED_SOURCE"',self.main)
+
+    def test_replayed_sse_snapshot_is_not_promoted_to_verified_pump_data(self):
+        section=self.main.split("static void parse_sse_state",1)[1].split("static void sse_worker",1)[0]
+        # SSE receipt time is preserved for diagnostic counters, but never
+        # copied into the CN105 sample's pump-origin freshness fields.
+        self.assertIn("climate_utc=climate_stamp",section)
+        self.assertIn("compressor_utc=compressor_stamp",section)
+        self.assertIn("copy.captured_utc=0;",section)
+        self.assertIn("copy.received=false;",section)
+        self.assertNotIn("copy.captured_utc=climate_stamp",section)
+        self.assertNotIn("copy.received=(copy.captured_utc",section)
+        ui=self.main.split("static void status_endpoint()",1)[1]
+        self.assertIn('cn105_source_verified',ui)
+        self.assertIn('cn105_measurement_quality',ui)
 
     def test_one_shot_reset_reason_is_reported_without_new_watchdog(self):
         setup = self.main.split("void setup() {", 1)[1].split("void loop() {", 1)[0]

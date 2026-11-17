@@ -5,7 +5,9 @@
 bool cottage_ota_configured();
 void cottage_ota_initialize();
 void cottage_ota_worker(void*);
-void cottage_ota_confirm_boot();
+bool cottage_ota_confirmation_pending();
+// True only after durable good-version and pending-transaction cleanup.
+bool cottage_ota_confirm_boot();
 uint32_t cottage_ota_good_version();
 uint32_t cottage_ota_last_candidate();
 int cottage_ota_status();
