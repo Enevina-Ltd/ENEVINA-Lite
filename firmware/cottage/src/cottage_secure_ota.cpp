@@ -209,17 +209,12 @@ bool fetch_manifest(Release& out) {
     close_https(client);
     return success;
 }
-bool store_pending(uint32_t version) {
-    Preferences p;
-    if(!p.begin("c24_ota",false))return false;
-    const bool ok=p.putUInt("pending",version)==sizeof(uint32_t);
-    p.end();
-    return ok;
-}
 bool update_app(const Release& release) {
     const esp_partition_t* active=esp_ota_get_running_partition();
     const esp_partition_t* target=esp_ota_get_next_update_partition(nullptr);
     if(!active || !target || target==active || release.size>target->size)return false;
+    esp_ota_img_states_t old_target_state=ESP_OTA_IMG_UNDEFINED;
+    esp_ota_get_state_partition(target,&old_target_state);
     auto client=open_https(COTTAGE_OTA_FIRMWARE_URL,static_cast<int>(release.size));
     if(!client)return false;
     esp_ota_handle_t handle=0;
@@ -258,11 +253,42 @@ bool update_app(const Release& release) {
         return false;
     }
     if(esp_ota_end(handle)!=ESP_OK)return false; // app image verified by IDF
-    if(!store_pending(release.version))return false;
-    if(esp_ota_set_boot_partition(target)!=ESP_OK) {
-        Preferences p;
-        if(p.begin("c24_ota",false)){p.remove("pending");p.end();}
+    ota::Transaction tx{};
+    tx.version=release.version;
+    tx.source_address=active->address;
+    tx.target_address=target->address;
+    tx.target_subtype=target->subtype;
+    tx.previous_target_state=static_cast<ota::ImageState>(old_target_state);
+    tx.phase=ota::Phase::Prepared;
+    // The exact partition image hash, not just a version number, binds
+    // recovery to this flashed candidate, even across power loss.
+    if(esp_partition_get_sha256(target,tx.target_image_sha256)!=ESP_OK)
         return false;
+    Preferences p;
+    if(!p.begin("c24_ota",false))return false;
+    if(p.isKey("txv2") || p.isKey("pending") ||
+       !write_transaction(p,tx)) {
+        p.end();return false;
+    }
+    p.end();
+    if(esp_ota_set_boot_partition(target)!=ESP_OK) {
+        // A failed activation is not a failed boot. If NVS cleanup itself
+        // fails, initialize() will discard this Prepared intent next boot.
+        Preferences cleanup;
+        if(cleanup.begin("c24_ota",false)){
+            cleanup.remove("txv2");cleanup.end();
+        }
+        return false;
+    }
+    // The bootloader's NEW record is durable now. A power cut before this
+    // Armed update still safely boots the candidate; successful candidate
+    // startup proves activation. Ambiguous failed boots are not quarantined.
+    tx.phase=ota::Phase::Armed;
+    Preferences armed;
+    if(armed.begin("c24_ota",false)) {
+        if(!write_transaction(armed,tx))
+            Serial.println("C24_OTA_RECOVERY: activation armed marker deferred");
+        armed.end();
     }
     return true;
 }
