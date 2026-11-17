@@ -1398,12 +1398,6 @@ void setup() {
             "frame-ancestors 'none'; base-uri 'none'");
         web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html);
     });
-    // Legacy bookmark only: no second HTML application in flash.
-    web.on("/diagnostics",HTTP_GET,[](){
-        web.sendHeader("Location","/#settings");
-        web.sendHeader("Cache-Control","no-store");
-        web.send(302,"text/plain","");
-    });
     web.on("/api/status",HTTP_GET,status_endpoint);
     web.on("/api/plan",HTTP_GET,plan_endpoint);
     web.on("/api/prices",HTTP_GET,prices_endpoint);
