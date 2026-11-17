@@ -546,6 +546,17 @@ static BootstrapDecision bootstrap_preview(int64_t now,
        !std::isfinite(target_plan.target_c)) {
         return {}; // Cannot make up a drying temperature without outside data.
     }
+    if(mode.mode==CottageMode::Drying &&
+       !target_plan.advisory_heat_needed) {
+        // The existing humidity duration and hysteresis decide whether
+        // drying heat is actually requested. A target alone is NOT permission
+        // to heat dry air, especially with prices unavailable.
+        BootstrapDecision no_heat{};
+        no_heat.action=BootstrapAction::Off;
+        no_heat.reason=BootstrapReason::NoHeatingRequested;
+        no_heat.requested_room_c=target_plan.target_c;
+        return no_heat;
+    }
     input.desired_room_c=target_plan.target_c;
     const auto market=enevina_firmware::market_status();
     constexpr size_t N=8;
