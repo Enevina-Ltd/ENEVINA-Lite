@@ -35,7 +35,7 @@ struct PumpReadCounterMessage {
 };
 class PumpReadCounterTracker final {
 public:
-    void invalidate() { have_baseline_=false; }
+    void invalidate() { needs_new_baseline_=true; } // keep epoch high-water
     PumpReadProofStatus observe(const PumpReadCounterMessage& msg,
                                int64_t now_utc,int64_t max_age_s) {
         if(!msg.documented_uart_counter || !msg.uart_connected ||
@@ -61,8 +61,15 @@ public:
             return PumpReadProofStatus::Baseline;
         }
         if(msg.successful_uart_reads<counter_) {
-            update_baseline(msg); // after reset, require another real increment
+            // A lower counter in the SAME epoch may be an old replay.
+            // Do not decrease the high-water mark without a new boot epoch.
             return PumpReadProofStatus::CounterReset;
+        }
+        if(needs_new_baseline_) {
+            // After transport loss, the first snapshot is never certified.
+            counter_=msg.successful_uart_reads;
+            needs_new_baseline_=false;
+            return PumpReadProofStatus::Baseline;
         }
         if(msg.successful_uart_reads==counter_)
             return PumpReadProofStatus::Replay;
@@ -74,8 +81,10 @@ private:
         epoch_=msg.boot_epoch;
         counter_=msg.successful_uart_reads;
         have_baseline_=true;
+        needs_new_baseline_=false;
     }
     bool have_baseline_=false;
+    bool needs_new_baseline_=false;
     uint64_t epoch_=0,counter_=0;
 };
 } // namespace enevina
