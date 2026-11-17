@@ -95,7 +95,7 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-const state={status:null,prices:null,plan:null,history:null,mode:0,settingsDirty:false};
+const state={status:null,prices:null,plan:null,history:null,mode:0,settingsDirty:false,settingsRevision:0,settingsSaving:false};
 const fmt=(v,d=1)=>Number.isFinite(v)?v.toLocaleString('fi-FI',{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
 const text=(id,value)=>{const e=$(id);if(e)e.textContent=value==null?'—':String(value);};
 const time=sec=>Number.isFinite(sec)&&sec>1700000000?new Date(sec*1000).toLocaleString('fi-FI',{timeZone:'Europe/Helsinki',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'Ei aikaa';
@@ -153,7 +153,7 @@ function showStatus(){
     $('setting-delta').value=number(a.drying_delta_c)===null?'':a.drying_delta_c;
   }
   document.querySelectorAll('[data-mode]').forEach(b=>b.disabled=false);
-  $('save-mode').disabled=!a.config_token;
+  $('save-mode').disabled=state.settingsSaving||!a.config_token;
 }
 function showPrices(){
   const p=state.prices||{},rows=p.valid===true&&Array.isArray(p.slots)?p.slots.filter(x=>Number.isFinite(x.spot)): [];
@@ -212,19 +212,32 @@ async function reloadStatus(){try{state.status=await fetchJSON('/api/status');sh
 async function reloadPrices(){try{state.prices=await fetchJSON('/api/prices');showPrices();}catch(e){state.prices={valid:false,slots:[]};showPrices();}}
 async function reloadPlan(){try{state.plan=await fetchJSON('/api/plan');showPlan();}catch(e){state.plan={valid:false};showPlan();}}
 async function reloadHistory(){try{state.history=await fetchJSON('/api/air/history');showHistory();}catch(e){state.history={hours:[]};showHistory();}}
-document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>{state.settingsDirty=true;state.mode=Number(b.dataset.mode);document.querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('selected',x===b));}));
-['setting-hold','setting-delta'].forEach(id=>$(id).addEventListener('input',()=>{state.settingsDirty=true;}));
+document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>{state.settingsDirty=true;++state.settingsRevision;state.mode=Number(b.dataset.mode);document.querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('selected',x===b));}));
+['setting-hold','setting-delta'].forEach(id=>$(id).addEventListener('input',()=>{state.settingsDirty=true;++state.settingsRevision;}));
 $('save-mode').addEventListener('click',async()=>{
+  if(state.settingsSaving)return; // only one POST may be in flight
   const a=state.status&&state.status.air,btn=$('save-mode');if(!a||!a.config_token){text('feedback','Tiedot puuttuvat.');return;}
   const hold=Number($('setting-hold').value),delta=Number($('setting-delta').value);
   if(!Number.isFinite(hold)||hold<5||hold>24||!Number.isFinite(delta)||delta<3||delta>5){text('feedback','Tarkista lämpötilarajat.');return;}
+  const submittedRevision=state.settingsRevision;
+  state.settingsSaving=true;
   btn.disabled=true;text('feedback','Tallennetaan paikallisia asetuksia…');
   try{const body=new URLSearchParams({token:a.config_token,mode:String(state.mode),hold:String(hold),delta:String(delta)});
     const r=await fetch('/api/air/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
     if(!r.ok)throw Error('HTTP '+r.status);
-    text('feedback','Asetukset tallennettu. Lämpöpumpulle ei lähetetty käskyä.');
-    state.settingsDirty=false;await reloadStatus();
-  }catch(e){text('feedback','Tallennus ei onnistunut.');}finally{btn.disabled=false;}
+    if(state.settingsRevision===submittedRevision){
+      state.settingsDirty=false;
+      text('feedback','Asetukset tallennettu. Lämpöpumpulle ei lähetetty käskyä.');
+    }else{
+      // A newer unsaved draft must survive the older POST response.
+      state.settingsDirty=true;
+      text('feedback','Aiemmat asetukset tallennettu. Uusia muutoksia odottaa tallennusta.');
+    }
+    await reloadStatus();
+  }catch(e){text('feedback','Tallennus ei onnistunut.');}finally{
+    state.settingsSaving=false;
+    btn.disabled=!(state.status&&state.status.air&&state.status.air.config_token);
+  }
 });
 // One request at a time on first load: avoid opening four TCP connections to ESP32.
 async function initialRefresh(){await reloadStatus();await reloadPrices();await reloadPlan();await reloadHistory();}
