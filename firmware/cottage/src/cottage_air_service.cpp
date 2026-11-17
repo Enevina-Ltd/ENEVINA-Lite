@@ -28,6 +28,7 @@ RuuviBinding indoor_binding,outdoor_binding;
 AirHistory history;
 MoistureMonitor alarm_engine;
 CottageModeConfig config{};
+uint32_t config_generation=0;
 AdvisoryLimits warning_limits{};
 AirMoisture indoor_air{},outdoor_air{};
 RuuviV5 last_indoor{},last_outdoor{},discovered{};
@@ -381,6 +382,10 @@ bool c23_authorize_local_setting(const char* submitted_token) {
     return guard && submitted_token && strlen(submitted_token)==strlen(csrf_token) &&
            strcmp(submitted_token,csrf_token)==0;
 }
+uint32_t c23_config_generation() {
+    if(!guard)return 0;
+    lock();const uint32_t g=config_generation;unlock();return g;
+}
 CottageModeConfig c23_mode_config() {
     if(!guard) return CottageModeConfig{};
     lock();const auto snapshot=config;unlock();
@@ -554,6 +559,7 @@ void c23_register_routes(WebServer& web) {
         config.mode=static_cast<CottageMode>(mode_s.toInt());
         config.hold_target_c=hold;
         config.drying_delta_c=delta;
+        ++config_generation; // invalidates any in-flight command preparation
         log_event(3,static_cast<uint8_t>(config.mode));
         unlock();
         const bool saved=save_config();
