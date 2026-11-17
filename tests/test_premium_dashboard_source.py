@@ -15,6 +15,11 @@ class PremiumDashboardSourceTests(unittest.TestCase):
         self.assertIn("premium_dashboard_html[] PROGMEM", UI)
         self.assertIn('web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html)', MAIN)
         self.assertIn('web.on("/diagnostics",HTTP_GET', MAIN)
+        self.assertIn('web.sendHeader("Location","/#settings")', MAIN)
+        self.assertNotIn('static const char html[] PROGMEM', MAIN)
+        self.assertNotIn('web.send(200,"text/html; charset=utf-8",html)', MAIN)
+        self.assertIn('id="ruuvi-bind"', UI)
+        self.assertIn('id="alerts-save"', UI)
 
     def test_ui_has_no_external_assets_or_mock_sensor_numbers(self):
         self.assertNotIn("https://", UI)
