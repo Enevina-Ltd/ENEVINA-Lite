@@ -37,6 +37,8 @@ static std::atomic<bool> wifi_ok{false};
 static std::atomic<uint32_t> web_loop_heartbeat_ms{0};
 static CN105Telemetry pump{};
 static ObservedModeDuration observed_mode_duration{};
+// Protected by lock_data. Reject MPC results computed before an SSE mode change.
+static uint32_t observed_mode_generation=0;
 static ShellyTelemetry consumption{};
 static TemperatureSample temperature{};
 static int64_t climate_utc=0,compressor_utc=0;
@@ -152,6 +154,16 @@ static void parse_sse_state(const char* raw) {
         if(climate_event) {
             const bool continuous=climate_utc>0 && now>=climate_utc &&
                 now-climate_utc<=180;
+            // The MPC snapshot assumes both its original pump mode AND
+            // confirmed uninterrupted dwell age. A gap >180s or a clock
+            // discontinuity resets dwell even when HEAT/OFF is unchanged.
+            // Change generation under lock_data so a concurrently running
+            // optimizer cannot publish a schedule built on stale dwell.
+            if(copy.mode!=pump.mode || !continuous) {
+                ++observed_mode_generation;
+                plan_count=0;
+                last_plan.status=MpcStatus::InvalidInput;
+            }
             observed_mode_duration.observe(copy.mode,
                 static_cast<uint64_t>(esp_timer_get_time()/1000),continuous);
         }
@@ -226,6 +238,12 @@ static void sse_worker(void*) {
         // Resume conservatively with zero confirmed dwell age.
         xSemaphoreTake(lock_data,portMAX_DELAY);
         observed_mode_duration.invalidate();
+        // A disconnected stream resets dwell even if the mode looks
+        // unchanged when SSE reconnects. Invalidate the cached plan AND
+        // in-flight optimizer snapshot under the same mutex.
+        ++observed_mode_generation;
+        plan_count=0;
+        last_plan.status=MpcStatus::InvalidInput;
         xSemaphoreGive(lock_data);
         vTaskDelay(pdMS_TO_TICKS(1500));
     }
@@ -286,8 +304,10 @@ static void optimizer_worker(void*) {
         if(wifi_ok.load() && clock_ok() && prices && weather && aligned && bridge && rows) {
             CN105Telemetry cp;TemperatureSample ts;
             unsigned observed_mode_minutes=0;
+            uint32_t optimizer_mode_generation=0;
             xSemaphoreTake(lock_data,portMAX_DELAY);
             cp=pump;
+            optimizer_mode_generation=observed_mode_generation;
             observed_mode_minutes=observed_mode_duration.minutes(
                 cp.mode,static_cast<uint64_t>(esp_timer_get_time()/1000),
                 valid_cn105(cp,now));
@@ -341,15 +361,27 @@ static void optimizer_worker(void*) {
                     }
                 }
                 xSemaphoreTake(lock_data,portMAX_DELAY);
-                last_plan=result;last_optimized_utc=now;
-                if(result.status==MpcStatus::Ok && elapsed<=2000) {
+                // The optimization ran without holding lock_data. An SSE
+                // mode transition may have invalidated its input snapshot
+                // while the solver was busy; never publish that old plan,
+                // even if HEAT -> OFF -> HEAT returned to the same mode.
+                const bool mode_changed=optimizer_mode_generation!=
+                    observed_mode_generation || cp.mode!=pump.mode;
+                last_optimized_utc=now;
+                if(mode_changed) {
+                    plan_count=0;
+                    last_plan.status=MpcStatus::InvalidInput;
+                } else if(result.status==MpcStatus::Ok && elapsed<=2000) {
+                    last_plan=result;
                     std::copy(rows,rows+max_horizon_slots,plan_rows.begin());
                     plan_count=result.count;
                 } else {
                     plan_count=0;
                     last_plan.status=MpcStatus::ResourceLimit;
                 }
-                strlcpy(reason_text,result.status==MpcStatus::Ok && elapsed<=2000?
+                strlcpy(reason_text,mode_changed?
+                    "CN105 tila vaihtui laskennan aikana":
+                    result.status==MpcStatus::Ok && elapsed<=2000?
                     "Vain synteettinen testimalli":"MPC infeasible / virhe",
                     sizeof(reason_text));
                 xSemaphoreGive(lock_data);
@@ -366,6 +398,7 @@ static void optimizer_worker(void*) {
                 xSemaphoreGive(lock_data);
             }
             if(!valid_cn105(cp,now) || !valid_temperature(ts,now) ||
+               (cp.mode!=ObservedPumpMode::Heat && cp.mode!=ObservedPumpMode::Off) ||
                !ms.current_price_valid || !ws.available) {
                 xSemaphoreTake(lock_data,portMAX_DELAY);
                 plan_count=0;
@@ -790,6 +823,7 @@ static void plan_endpoint() {
     const bool ok=rows && p.status==MpcStatus::Ok && n>0 && n<=192 &&
         current_utc>=computed_utc && current_utc-computed_utc<900 &&
         valid_cn105(cp,current_utc) && valid_temperature(ts,current_utc) &&
+        (cp.mode==ObservedPumpMode::Heat || cp.mode==ObservedPumpMode::Off) &&
         COTTAGE_SYNTHETIC_TEST_MODEL;
     snprintf(buf,sizeof(buf),
       "{\"valid\":%s,\"count\":%u,\"cost_eur\":%.8f,\"minimum_c\":%.5f,\"slots\":[",
