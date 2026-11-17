@@ -723,12 +723,23 @@ static void cottage_control_tick() {
     static uint64_t last_command_ms=0;
     static bool mode_change_present=false;
     static uint64_t last_mode_change_ms=0;
-    // On first activation the observed mode's age is unknown. Conservatively
-    // assume a transition has just happened and do not switch modes for 60m.
-    if(!mode_change_present) {
+    static bool last_bridge_heat_known=false;
+    static bool last_bridge_heat=false;
+    static uint64_t last_bridge_get_ms=0;
+    // A new externally commanded mode or a prolonged loss of bridge
+    // observations resets the minimum mode-dwell window. It is not inferred
+    // from the optional Verified Snapshot event.
+    const bool bridge_gap=last_bridge_heat_known &&
+        (now_ms<last_bridge_get_ms ||
+         now_ms-last_bridge_get_ms>180000ULL);
+    if(!mode_change_present || bridge_gap ||
+       (last_bridge_heat_known && last_bridge_heat!=current_heat)) {
         mode_change_present=true;
         last_mode_change_ms=now_ms;
     }
+    last_bridge_heat=current_heat;
+    last_bridge_heat_known=true;
+    last_bridge_get_ms=now_ms;
     // Preflight GET can block: old sensor, mode and user authorization
     // snapshots must never be carried into the physical POST.
     if(!control_armed.load() ||
@@ -809,11 +820,12 @@ static void cottage_control_tick() {
     }
 }
 static void cottage_control_registration() {
-    // Disabled on first install; only explicit authenticated local POST can
-    // change it. A normal OTA update never toggles control on.
+    // Every boot and every OTA update starts DISARMED. A previously saved
+    // arm must not silently resume physical writes after reboot.
+    control_armed.store(false);
     Preferences prefs;
-    if(prefs.begin("cottage_ctl",true)) {
-        control_armed.store(prefs.getBool("armed",false));
+    if(prefs.begin("cottage_ctl",false)) {
+        if(prefs.getBool("armed",false))prefs.putBool("armed",false);
         prefs.end();
     }
     web.on("/api/control/arm",HTTP_POST,[]() {
