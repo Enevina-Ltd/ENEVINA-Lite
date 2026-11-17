@@ -36,13 +36,33 @@ def utc() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds")
 
 
+class HeartbeatDeadline:
+    """Detect both initial silence and silence after the final heartbeat."""
+    def __init__(self, started_at: float, deadline_s: float = 90.0):
+        self.last_heartbeat_at = started_at
+        self.deadline_s = deadline_s
+        self.gap_reported = False
+
+    def check(self, now: float) -> float | None:
+        elapsed = now - self.last_heartbeat_at
+        if elapsed > self.deadline_s and not self.gap_reported:
+            self.gap_reported = True
+            return elapsed
+        return None
+
+    def beat(self, now: float):
+        self.last_heartbeat_at = now
+        self.gap_reported = False
+
+
 def monitor(port: str, output: Path, duration_s: float):
     if serial is None:
         raise RuntimeError("pyserial required for hardware logging")
-    stop_at = time.monotonic() + duration_s
+    started_at = time.monotonic()
+    deadline = HeartbeatDeadline(started_at)
+    stop_at = started_at + duration_s
     os.umask(0o077)
     output.parent.mkdir(parents=True, exist_ok=True)
-    last_heartbeat = None
     stats = {"boot": 0, "heartbeat": 0, "shadow_start": 0,
              "watchdog": 0, "fatal": 0, "heartbeat_gap": 0, "serial_error": 0}
     with output.open("a", encoding="utf-8") as fh:
@@ -51,7 +71,12 @@ def monitor(port: str, output: Path, duration_s: float):
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
             fh.flush()
         log("capture_start", mode="READ_ONLY", target="ESP32-S3 USB", duration_s=duration_s)
+        def check_heartbeat_deadline(now: float):
+            if (elapsed := deadline.check(now)) is not None:
+                stats["heartbeat_gap"] += 1
+                log("heartbeat_gap", elapsed_s=round(elapsed, 1))
         while time.monotonic() < stop_at:
+            check_heartbeat_deadline(time.monotonic())
             try:
                 with serial.Serial(port, 115200, timeout=0.5) as com:
                     com.dtr = False
@@ -59,6 +84,8 @@ def monitor(port: str, output: Path, duration_s: float):
                     log("serial_open")
                     while time.monotonic() < stop_at:
                         raw = com.readline()
+                        now = time.monotonic()
+                        check_heartbeat_deadline(now)
                         if not raw:
                             continue
                         text = raw.decode("utf-8", "replace").strip()
@@ -66,11 +93,7 @@ def monitor(port: str, output: Path, duration_s: float):
                         if event:
                             stats[event] = stats.get(event, 0) + 1
                             if event == "heartbeat":
-                                now = time.monotonic()
-                                if last_heartbeat is not None and now-last_heartbeat > 90:
-                                    stats["heartbeat_gap"] += 1
-                                    log("heartbeat_gap", elapsed_s=round(now-last_heartbeat, 1))
-                                last_heartbeat = now
+                                deadline.beat(now)
                                 log("heartbeat", message=text[:420])
                             else:
                                 # Keep addresses and credentials out of logs.
@@ -78,7 +101,9 @@ def monitor(port: str, output: Path, duration_s: float):
             except (OSError, serial.SerialException) as exc:
                 stats["serial_error"] += 1
                 log("serial_error", error=type(exc).__name__)
+                check_heartbeat_deadline(time.monotonic())
                 time.sleep(min(5, max(0, stop_at-time.monotonic())))
+        check_heartbeat_deadline(time.monotonic())
         log("capture_complete", elapsed_s=duration_s, **stats)
     return stats
 
