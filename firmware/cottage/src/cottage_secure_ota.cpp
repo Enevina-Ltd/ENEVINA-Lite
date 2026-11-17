@@ -43,6 +43,12 @@ constexpr uint32_t max_image_size=0x640000u;
 std::atomic<uint32_t> last_good{0}, last_candidate{0};
 std::atomic<int> last_status{0}; // 0 idle; 1 disabled; 2 transient; 3 refused; 4 rejected; 5 downloading; 6 rebooting
 namespace ota=enevina::cottage::ota;
+// Compile-time check against the actual ESP-IDF headers in this firmware.
+static_assert(ESP_OTA_IMG_NEW==0u && ESP_OTA_IMG_PENDING_VERIFY==1u &&
+              ESP_OTA_IMG_VALID==2u && ESP_OTA_IMG_INVALID==3u &&
+              ESP_OTA_IMG_ABORTED==4u &&
+              static_cast<uint32_t>(ESP_OTA_IMG_UNDEFINED)==0xffffffffu,
+              "ESP-IDF OTA states changed: update portable decoder");
 std::atomic<bool> confirmation_pending{false};
 bool read_transaction(Preferences& prefs,ota::Transaction& tx) {
     if(prefs.getBytesLength("txv2")!=sizeof(tx))return false;
@@ -75,7 +81,7 @@ ota::Evidence boot_evidence(const ota::Transaction& tx) {
     e.target_hash_matches=matching_image(target,tx);
     esp_ota_img_states_t state=ESP_OTA_IMG_UNDEFINED;
     if(target && esp_ota_get_state_partition(target,&state)==ESP_OK)
-        e.target_state=static_cast<ota::ImageState>(state);
+        e.target_state=ota::decode_esp_idf_image_state(static_cast<uint32_t>(state));
     return e;
 }
 struct NvsConfirm {
@@ -258,7 +264,7 @@ bool update_app(const Release& release) {
     tx.source_address=active->address;
     tx.target_address=target->address;
     tx.target_subtype=target->subtype;
-    tx.previous_target_state=static_cast<ota::ImageState>(old_target_state);
+    tx.previous_target_state=ota::decode_esp_idf_image_state(static_cast<uint32_t>(old_target_state));
     tx.phase=ota::Phase::Prepared;
     // The exact partition image hash, not just a version number, binds
     // recovery to this flashed candidate, even across power loss.
