@@ -171,7 +171,9 @@ static bool parse_cn105_proof_event(const cJSON* root,int64_t now) {
     const cJSON* source=cJSON_GetObjectItemCaseSensitive(root,"value");
     if(!cJSON_IsString(source) || !source->valuestring ||
        strlen(source->valuestring)>512)return false;
-    cJSON* doc=cJSON_Parse(source->valuestring);
+    // Parse the ENTIRE proof envelope: cJSON_Parse() silently accepts
+    // concatenated JSON or trailing garbage after a valid first object.
+    cJSON* doc=cJSON_ParseWithOpts(source->valuestring,nullptr,true);
     if(!doc)return false;
     uint64_t schema=0,boot=0,seq=0;
     CN105ProvenPoll p{};
@@ -244,7 +246,7 @@ static bool get_http(const char* url,String& result,unsigned timeout_ms=4000) {
     return ok && result.length()==static_cast<unsigned>(body_size);
 }
 static void parse_sse_state(const char* raw) {
-    cJSON* root=cJSON_Parse(raw);
+    cJSON* root=cJSON_ParseWithOpts(raw,nullptr,true);
     if(!root) return;
     const cJSON* key=cJSON_GetObjectItemCaseSensitive(root,"id");
     const int64_t now=clock_ok()?time(nullptr):0;
