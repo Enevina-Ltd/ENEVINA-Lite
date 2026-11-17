@@ -110,9 +110,21 @@ int main(){
     Store prior{};prior.good=tx.version;prior.pending=false;
     assert(confirm_persistence(prior,tx,prior.good));
     assert(!prior.txn&&prior.good==tx.version);
-    // Higher signed version remains eligible (bad=9 is not permanent lockout).
+    // NVS-open failure is fail-closed and the intact transaction is
+    // retryable when storage becomes available again.
+    Store unavailable{};
+    bool can_open_nvs=false;
+    auto confirm_if_open=[&]() {
+        return can_open_nvs && confirm_persistence(unavailable,tx,unavailable.good);
+    };
+    assert(!confirm_if_open() && unavailable.txn);
+    can_open_nvs=true;
+    assert(confirm_if_open() && !unavailable.txn);
+    // Same defective signed version stays quarantined, but a higher
+    // verified version can still repair the controller after recovery.
     const uint32_t bad=tx.version;
-    assert(!(tx.version>bad));
-    assert(10u>bad);
+    assert(!signed_version_eligible(tx.version,8,bad,false));
+    assert(signed_version_eligible(10,8,bad,false));
+    assert(!signed_version_eligible(10,8,bad,true));
     std::puts("PASS 11 OTA recovery/power-cut scenarios and NVS fault injection");
 }
