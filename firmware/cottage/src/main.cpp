@@ -110,7 +110,9 @@ static void verify_new_ota_boot() {
     }
 #endif
     if(elapsed<60000) return; // allow BLE, WebServer, RTOS to settle
-    const bool healthy=boot_ui_started && wifi_ok.load() &&
+    // Never confirm a candidate that cannot receive the next signed OTA.
+    const bool healthy=cottage_ota_configured() &&
+        boot_ui_started && wifi_ok.load() &&
         c23_ble_initialized() &&
         ESP.getPsramSize()>=7*1024*1024 &&
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>=64*1024 &&
