@@ -9,3 +9,5 @@
 #include "../../../forecast/sources.cpp"
 #include "../../../forecast/fmi.cpp"
 #include "../../../cottage/url_guard.cpp"
+#include "../../../cottage/ruuvi_v5.cpp"
+#include "../../../cottage/air_humidity.cpp"
