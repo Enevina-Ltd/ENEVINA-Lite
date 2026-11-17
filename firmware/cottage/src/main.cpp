@@ -168,10 +168,13 @@ static void parse_sse_state(const char* raw) {
                 static_cast<uint64_t>(esp_timer_get_time()/1000),continuous);
         }
         climate_utc=climate_stamp;compressor_utc=compressor_stamp;
-        copy.captured_utc=climate_stamp&&compressor_stamp?
-            std::min(climate_stamp,compressor_stamp):0;
-        copy.received=(copy.captured_utc>0 &&
-            now>=copy.captured_utc && now-copy.captured_utc<=180);
+        // /events may replay cached climate and compressor snapshots after
+        // a reconnect. climate_utc/compressor_utc above record SSE RECEIPT
+        // time only, not a proven pump UART read or source sequence. Until
+        // the CN105 bridge supplies verifiable pump-origin freshness, fail
+        // closed: never make receipt time look like fresh pump telemetry.
+        copy.captured_utc=0;
+        copy.received=false;
         pump=copy;
         xSemaphoreGive(lock_data);
     }
@@ -466,8 +469,8 @@ const shown=[['CN105',s.cn105],['Pumppu',s.pump_mode],['Pumpun sisälämpö °C'
 ['Pumpun lämpötilatapahtumia',s.sse_climate_events],
 ['Kompressoritaajuustapahtumia',s.sse_compressor_events],
 ['CN105-yhteyden heartbeat-lukuja',s.sse_link_events],
-['Pumpun viimeisin lämpötapahtuma UTC',s.cn105_climate_utc?new Date(s.cn105_climate_utc*1000).toISOString():'Ei mittausta'],
-['Kompressorin viimeisin tapahtuma UTC',s.cn105_compressor_utc?new Date(s.cn105_compressor_utc*1000).toISOString():'Ei mittausta'],
+['CN105-SSE lämpöviesti vastaanotettu UTC (ei pumpun lähdeaika)',s.cn105_climate_utc?new Date(s.cn105_climate_utc*1000).toISOString():'Ei mittausta'],
+['CN105-SSE kompressoriviesti vastaanotettu UTC (ei lähdeaika)',s.cn105_compressor_utc?new Date(s.cn105_compressor_utc*1000).toISOString():'Ei mittausta'],
 ['CN105-yhteyden uptime s',s.cn105_link_uptime_s],
 ['Shelly lukuja OK/virhe',s.shelly_reads_ok+'/'+s.shelly_reads_bad],
 ['Shelly viimeisin vaste ms',s.shelly_rtt_ms],
@@ -724,6 +727,9 @@ static void status_endpoint() {
     cJSON_AddStringToObject(root,"mode","VARJOTILA_EI_KOMENTOJA");
     cJSON_AddBoolToObject(root,"physical_writes",false);
     cJSON_AddBoolToObject(root,"cn105",valid_cn105(cp,now));
+    // Explicit provenance: SSE receipt is not a pump-origin timestamp.
+    cJSON_AddBoolToObject(root,"cn105_source_verified",false);
+    cJSON_AddStringToObject(root,"cn105_measurement_quality","UNVERIFIED_SOURCE");
     cJSON_AddStringToObject(root,"pump_mode",cp.mode==ObservedPumpMode::Heat?
         "HEAT":cp.mode==ObservedPumpMode::Off?"OFF":"MUU/EI");
     if(valid_cn105(cp,now)) {
