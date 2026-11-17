@@ -27,7 +27,7 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
 .muted{color:var(--muted)}.tiny{font-size:12px}.metric{font-size:48px;line-height:1.12;font-weight:750;letter-spacing:-2px}.metric.small{font-size:32px;letter-spacing:-1px}.unit{font-size:17px;font-weight:500;letter-spacing:0}.flex{display:flex;align-items:center;justify-content:space-between;gap:12px}.pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:17px}.pill{font-size:12px;color:var(--green);background:#e7f3e9;padding:7px 10px;border-radius:99px}
 .temperature{background:linear-gradient(130deg,#1b5544,#103e33);color:#fff;border:0;min-height:245px;display:flex;flex-direction:column;justify-content:space-between}.temperature .muted{color:#c5ded1}.temperature .metric{font-size:67px}.temperature .pill{background:rgba(255,255,255,.13);color:#fff;display:inline-block}
 .statline{display:flex;justify-content:space-between;gap:10px;border-top:1px solid var(--edge);padding:10px 0}.statline:first-of-type{border:0}.statline span:last-child{font-weight:650;text-align:right}
-.mode{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.mode button{border:1px solid var(--edge);background:#fafcf9;border-radius:13px;padding:14px 8px;color:var(--ink)}.mode button.selected{border:2px solid var(--green);background:var(--mint);font-weight:700}.mode button:disabled{opacity:.5;cursor:not-allowed}
+.mode{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.mode button{border:1px solid var(--edge);background:#fafcf9;border-radius:13px;padding:14px 8px;color:var(--ink)}.mode button.selected{border:2px solid var(--green);background:var(--mint);font-weight:700}.mode button:disabled{opacity:.5;cursor:not-allowed}
 .fieldrow{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.field{display:grid;gap:4px;font-size:12px;color:var(--muted)}.field input{width:110px;border:1px solid #c5d2c8;border-radius:9px;padding:9px;color:var(--ink);background:#fff}.primary{background:var(--deep);color:#fff;border:0;border-radius:10px;padding:11px 15px;font-weight:700}.primary:disabled{opacity:.5;cursor:not-allowed}
 .subhead{margin:0 0 6px;font-size:13px;color:var(--muted)}.callout{background:#f3f8f2;border-radius:12px;padding:13px 15px;color:#365c4b;font-size:13px}.callout.warn{background:var(--warnbg);color:#744c13}
 .chart{width:100%;overflow:hidden}.bars{height:180px;display:flex;align-items:flex-end;gap:2px;border-bottom:1px solid #c5d4cb;padding:8px 0 0;overflow:hidden}.bar{min-width:2px;flex:1;border:0;border-radius:3px 3px 0 0;background:#8dbea2}.bar.cheap{background:#2c855f}.bar.high{background:#c6a65a}.bar.current{outline:2px solid #17352e;outline-offset:-1px}.ticks{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:8px}.legend{display:flex;gap:18px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin-top:8px}
@@ -36,7 +36,7 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
 .foot{color:var(--muted);font-size:12px;margin-top:22px}#feedback{font-size:12px;margin-top:10px}.statusgrid{display:grid;grid-template-columns:1fr auto;gap:9px;font-size:13px}.statusgrid span:nth-child(2n){font-weight:650;text-align:right}
 @media(max-width:1100px){.grid{gap:12px}.span7,.span5{grid-column:span 6}.span4{grid-column:span 4}.span8{grid-column:span 8}}
 @media(max-width:850px){.shell{display:block}.sidebar{position:static;height:auto;padding:9px 14px;gap:5px;border-right:0;border-bottom:1px solid var(--edge)}.brand{padding:3px}.brand-mark{font-size:16px;padding:5px 9px;border-radius:9px}.brand-name{font-size:20px}.brand-name small{display:none}.nav{display:flex;overflow:auto;gap:4px}.nav button{width:auto;white-space:nowrap;padding:9px 11px;font-size:12px}.nav .i{font-size:13px;width:auto}.aside-foot{display:none}.main{padding:15px 14px 40px}.top{margin-bottom:12px}.heading{margin-bottom:18px}h1{font-size:23px}.card{padding:16px}}
-@media(max-width:600px){.span7,.span5,.span4,.span8,.span12{grid-column:span 12}.metric{font-size:39px}.temperature .metric{font-size:56px}.mode button{padding:10px 5px;font-size:12px}.chip{font-size:11px}.bars{height:155px}}
+@media(max-width:600px){.span7,.span5,.span4,.span8,.span12{grid-column:span 12}.metric{font-size:39px}.temperature .metric{font-size:56px}.mode{grid-template-columns:repeat(2,minmax(0,1fr))}.mode button{padding:10px 5px;font-size:12px}.chip{font-size:11px}.bars{height:155px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 </style>
 </head>
@@ -84,8 +84,8 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
   <section class="view" id="view-settings">
     <div class="heading"><div><div class="eyebrow">Olosuhteet ja laite</div><h1>Asetukset ja diagnostiikka</h1><p>Paikallinen huonetavoite ja erikseen käyttöönotettava CN105-lämmitysohjaus.</p></div></div>
     <div class="grid">
-      <article class="card span7"><h2>Pihamökin toimintatila</h2><p class="tiny muted">Ylläpitotavoite ohjaa laskentaa. Kun CN105-automaattiohjaus otetaan erikseen käyttöön, Lite säätää pumpun pyyntilämpötilaa.</p><div class="mode" role="group" aria-label="Laskennallinen tila"><button type="button" data-mode="0">Kylmillään</button><button type="button" data-mode="1">Kuivanapito</button><button type="button" data-mode="2">Ylläpitolämpö</button></div><div class="fieldrow" style="margin-top:17px"><label class="field">Ylläpitotavoite °C<input id="setting-hold" type="number" min="5" max="24" step=".5" inputmode="decimal"></label><label class="field">Kuivanapito Δ°C<input id="setting-delta" type="number" min="3" max="5" step=".5" inputmode="decimal"></label><button class="primary" id="save-mode" type="button" disabled>Tallenna asetukset</button></div><div id="feedback" role="status"></div><p class="tiny muted">Valitse Ylläpitolämpö ja oma huonetavoite. Hintaehdotus laskee Mitsubishille 16–26 °C pyyntilämpötilan 0,5 °C askelin; komennot sallitaan vain erillisellä käyttöönotolla.</p></article>
-      <article class="card span12"><h2>Mitsubishi · automaattinen lämpötilan säätö</h2><p class="tiny muted">Laskenta käyttää RuuviTagia ja sähkön kokonaishintaa. Lämmitystä ohjataan vain Ylläpitolämpö-tilassa. Komento lähtee CN105:lle, ja tavoitelämpötila tarkistetaan takaisinlukemalla. Käyttöönotto on aina erillinen valinta eikä firmwarepäivitys käynnistä sitä.</p><div class="flex"><span class="chip" id="control-state">Ohjaus ei käytössä</span><span id="control-last">Ei komentoja</span><button type="button" id="control-enable" class="primary">Ota automaattiohjaus käyttöön</button><button type="button" id="control-disable">Poista automaattiohjaus käytöstä</button></div><p id="control-feedback" role="status"></p></article>
+      <article class="card span7"><h2>Pihamökin toimintatila</h2><p class="tiny muted">Ylläpitolämpö ja Asuttu käyttävät omia, toisistaan riippumattomia huonetavoitteitaan. Hintaohjaus voi säätää Mitsubishin pyyntilämpötilaa.</p><div class="mode" role="group" aria-label="Laskennallinen tila"><button type="button" data-mode="0">Kylmillään</button><button type="button" data-mode="1">Kuivanapito</button><button type="button" data-mode="2">Ylläpitolämpö</button><button type="button" data-mode="3">Asuttu</button></div><div class="fieldrow" style="margin-top:17px"><label class="field">Ylläpitotavoite °C<input id="setting-hold" type="number" min="5" max="24" step=".5" inputmode="decimal"></label><label class="field">Asuttu °C<input id="setting-occupied" type="number" min="16" max="26" step=".5" inputmode="decimal"></label><label class="field">Kuivanapito Δ°C<input id="setting-delta" type="number" min="3" max="5" step=".5" inputmode="decimal"></label><button class="primary" id="save-mode" type="button" disabled>Tallenna asetukset</button></div><div id="feedback" role="status"></div><p class="tiny muted">Valitse Ylläpitolämpö tai Asuttu sekä kyseisen tilan huonetavoite. Hintaehdotus laskee Mitsubishille 16–26 °C pyyntilämpötilan 0,5 °C askelin; komennot sallitaan vain erillisellä käyttöönotolla.</p></article>
+      <article class="card span12"><h2>Mitsubishi · automaattinen lämpötilan säätö</h2><p class="tiny muted">Laskenta käyttää RuuviTagia ja sähkön kokonaishintaa. Lämmitystä ohjataan Ylläpitolämpö- ja Asuttu-tiloissa. Komento lähtee CN105:lle, ja tavoitelämpötila tarkistetaan takaisinlukemalla. Käyttöönotto on aina erillinen valinta eikä firmwarepäivitys käynnistä sitä.</p><div class="flex"><span class="chip" id="control-state">Ohjaus ei käytössä</span><span id="control-last">Ei komentoja</span><button type="button" id="control-enable" class="primary">Ota automaattiohjaus käyttöön</button><button type="button" id="control-disable">Poista automaattiohjaus käytöstä</button></div><p id="control-feedback" role="status"></p></article>
       <article class="card span5"><h2>Laitteen tila</h2><div class="statusgrid"><span>Ohjelmistoversio</span><span id="device-version">—</span><span>Wi-Fi RSSI</span><span id="device-wifi">—</span><span>CN105-telemetria</span><span id="device-cn105">—</span><span>Shelly-mittaus</span><span id="device-shelly">—</span><span>Sisäinen vapaa RAM</span><span id="device-ram">—</span><span>PSRAM vapaana</span><span id="device-psram">—</span><span>OTA-lataus käytössä</span><span id="device-ota">—</span></div><p class="foot"><a href="/diagnostics" style="text-decoration:underline">Avaa alkuperäinen tekninen diagnostiikka</a></p></article>
       <article class="card span12"><h2>Mitsubishi CN105 · vastaanotettu data</h2><div class="statusgrid"><span>Viimeisin SSE-tilaviesti</span><span id="mitsubishi-read-status">—</span><span>Pumpun tila (SSE)</span><span id="mitsubishi-read-mode">—</span><span>Pumpun sisälämpötila (SSE)</span><span id="mitsubishi-read-temp">—</span><span>Asetuslämpötila (SSE)</span><span id="mitsubishi-read-setpoint">—</span><span>Kompressori (SSE)</span><span id="mitsubishi-read-hz">—</span><span>Kompressoriviestin ikä</span><span id="mitsubishi-compressor-age">—</span></div><p class="foot">ESPHome /events -rajapinnasta vastaanotettu viimeisin tilatieto. Viestin vastaanottoaika ei todista uutta CN105-UART-lukua, eikä näitä arvoja käytetä optimoinnin turvallisuushyväksyntään.</p></article>
       <article class="card span12"><h2>Sisäilman historia · RuuviTag</h2><div id="history-chart" class="chart"><div class="empty">Historiatietoja odotetaan</div></div><p class="foot">Viimeisimmät mittaukset, ei rakenteen kosteusmittaus. Offline-ajalta tallennettuja aikaleimoja ei esitetä UTC-aikana.</p></article>
@@ -102,7 +102,7 @@ const fmt=(v,d=1)=>Number.isFinite(v)?v.toLocaleString('fi-FI',{minimumFractionD
 const text=(id,value)=>{const e=$(id);if(e)e.textContent=value==null?'—':String(value);};
 const time=sec=>Number.isFinite(sec)&&sec>1700000000?new Date(sec*1000).toLocaleString('fi-FI',{timeZone:'Europe/Helsinki',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'Ei aikaa';
 const number=v=>typeof v==='number'&&Number.isFinite(v)?v:null;
-const modes=['Kylmillään','Kuivanapito','Ylläpitolämpö'];
+const modes=['Kylmillään','Kuivanapito','Ylläpitolämpö','Asuttu'];
 const priceFmt=v=>number(v)===null?'—':fmt(v*100,2)+' snt/kWh';
 function switchView(name){
   if(!['home','prices','plan','settings'].includes(name))return;
@@ -144,7 +144,7 @@ function showStatus(){
   text('price-now',priceFmt(s.spot));text('price-updated','Viimeisin haku: '+time(s.market_last_fetch_utc));
   text('pilot-state-heading',s.control_armed===true?'CN105-OHJAUS SALLITTU':'OHJAUS POIS');
   text('pilot-state-text',s.control_armed===true?
-    'Automaattiohjaus on kytketty. Käskyjä lähetetään vain Ylläpitolämpö-tilassa, kun mittaus- ja yhteysportit ovat kunnossa.':
+    'Automaattiohjaus on kytketty. Käskyjä lähetetään Ylläpitolämpö- tai Asuttu-tilassa, kun mittaus- ja yhteysportit ovat kunnossa.':
     'Automaattiohjaus ei ole päällä. Laskenta näyttää ehdotuksia ilman fyysisiä käskyjä.');
   text('control-state',s.control_armed===true?
     'Automaattiohjaus valittu · '+(s.control_gate||'odottaa'): 'Automaattiohjaus pois');
@@ -175,6 +175,7 @@ function showStatus(){
     state.mode=mode;
     document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('selected',Number(b.dataset.mode)===mode));
     $('setting-hold').value=number(a.hold_target_c)===null?'':a.hold_target_c;
+    $('setting-occupied').value=number(a.occupied_target_c)===null?'21':a.occupied_target_c;
     $('setting-delta').value=number(a.drying_delta_c)===null?'':a.drying_delta_c;
   }
   document.querySelectorAll('[data-mode]').forEach(b=>b.disabled=false);
@@ -208,7 +209,7 @@ function showPlan(){
   text('home-plan-reason',ok?'Simuloitu MPC-ehdotus. Automaattiohjaus toimii erillisellä hintaohjauspolulla.':
     hasFallback?'Ruuvi + 15 min kokonaishinnat; huonetavoite '+
       fmt(s.bootstrap_room_target_c,1)+' °C; syy: '+(s.bootstrap_reason||'—')+
-      '. Ehdotus ei ole kalibroitu MPC eikä lähetä ohjauskäskyjä.':
+      '. Ehdotus ei ole kalibroitu MPC; CN105-ohjaus erillisen käyttäjän valinnan takana.':
     'Ehdotus estetty: '+(s.bootstrap_reason||'puutteelliset lähtötiedot')+'.');
   text('plan-warning',ok?'Ehdotukset ovat laskennallisia. Fyysiset ohjauskäskyt ovat estettyjä.':
     hasFallback?'Lähtötason hintaohjaus: '+proposed+' (ehdotus, ei käsky). Kalibroitua MPC-suunnitelmaa ei ole vielä saatavilla.':
@@ -283,7 +284,7 @@ async function setControlArmed(enabled) {
     const j=await r.json();
     if(!r.ok||j.saved!==true)throw Error('Asetuksen tallennus epäonnistui');
     text('control-feedback',enabled?
-      'Automaattiohjaus sallittu. Ensimmäinen ohjaus odottaa tuoreita tietoja ja Ylläpitolämpö-tilaa.':
+      'Automaattiohjaus sallittu. Ensimmäinen ohjaus odottaa tuoreita tietoja ja Ylläpitolämpö- tai Asuttu-tilaa.':
       'Automaattiohjaus poistettu käytöstä.');
     await reloadStatus();
   }catch(e) {
@@ -294,16 +295,20 @@ async function setControlArmed(enabled) {
 $('control-enable').addEventListener('click',()=>setControlArmed(true));
 $('control-disable').addEventListener('click',()=>setControlArmed(false));
 document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>{state.settingsDirty=true;++state.settingsRevision;state.mode=Number(b.dataset.mode);document.querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('selected',x===b));}));
-['setting-hold','setting-delta'].forEach(id=>$(id).addEventListener('input',()=>{state.settingsDirty=true;++state.settingsRevision;}));
+['setting-hold','setting-occupied','setting-delta'].forEach(id=>$(id).addEventListener('input',()=>{state.settingsDirty=true;++state.settingsRevision;}));
 $('save-mode').addEventListener('click',async()=>{
   if(state.settingsSaving)return; // only one POST may be in flight
   const a=state.status&&state.status.air,btn=$('save-mode');if(!a||!a.config_token){text('feedback','Tiedot puuttuvat.');return;}
-  const hold=Number($('setting-hold').value),delta=Number($('setting-delta').value);
-  if(!Number.isFinite(hold)||hold<5||hold>24||!Number.isFinite(delta)||delta<3||delta>5){text('feedback','Tarkista lämpötilarajat.');return;}
+  const hold=Number($('setting-hold').value),occupied=Number($('setting-occupied').value),
+        delta=Number($('setting-delta').value);
+  if(!Number.isFinite(hold)||hold<5||hold>24||
+     !Number.isFinite(occupied)||occupied<16||occupied>26||Math.abs(occupied*2-Math.round(occupied*2))>1e-7||
+     !Number.isFinite(delta)||delta<3||delta>5){text('feedback','Tarkista lämpötilatavoitteet.');return;}
   const submittedRevision=state.settingsRevision;
   state.settingsSaving=true;
   btn.disabled=true;text('feedback','Tallennetaan paikallisia asetuksia…');
-  try{const body=new URLSearchParams({token:a.config_token,mode:String(state.mode),hold:String(hold),delta:String(delta)});
+  try{const body=new URLSearchParams({token:a.config_token,mode:String(state.mode),hold:String(hold),
+      occupied:String(occupied),delta:String(delta)});
     const r=await fetch('/api/air/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
     if(!r.ok)throw Error('HTTP '+r.status);
     if(state.settingsRevision===submittedRevision){
