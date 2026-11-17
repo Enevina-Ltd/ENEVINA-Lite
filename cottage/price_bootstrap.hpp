@@ -12,7 +12,7 @@ namespace enevina::cottage {
 enum class BootstrapAction : uint8_t { Unavailable, HeatSetpoint, Off, Hold };
 enum class BootstrapReason : uint8_t {
     MissingTemperature, MissingPrices, NoHeatingRequested, TemperatureLow, TemperatureHigh,
-    CheapWindow, ExpensiveWindow, Hysteresis
+    CheapWindow, ExpensiveWindow, ThermostatWithoutPrices
 };
 struct BootstrapInput {
     double indoor_c=0;
@@ -26,18 +26,13 @@ struct BootstrapInput {
     size_t price_count=0;
     // True only for consecutive, current-to-future UTC 15-minute slots.
     bool prices_contiguous_and_fresh=false;
-    bool currently_heating=false;
-    // Based on confirmed actuator transitions; never inferred from SSE heartbeat.
-    unsigned confirmed_minutes_in_mode=0;
-    // A real, acknowledged actuator transition is necessary for dwell
-    // enforcement. Display-only proposals cannot invent pump mode uptime.
-    bool actuator_dwell_verified=false;
 };
 struct BootstrapDecision {
     BootstrapAction action=BootstrapAction::Unavailable;
     BootstrapReason reason=BootstrapReason::MissingTemperature;
     double compared_median_eur_per_kwh=0;
     double current_total_eur_per_kwh=0;
+    bool price_data_valid=false;
     double requested_room_c=0;
     double heat_setpoint_c=0; // only valid for HeatSetpoint, 16..26 in 0.5C steps
     // Physical commands NEVER originate in this model-free module.
@@ -50,42 +45,42 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
         !std::isfinite(in.desired_room_c) ||
         in.desired_room_c<5.0 || in.desired_room_c>26.0) return d;
     d.requested_room_c=in.desired_room_c;
-    if(!in.prices_contiguous_and_fresh || !in.next_total_prices ||
-       in.price_count<8 || in.price_count>96) {
-        d.reason=BootstrapReason::MissingPrices;
-        return d;
-    }
-    // Bounded sort, no allocation and no library/platform dependence.
+    // Price data is OPTIONAL for maintaining a user-selected temperature.
+    // A Nord Pool/network outage must not disable the local thermostat.
+    bool price_valid=in.prices_contiguous_and_fresh && in.next_total_prices &&
+        in.price_count>=8 && in.price_count<=96;
     std::array<double,96> sorted{};
-    for(size_t i=0;i<in.price_count;i++) {
+    for(size_t i=0;price_valid && i<in.price_count;++i) {
         const double v=in.next_total_prices[i];
         if(!std::isfinite(v) || v< -1 || v>10) {
-            d.reason=BootstrapReason::MissingPrices;return d;
+            price_valid=false;break;
         }
         sorted[i]=v;
     }
-    std::sort(sorted.begin(),sorted.begin()+in.price_count);
-    const size_t mid=in.price_count/2;
-    d.compared_median_eur_per_kwh=in.price_count%2?
-        sorted[mid]:(sorted[mid-1]+sorted[mid])*0.5;
-    d.current_total_eur_per_kwh=in.next_total_prices[0];
-    // Room-target hysteresis is independent of the CN105 pump setpoint.
-    // The latter is only a suggested actuator request, not a guaranteed
-    // resulting cabin temperature (that requires a calibrated model).
-    const bool cheap=in.next_total_prices[0]<=d.compared_median_eur_per_kwh;
+    bool cheap=false;
+    if(price_valid) {
+        std::sort(sorted.begin(),sorted.begin()+in.price_count);
+        const size_t mid=in.price_count/2;
+        d.compared_median_eur_per_kwh=in.price_count%2?
+            sorted[mid]:(sorted[mid-1]+sorted[mid])*0.5;
+        d.current_total_eur_per_kwh=in.next_total_prices[0];
+        d.price_data_valid=true;
+        cheap=in.next_total_prices[0]<=d.compared_median_eur_per_kwh;
+    }
     const bool below=in.indoor_c<=in.desired_room_c-0.5;
     const bool above=in.indoor_c>=in.desired_room_c+0.5;
     if(above) {
         d.action=BootstrapAction::Off;
-        d.reason=BootstrapReason::TemperatureHigh;
+        d.reason=price_valid?BootstrapReason::TemperatureHigh:
+                             BootstrapReason::ThermostatWithoutPrices;
     } else if(below) {
         d.action=BootstrapAction::HeatSetpoint;
-        d.reason=BootstrapReason::TemperatureLow;
-    } else if(in.actuator_dwell_verified &&
-       ((in.currently_heating && in.indoor_c<in.desired_room_c+0.25) ||
-        in.confirmed_minutes_in_mode<60)) {
+        d.reason=price_valid?BootstrapReason::TemperatureLow:
+                             BootstrapReason::ThermostatWithoutPrices;
+    } else if(!price_valid) {
+        // Already within target deadband: keep pump's current mode.
         d.action=BootstrapAction::Hold;
-        d.reason=BootstrapReason::Hysteresis;
+        d.reason=BootstrapReason::ThermostatWithoutPrices;
     } else if(cheap) {
         d.action=BootstrapAction::HeatSetpoint;
         d.reason=BootstrapReason::CheapWindow;
@@ -94,9 +89,8 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
         d.reason=BootstrapReason::ExpensiveWindow;
     }
     if(d.action==BootstrapAction::HeatSetpoint) {
-        // Nominal target+0.5C, cheap-hours boost +2C when below target or
-        // +1C in the deadband. Conservative heuristic, NOT COP optimization.
-        const double lift=cheap?(below?2.0:1.0):0.5;
+        // Device HEAT setpoint is not the room target below 16C.
+        const double lift=price_valid?(cheap?(below?2.0:1.0):0.5):0.5;
         const double raw=std::max(16.0,std::min(26.0,in.desired_room_c+lift));
         d.heat_setpoint_c=std::round(raw*2.0)/2.0;
     }
@@ -111,7 +105,7 @@ inline const char* bootstrap_reason_name(BootstrapReason reason) {
     case BootstrapReason::TemperatureHigh:return "ABOVE_ROOM_TARGET";
     case BootstrapReason::CheapWindow:return "LOW_COST_WINDOW";
     case BootstrapReason::ExpensiveWindow:return "HIGH_COST_WINDOW";
-    case BootstrapReason::Hysteresis:return "MIN_RUN_AND_HYSTERESIS";
+    case BootstrapReason::ThermostatWithoutPrices:return "THERMOSTAT_NO_PRICES";
     }
     return "UNKNOWN";
 }
