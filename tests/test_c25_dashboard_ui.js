@@ -28,7 +28,7 @@ const document={activeElement:null,getElementById:$,querySelectorAll(s){
   if(s==='.view')return views;
   return [];
 },createElement:el};
-let offline=false,configured=null,pauseSave=false,resolveSave=null;
+let offline=false,configured=null,pauseSave=false,resolveSave=null,pauseStatus=false,settleStatus=null;
 const status={air:{sensor_fresh:true,mode:0,temperature_c:21,age_s:2,rh_pct:53,
     dewpoint_c:11.0,outside_temperature_c:2.5,hold_target_c:12,drying_delta_c:4,
     config_token:'test'},
@@ -39,7 +39,17 @@ const context={document,location:{hash:''},history:{replaceState(){}},
   Date,URLSearchParams,console,setInterval(){},
   fetch:async(path,opt)=>{
     if(offline)throw Error('offline');
-    if(path==='/api/status')return {ok:true,json:async()=>status};
+    if(path==='/api/status'){
+      if(pauseStatus){
+        // Snapshot as though the endpoint replied with its earlier values.
+        const old=JSON.parse(JSON.stringify(status));
+        return new Promise((resolve,reject)=>{settleStatus={
+          ok:()=>resolve({ok:true,json:async()=>old}),
+          fail:()=>reject(Error('stale status error'))
+        };});
+      }
+      return {ok:true,json:async()=>status};
+    }
     if(path==='/api/air/config'){
       configured=String(opt.body);
       if(pauseSave)return new Promise(resolve=>{resolveSave=()=>resolve({ok:true})});
@@ -97,6 +107,36 @@ const run=x=>vm.runInContext(x,context);
   assert.match(configured,/hold=20/);
   assert.match(configured,/mode=1/);
   assert.equal(run('state.settingsDirty'),false);
+  // Codex P2: a periodic status request that began BEFORE the settings POST
+  // may complete after the post-save refresh. It must not restore old 0/12C.
+  pauseStatus=true;
+  const staleSuccess=run('reloadStatus()');
+  assert.equal(typeof settleStatus.ok,'function');
+  pauseStatus=false;
+  modes[2].handlers.click();
+  $('setting-hold').value='18';
+  $('setting-hold').handlers.input();
+  status.air.mode=2;status.air.hold_target_c=18;
+  await $('save-mode').handlers.click();
+  assert.equal(run('state.mode'),2);
+  assert.equal(String($('setting-hold').value),'18');
+  assert.equal(run('state.settingsDirty'),false);
+  settleStatus.ok();
+  await staleSuccess;
+  assert.equal(run('state.mode'),2,'older success must not restore mode 0');
+  assert.equal(String($('setting-hold').value),'18','older success must not restore 12C');
+  assert.equal(run('state.settingsDirty'),false);
+  // Stale failures also must not erase a newer successful refresh.
+  pauseStatus=true;
+  const staleFailure=run('reloadStatus()');
+  const rejectOld=settleStatus.fail;
+  pauseStatus=false;
+  await run('reloadStatus()');
+  rejectOld();
+  await staleFailure;
+  assert.equal($('device-cn105').textContent,'Tuore','stale failure must not hide fresh CN105');
+  assert.equal(String($('setting-hold').value),'18');
+  assert.equal(run('state.mode'),2);
   offline=true;
   await run('reloadStatus()');
   for(const id of ['home-dew','home-outside','device-cn105','device-shelly','device-wifi','device-ram','home-rh','home-watts'])
@@ -109,5 +149,5 @@ const run=x=>vm.runInContext(x,context);
   await run('reloadStatus()');
   assert.equal($('device-cn105').textContent,'Tuore');
   assert.equal($('home-dew').textContent,'11,0 °C');
-  console.log('PASS dashboard draft edits during pending POST, duplicate save blocked, stale clearance, recovery');
+  console.log('PASS dashboard mid-POST edits, out-of-order status success/failure, stale clearance and recovery');
 })().catch(e=>{console.error(e);process.exitCode=1});
