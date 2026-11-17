@@ -23,11 +23,11 @@ int main() {
     CHECK(t.observe(r,now,180)==PumpReadProofStatus::Unverified);
     r.uart_connected=true;
     CHECK(t.observe(r,now,180)==PumpReadProofStatus::Baseline);
-    r.successful_uart_reads=1; // counter reset
+    r.successful_uart_reads=1; // same epoch lower counter: never reduce high-water
     CHECK(t.observe(r,now,180)==PumpReadProofStatus::CounterReset);
     ++r.successful_uart_reads;
-    CHECK(t.observe(r,now,180)==PumpReadProofStatus::NewRead);
-    ++r.boot_epoch; // new firmware session, source restart
+    CHECK(t.observe(r,now,180)==PumpReadProofStatus::CounterReset);
+    ++r.boot_epoch; // a verified new firmware session permits a new baseline
     CHECK(t.observe(r,now,180)==PumpReadProofStatus::Baseline);
     ++r.successful_uart_reads;
     r.source_utc=now+1; // invalid source clock
@@ -55,6 +55,25 @@ int main() {
     ++old.successful_uart_reads;
     CHECK(aged.observe(old,now,180)==PumpReadProofStatus::NewRead);
     CHECK(aged.observe(old,0,180)==PumpReadProofStatus::InvalidClock);
+    // Codex P2 regression: 100 -> 101 -> 100 -> 101 MUST NOT recertify
+    // the already handled 101 within the same source boot epoch.
+    PumpReadCounterTracker replay;
+    PumpReadCounterMessage prev{true,true,true,true,7,100,now-2,now};
+    CHECK(replay.observe(prev,now,180)==PumpReadProofStatus::Baseline);
+    prev.successful_uart_reads=101;
+    CHECK(replay.observe(prev,now,180)==PumpReadProofStatus::NewRead);
+    prev.successful_uart_reads=100;
+    CHECK(replay.observe(prev,now,180)==PumpReadProofStatus::CounterReset);
+    prev.successful_uart_reads=101;
+    CHECK(replay.observe(prev,now,180)==PumpReadProofStatus::Replay);
+    // Reconnect may NOT erase the highest confirmed counter in that epoch.
+    replay.invalidate();
+    prev.successful_uart_reads=100;
+    CHECK(replay.observe(prev,now,180)==PumpReadProofStatus::CounterReset);
+    prev.successful_uart_reads=101;
+    CHECK(replay.observe(prev,now,180)==PumpReadProofStatus::Baseline);
+    prev.successful_uart_reads=102;
+    CHECK(replay.observe(prev,now,180)==PumpReadProofStatus::NewRead);
     CHECK(!confirmed_pump_serial_update({true,true,5,5}));
     CHECK(assess_measurement({now,now-181,true},now,180)==MeasurementQuality::StaleSource);
     CHECK(assess_measurement({now,0,false},now,180)==MeasurementQuality::UnverifiedSource);
