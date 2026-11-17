@@ -106,8 +106,8 @@ inline const char* bootstrap_reason_name(BootstrapReason reason) {
     switch(reason) {
     case BootstrapReason::MissingTemperature:return "RUUVI_STALE";
     case BootstrapReason::MissingPrices:return "PRICES_UNAVAILABLE";
-    case BootstrapReason::TemperatureLow:return "TEMPERATURE_BELOW_15_5";
-    case BootstrapReason::TemperatureHigh:return "TEMPERATURE_ABOVE_17";
+    case BootstrapReason::TemperatureLow:return "BELOW_ROOM_TARGET";
+    case BootstrapReason::TemperatureHigh:return "ABOVE_ROOM_TARGET";
     case BootstrapReason::CheapWindow:return "LOW_COST_WINDOW";
     case BootstrapReason::ExpensiveWindow:return "HIGH_COST_WINDOW";
     case BootstrapReason::Hysteresis:return "MIN_RUN_AND_HYSTERESIS";
