@@ -28,7 +28,7 @@ const document={activeElement:null,getElementById:$,querySelectorAll(s){
   if(s==='.view')return views;
   return [];
 },createElement:el};
-let offline=false,configured=null;
+let offline=false,configured=null,pauseSave=false,resolveSave=null;
 const status={air:{sensor_fresh:true,mode:0,temperature_c:21,age_s:2,rh_pct:53,
     dewpoint_c:11.0,outside_temperature_c:2.5,hold_target_c:12,drying_delta_c:4,
     config_token:'test'},
@@ -40,7 +40,11 @@ const context={document,location:{hash:''},history:{replaceState(){}},
   fetch:async(path,opt)=>{
     if(offline)throw Error('offline');
     if(path==='/api/status')return {ok:true,json:async()=>status};
-    if(path==='/api/air/config'){configured=String(opt.body);return{ok:true}};
+    if(path==='/api/air/config'){
+      configured=String(opt.body);
+      if(pauseSave)return new Promise(resolve=>{resolveSave=()=>resolve({ok:true})});
+      return{ok:true};
+    }
     return {ok:true,json:async()=>({})};
   }
 };
@@ -63,6 +67,36 @@ const run=x=>vm.runInContext(x,context);
   assert.match(configured,/mode=2/);
   assert.match(configured,/hold=18/);
   assert.equal(run('state.settingsDirty'),false);
+  // Codex P2: submitting 18 C must not wipe edits to 20 C made while
+  // the POST response is pending. Nor may refresh unlock a second POST.
+  pauseSave=true;
+  modes[2].handlers.click();
+  $('setting-hold').value='18';
+  $('setting-hold').handlers.input();
+  const inFlight=$('save-mode').handlers.click();
+  assert.equal(run('state.settingsSaving'),true);
+  assert.equal($('save-mode').disabled,true);
+  const submitted=configured;
+  await $('save-mode').handlers.click();
+  assert.equal(configured,submitted,'second POST must be blocked');
+  $('setting-hold').value='20';
+  $('setting-hold').handlers.input();
+  modes[1].handlers.click();
+  assert.equal(run('state.settingsDirty'),true);
+  assert.equal(typeof resolveSave,'function');
+  resolveSave();
+  await inFlight;
+  assert.match(configured,/hold=18/);
+  assert.match(configured,/mode=2/);
+  assert.equal($('setting-hold').value,'20','newer unsaved draft retained');
+  assert.equal(run('state.mode'),1);
+  assert.equal(run('state.settingsDirty'),true);
+  assert.equal(run('state.settingsSaving'),false);
+  pauseSave=false;
+  await $('save-mode').handlers.click();
+  assert.match(configured,/hold=20/);
+  assert.match(configured,/mode=1/);
+  assert.equal(run('state.settingsDirty'),false);
   offline=true;
   await run('reloadStatus()');
   for(const id of ['home-dew','home-outside','device-cn105','device-shelly','device-wifi','device-ram','home-rh','home-watts'])
@@ -75,5 +109,5 @@ const run=x=>vm.runInContext(x,context);
   await run('reloadStatus()');
   assert.equal($('device-cn105').textContent,'Tuore');
   assert.equal($('home-dew').textContent,'11,0 °C');
-  console.log('PASS dashboard dirty edits, save POST, stale telemetry clearance, recovery');
+  console.log('PASS dashboard draft edits during pending POST, duplicate save blocked, stale clearance, recovery');
 })().catch(e=>{console.error(e);process.exitCode=1});
