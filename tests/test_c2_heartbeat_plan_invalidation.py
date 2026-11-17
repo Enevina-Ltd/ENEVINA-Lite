@@ -44,5 +44,14 @@ class HeartbeatGapTests(TestCase):
         self.assertIn("plan_count=0;\n                last_plan.status=MpcStatus::InvalidInput;",main)
         self.assertIn("cp.mode==ObservedPumpMode::Heat || cp.mode==ObservedPumpMode::Off",main)
 
+    def test_solver_result_cannot_resurrect_pretransition_mode(self):
+        main=(ROOT/"firmware/cottage/src/main.cpp").read_text()
+        self.assertIn("++observed_mode_generation;",main)
+        self.assertIn("optimizer_mode_generation=observed_mode_generation;",main)
+        self.assertIn("const bool mode_changed=optimizer_mode_generation!=",main)
+        self.assertIn("observed_mode_generation || cp.mode!=pump.mode;",main)
+        assert main.index("if(mode_changed) {") < main.index("last_plan=result;")
+        assert main.index("last_plan=result;") < main.index("xSemaphoreGive(lock_data);",main.index("if(mode_changed) {"))
+
 if __name__=="__main__":
     import unittest;unittest.main()
