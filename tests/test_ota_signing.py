@@ -1,8 +1,10 @@
 import importlib.util,unittest,contextlib,io,sys,tempfile
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes,serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.exceptions import InvalidSignature
 from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"tools"))
+from cottage_ota_channel import channel_tag
 
 SRC=Path(__file__).resolve().parents[1]/"tools/cottage_ota_publish.py"
 spec=importlib.util.spec_from_file_location("ota_publish",SRC)
@@ -40,21 +42,86 @@ class SignedPullReleaseCapabilityTests(unittest.TestCase):
     def test_publish_rejects_firmware_without_compiled_ota(self):
         # A normal ESP image header alone must not make a release signable.
         image=b"\xE9"+b"\0"*4095
-        self.assertFalse(ota.is_signed_pull_capable_image(image))
+        self.assertFalse(ota.is_signed_pull_capable_image(image,"ENEVINA_C24_CHANNEL_test"))
     def test_publisher_accepts_single_compiled_capability_marker(self):
-        image=b"\xE9"+b"\0"*1024+ota.SIGNED_PULL_MARKER
-        self.assertTrue(ota.is_signed_pull_capable_image(image))
+        marker="ENEVINA_C24_CHANNEL_"+"a"*64
+        image=b"\xE9"+b"\0"*1024+ota.SIGNED_PULL_MARKER+marker.encode()
+        self.assertTrue(ota.is_signed_pull_capable_image(image,marker))
     def test_publisher_rejects_ambiguous_marker(self):
         image=b"\xE9"+ota.SIGNED_PULL_MARKER*2
-        self.assertFalse(ota.is_signed_pull_capable_image(image))
+        self.assertFalse(ota.is_signed_pull_capable_image(image,"ENEVINA_C24_CHANNEL_test"))
+    def test_different_publisher_or_ca_or_endpoint_never_matches(self):
+        manifest="https://ota.test:8443/manifest.txt"
+        firmware="https://ota.test:8443/firmware.bin"
+        ca="dummy-ca\n"
+        key="dummy-publisher\n"
+        tag=channel_tag(manifest,firmware,ca,key)
+        image=b"\xE9"+ota.SIGNED_PULL_MARKER+tag.encode()
+        self.assertTrue(ota.is_signed_pull_capable_image(image,tag))
+        for changed in (
+            channel_tag(manifest,firmware,ca,"other-publisher"),
+            channel_tag(manifest,firmware,"other-ca",key),
+            channel_tag("https://other.test:8443/manifest.txt",
+                        "https://other.test:8443/firmware.bin",ca,key),
+        ):
+            self.assertNotEqual(tag,changed)
+            self.assertFalse(ota.is_signed_pull_capable_image(image,changed))
+
+    def test_channel_digest_in_generator_and_build(self):
+        root=Path(__file__).resolve().parents[1]
+        generator=(root/"tools/cottage_ota_generate_header.py").read_text()
+        cpp=(root/"firmware/cottage/src/cottage_secure_ota.cpp").read_text()
+        self.assertIn('COTTAGE_OTA_CHANNEL_MARKER',generator)
+        self.assertIn('static const volatile char signed_channel_marker[]',cpp)
+        self.assertIn("signed_channel_marker[0]=='E'",cpp)
+
+    def test_real_publisher_accepts_matching_channel_and_refuses_wrong_channel(self):
+        from unittest.mock import patch
+        manifest="https://ota.test/manifest.txt"
+        firmware_url="https://ota.test/firmware.bin"
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            publisher=ec.generate_private_key(ec.SECP256R1())
+            (root/"publisher-private.pem").write_bytes(publisher.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption()))
+            pub=publisher.public_key().public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo).decode("ascii")
+            ca="test-only-public-ca-text\n"
+            (root/"ca-public.pem").write_text(ca)
+            (root/"publisher-public.pem").write_text(pub)
+            marker=channel_tag(manifest,firmware_url,ca,pub)
+            image=root/"firmware.bin"
+            image.write_bytes(b"\xE9"+b"\x00"*4096+ota.SIGNED_PULL_MARKER+marker.encode())
+            args=["publish","--firmware",str(image),"--version","1",
+                  "--root",str(root),"--manifest-url",manifest,
+                  "--firmware-url",firmware_url]
+            with patch.object(sys,"argv",args[:-1]+["https://wrong.test/firmware.bin"]):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as rejected:
+                        ota.main()
+                self.assertEqual(rejected.exception.code,2)
+            self.assertFalse((root/"releases").exists())
+            with patch.object(sys,"argv",args):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    ota.main()
+            self.assertTrue((root/"releases/manifest.txt").exists())
+            self.assertEqual((root/"releases/firmware.bin").read_bytes(),
+                             image.read_bytes())
     def test_real_publisher_refuses_unsigned_pull_image_before_staging(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             fw=root/"unprovisioned.bin"
             fw.write_bytes(b"\xE9"+b"\x00"*4095)
+            (root/"ca-public.pem").write_text("dummy-ca\n")
+            (root/"publisher-public.pem").write_text("dummy-publisher\n")
             with patch.object(sys,"argv",["publish","--firmware",str(fw),
-                                           "--version","1","--root",str(root)]):
+                                            "--version","1","--root",str(root),
+                                           "--manifest-url","https://ota.test/manifest.txt",
+                                           "--firmware-url","https://ota.test/firmware.bin"]):
                 with contextlib.redirect_stderr(io.StringIO()):
                     with self.assertRaises(SystemExit) as caught:
                         ota.main()
