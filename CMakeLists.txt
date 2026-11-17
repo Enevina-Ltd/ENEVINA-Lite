@@ -45,6 +45,11 @@ add_executable(market_cache_tests tests/market_cache_tests.cpp)
 target_link_libraries(market_cache_tests PRIVATE enevina_core)
 add_test(NAME market_cache_tests COMMAND market_cache_tests)
 
+# Manufacturer-independent adapter identity and capability regression.
+add_executable(pump_capabilities_tests tests/pump_capabilities_tests.cpp)
+target_include_directories(pump_capabilities_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME pump_capabilities_tests COMMAND pump_capabilities_tests)
+
 # Pump-origin serial freshness policy: HTTP transport alone is not proof.
 add_executable(pump_freshness_tests tests/pump_freshness_tests.cpp)
 target_include_directories(pump_freshness_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -77,6 +82,11 @@ add_executable(cottage_memory_policy_tests tests/test_c24_memory_policy.cpp)
 target_include_directories(cottage_memory_policy_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME cottage_memory_policy_tests COMMAND cottage_memory_policy_tests)
 
+# Verified app-slot identity and crash-consistent signed-OTA state transitions.
+add_executable(cottage_ota_recovery_tests tests/cottage_ota_recovery_tests.cpp)
+target_include_directories(cottage_ota_recovery_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME cottage_ota_recovery_tests COMMAND cottage_ota_recovery_tests)
+
 
 
 # Test assertions stay active even when the executable is built as Release.
@@ -89,6 +99,7 @@ if(MSVC)
   target_compile_options(cottage_safety_tests PRIVATE /UNDEBUG)
   target_compile_options(cottage_sse_transport_tests PRIVATE /UNDEBUG)
   target_compile_options(cottage_memory_policy_tests PRIVATE /UNDEBUG)
+  target_compile_options(cottage_ota_recovery_tests PRIVATE /UNDEBUG)
   target_compile_options(cottage_tests PRIVATE /UNDEBUG)
   target_compile_options(cottage_url_guard_tests PRIVATE /UNDEBUG)
   target_compile_options(finnish_tariff_tests PRIVATE /UNDEBUG)
@@ -105,6 +116,7 @@ else()
   target_compile_options(cottage_safety_tests PRIVATE -UNDEBUG)
   target_compile_options(cottage_sse_transport_tests PRIVATE -UNDEBUG)
   target_compile_options(cottage_memory_policy_tests PRIVATE -UNDEBUG)
+  target_compile_options(cottage_ota_recovery_tests PRIVATE -UNDEBUG)
   target_compile_options(cottage_tests PRIVATE -UNDEBUG)
   target_compile_options(cottage_url_guard_tests PRIVATE -UNDEBUG)
   target_compile_options(finnish_tariff_tests PRIVATE -UNDEBUG)

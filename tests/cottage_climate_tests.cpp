@@ -53,6 +53,15 @@ int main() {
     RuuviBinding gate;
     assert(gate.accept(a,1000)==RuuviAccept::Unbound);
     gate.bind(official_mac);
+    // Codex P2: older hourly_v1 has no MAC in the record. Restoration
+    // requires a durable matching NVS identity, not compiler fallback.
+    assert(verified_history_origin(true,official_mac,gate));
+    assert(!verified_history_origin(false,official_mac,gate));
+    auto recompiled_mac=official_mac;
+    recompiled_mac[0]^=0x02;
+    assert(!verified_history_origin(true,recompiled_mac,gate));
+    RuuviBinding unbound_history{};
+    assert(!verified_history_origin(true,official_mac,unbound_history));
     assert(gate.accept(a,1000)==RuuviAccept::Accepted);
     assert(gate.accept(a,1200)==RuuviAccept::Duplicate);
     assert(gate.valid(500000));
@@ -68,6 +77,35 @@ int main() {
     assert(gate.accept(next,2100)==RuuviAccept::Implausible);
     next.temperature_c=24.5;
     assert(gate.accept(next,2100)==RuuviAccept::Accepted);
+    // Codex P2: an RH=0 sample must not advance packet freshness.
+    RuuviBinding moisture_gate;
+    moisture_gate.bind(a.mac);
+    assert(moisture_gate.accept(a,1000)==RuuviAccept::Accepted);
+    for(unsigned seq=1;seq<=5;++seq) {
+        RuuviV5 zero_rh=a;zero_rh.sequence=static_cast<uint16_t>(a.sequence+seq);
+        zero_rh.relative_humidity_pct=0;
+        assert(moisture_gate.accept(zero_rh,1000+seq*60000ULL)==RuuviAccept::Invalid);
+    }
+    assert(!moisture_gate.valid(1000+600001ULL));
+    assert(moisture_gate.age_ms(1000+600001ULL)==600001ULL);
+    // Codex P2: a stale bound sensor may reboot its sequence on battery
+    // replacement. Never reset on one old/replayed frame; accept only
+    // two advancing restart frames after the previous value has expired.
+    RuuviBinding restart_gate;
+    restart_gate.bind(a.mac);
+    RuuviV5 before_restart=a;before_restart.sequence=10000;
+    assert(restart_gate.accept(before_restart,1000)==RuuviAccept::Accepted);
+    RuuviV5 restarted=before_restart;restarted.sequence=0;
+    assert(restart_gate.accept(restarted,400000)==RuuviAccept::OldSequence);
+    assert(restart_gate.valid(400000));
+    assert(restart_gate.accept(restarted,700001)==RuuviAccept::OldSequence);
+    assert(!restart_gate.valid(700001));
+    restarted.sequence=1;
+    assert(restart_gate.accept(restarted,701001)==RuuviAccept::Accepted);
+    assert(restart_gate.valid(701001));
+    assert(restart_gate.accept(restarted,701500)==RuuviAccept::Duplicate);
+    restarted.sequence=0;
+    assert(restart_gate.accept(restarted,702000)==RuuviAccept::OldSequence);
     gate.unbind();
     assert(!gate.valid(2100));
     assert(!parse_ruuvi_mac("FF:FF:FF:FF:FF:FF",official_mac));
@@ -98,6 +136,19 @@ int main() {
     assert(restored.restore(dump));
     assert(restored.count()==hist.count());
     assert(restored.newest(0).hour_utc==hist.newest(0).hour_utc);
+    // Codex P2: an unsynchronised reboot MUST NOT overwrite NVS-restored
+    // UTC history with boot-relative hours, even before NTP arrives.
+    AirHistory persisted_history;
+    for(int i=0;i<48;i++)
+        assert(persisted_history.add(air,1700000000LL+i*3600LL));
+    AirHistory recovered_history;
+    assert(recovered_history.restore(persisted_history.dump()));
+    assert(recovered_history.count()==48);
+    assert(!recovered_history.add_offline(air,3600000));
+    assert(recovered_history.count()==48);
+    assert(recovered_history.add(air,1700000000LL+48*3600LL));
+    assert(recovered_history.count()==49);
+    assert(recovered_history.newest(48).hour_utc==1700000000LL/3600);
     dump.checksum++;
     assert(!restored.restore(dump));
     assert(restored.count()==2);
@@ -164,6 +215,16 @@ int main() {
     dry=evaluate_cottage_mode(cfg,wet,true,true,8,7ULL*3600000);
     assert(dry.has_target&&dry.advisory_heat_needed &&
            dry.direct_setpoint_below_mitsubishi_min && !dry.physical_writes_allowed);
+    // Codex P2: monitor exposure remains above clear threshold 65% even
+    // while current RH dips to 69%. Do not thrash drying advice at 70%.
+    auto hysteresis_air=calculate_air_moisture(10,69);
+    auto held=evaluate_cottage_mode(cfg,hysteresis_air,true,true,8,7ULL*3600000);
+    assert(held.advisory_heat_needed);
+    assert(held.advisory==ModeAdvisory::UnsupportedBelow16);
+    auto clear_air=calculate_air_moisture(10,64);
+    auto cleared=evaluate_cottage_mode(cfg,clear_air,true,true,8,0);
+    assert(!cleared.advisory_heat_needed);
+    assert(cleared.advisory==ModeAdvisory::MonitoringHumidity);
     cfg.mode=CottageMode::Hold;cfg.hold_target_c=12;
     auto hold=evaluate_cottage_mode(cfg,wet,true,true,0,0);
     assert(hold.has_target && near(hold.target_c,12) &&

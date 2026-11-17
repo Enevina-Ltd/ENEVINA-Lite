@@ -38,6 +38,25 @@ Julkaisua ei voi luoda laitteen Web UI:sta. Kaelion-koneella tunnistettu ylläpi
 
 Uuden testikortin OTA-käyttöönottoon kuuluu **yksi USB-provisiointi**: käännä rollbackilla varustettu bootloader (`sdkconfig.defaults`), varmista 16 Mt:n osiointi, ota flashvarmuuskopio ennen bootloaderin vaihtoa, luo avaimet paikallisesti ja muodosta `cottage_ota_private.hpp` -tiedosto `tools/cottage_ota_generate_header.py` -aputyökalulla. Älä koskaan commitoi paikallista `cottage_ota_private.hpp`-tiedostoa. Myöhemmät firmwarepäivitykset kulkevat tämän jälkeen vain Wi-Fi:n kautta.
 
+## 17.11.2026 – julkaisukanavan yhteensopivuus (P1-korjaus)
+
+Uusi OTA-julkaisun tarkistus sitoo yhteen saman julkaisukanavan **publisher-public.pem**-julkisen avaimen, **ca-public.pem**-varmenteen sekä täsmälliset HTTPS-manifesti- ja firmwareosoitteet. `tools/cottage_ota_generate_header.py` lisää paikalliseen `cottage_ota_private.hpp`-otsakkeeseen `COTTAGE_OTA_CHANNEL_MARKER`-tunnisteen. Se käännetään sovelluskuvaan, ja `cottage_ota_publish.py` vertaa tunnistetta julkaisukoneen luottamustietoihin. Väärän CA:n, julkaisijan tai HTTPS-osoitteen sisältävää kuvaa ei saa allekirjoittaa tälle kanavalle.
+
+**Julkaisutyökalulle on nyt pakko antaa myös `--manifest-url` ja `--firmware-url`.** Niiden on oltava samat kuin luottamusankkuriotsakkeen generoinnissa. Esimerkki vain paikallisessa eristetyssä testiympäristössä:
+
+```bash
+python3 tools/cottage_ota_publish.py \
+  --root /polku/eristettyyn/ota-juureen \
+  --firmware /polku/testi-firmware.bin \
+  --version 2026111701 \
+  --manifest-url https://OTA_HOST/manifest.txt \
+  --firmware-url https://OTA_HOST/firmware.bin
+```
+
+Vanha paikallinen header on päivitettävä tarkistetulla generatorilla ennen uuden OTA-firmwaren kääntämistä. Generaattori kieltäytyy ylikirjoittamasta olemassa olevaa headeria: tee uusi versio erilliseen tiedostoon, vertaile julkiset luottamusankkurit ja siirrä se käyttöön vain hyväksytyllä kehitystyömenettelyllä. **Älä julkaise, vaihda tuotannon OTA-avaimia, flashaa testikorttia tai muuta fyysistä lämpöpumppua tämän dokumenttimuutoksen perusteella.** Merkki estää vahinkojulkaisuja, ei korvaa kryptografista allekirjoituksen tarkistusta tai laitteen attestaatiota.
+
+Core-koneen ohjelmistotestissä 18/18 kohdennettua OTA-regressiota ja ESP32-S3 PlatformIO BUILD+LINK läpäisivät; uudessa firmwarekuvassa kanavatunniste löytyi kerran. **Fyysistä uutta OTA- tai rollback-hyväksyntää ei tehty.** PR #7:n sähkökatko-/NVS-tilakoneen hyväksyntä ja Codexin lopullinen katselmointi ovat edelleen avoinna.
+
 ## Paikalliset testit
 
 - ESP32-S3: tavallinen OTA-versio PlatformIO **BUILD PASS**, viallisen käynnistyksen fyysinen testiversio erillisessä PlatformIO-ympäristössä **BUILD PASS**. Tavallisen ELF-kuvan `verifyRollbackLater` on vahva (ei weak) symboli.
