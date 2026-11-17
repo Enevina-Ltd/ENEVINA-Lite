@@ -533,10 +533,12 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     input.indoor_fresh=valid_temperature(t,now);
     input.indoor_c=t.indoor_c;
     const CottageModeConfig mode=c23_mode_config();
-    // Saved Hold target is user-configurable via local UI. Cold/Drying
-    // remain at the current baseline 16C until their own limits are modeled.
-    input.desired_room_c=mode.mode==CottageMode::Hold?
-        mode.hold_target_c:16.0;
+    // Distinct user-configured room targets: occupied living and
+    // maintenance are never overwritten by switching to the other mode.
+    // Cold/Drying retain their existing non-actuating preview baseline.
+    input.desired_room_c=mode.mode==CottageMode::Occupied?
+        mode.occupied_target_c:
+        mode.mode==CottageMode::Hold?mode.hold_target_c:16.0;
     input.currently_heating=confirmed.mode==ObservedPumpMode::Heat &&
                             valid_cn105(confirmed,now);
     // A replayed SSE snapshot must never certify HEAT/OFF dwell.
@@ -635,7 +637,8 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     // Network-budget wait is a cancellation point. Never dispatch a command
     // prepared before a completed DISARM, mode or target configuration change.
     if(!control_armed.load() || c23_config_generation()!=config_generation ||
-       c23_mode_config().mode!=CottageMode::Hold || !wifi_ok.load() ||
+       (c23_mode_config().mode!=CottageMode::Hold &&
+        c23_mode_config().mode!=CottageMode::Occupied) || !wifi_ok.load() ||
        !clock_ok())return false;
     const int64_t now=time(nullptr);
     const auto current_temp=c23_temperature_sample();
@@ -663,7 +666,8 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     req.addHeader("Content-Type","application/x-www-form-urlencoded");
     // Last cancellation point after all potentially blocking preparation.
     if(!control_armed.load() || c23_config_generation()!=config_generation ||
-       c23_mode_config().mode!=CottageMode::Hold) {
+       (c23_mode_config().mode!=CottageMode::Hold &&
+        c23_mode_config().mode!=CottageMode::Occupied)) {
         req.end();
         return false;
     }
@@ -695,8 +699,8 @@ static void cottage_control_tick() {
     // direct bridge GET and subsequent state readback are required as well.
     const bool link_fresh=sse_stream_active.load() &&
         link_utc>0 && now>=link_utc && now-link_utc<=180;
-    if(mode.mode!=CottageMode::Hold) {
-        control_gate.store(static_cast<int>(ControlBlock::NotInHoldMode));
+    if((mode.mode!=CottageMode::Hold && mode.mode!=CottageMode::Occupied)) {
+        control_gate.store(static_cast<int>(ControlBlock::NotInHeatingMode));
         return;
     }
     if(!valid_temperature(sample,now) ||
@@ -744,14 +748,16 @@ static void cottage_control_tick() {
     // snapshots must never be carried into the physical POST.
     if(!control_armed.load() ||
        config_generation!=c23_config_generation() ||
-       c23_mode_config().mode!=CottageMode::Hold ||
+       (c23_mode_config().mode!=CottageMode::Hold &&
+        c23_mode_config().mode!=CottageMode::Occupied) ||
        !valid_temperature(c23_temperature_sample(),time(nullptr))) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
     }
     ControlSnapshot candidate{};
     candidate.armed=control_armed.load();
-    candidate.hold_mode=mode.mode==CottageMode::Hold;
+    candidate.heating_mode=mode.mode==CottageMode::Hold ||
+                        mode.mode==CottageMode::Occupied;
     candidate.temperature_fresh=valid_temperature(sample,now);
     candidate.market_fresh=proposal.action!=BootstrapAction::Unavailable;
     candidate.cn105_link_fresh=link_fresh;
