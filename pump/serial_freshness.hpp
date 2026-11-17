@@ -37,18 +37,22 @@ class PumpReadCounterTracker final {
 public:
     void invalidate() { have_baseline_=false; }
     PumpReadProofStatus observe(const PumpReadCounterMessage& msg,
-                               int64_t max_age_s) {
+                               int64_t now_utc,int64_t max_age_s) {
         if(!msg.documented_uart_counter || !msg.uart_connected ||
            !msg.packet_decoded || !msg.counter_bound_to_sample) {
             invalidate();
             return PumpReadProofStatus::Unverified;
         }
         if(msg.source_utc<=0 || msg.received_utc<=0 ||
-           msg.source_utc>msg.received_utc || max_age_s<=0) {
+           now_utc<=0 || max_age_s<=0 ||
+           msg.source_utc>msg.received_utc ||
+           msg.received_utc>now_utc) {
             invalidate();
             return PumpReadProofStatus::InvalidClock;
         }
-        if(msg.received_utc-msg.source_utc>max_age_s) {
+        // The upstream timestamps may be internally consistent but hours
+        // old: a cached SSE payload must be compared with current UTC.
+        if(now_utc-msg.source_utc>max_age_s) {
             invalidate();
             return PumpReadProofStatus::StaleSource;
         }
