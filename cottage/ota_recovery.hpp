@@ -39,6 +39,11 @@ inline bool valid(const Transaction& t) {
            t.phase>=Phase::Prepared && t.phase<=Phase::Armed &&
            t.checksum==checksum(t);
 }
+inline bool signed_version_eligible(uint32_t version,uint32_t good,
+                                    uint32_t bad,bool transaction_pending) {
+    return version!=0 && version>good && version>bad &&
+           !transaction_pending;
+}
 struct Evidence {
     bool running_source=false, running_target=false;
     bool selected_target=false, target_hash_matches=false;
