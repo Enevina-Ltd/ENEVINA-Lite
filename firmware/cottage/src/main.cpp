@@ -117,7 +117,8 @@ static void verify_new_ota_boot() {
         ESP.getPsramSize()>=7*1024*1024 &&
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>=64*1024 &&
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>=16*1024 &&
-        task_sse!=nullptr && task_shelly!=nullptr && task_optimizer!=nullptr;
+        task_sse!=nullptr && task_shelly!=nullptr &&
+        task_optimizer!=nullptr && task_ota!=nullptr;
     if(healthy) {
         if(esp_ota_mark_app_valid_cancel_rollback()==ESP_OK) {
             cottage_ota_confirm_boot();
@@ -954,8 +955,12 @@ void setup() {
     xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,&task_shelly,0);
     // BLE already running. No physical actuator command is ever sent.
     xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
-    if(cottage_ota_configured())
-        xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota",16384,nullptr,1,&task_ota,1);
+    if(cottage_ota_configured() &&
+        xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota",
+                                16384,nullptr,1,&task_ota,1)!=pdPASS) {
+        task_ota=nullptr;
+        Serial.println("C24_OTA_ERROR: signed OTA task creation failed");
+    }
     Serial.println("ENEVINA LITE C2 SHADOW: NO ACTUATOR PATH");
 }
 void loop() {
