@@ -33,7 +33,15 @@ int main() {
     ++p.completed_poll_sequence;
     // A same-epoch reset cannot re-certify old samples by climbing slowly.
     CHECK(proof.accept(p,accepted)==PumpReadProofStatus::CounterReset);
-    ++p.boot_epoch; // trusted new boot epoch permits a fresh baseline
+    ++p.boot_epoch; // audited persistent monotonic generation; NOT random ID
+    p.oldest_uart_read_utc=now-4; // a reboot must carry a strictly newer source read
+    CHECK(proof.accept(p,accepted)==PumpReadProofStatus::Baseline);
+    ++p.completed_poll_sequence;
+    CHECK(proof.accept(p,accepted)==PumpReadProofStatus::NewRead);
+    // A delayed previous-session SSE snapshot is never a fresh UART poll.
+    p.boot_epoch=77;p.completed_poll_sequence=101;p.oldest_uart_read_utc=now-5;
+    CHECK(proof.accept(p,accepted)==PumpReadProofStatus::CounterReset);
+    p.boot_epoch=78;p.completed_poll_sequence=4;p.oldest_uart_read_utc=now-3;
     CHECK(proof.accept(p,accepted)==PumpReadProofStatus::Baseline);
     ++p.completed_poll_sequence;
     CHECK(proof.accept(p,accepted)==PumpReadProofStatus::NewRead);
