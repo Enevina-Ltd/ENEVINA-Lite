@@ -418,6 +418,9 @@ void cottage_ota_worker(void*) {
     // LAN host + signing key access is the approval step.
     vTaskDelay(pdMS_TO_TICKS(90000));
     while(true) {
+        // Retry transient NVS cleanup/reconciliation without any new
+        // watcher, reset loop or physical flash operation.
+        cottage_ota_initialize();
         if(WiFi.status()!=WL_CONNECTED || time(nullptr)<1700000000) {
             last_status.store(2);
         } else if(!enevina_firmware::network_budget_acquire(200,
@@ -437,6 +440,10 @@ void cottage_ota_worker(void*) {
                     good=p.getUInt("good",0);
                     bad=p.getUInt("bad",0);
                     pending=p.getUInt("pending",0);
+                    // txv2 is authoritative for all new OTA releases.
+                    // Even after a good write, a failed deletion must
+                    // block new installs until idempotent cleanup succeeds.
+                    if(p.isKey("txv2"))pending=1;
                     p.end();
                 }
                 if(!store_ready) {
