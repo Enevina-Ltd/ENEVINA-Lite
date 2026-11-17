@@ -238,6 +238,12 @@ static void sse_worker(void*) {
         // Resume conservatively with zero confirmed dwell age.
         xSemaphoreTake(lock_data,portMAX_DELAY);
         observed_mode_duration.invalidate();
+        // A disconnected stream resets dwell even if the mode looks
+        // unchanged when SSE reconnects. Invalidate the cached plan AND
+        // in-flight optimizer snapshot under the same mutex.
+        ++observed_mode_generation;
+        plan_count=0;
+        last_plan.status=MpcStatus::InvalidInput;
         xSemaphoreGive(lock_data);
         vTaskDelay(pdMS_TO_TICKS(1500));
     }
