@@ -97,13 +97,21 @@ static void verify_new_ota_boot() {
     const esp_partition_t* running=esp_ota_get_running_partition();
     esp_ota_img_states_t state=ESP_OTA_IMG_UNDEFINED;
     if(!running || esp_ota_get_state_partition(running,&state)!=ESP_OK ||
-       state!=ESP_OTA_IMG_PENDING_VERIFY) return;
+       (state!=ESP_OTA_IMG_PENDING_VERIFY && state!=ESP_OTA_IMG_VALID))return;
+    const bool boot_pending=state==ESP_OTA_IMG_PENDING_VERIFY;
     const uint32_t elapsed=millis()-boot_validation_started_ms;
+    if(!cottage_ota_confirmation_pending()) {
+        // Legacy NVS migration or transaction read may have failed.
+        // Do not accept the candidate without a durable release identity.
+        if(boot_pending && elapsed>120000)
+            esp_ota_mark_app_invalid_rollback_and_reboot();
+        return;
+    }
 #ifdef ENEVINA_OTA_TEST_RESET_BEFORE_CONFIRM
     // Explicitly gated physical regression test: simulate sudden app reset
     // while the new OTA image is pending. Only enable in a special signed
     // fault-test release, never in the field/production firmware.
-    if(elapsed>=15000) {
+    if(boot_pending && elapsed>=15000) {
         Serial.println("C24_OTA_TEST: restarting before confirmation");
         Serial.flush();
         esp_restart();
@@ -120,12 +128,22 @@ static void verify_new_ota_boot() {
         task_sse!=nullptr && task_shelly!=nullptr &&
         task_optimizer!=nullptr && task_ota!=nullptr;
     if(healthy) {
-        if(esp_ota_mark_app_valid_cancel_rollback()==ESP_OK) {
-            cottage_ota_confirm_boot();
-            ota_boot_confirmed=true;
+        // Power loss can occur after bootloader VALID and before NVS good.
+        // Retry the same durable NVS transaction on both PENDING and VALID
+        // boots. Never claim success after a failed NVS put/remove.
+        if(boot_pending && esp_ota_mark_app_valid_cancel_rollback()!=ESP_OK) {
+            Serial.println("C24_OTA_ERROR: boot validation could not commit");
+            return;
         }
-        else Serial.println("C24_OTA_ERROR: boot validation could not commit");
-    } else if(elapsed>120000) {
+        if(cottage_ota_confirm_boot())ota_boot_confirmed=true;
+        else {
+            static uint32_t last_nvs_error_ms=0;
+            if(millis()-last_nvs_error_ms>=30000u){
+                last_nvs_error_ms=millis();
+                Serial.println("C24_OTA_ERROR: NVS confirmation failed; retrying");
+            }
+        }
+    } else if(boot_pending && elapsed>120000) {
         Serial.println("C24_OTA_REJECT: boot self-test failed; requesting rollback");
         esp_ota_mark_app_invalid_rollback_and_reboot();
     }
