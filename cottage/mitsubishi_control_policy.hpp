@@ -10,8 +10,7 @@ namespace enevina::cottage {
 enum class ControlStep : uint8_t { None, Setpoint, SetHeat, SetOff };
 enum class ControlBlock : uint8_t {
     Disabled, NotInHeatingMode, InputsUnverified, NoProposal,
-    UnsupportedCommand, AlreadyApplied, ModeDwell, RateLimited,
-    Ready
+    UnsupportedCommand, AlreadyApplied, Ready
 };
 struct ControlSnapshot {
     bool armed=false;
@@ -22,11 +21,6 @@ struct ControlSnapshot {
     bool bridge_get_ok=false; // fresh GET from device, not pump-UART proof
     bool current_heat=false;
     double current_setpoint_c=0;
-    uint64_t now_ms=0;
-    uint64_t last_command_ms=0;
-    bool has_last_command=false;
-    uint64_t last_mode_change_ms=0;
-    bool has_confirmed_mode_change=false;
     BootstrapDecision proposal{};
 };
 struct ControlProposal {
@@ -45,12 +39,6 @@ inline ControlProposal choose_mitsubishi_control(const ControlSnapshot& s) {
     if(s.proposal.action==BootstrapAction::Unavailable ||
        s.proposal.action==BootstrapAction::Hold) {
         out.gate=ControlBlock::NoProposal;return out;
-    }
-    if(s.has_last_command) {
-        if(s.now_ms<s.last_command_ms ||
-           s.now_ms-s.last_command_ms<60000ULL) {
-            out.gate=ControlBlock::RateLimited;return out;
-        }
     }
     if(s.proposal.action==BootstrapAction::HeatSetpoint) {
         if(!mitsubishi_valid_setpoint(s.proposal.heat_setpoint_c)) {
@@ -72,14 +60,6 @@ inline ControlProposal choose_mitsubishi_control(const ControlSnapshot& s) {
         }
         out.step=ControlStep::SetOff;
     }
-    if((out.step==ControlStep::SetHeat || out.step==ControlStep::SetOff) &&
-        s.has_confirmed_mode_change &&
-        (s.now_ms<s.last_mode_change_ms ||
-         s.now_ms-s.last_mode_change_ms<3600000ULL)) {
-        out.step=ControlStep::None;
-        out.gate=ControlBlock::ModeDwell;
-        return out;
-    }
     if(out.step!=ControlStep::None)out.gate=ControlBlock::Ready;
     return out;
 }
@@ -91,8 +71,6 @@ inline const char* control_gate_name(ControlBlock x) {
     case ControlBlock::NoProposal:return "NO_PROPOSAL";
     case ControlBlock::UnsupportedCommand:return "INVALID_SETPOINT";
     case ControlBlock::AlreadyApplied:return "ALREADY_APPLIED";
-    case ControlBlock::ModeDwell:return "MIN_MODE_DURATION";
-    case ControlBlock::RateLimited:return "RATE_LIMIT";
     case ControlBlock::Ready:return "READY";
     }
     return "UNKNOWN";
