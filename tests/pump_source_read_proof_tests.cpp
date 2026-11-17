@@ -27,7 +27,8 @@ int main() {
     CHECK(t.observe(r,now,180)==PumpReadProofStatus::CounterReset);
     ++r.successful_uart_reads;
     CHECK(t.observe(r,now,180)==PumpReadProofStatus::CounterReset);
-    ++r.boot_epoch; // a verified new firmware session permits a new baseline
+    ++r.boot_epoch; // documented monotonic epoch plus strictly newer source read
+    r.source_utc=now-2;
     CHECK(t.observe(r,now,180)==PumpReadProofStatus::Baseline);
     ++r.successful_uart_reads;
     r.source_utc=now+1; // invalid source clock
@@ -74,6 +75,36 @@ int main() {
     CHECK(replay.observe(prev,now,180)==PumpReadProofStatus::Baseline);
     prev.successful_uart_reads=102;
     CHECK(replay.observe(prev,now,180)==PumpReadProofStatus::NewRead);
+    // Codex P2: an old boot session must NEVER be reopened by replay.
+    PumpReadCounterTracker epochs;
+    PumpReadCounterMessage ep{true,true,true,true,7,100,now-20,now};
+    CHECK(epochs.observe(ep,now,180)==PumpReadProofStatus::Baseline);
+    ep.successful_uart_reads=101;ep.source_utc=now-19;
+    CHECK(epochs.observe(ep,now,180)==PumpReadProofStatus::NewRead);
+    ep.boot_epoch=8;ep.successful_uart_reads=1;ep.source_utc=now-10;
+    CHECK(epochs.observe(ep,now,180)==PumpReadProofStatus::Baseline);
+    ep.boot_epoch=7;ep.successful_uart_reads=100;ep.source_utc=now-20;
+    CHECK(epochs.observe(ep,now,180)==PumpReadProofStatus::CounterReset);
+    ep.successful_uart_reads=101;ep.source_utc=now-19;
+    CHECK(epochs.observe(ep,now,180)==PumpReadProofStatus::CounterReset);
+    // Failed old-epoch replay means next current-epoch sample is baseline.
+    ep.boot_epoch=8;ep.successful_uart_reads=2;ep.source_utc=now-9;
+    CHECK(epochs.observe(ep,now,180)==PumpReadProofStatus::Baseline);
+    ep.successful_uart_reads=3;ep.source_utc=now-8;
+    CHECK(epochs.observe(ep,now,180)==PumpReadProofStatus::NewRead);
+    // A nonmonotonic/new random epoch is not proof of a real reboot.
+    ep.boot_epoch=6;ep.successful_uart_reads=1;ep.source_utc=now-7;
+    CHECK(epochs.observe(ep,now,180)==PumpReadProofStatus::CounterReset);
+    // An epoch that appears newer but carries an older source timestamp is replay.
+    ep.boot_epoch=9;ep.successful_uart_reads=1;ep.source_utc=now-19;
+    CHECK(epochs.observe(ep,now,180)==PumpReadProofStatus::CounterReset);
+    ep.boot_epoch=8;ep.successful_uart_reads=4;ep.source_utc=now-6;
+    CHECK(epochs.observe(ep,now,180)==PumpReadProofStatus::Baseline);
+    ep.successful_uart_reads=5;ep.source_utc=now-5;
+    CHECK(epochs.observe(ep,now,180)==PumpReadProofStatus::NewRead);
+    // A higher counter with an earlier pump-source time is not a fresh UART read.
+    ep.successful_uart_reads=6;ep.source_utc=now-30;
+    CHECK(epochs.observe(ep,now,180)==PumpReadProofStatus::Replay);
     CHECK(!confirmed_pump_serial_update({true,true,5,5}));
     CHECK(assess_measurement({now,now-181,true},now,180)==MeasurementQuality::StaleSource);
     CHECK(assess_measurement({now,0,false},now,180)==MeasurementQuality::UnverifiedSource);
