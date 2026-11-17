@@ -39,6 +39,8 @@ static std::atomic<bool> wifi_ok{false};
 static std::atomic<uint32_t> web_loop_heartbeat_ms{0};
 static CN105Telemetry pump{};
 static ObservedModeDuration observed_mode_duration{};
+// Protected by lock_data. Reject MPC results computed before an SSE mode change.
+static uint32_t observed_mode_generation=0;
 static ShellyTelemetry consumption{};
 static TemperatureSample temperature{};
 static int64_t climate_utc=0,compressor_utc=0;
@@ -156,6 +158,7 @@ static void parse_sse_state(const char* raw) {
             // and dwell. Any mode transition invalidates that schedule
             // immediately (also HEAT <-> OFF and unsupported COOL/DRY/FAN).
             if(copy.mode!=pump.mode) {
+                ++observed_mode_generation;
                 plan_count=0;
                 last_plan.status=MpcStatus::InvalidInput;
             }
@@ -324,8 +327,10 @@ static void optimizer_worker(void*) {
         if(wifi_ok.load() && clock_ok() && prices && weather && aligned && bridge && rows) {
             CN105Telemetry cp;TemperatureSample ts;
             unsigned observed_mode_minutes=0;
+            uint32_t optimizer_mode_generation=0;
             xSemaphoreTake(lock_data,portMAX_DELAY);
             cp=pump;ts=temperature;
+            optimizer_mode_generation=observed_mode_generation;
             observed_mode_minutes=observed_mode_duration.minutes(
                 cp.mode,static_cast<uint64_t>(esp_timer_get_time()/1000),
                 valid_cn105(cp,now));
@@ -378,15 +383,27 @@ static void optimizer_worker(void*) {
                     }
                 }
                 xSemaphoreTake(lock_data,portMAX_DELAY);
-                last_plan=result;last_optimized_utc=now;
-                if(result.status==MpcStatus::Ok && elapsed<=2000) {
+                // The optimization ran without holding lock_data. An SSE
+                // mode transition may have invalidated its input snapshot
+                // while the solver was busy; never publish that old plan,
+                // even if HEAT -> OFF -> HEAT returned to the same mode.
+                const bool mode_changed=optimizer_mode_generation!=
+                    observed_mode_generation || cp.mode!=pump.mode;
+                last_optimized_utc=now;
+                if(mode_changed) {
+                    plan_count=0;
+                    last_plan.status=MpcStatus::InvalidInput;
+                } else if(result.status==MpcStatus::Ok && elapsed<=2000) {
+                    last_plan=result;
                     std::copy(rows,rows+max_horizon_slots,plan_rows.begin());
                     plan_count=result.count;
                 } else {
                     plan_count=0;
                     last_plan.status=MpcStatus::ResourceLimit;
                 }
-                strlcpy(reason_text,result.status==MpcStatus::Ok && elapsed<=2000?
+                strlcpy(reason_text,mode_changed?
+                    "CN105 tila vaihtui laskennan aikana":
+                    result.status==MpcStatus::Ok && elapsed<=2000?
                     "Vain synteettinen testimalli":"MPC infeasible / virhe",
                     sizeof(reason_text));
                 xSemaphoreGive(lock_data);
