@@ -25,6 +25,9 @@ struct BootstrapInput {
     bool currently_heating=false;
     // Based on confirmed actuator transitions; never inferred from SSE heartbeat.
     unsigned confirmed_minutes_in_mode=0;
+    // A real, acknowledged actuator transition is necessary for dwell
+    // enforcement. Display-only proposals cannot invent pump mode uptime.
+    bool actuator_dwell_verified=false;
 };
 struct BootstrapDecision {
     BootstrapAction action=BootstrapAction::Unavailable;
@@ -73,10 +76,12 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     // is used for additional heating, without fabricating a COP saving.
     // Hysteresis: do not flip a running compressor inside the 16C band
     // if the temperature has not reached 16.5C.
-    if(in.currently_heating && in.indoor_c<16.5) {
+    if(in.actuator_dwell_verified &&
+       in.currently_heating && in.indoor_c<16.5) {
         d.action=BootstrapAction::Hold;
         d.reason=BootstrapReason::Hysteresis;
-    } else if(in.confirmed_minutes_in_mode<60) {
+    } else if(in.actuator_dwell_verified &&
+              in.confirmed_minutes_in_mode<60) {
         d.action=BootstrapAction::Hold;
         d.reason=BootstrapReason::Hysteresis;
     } else if(in.next_total_prices[0] <= d.compared_median_eur_per_kwh) {
