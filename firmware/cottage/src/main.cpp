@@ -104,6 +104,11 @@ static std::atomic<uint32_t> control_commands_failed{0};
 static std::atomic<int64_t> control_last_command_utc{0};
 static std::atomic<int64_t> control_last_ack_utc{0};
 static std::atomic<int64_t> control_last_bridge_read_utc{0};
+// Observe the physical CN105 command path without serial access.
+static std::atomic<int> control_post_stage{0};
+static std::atomic<int> control_post_http_code{0};
+static std::atomic<int> control_get_http_code{0};
+
 static char reason_text[80]="Käynnistys";
 struct Row {
     int64_t utc=0;
@@ -611,6 +616,7 @@ static bool cn105_bridge_get(bool& heating,double& target) {
     if(!req.begin(client,url))return false;
     req.addHeader("Cache-Control","no-cache");
     const int code=req.GET();
+    control_get_http_code.store(code);
     const int body_size=req.getSize();
     bool good=false;
     if(code==200&&body_size>0&&body_size<1800) {
@@ -644,9 +650,13 @@ static bool cn105_bridge_get(bool& heating,double& target) {
 static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
                               uint32_t config_generation,ControlStep step,
                               double required_target) {
-    if(!command.valid || !control_armed.load() || !wifi_ok.load())return false;
+    control_post_stage.store(1);
+    control_post_http_code.store(0);
+    if(!command.valid || !control_armed.load() || !wifi_ok.load()) {
+        control_post_stage.store(-1);return false;
+    }
     const String url=cn105_local_url(command.path.data());
-    if(url.isEmpty())return false;
+    if(url.isEmpty()) {control_post_stage.store(-2);return false;}
     // Never hold NetworkBudgetLease across cn105_bridge_get(): it owns its
     // own non-recursive network mutex. Revalidate after this blocking GET.
     const int64_t now=time(nullptr);
@@ -657,7 +667,10 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     if(current_mode!=CottageMode::Cold &&
        !valid_temperature(current_temp,now))return false;
     bool bridge_heat=false;double bridge_setpoint=0;
-    if(!cn105_bridge_get(bridge_heat,bridge_setpoint))return false;
+    if(!cn105_bridge_get(bridge_heat,bridge_setpoint)) {
+        control_post_stage.store(-3);return false;
+    }
+    control_post_stage.store(3);
     const auto latest=bootstrap_preview(now,current_temp);
     if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
        (latest.action!=BootstrapAction::HeatSetpoint ||
@@ -665,7 +678,8 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     if(step==ControlStep::SetOff && latest.action!=BootstrapAction::Off)
         return false;
     enevina_firmware::NetworkBudgetLease lease(1000,72*1024,16*1024);
-    if(!lease.held())return false;
+    if(!lease.held()) {control_post_stage.store(-4);return false;}
+    control_post_stage.store(4);
     // Network-budget wait is another cancellation point. A user's updated
     // settings always supersede an in-flight automatic command.
     if(!control_armed.load() || c23_config_generation()!=config_generation ||
@@ -681,14 +695,17 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     HTTPClient req;
     req.setConnectTimeout(1500);req.setTimeout(1800);
     req.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    if(!req.begin(client,url))return false;
+    if(!req.begin(client,url)) {control_post_stage.store(-5);return false;}
     req.addHeader("Content-Type","application/x-www-form-urlencoded");
+    control_post_stage.store(5);
     // Last cancellation point after all potentially blocking preparation.
     if(!control_armed.load() || c23_config_generation()!=config_generation) {
         req.end();
         return false;
     }
     const int code=req.POST("");
+    control_post_http_code.store(code);
+    control_post_stage.store(code>=200 && code<300?6:-6);
     req.end();
     return code>=200 && code<300;
 }
@@ -775,9 +792,11 @@ static void cottage_control_tick() {
         }
     }
     if(confirmed) {
+        control_post_stage.store(8);
         control_commands_confirmed.fetch_add(1);
         control_last_ack_utc.store(time(nullptr));
     } else {
+        if(control_post_stage.load()==6)control_post_stage.store(-8);
         control_commands_failed.fetch_add(1);
     }
 }
@@ -1011,6 +1030,9 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"control_commands_sent",control_commands_sent.load());
     cJSON_AddNumberToObject(root,"control_commands_confirmed",control_commands_confirmed.load());
     cJSON_AddNumberToObject(root,"control_commands_failed",control_commands_failed.load());
+    cJSON_AddNumberToObject(root,"control_post_stage",control_post_stage.load());
+    cJSON_AddNumberToObject(root,"control_post_http_code",control_post_http_code.load());
+    cJSON_AddNumberToObject(root,"control_get_http_code",control_get_http_code.load());
     cJSON_AddNumberToObject(root,"control_last_command_utc",
                             static_cast<double>(control_last_command_utc.load()));
     cJSON_AddNumberToObject(root,"control_last_ack_utc",
