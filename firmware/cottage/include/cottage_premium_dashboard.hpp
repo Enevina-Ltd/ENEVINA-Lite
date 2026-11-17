@@ -95,7 +95,7 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-const state={status:null,prices:null,plan:null,history:null,mode:0,settingsDirty:false,settingsRevision:0,settingsSaving:false};
+const state={status:null,prices:null,plan:null,history:null,mode:0,settingsDirty:false,settingsRevision:0,settingsSaving:false,statusRequestSequence:0};
 const fmt=(v,d=1)=>Number.isFinite(v)?v.toLocaleString('fi-FI',{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
 const text=(id,value)=>{const e=$(id);if(e)e.textContent=value==null?'—':String(value);};
 const time=sec=>Number.isFinite(sec)&&sec>1700000000?new Date(sec*1000).toLocaleString('fi-FI',{timeZone:'Europe/Helsinki',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'Ei aikaa';
@@ -192,7 +192,16 @@ function showHistory(){
   const note=document.createElement('p');note.className='tiny muted';note.textContent='Näkyvät lämpötilat: '+fmt(min)+'–'+fmt(max)+' °C · '+vals.length+' tuntipistettä';host.append(note);
 }
 async function fetchJSON(path){const r=await fetch(path,{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);return r.json();}
-async function reloadStatus(){try{state.status=await fetchJSON('/api/status');showStatus();}catch(e){
+async function reloadStatus(){
+  // Latest-started request wins: an earlier periodic response, including an
+  // error, must never replace the post-save status or its verified controls.
+  const requestId=++state.statusRequestSequence;
+  try{
+    const next=await fetchJSON('/api/status');
+    if(requestId!==state.statusRequestSequence)return;
+    state.status=next;showStatus();
+  }catch(e){
+    if(requestId!==state.statusRequestSequence)return;
   // Never leave the last good readings looking live across a status failure.
   state.status=null;state.plan={valid:false};
   text('connection','Yhteys poikki');$('connection-dot').className='dot bad';
