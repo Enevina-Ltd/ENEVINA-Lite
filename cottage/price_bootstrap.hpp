@@ -48,7 +48,7 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     if(!in.indoor_fresh || !std::isfinite(in.indoor_c) ||
         in.indoor_c< -10 || in.indoor_c>40 ||
         !std::isfinite(in.desired_room_c) ||
-        in.desired_room_c<5.0 || in.desired_room_c>24.0) return d;
+        in.desired_room_c<5.0 || in.desired_room_c>26.0) return d;
     d.requested_room_c=in.desired_room_c;
     if(!in.prices_contiguous_and_fresh || !in.next_total_prices ||
        in.price_count<8 || in.price_count>96) {
