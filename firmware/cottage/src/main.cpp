@@ -639,17 +639,17 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
        !clock_ok())return false;
     const int64_t now=time(nullptr);
     const auto current_temp=c23_temperature_sample();
-    CN105Telemetry verified{};
+    CN105Telemetry observed{};
     int64_t current_link_utc=0;
     xSemaphoreTake(lock_data,portMAX_DELAY);
-    verified=pump;current_link_utc=cn105_link_event_utc;
+    observed=sse_observed_pump;current_link_utc=cn105_link_event_utc;
     xSemaphoreGive(lock_data);
+    // ESPHome GET returns the bridge's reported state. The optional
+    // Verified Snapshot UART proof is never a prerequisite for this pilot.
     if(!valid_temperature(current_temp,now) ||
-       !valid_cn105(verified,now) ||
-       !verified.evidence.source_time_verified ||
        !sse_stream_active.load() || current_link_utc<=0 ||
        now<current_link_utc || now-current_link_utc>180)return false;
-    const auto latest=bootstrap_preview(now,current_temp,verified);
+    const auto latest=bootstrap_preview(now,current_temp,observed);
     if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
        (latest.action!=BootstrapAction::HeatSetpoint ||
         std::fabs(latest.heat_setpoint_c-required_target)>0.001))return false;
@@ -700,8 +700,6 @@ static void cottage_control_tick() {
         return;
     }
     if(!valid_temperature(sample,now) ||
-       !valid_cn105(pump_snapshot,now) ||
-       !pump_snapshot.evidence.source_time_verified ||
        proposal.action==BootstrapAction::Unavailable || !link_fresh) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
@@ -746,9 +744,7 @@ static void cottage_control_tick() {
     candidate.temperature_fresh=valid_temperature(sample,now);
     candidate.market_fresh=proposal.action!=BootstrapAction::Unavailable;
     candidate.cn105_link_fresh=link_fresh;
-    candidate.bridge_get_ok=true;
-    candidate.pump_origin_verified=valid_cn105(pump_snapshot,now) &&
-                                   pump_snapshot.evidence.source_time_verified;
+    candidate.bridge_get_ok=true; // separate live ESPHome GET succeeded
     candidate.current_heat=current_heat;
     candidate.current_setpoint_c=current_setpoint;
     candidate.now_ms=now_ms;
@@ -780,40 +776,24 @@ static void cottage_control_tick() {
         mode_change_present=true;
         last_mode_change_ms=now_ms;
     }
-    const uint32_t proof_before=cn105_source_proof_good.load();
     const bool sent=cn105_bridge_post(request,config_generation,
                                       decision.step,decision.target_c);
-    // ESPHome may acknowledge HTTP before state propagation. Read the state
-    // after a short pause; bridge acknowledgement is NOT pump-UART proof.
-    if(sent)vTaskDelay(pdMS_TO_TICKS(1200));
-    bool read_heating=false;
-    double read_setpoint=0;
-    const bool readback=sent && cn105_bridge_get(read_heating,read_setpoint);
-    // The ESPHome GET can replay cached state. Wait for a *new*, proven
-    // complete CN105 UART poll and verify its decoded mode/setpoint as well.
-    bool source_confirmed=false;
-    if(readback) {
+    // ESPHome may acknowledge the POST before updating its REST state.
+    // Confirm only what the bridge GET reports, never claim UART proof.
+    bool confirmed=false;
+    if(sent) {
         for(unsigned attempt=0;attempt<5 && control_armed.load();++attempt) {
-            CN105Telemetry current{};
-            xSemaphoreTake(lock_data,portMAX_DELAY);current=pump;
-            xSemaphoreGive(lock_data);
-            if(cn105_source_proof_good.load()>proof_before &&
-               valid_cn105(current,time(nullptr)) &&
-               current.evidence.source_time_verified) {
-                source_confirmed=decision.step==ControlStep::Setpoint ?
-                    std::fabs(current.setpoint_c-decision.target_c)<=0.001 :
-                    decision.step==ControlStep::SetHeat ?
-                    current.mode==ObservedPumpMode::Heat :
-                    current.mode==ObservedPumpMode::Off;
-                if(source_confirmed)break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(800));
+            vTaskDelay(pdMS_TO_TICKS(600));
+            bool read_heating=false;
+            double read_setpoint=0;
+            if(!cn105_bridge_get(read_heating,read_setpoint))continue;
+            confirmed=decision.step==ControlStep::Setpoint ?
+                std::fabs(read_setpoint-decision.target_c)<=0.001 :
+                decision.step==ControlStep::SetHeat ? read_heating :
+                !read_heating;
+            if(confirmed)break;
         }
     }
-    const bool confirmed=readback && source_confirmed &&
-       (decision.step==ControlStep::Setpoint ?
-        std::fabs(read_setpoint-decision.target_c)<=0.001 :
-        decision.step==ControlStep::SetHeat ? read_heating : !read_heating);
     if(confirmed) {
         control_commands_confirmed.fetch_add(1);
         control_last_ack_utc.store(time(nullptr));
