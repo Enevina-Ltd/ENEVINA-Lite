@@ -9,3 +9,5 @@ __pycache__/
 # Mitsubishi ESP32 local secrets and build artifacts
 firmware/cottage/.pio/
 firmware/cottage/include/cottage_local_config.hpp
+# Signed OTA public trust bundle is provisioned locally per gateway
+firmware/cottage/include/cottage_ota_private.hpp

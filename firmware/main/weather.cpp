@@ -1,6 +1,9 @@
 #ifdef ARDUINO
 #include "tls_roots.hpp"
 #include "esp_heap_caps.h"
+#ifdef COTTAGE_SHARED_MEMORY_GUARD
+#include "cottage_network_budget.hpp"
+#endif
 #endif
 #include "weather.hpp"
 #include "weather_cache.hpp"
@@ -72,6 +75,13 @@ bool save_cache(const WeatherCache& data) {
 }
 
 bool fetch_weather(WeatherCache& next) {
+#ifdef COTTAGE_SHARED_MEMORY_GUARD
+    // Never run Nord Pool and FMI TLS handshakes together or during BLE
+    // discovery. Reject unsafe load rather than exhausting internal RAM.
+    NetworkBudgetLease network_lease(8000, 78*1024, 16*1024);
+    if(!network_lease.held()) return false;
+#endif
+
     char url[320];
     const int n=std::snprintf(url,sizeof(url),
         "https://opendata.fmi.fi/wfs?service=WFS&version=2.0.0&"
@@ -96,8 +106,9 @@ bool fetch_weather(WeatherCache& next) {
         if(esp_http_client_get_status_code(client)==200) {
             constexpr size_t limit=60000;
             #ifdef ARDUINO
-            // Share scarce internal RAM with C2.3 BLE. Large downloads
-            // use external PSRAM; fail closed if unavailable.
+            // C2.3 BLE and two concurrent HTTPS readers share scarce internal
+            // RAM. Download bodies must use verified external PSRAM, and
+            // fail closed if unavailable (no internal-RAM fallback).
             body=static_cast<char*>(heap_caps_malloc(
                 limit+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
             #else
@@ -108,6 +119,9 @@ bool fetch_weather(WeatherCache& next) {
                 int read=0;
                 while(used<limit && (read=esp_http_client_read(client,body+used,
                     static_cast<int>(limit-used)))>0) used+=static_cast<size_t>(read);
+#ifdef COTTAGE_SHARED_MEMORY_GUARD
+                network_budget_sample();
+#endif
                 if(read==0 && used>0) {
                     body[used]='\0';
                     size_t count=0;

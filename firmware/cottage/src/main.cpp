@@ -6,6 +6,7 @@
 #include <esp_task_wdt.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
+#include <esp_ota_ops.h>
 #include <cJSON.h>
 #include <array>
 #include <algorithm>
@@ -18,6 +19,8 @@
 #include <string>
 #include "cottage_config.hpp"
 #include "cottage_air_service.hpp"
+#include "cottage_network_budget.hpp"
+#include "cottage_secure_ota.hpp"
 #include "cottage/physics.hpp"
 #include "cottage/mpc.hpp"
 #include "cottage/telemetry.hpp"
@@ -29,6 +32,11 @@
 #include "cottage/sse_transport.hpp"
 #include "../../main/market.hpp"
 #include "../../main/weather.hpp"
+
+// Arduino ESP32 initArduino() calls verifyOta() and marks a PENDING_VERIFY
+// firmware valid by default BEFORE setup(). Override its documented weak
+// hook so only Enevina's own post-boot health gate commits a new image.
+extern "C" bool verifyRollbackLater() { return true; }
 
 using namespace enevina::cottage;
 static WebServer web(80);
@@ -50,6 +58,9 @@ static uint32_t optimizer_ms=0;
 static uint32_t max_optimizer_ms=0;
 static size_t plan_count=0;
 static uint32_t free_heap=0,free_psram=0,stack_watermark=0;
+static uint32_t boot_validation_started_ms=0;
+static bool boot_ui_started=false;
+static bool ota_boot_confirmed=false;
 static std::atomic<uint32_t> failed_reads{0};
 static std::atomic<uint32_t> sse_connections{0},sse_disconnects{0};
 static std::atomic<uint32_t> sse_climate_events{0},sse_compressor_events{0};
@@ -62,6 +73,7 @@ static int64_t cn105_link_event_utc=0;
 static double cn105_link_uptime_s=0;
 static TaskHandle_t task_sse=nullptr,task_shelly=nullptr;
 static TaskHandle_t task_ruuvi=nullptr,task_optimizer=nullptr;
+static TaskHandle_t task_ota=nullptr;
 static bool shelly_relay_on=false;
 static char reason_text[80]="Käynnistys";
 struct Row {
@@ -74,6 +86,70 @@ struct Row {
 static std::array<Row,max_horizon_slots> plan_rows{};
 static Parameters model{};
 
+// All cJSON nodes and serialized HTTP JSON are allocated in PSRAM.
+// Never fall back to scarce internal RAM on allocation failure.
+static void* json_alloc_psram(size_t n) {
+    return heap_caps_malloc(n,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+}
+static void json_free_psram(void* p) {heap_caps_free(p);}
+// A/B OTA boot verification: no new image is confirmed immediately merely
+// because the bootloader reached setup(). With an ESP-IDF rollback-capable
+// bootloader, a boot failure or reset before confirmation falls back safely.
+static void verify_new_ota_boot() {
+    const esp_partition_t* running=esp_ota_get_running_partition();
+    esp_ota_img_states_t state=ESP_OTA_IMG_UNDEFINED;
+    if(!running || esp_ota_get_state_partition(running,&state)!=ESP_OK ||
+       (state!=ESP_OTA_IMG_PENDING_VERIFY && state!=ESP_OTA_IMG_VALID))return;
+    const bool boot_pending=state==ESP_OTA_IMG_PENDING_VERIFY;
+    const uint32_t elapsed=millis()-boot_validation_started_ms;
+    if(!cottage_ota_confirmation_pending()) {
+        // Legacy NVS migration or transaction read may have failed.
+        // Do not accept the candidate without a durable release identity.
+        if(boot_pending && elapsed>120000)
+            esp_ota_mark_app_invalid_rollback_and_reboot();
+        return;
+    }
+#ifdef ENEVINA_OTA_TEST_RESET_BEFORE_CONFIRM
+    // Explicitly gated physical regression test: simulate sudden app reset
+    // while the new OTA image is pending. Only enable in a special signed
+    // fault-test release, never in the field/production firmware.
+    if(boot_pending && elapsed>=15000) {
+        Serial.println("C24_OTA_TEST: restarting before confirmation");
+        Serial.flush();
+        esp_restart();
+    }
+#endif
+    if(elapsed<60000) return; // allow BLE, WebServer, RTOS to settle
+    // Never confirm a candidate that cannot receive the next signed OTA.
+    const bool healthy=cottage_ota_configured() &&
+        boot_ui_started && wifi_ok.load() &&
+        c23_ble_initialized() &&
+        ESP.getPsramSize()>=7*1024*1024 &&
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>=64*1024 &&
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>=16*1024 &&
+        task_sse!=nullptr && task_shelly!=nullptr &&
+        task_optimizer!=nullptr && task_ota!=nullptr;
+    if(healthy) {
+        // Power loss can occur after bootloader VALID and before NVS good.
+        // Retry the same durable NVS transaction on both PENDING and VALID
+        // boots. Never claim success after a failed NVS put/remove.
+        if(boot_pending && esp_ota_mark_app_valid_cancel_rollback()!=ESP_OK) {
+            Serial.println("C24_OTA_ERROR: boot validation could not commit");
+            return;
+        }
+        if(cottage_ota_confirm_boot())ota_boot_confirmed=true;
+        else {
+            static uint32_t last_nvs_error_ms=0;
+            if(millis()-last_nvs_error_ms>=30000u){
+                last_nvs_error_ms=millis();
+                Serial.println("C24_OTA_ERROR: NVS confirmation failed; retrying");
+            }
+        }
+    } else if(boot_pending && elapsed>120000) {
+        Serial.println("C24_OTA_REJECT: boot self-test failed; requesting rollback");
+        esp_ota_mark_app_invalid_rollback_and_reboot();
+    }
+}
 static bool clock_ok() {return time(nullptr)>1700000000;}
 static bool number(const cJSON* item,double& output,double min,double max) {
     if(!item) return false;
@@ -756,7 +832,8 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"mpc_worst_ms",worst);
     cJSON_AddNumberToObject(root,"optimized_utc",static_cast<double>(optimized));
     cJSON_AddNumberToObject(root,"free_heap",heap);
-    cJSON_AddNumberToObject(root,"free_psram",psram);
+    cJSON_AddNumberToObject(root,"free_psram",
+                            heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     cJSON_AddNumberToObject(root,"stack_free_bytes",stack);
     cJSON_AddStringToObject(root,"reason",reason);
     cJSON_AddNumberToObject(root,"bad_reads",failed_reads.load());
@@ -788,12 +865,33 @@ static void status_endpoint() {
                             static_cast<double>(weather.fetched_utc));
     cJSON_AddNumberToObject(root,"weather_points",weather.points);
     cJSON_AddNumberToObject(root,"uptime_ms",millis());
+    cJSON_AddStringToObject(root,"firmware_version","c2.4-dev");
+    const esp_partition_t* active=esp_ota_get_running_partition();
+    cJSON_AddStringToObject(root,"ota_partition",active?active->label:"unknown");
+    esp_ota_img_states_t image_state=ESP_OTA_IMG_UNDEFINED;
+    const bool has_ota_state=active &&
+        esp_ota_get_state_partition(active,&image_state)==ESP_OK;
+    cJSON_AddNumberToObject(root,"ota_image_state",
+                            has_ota_state?static_cast<int>(image_state):-1);
+    cJSON_AddBoolToObject(root,"ota_boot_confirmed",ota_boot_confirmed);
+    cJSON_AddBoolToObject(root,"ota_upload_enabled",false);
+    cJSON_AddBoolToObject(root,"ota_signed_pull_enabled",cottage_ota_configured());
+    cJSON_AddNumberToObject(root,"ota_signed_good_version",cottage_ota_good_version());
+    cJSON_AddNumberToObject(root,"ota_signed_candidate",cottage_ota_last_candidate());
+    cJSON_AddNumberToObject(root,"ota_signed_status",cottage_ota_status());
     cJSON_AddNumberToObject(root,"free_internal_heap",
                             heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(root,"min_free_internal_heap",
                             heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(root,"min_free_psram",
                             heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
+    cJSON_AddNumberToObject(root,"largest_free_internal_heap",
+                            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(root,"network_budget_denials",
+                            enevina_firmware::network_budget_denials());
+    cJSON_AddBoolToObject(root,"ble_initialized",c23_ble_initialized());
+    cJSON_AddNumberToObject(root,"observed_min_largest_internal",
+                            enevina_firmware::network_budget_min_largest_internal());
     cJSON_AddNumberToObject(root,"sse_stack_free",
                             task_sse?uxTaskGetStackHighWaterMark(task_sse):0);
     cJSON_AddNumberToObject(root,"shelly_stack_free",
@@ -876,8 +974,17 @@ void setup() {
         Serial.println("C2_SHADOW_FATAL: expected >=7MB PSRAM unavailable");
         while(true) { delay(1000); }
     }
+    if(!enevina_firmware::network_budget_init()) {
+        Serial.println("C24_FATAL: memory guard allocation failed");
+        while(true) delay(1000);
+    }
+    cJSON_Hooks hooks{};
+    hooks.malloc_fn=json_alloc_psram;
+    hooks.free_fn=json_free_psram;
+    cJSON_InitHooks(&hooks); // Once, before any reader/task starts.
     setup_model();
     c23_initialize(); // NVS mode + persistent explicit Ruuvi bonding
+    cottage_ota_initialize(); // Persist successful signed release + reject failed candidate
     // Avoid device contact without explicit local configuration.
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
@@ -891,21 +998,34 @@ void setup() {
     c23_register_routes(web); // mode/config persistence, NO actuator writes
     web.onNotFound([](){web.send(404,"text/plain","Ei löydy");});
     web.begin();
+    boot_ui_started=true;
+    boot_validation_started_ms=millis();
     enableLoopWDT(); // Arduino ESP32 loop-task hardware watchdog.
+    // Initialize BLE before starting memory-heavy HTTPS workers.
+    xTaskCreatePinnedToCore(c23_ble_worker,"cottage_ruuvi",10240,nullptr,1,&task_ruuvi,0);
+    for(int i=0;i<150 && !c23_ble_initialized();++i)
+        delay(20);
+    if(!c23_ble_initialized())
+        Serial.println("C24_WARN: BLE initialization not confirmed");
     enevina_firmware::start_market_reader();
     enevina_firmware::start_weather_reader();
     xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",8192,nullptr,2,&task_sse,0);
     xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,&task_shelly,0);
-    // Start BLE even before a tag is bound: discovery + explicit pairing
-    // must work when local compile-time MAC is empty or NVS restores a tag.
-    xTaskCreatePinnedToCore(c23_ble_worker,"cottage_ruuvi",10240,nullptr,1,&task_ruuvi,0);
+    // BLE already running. No physical actuator command is ever sent.
     xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
+    if(cottage_ota_configured() &&
+        xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota",
+                                16384,nullptr,1,&task_ota,1)!=pdPASS) {
+        task_ota=nullptr;
+        Serial.println("C24_OTA_ERROR: signed OTA task creation failed");
+    }
     Serial.println("ENEVINA LITE C2 SHADOW: NO ACTUATOR PATH");
 }
 void loop() {
     wifi_ok.store(WiFi.status()==WL_CONNECTED);
     web_loop_heartbeat_ms.store(millis());
     web.handleClient();
+    verify_new_ota_boot();
     c23_tick(); // local BLE/mode/alarm history works with wifi=0
     // Serial evidence is useful during fully isolated cold-boot tests.
     // Never print access tokens, Wi-Fi passwords or raw device addresses.
