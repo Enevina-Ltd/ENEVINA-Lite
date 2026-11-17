@@ -636,12 +636,8 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     if(!command.valid || !control_armed.load() || !wifi_ok.load())return false;
     const String url=cn105_local_url(command.path.data());
     if(url.isEmpty())return false;
-    enevina_firmware::NetworkBudgetLease lease(1000,72*1024,16*1024);
-    if(!lease.held())return false;
-    // Network-budget wait is a cancellation point. Never dispatch a command
-    // prepared before a completed DISARM, mode or target configuration change.
-    if(!control_armed.load() || c23_config_generation()!=config_generation ||
-       !wifi_ok.load() || !clock_ok())return false;
+    // Never hold NetworkBudgetLease across cn105_bridge_get(): it owns its
+    // own non-recursive network mutex. Revalidate after this blocking GET.
     const int64_t now=time(nullptr);
     const auto current_temp=c23_temperature_sample();
     // A direct CN105 HTTP GET is the live device check. An unrelated SSE
@@ -657,6 +653,19 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
         std::fabs(latest.heat_setpoint_c-required_target)>0.001))return false;
     if(step==ControlStep::SetOff && latest.action!=BootstrapAction::Off)
         return false;
+    enevina_firmware::NetworkBudgetLease lease(1000,72*1024,16*1024);
+    if(!lease.held())return false;
+    // Network-budget wait is another cancellation point. A user's updated
+    // settings always supersede an in-flight automatic command.
+    if(!control_armed.load() || c23_config_generation()!=config_generation ||
+       !wifi_ok.load() || !clock_ok())return false;
+    const auto refreshed=bootstrap_preview(time(nullptr),c23_temperature_sample());
+    if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
+       (refreshed.action!=BootstrapAction::HeatSetpoint ||
+        std::fabs(refreshed.heat_setpoint_c-required_target)>0.001))
+        return false;
+    if(step==ControlStep::SetOff &&
+       refreshed.action!=BootstrapAction::Off)return false;
     WiFiClient client;
     HTTPClient req;
     req.setConnectTimeout(1500);req.setTimeout(1800);
@@ -715,7 +724,8 @@ static void cottage_control_tick() {
           mode.mode==CottageMode::Drying ||
           mode.mode==CottageMode::Hold ||
           mode.mode==CottageMode::Occupied);
-    candidate.temperature_fresh=valid_temperature(sample,now);
+    candidate.temperature_fresh=mode.mode==CottageMode::Cold ||
+                                valid_temperature(sample,now);
     candidate.market_fresh=proposal.action!=BootstrapAction::Unavailable;
     candidate.cn105_link_fresh=true; // direct bridge GET above succeeded
     candidate.bridge_get_ok=true; // separate live ESPHome GET succeeded
@@ -761,12 +771,12 @@ static void cottage_control_tick() {
     }
 }
 static void cottage_control_registration() {
-    // Preserve the user's own explicit enable/disable selection across OTA.
-    // No prior opt-in or blank NVS always defaults to OFF.
+    // An OTA or reboot must never silently re-enable physical writes.
+    // A fresh local explicit enable is required once each boot.
     control_armed.store(false);
     Preferences prefs;
-    if(prefs.begin("cottage_ctl",true)) {
-        control_armed.store(prefs.getBool("armed",false));
+    if(prefs.begin("cottage_ctl",false)) {
+        if(prefs.getBool("armed",false))prefs.putBool("armed",false);
         prefs.end();
     }
     web.on("/api/control/arm",HTTP_POST,[]() {
