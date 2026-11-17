@@ -21,6 +21,10 @@ int main() {
     assert(choose_mitsubishi_control(s).gate==ControlBlock::NotInHeatingMode);
     s=base();s.temperature_fresh=false;
     assert(choose_mitsubishi_control(s).gate==ControlBlock::InputsUnverified);
+    // Cold's explicit OFF works without a live sensor: no fake heat demand.
+    s=base();s.temperature_fresh=true;s.current_heat=true;
+    s.proposal.action=BootstrapAction::Off;
+    assert(choose_mitsubishi_control(s).step==ControlStep::SetOff);
     s=base();s.market_fresh=false;
     assert(choose_mitsubishi_control(s).gate==ControlBlock::InputsUnverified);
     s=base();s.cn105_link_fresh=false;
