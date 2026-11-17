@@ -624,18 +624,49 @@ static bool cn105_bridge_get(bool& heating,double& target) {
     if(good)control_last_bridge_read_utc.store(time(nullptr));
     return good;
 }
-static bool cn105_bridge_post(const MitsubishiHttpRequest& command) {
+static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
+                              uint32_t config_generation,ControlStep step,
+                              double required_target) {
     if(!command.valid || !control_armed.load() || !wifi_ok.load())return false;
     const String url=cn105_local_url(command.path.data());
     if(url.isEmpty())return false;
     enevina_firmware::NetworkBudgetLease lease(1000,72*1024,16*1024);
     if(!lease.held())return false;
+    // Network-budget wait is a cancellation point. Never dispatch a command
+    // prepared before a completed DISARM, mode or target configuration change.
+    if(!control_armed.load() || c23_config_generation()!=config_generation ||
+       c23_mode_config().mode!=CottageMode::Hold || !wifi_ok.load() ||
+       !clock_ok())return false;
+    const int64_t now=time(nullptr);
+    const auto current_temp=c23_temperature_sample();
+    CN105Telemetry verified{};
+    int64_t current_link_utc=0;
+    xSemaphoreTake(lock_data,portMAX_DELAY);
+    verified=pump;current_link_utc=cn105_link_event_utc;
+    xSemaphoreGive(lock_data);
+    if(!valid_temperature(current_temp,now) ||
+       !valid_cn105(verified,now) ||
+       !verified.evidence.source_time_verified ||
+       !sse_stream_active.load() || current_link_utc<=0 ||
+       now<current_link_utc || now-current_link_utc>180)return false;
+    const auto latest=bootstrap_preview(now,current_temp,verified);
+    if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
+       (latest.action!=BootstrapAction::HeatSetpoint ||
+        std::fabs(latest.heat_setpoint_c-required_target)>0.001))return false;
+    if(step==ControlStep::SetOff && latest.action!=BootstrapAction::Off)
+        return false;
     WiFiClient client;
     HTTPClient req;
     req.setConnectTimeout(1500);req.setTimeout(1800);
     req.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     if(!req.begin(client,url))return false;
     req.addHeader("Content-Type","application/x-www-form-urlencoded");
+    // Last cancellation point after all potentially blocking preparation.
+    if(!control_armed.load() || c23_config_generation()!=config_generation ||
+       c23_mode_config().mode!=CottageMode::Hold) {
+        req.end();
+        return false;
+    }
     const int code=req.POST("");
     req.end();
     return code>=200 && code<300;
@@ -650,6 +681,7 @@ static void cottage_control_tick() {
         return;
     }
     const CottageModeConfig mode=c23_mode_config();
+    const uint32_t config_generation=c23_config_generation();
     const auto sample=c23_temperature_sample();
     const int64_t now=time(nullptr);
     CN105Telemetry pump_snapshot{};
@@ -668,6 +700,8 @@ static void cottage_control_tick() {
         return;
     }
     if(!valid_temperature(sample,now) ||
+       !valid_cn105(pump_snapshot,now) ||
+       !pump_snapshot.evidence.source_time_verified ||
        proposal.action==BootstrapAction::Unavailable || !link_fresh) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
@@ -691,6 +725,21 @@ static void cottage_control_tick() {
     static uint64_t last_command_ms=0;
     static bool mode_change_present=false;
     static uint64_t last_mode_change_ms=0;
+    // On first activation the observed mode's age is unknown. Conservatively
+    // assume a transition has just happened and do not switch modes for 60m.
+    if(!mode_change_present) {
+        mode_change_present=true;
+        last_mode_change_ms=now_ms;
+    }
+    // Preflight GET can block: old sensor, mode and user authorization
+    // snapshots must never be carried into the physical POST.
+    if(!control_armed.load() ||
+       config_generation!=c23_config_generation() ||
+       c23_mode_config().mode!=CottageMode::Hold ||
+       !valid_temperature(c23_temperature_sample(),time(nullptr))) {
+        control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
+        return;
+    }
     ControlSnapshot candidate{};
     candidate.armed=control_armed.load();
     candidate.hold_mode=mode.mode==CottageMode::Hold;
@@ -698,6 +747,8 @@ static void cottage_control_tick() {
     candidate.market_fresh=proposal.action!=BootstrapAction::Unavailable;
     candidate.cn105_link_fresh=link_fresh;
     candidate.bridge_get_ok=true;
+    candidate.pump_origin_verified=valid_cn105(pump_snapshot,now) &&
+                                   pump_snapshot.evidence.source_time_verified;
     candidate.current_heat=current_heat;
     candidate.current_setpoint_c=current_setpoint;
     candidate.now_ms=now_ms;
@@ -723,14 +774,43 @@ static void cottage_control_tick() {
     control_last_step.store(static_cast<int>(decision.step));
     control_last_command_utc.store(now);
     control_commands_sent.fetch_add(1);
-    const bool sent=cn105_bridge_post(request);
+    // Record any mode POST attempt as a potentially applied transition,
+    // including cases where the network reply or subsequent readback fails.
+    if(decision.step!=ControlStep::Setpoint) {
+        mode_change_present=true;
+        last_mode_change_ms=now_ms;
+    }
+    const uint32_t proof_before=cn105_source_proof_good.load();
+    const bool sent=cn105_bridge_post(request,config_generation,
+                                      decision.step,decision.target_c);
     // ESPHome may acknowledge HTTP before state propagation. Read the state
     // after a short pause; bridge acknowledgement is NOT pump-UART proof.
     if(sent)vTaskDelay(pdMS_TO_TICKS(1200));
     bool read_heating=false;
     double read_setpoint=0;
     const bool readback=sent && cn105_bridge_get(read_heating,read_setpoint);
-    const bool confirmed=readback &&
+    // The ESPHome GET can replay cached state. Wait for a *new*, proven
+    // complete CN105 UART poll and verify its decoded mode/setpoint as well.
+    bool source_confirmed=false;
+    if(readback) {
+        for(unsigned attempt=0;attempt<5 && control_armed.load();++attempt) {
+            CN105Telemetry current{};
+            xSemaphoreTake(lock_data,portMAX_DELAY);current=pump;
+            xSemaphoreGive(lock_data);
+            if(cn105_source_proof_good.load()>proof_before &&
+               valid_cn105(current,time(nullptr)) &&
+               current.evidence.source_time_verified) {
+                source_confirmed=decision.step==ControlStep::Setpoint ?
+                    std::fabs(current.setpoint_c-decision.target_c)<=0.001 :
+                    decision.step==ControlStep::SetHeat ?
+                    current.mode==ObservedPumpMode::Heat :
+                    current.mode==ObservedPumpMode::Off;
+                if(source_confirmed)break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(800));
+        }
+    }
+    const bool confirmed=readback && source_confirmed &&
        (decision.step==ControlStep::Setpoint ?
         std::fabs(read_setpoint-decision.target_c)<=0.001 :
         decision.step==ControlStep::SetHeat ? read_heating : !read_heating);
