@@ -450,7 +450,7 @@ void cottage_ota_worker(void*) {
                     // Refuse all OTA if persistent anti-rollback state
                     // cannot be read; never treat NVS failure as version zero.
                     last_status.store(3);
-                } else if(r.version<=good || r.version<=bad || pending) {
+                } else if(!ota::signed_version_eligible(r.version,good,bad,pending!=0)) {
                     last_status.store(0);
                 } else {
                     last_status.store(5);
