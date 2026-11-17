@@ -35,6 +35,9 @@ uint64_t indoor_mono_ms=0,outdoor_mono_ms=0;
 uint64_t last_store_ms=0,last_tick_ms=0;
 bool has_indoor=false,has_outdoor=false,have_discovered=false;
 bool history_changed=false;
+// Fail closed: a newly bound sensor's hourly history is not persisted
+// until its MAC has been successfully saved to configuration NVS.
+bool indoor_binding_persisted=true;
 uint32_t samples_ok=0,samples_rejected=0,samples_duplicate=0,stores=0;
 uint32_t low_heap_skips=0;
 std::atomic<bool> ble_initialized{false};
@@ -163,33 +166,37 @@ bool save_config() {
     saved &= p.putString("indoor",indoor_id)>0;
     saved &= p.putString("outdoor",outdoor_id)>0;
     p.end();
+    if(saved) {
+        lock();
+        indoor_binding_persisted=true;
+        unlock();
+    }
     return saved;
 }
 void checkpoint() {
     const uint64_t ms=uptime_ms();
     if(ms-last_store_ms<checkpoint_ms)return;
     last_store_ms=ms;
-    AirHistoryDump dump{};
-    bool should_save=false;
     lock();
-    // Never persist untrusted boot-relative UTC as if it were real history.
-    if(history_changed && history.count() &&
-       history.newest(0).hour_utc<0x80000000u) {
-        dump=history.dump();history_changed=false;should_save=true;
+    // Bind and checkpoint must serialize the full NVS write with the
+    // same guard. Taking a snapshot and unlocking before putBytes()
+    // allows an old sensor's checkpoint to race behind a MAC change.
+    if(!indoor_binding_persisted || !history_changed ||
+       !history.count() ||
+       history.newest(0).hour_utc>=0x80000000u) {
+        unlock();return;
     }
-    unlock();
-    if(!should_save)return;
+    const AirHistoryDump dump=history.dump();
     Preferences prefs;
     if(prefs.begin("cottage_hist",false)) {
-        if(prefs.putBytes("hourly_v1",&dump,sizeof(dump))==sizeof(dump))
+        if(prefs.putBytes("hourly_v1",&dump,sizeof(dump))==sizeof(dump)) {
+            history_changed=false;
             stores++;
-        else {
-            lock();history_changed=true;unlock();
         }
         prefs.end();
-    } else {
-        lock();history_changed=true;unlock();
     }
+    // NVS failure keeps history_changed set for the next checkpoint.
+    unlock();
 }
 bool parse_float(const String& input,double& result) {
     if(input.length()<1||input.length()>20)return false;
@@ -521,12 +528,31 @@ void c23_register_routes(WebServer& web) {
         if(!unbind && !parse_ruuvi_mac(value.c_str(),mac)) {
             web.send(400,"text/plain","Bad MAC");return;
         }
-        bool cleared_indoor_history=false;
         lock();
         if(kind=="indoor") {
             const bool binding_changed=unbind?indoor_binding.bound():
                 (!indoor_binding.bound()||indoor_binding.mac()!=mac);
             if(binding_changed) {
+                // Commit order matters: a failed NVS purge must not switch
+                // the active sensor in RAM. A subsequent save_config() must
+                // never persist a new MAC alongside the old sensor history.
+                // Hold the sensor mutex across purge + bind so BLE callbacks
+                // cannot refill the old series during the transition.
+                Preferences p;
+                bool purged=false;
+                if(p.begin("cottage_hist",false)) {
+                    purged=p.getBytesLength("hourly_v1")==0 ||
+                           p.remove("hourly_v1");
+                    p.end();
+                }
+                if(!purged) {
+                    unlock();
+                    web.send(500,"text/plain","History NVS purge failed");
+                    return;
+                }
+                // Blocking persistence immediately prevents BLE history
+                // checkpoint even if save_config later fails or is delayed.
+                indoor_binding_persisted=false;
                 if(unbind) indoor_binding.unbind();
                 else indoor_binding.bind(mac);
                 has_indoor=false;indoor_utc=0;indoor_air={};
@@ -534,7 +560,6 @@ void c23_register_routes(WebServer& web) {
                 history=AirHistory{}; // never mix two sensors in one series
                 history_changed=false;
                 last_store_ms=uptime_ms();
-                cleared_indoor_history=true;
             }
         } else {
             if(unbind)outdoor_binding.unbind();
@@ -543,21 +568,6 @@ void c23_register_routes(WebServer& web) {
         }
         log_event(4,kind=="indoor"?0:1);
         unlock();
-        if(cleared_indoor_history) {
-            // New binding must not be persisted if old sensor history cannot
-            // be cleared from NVS first (prevents mixing after reboot).
-            Preferences p;
-            bool purged=false;
-            if(p.begin("cottage_hist",false)) {
-                purged=p.getBytesLength("hourly_v1")==0 ||
-                       p.remove("hourly_v1");
-                p.end();
-            }
-            if(!purged) {
-                web.send(500,"text/plain","History NVS purge failed");
-                return;
-            }
-        }
         const bool saved=save_config();
         web.send(saved?200:500,"application/json",
                  saved?"{\"saved\":true,\"physical_writes\":false}":

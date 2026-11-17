@@ -36,6 +36,9 @@ private:
     std::array<uint8_t,6> bound_mac_{};
     RuuviV5 latest_{};
     uint64_t accepted_ms_=0;
-    bool bound_=false,has_sample_=false;
+    // Candidate restart sequence (untrusted until a second advancing frame).
+    uint64_t restart_candidate_ms_=0;
+    uint16_t restart_candidate_sequence_=0;
+    bool bound_=false,has_sample_=false,restart_candidate_=false;
 };
 } // namespace enevina::cottage
