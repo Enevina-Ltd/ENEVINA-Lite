@@ -50,7 +50,7 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
     <button data-view="plan"><span class="i">▤</span>Optimointi</button>
     <button data-view="settings"><span class="i">⚙</span>Asetukset</button>
   </nav>
-  <div class="aside-foot">Enevina Lite · paikallinen ohjain<br><a href="/diagnostics">Tekninen diagnostiikka</a></div>
+  <div class="aside-foot">Enevina Lite · paikallinen ohjain<br><a href="/#settings">Laiteasetukset</a></div>
 </aside>
 <main class="main">
   <div class="top"><div><div class="eyebrow">Energia · Pihamökki</div><strong id="clock">Aikaa ei ole synkronoitu</strong></div><span class="chip"><span id="connection-dot" class="dot"></span><span id="connection">Yhdistetään</span></span></div>
@@ -86,18 +86,31 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
     <div class="grid">
       <article class="card span7"><h2>Pihamökin toimintatila</h2><p class="tiny muted">Ylläpitolämpö ja Asuttu käyttävät omia, toisistaan riippumattomia huonetavoitteitaan. Hintaohjaus voi säätää Mitsubishin pyyntilämpötilaa.</p><div class="mode" role="group" aria-label="Laskennallinen tila"><button type="button" data-mode="0">Kylmillään</button><button type="button" data-mode="1">Kuivanapito</button><button type="button" data-mode="2">Ylläpitolämpö</button><button type="button" data-mode="3">Asuttu</button></div><div class="fieldrow" style="margin-top:17px"><label class="field">Ylläpitotavoite °C<input id="setting-hold" type="number" min="5" max="24" step=".5" inputmode="decimal"></label><label class="field">Asuttu °C<input id="setting-occupied" type="number" min="16" max="26" step=".5" inputmode="decimal"></label><label class="field">Kuivanapito Δ°C<input id="setting-delta" type="number" min="3" max="5" step=".5" inputmode="decimal"></label><button class="primary" id="save-mode" type="button" disabled>Tallenna asetukset</button></div><div id="feedback" role="status"></div><p class="tiny muted">Valitse Ylläpitolämpö tai Asuttu sekä kyseisen tilan huonetavoite. Hintaehdotus laskee Mitsubishille 16–26 °C pyyntilämpötilan 0,5 °C askelin; komennot sallitaan vain erillisellä käyttöönotolla.</p></article>
       <article class="card span12"><h2>Mitsubishi · automaattinen lämpötilan säätö</h2><p class="tiny muted">Laskenta käyttää RuuviTagia ja sähkön kokonaishintaa. Lämmitystä ohjataan Ylläpitolämpö- ja Asuttu-tiloissa. Komento lähtee CN105:lle, ja tavoitelämpötila tarkistetaan takaisinlukemalla. Käyttöönotto on aina erillinen valinta eikä firmwarepäivitys käynnistä sitä.</p><div class="flex"><span class="chip" id="control-state">Ohjaus ei käytössä</span><span id="control-last">Ei komentoja</span><button type="button" id="control-enable" class="primary">Ota automaattiohjaus käyttöön</button><button type="button" id="control-disable">Poista automaattiohjaus käytöstä</button></div><p id="control-feedback" role="status"></p></article>
-      <article class="card span5"><h2>Laitteen tila</h2><div class="statusgrid"><span>Ohjelmistoversio</span><span id="device-version">—</span><span>Wi-Fi RSSI</span><span id="device-wifi">—</span><span>CN105-telemetria</span><span id="device-cn105">—</span><span>Shelly-mittaus</span><span id="device-shelly">—</span><span>Sisäinen vapaa RAM</span><span id="device-ram">—</span><span>PSRAM vapaana</span><span id="device-psram">—</span><span>OTA-lataus käytössä</span><span id="device-ota">—</span></div><p class="foot"><a href="/diagnostics" style="text-decoration:underline">Avaa alkuperäinen tekninen diagnostiikka</a></p></article>
+      <article class="card span5"><h2>Laitteen tila</h2><div class="statusgrid"><span>Ohjelmistoversio</span><span id="device-version">—</span><span>Wi-Fi RSSI</span><span id="device-wifi">—</span><span>CN105-telemetria</span><span id="device-cn105">—</span><span>Shelly-mittaus</span><span id="device-shelly">—</span><span>Sisäinen vapaa RAM</span><span id="device-ram">—</span><span>PSRAM vapaana</span><span id="device-psram">—</span><span>OTA-lataus käytössä</span><span id="device-ota">—</span></div><p class="foot"><a href="/#settings" style="text-decoration:underline">Avaa laiteasetukset</a></p></article>
       <article class="card span12"><h2>Mitsubishi CN105 · vastaanotettu data</h2><div class="statusgrid"><span>Viimeisin SSE-tilaviesti</span><span id="mitsubishi-read-status">—</span><span>Pumpun tila (SSE)</span><span id="mitsubishi-read-mode">—</span><span>Pumpun sisälämpötila (SSE)</span><span id="mitsubishi-read-temp">—</span><span>Asetuslämpötila (SSE)</span><span id="mitsubishi-read-setpoint">—</span><span>Kompressori (SSE)</span><span id="mitsubishi-read-hz">—</span><span>Kompressoriviestin ikä</span><span id="mitsubishi-compressor-age">—</span></div><p class="foot">ESPHome /events -rajapinnasta vastaanotettu viimeisin tilatieto. Viestin vastaanottoaika ei todista uutta CN105-UART-lukua, eikä näitä arvoja käytetä optimoinnin turvallisuushyväksyntään.</p></article>
+      <article class="card span12"><h2>RuuviTag · anturit ja kosteusvaroitukset</h2>
+      <p class="tiny muted">Anturin MAC-tunniste on sidottava tarkoituksella. Kirjoita tunniste tai <code>none</code> irrottaaksesi sidonnan. Asetukset ovat vain paikallisia.</p>
+      <div class="statusgrid"><span>Sisäanturin sidonta</span><span id="ruuvi-bound">—</span><span>Havaittu tunniste</span><span id="ruuvi-discovered">—</span></div>
+      <div class="fieldrow"><label class="field">Anturin rooli<select id="ruuvi-role"><option value="indoor">Mökin sisäilma</option><option value="outdoor">Ulkoilma</option></select></label>
+      <label class="field">RuuviTag MAC<input id="ruuvi-mac" placeholder="XX:XX:XX:XX:XX:XX tai none" autocomplete="off"></label>
+      <button type="button" id="ruuvi-bind" class="primary">Tallenna anturisidonta</button></div>
+      <p id="ruuvi-feedback" role="status"></p>
+      <div class="fieldrow"><label class="field">RH-varoitus %<input id="alert-rh70" type="number" min="55" max="80" step="1"></label>
+      <label class="field">Korkea RH-varoitus %<input id="alert-rh80" type="number" min="75" max="95" step="1"></label>
+      <label class="field">Paristovaroitus V<input id="alert-battery" type="number" min="2" max="3.2" step=".05"></label>
+      <button type="button" id="alerts-save">Tallenna varoitusrajat</button></div>
+      <p id="alerts-feedback" role="status"></p><div id="alerts-active" class="pills"></div>
+      <p class="tiny muted">Ilman RH-arvot eivät yksin osoita rakenteiden kosteusturvallisuutta.</p></article>
       <article class="card span12"><h2>Sisäilman historia · RuuviTag</h2><div id="history-chart" class="chart"><div class="empty">Historiatietoja odotetaan</div></div><p class="foot">Viimeisimmät mittaukset, ei rakenteen kosteusmittaus. Offline-ajalta tallennettuja aikaleimoja ei esitetä UTC-aikana.</p></article>
     </div>
   </section>
-  <div class="foot">Enevina Lite · Paikallinen toiminta · <a href="/diagnostics" style="text-decoration:underline">Diagnostiikka</a></div>
+  <div class="foot">Enevina Lite · Paikallinen toiminta · <a href="/#settings" style="text-decoration:underline">Asetukset</a></div>
 </main>
 </div>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-const state={status:null,prices:null,plan:null,history:null,mode:0,settingsDirty:false,settingsRevision:0,settingsSaving:false,statusRequestSequence:0};
+const state={status:null,prices:null,plan:null,history:null,mode:0,settingsDirty:false,settingsRevision:0,settingsSaving:false,statusRequestSequence:0,alertSettingsLoaded:false};
 const fmt=(v,d=1)=>Number.isFinite(v)?v.toLocaleString('fi-FI',{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
 const text=(id,value)=>{const e=$(id);if(e)e.textContent=value==null?'—':String(value);};
 const time=sec=>Number.isFinite(sec)&&sec>1700000000?new Date(sec*1000).toLocaleString('fi-FI',{timeZone:'Europe/Helsinki',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'Ei aikaa';
@@ -111,6 +124,7 @@ function switchView(name){
   history.replaceState(null,'','#'+name);
 }
 document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>switchView(b.dataset.view)));
+window.addEventListener('hashchange',()=>switchView(location.hash.slice(1)));
 $('go-prices').addEventListener('click',()=>switchView('prices'));
 switchView(location.hash.slice(1)||'home');
 function drawBars(target,items){
@@ -180,6 +194,33 @@ function showStatus(){
   }
   document.querySelectorAll('[data-mode]').forEach(b=>b.disabled=false);
   $('save-mode').disabled=state.settingsSaving||!a.config_token;
+  text('ruuvi-bound',a.bound_mac||'Ei sidottu');
+  text('ruuvi-discovered',a.discovered_mac||'Ei havaintoa');
+  if(!state.alertSettingsLoaded && a.config_token) {
+    $('alert-rh70').value=a.warning_rh70??'';
+    $('alert-rh80').value=a.warning_rh80??'';
+    $('alert-battery').value=a.warning_battery_v??'';
+    state.alertSettingsLoaded=true;
+  }
+  const host=$('alerts-active');host.replaceChildren();
+  const alertNames=['RH koholla','RH erittäin korkea','RuuviTag ei vastaa',
+    'RuuviTag-paristo heikko','Pakkaslämpötila'];
+  for(const item of (a.alerts||[])) {
+    if(!item.active)continue;
+    const itemRow=document.createElement('span');itemRow.className='pill';
+    itemRow.textContent=alertNames[item.kind]||'Varoitus';
+    if(!item.ack && a.config_token) {
+      const ack=document.createElement('button');ack.type='button';
+      ack.textContent='Kuittaa';
+      ack.addEventListener('click',async()=>{
+        try {
+          await airPostLocal('/api/air/ack',{alert:String(item.kind)});
+          await reloadStatus();
+        }catch(e){text('alerts-feedback','Kuittaus epäonnistui: '+e.message);}
+      });itemRow.append(ack);
+    }
+    host.append(itemRow);
+  }
 }
 function showPrices(){
   const p=state.prices||{},rows=p.valid===true&&Array.isArray(p.slots)?p.slots.filter(x=>Number.isFinite(x.spot)): [];
@@ -294,6 +335,49 @@ async function setControlArmed(enabled) {
 }
 $('control-enable').addEventListener('click',()=>setControlArmed(true));
 $('control-disable').addEventListener('click',()=>setControlArmed(false));
+async function airPostLocal(path,fields) {
+  const token=state.status&&state.status.air&&state.status.air.config_token;
+  if(!token)throw Error('Laite ei vastaa tai valtuutus puuttuu');
+  const body=new URLSearchParams({...fields,token});
+  const response=await fetch(path,{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
+  if(!response.ok)throw Error('HTTP '+response.status);
+  const result=await response.json();
+  if(result.saved===false)throw Error('Tallennus epäonnistui');
+  return result;
+}
+$('ruuvi-bind').addEventListener('click',async()=>{
+  const mac=$('ruuvi-mac').value.trim();
+  if(!/^(?:[a-fA-F0-9]{2}:){5}[a-fA-F0-9]{2}$/.test(mac)&&mac!=='none') {
+    text('ruuvi-feedback','Anna kuusi tavuinen MAC-tunniste tai none');return;
+  }
+  $('ruuvi-bind').disabled=true;
+  try {
+    await airPostLocal('/api/air/bind',{which:$('ruuvi-role').value,mac});
+    text('ruuvi-feedback','Anturisidonta tallennettu.');
+    await reloadStatus();
+  } catch(e){text('ruuvi-feedback',e.message);}
+  finally{$('ruuvi-bind').disabled=false;}
+});
+$('alerts-save').addEventListener('click',async()=>{
+  const rh70=Number($('alert-rh70').value),
+    rh80=Number($('alert-rh80').value),
+    battery=Number($('alert-battery').value);
+  if(!Number.isFinite(rh70)||rh70<55||rh70>80 ||
+     !Number.isFinite(rh80)||rh80<75||rh80>95||rh80<rh70+5||
+     !Number.isFinite(battery)||battery<2||battery>3.2){
+    text('alerts-feedback','Tarkista varoitusarvot');return;
+  }
+  $('alerts-save').disabled=true;
+  try {
+    await airPostLocal('/api/air/thresholds',{rh70:String(rh70),
+      rh80:String(rh80),battery:String(battery)});
+    text('alerts-feedback','Varoitusrajat tallennettu.');
+    state.alertSettingsLoaded=false;await reloadStatus();
+  }catch(e){text('alerts-feedback',e.message);}
+  finally{$('alerts-save').disabled=false;}
+});
+
 document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>{state.settingsDirty=true;++state.settingsRevision;state.mode=Number(b.dataset.mode);document.querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('selected',x===b));}));
 ['setting-hold','setting-occupied','setting-delta'].forEach(id=>$(id).addEventListener('input',()=>{state.settingsDirty=true;++state.settingsRevision;}));
 $('save-mode').addEventListener('click',async()=>{
