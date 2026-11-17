@@ -7,6 +7,7 @@
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
 #include <esp_ota_ops.h>
+#include <esp_system.h>
 #include <cJSON.h>
 #include <array>
 #include <algorithm>
@@ -31,6 +32,7 @@
 #include "cottage/url_guard.hpp"
 #include "cottage/mode_timing.hpp"
 #include "cottage/sse_transport.hpp"
+#include "cottage/cn105_source_proof.hpp"
 #include "../../main/market.hpp"
 #include "../../main/weather.hpp"
 
@@ -60,6 +62,8 @@ static uint32_t max_optimizer_ms=0;
 static size_t plan_count=0;
 static uint32_t free_heap=0,free_psram=0,stack_watermark=0;
 static uint32_t boot_validation_started_ms=0;
+// Captured once at boot for diagnosing uptime drops (no watchdog/reset).
+static int boot_reset_reason_code=-1;
 static bool boot_ui_started=false;
 static bool ota_boot_confirmed=false;
 static std::atomic<uint32_t> failed_reads{0};
@@ -72,6 +76,11 @@ static std::atomic<uint32_t> shelly_reads_ok{0},shelly_reads_bad{0};
 static std::atomic<uint32_t> shelly_rtt_ms{0};
 static int64_t cn105_link_event_utc=0;
 static double cn105_link_uptime_s=0;
+// Used only by the existing CN105 SSE worker; no extra task/watchdog.
+static CN105SourceProofVerifier cn105_source_verifier{};
+static bool cn105_proof_envelope_active=false;
+static std::atomic<int> cn105_source_proof_status{0};
+static std::atomic<uint32_t> cn105_source_proof_good{0};
 static TaskHandle_t task_sse=nullptr,task_shelly=nullptr;
 static TaskHandle_t task_ruuvi=nullptr,task_optimizer=nullptr;
 static TaskHandle_t task_ota=nullptr;
@@ -162,6 +171,91 @@ static bool number(const cJSON* item,double& output,double min,double max) {
     } else return false;
     return std::isfinite(output) && output>=min && output<=max;
 }
+// Optional read-only source-verification event (CN105 pilot adapter only).
+// The upstream bridge must construct this one JSON value from *successful*
+// 0x02, 0x03 and 0x06 UART decodes in the same poll, never from cached SSE.
+static bool cn105_proof_unsigned(const cJSON* doc,const char* name,
+                                 uint64_t max,uint64_t& out) {
+    const cJSON* item=cJSON_GetObjectItemCaseSensitive(doc,name);
+    if(!cJSON_IsNumber(item))return false;
+    const double value=item->valuedouble;
+    if(!std::isfinite(value) || value<1 || value>static_cast<double>(max) ||
+       std::floor(value)!=value)return false;
+    out=static_cast<uint64_t>(value);
+    return true;
+}
+static bool cn105_proof_timestamp(const cJSON* doc,const char* name,int64_t& out) {
+    uint64_t value=0;
+    if(!cn105_proof_unsigned(doc,name,4102444800ULL,value) ||
+       value<1700000000ULL)return false;
+    out=static_cast<int64_t>(value);
+    return true;
+}
+static bool parse_cn105_proof_event(const cJSON* root,int64_t now) {
+    const cJSON* source=cJSON_GetObjectItemCaseSensitive(root,"value");
+    if(!cJSON_IsString(source) || !source->valuestring ||
+       strlen(source->valuestring)>512)return false;
+    // Parse the ENTIRE proof envelope: cJSON_Parse() silently accepts
+    // concatenated JSON or trailing garbage after a valid first object.
+    cJSON* doc=cJSON_ParseWithOpts(source->valuestring,nullptr,true);
+    if(!doc)return false;
+    uint64_t schema=0,boot=0,seq=0;
+    CN105ProvenPoll p{};
+    p.received_utc=now;
+    const cJSON* uart=cJSON_GetObjectItemCaseSensitive(doc,"uart_connected");
+    const cJSON* complete=cJSON_GetObjectItemCaseSensitive(doc,"complete_poll");
+    const cJSON* mode=cJSON_GetObjectItemCaseSensitive(doc,"mode");
+    const bool ok=cn105_proof_unsigned(doc,"schema",255,schema) &&
+        cn105_proof_unsigned(doc,"boot",UINT32_MAX,boot) &&
+        cn105_proof_unsigned(doc,"seq",UINT32_MAX,seq) &&
+        cn105_proof_timestamp(doc,"oldest_utc",p.oldest_uart_read_utc) &&
+        cn105_proof_timestamp(doc,"latest_utc",p.latest_uart_read_utc) &&
+        cJSON_IsBool(uart) && cJSON_IsBool(complete) &&
+        cJSON_IsString(mode) &&
+        number(cJSON_GetObjectItemCaseSensitive(doc,"indoor_c"),p.indoor_c,-10,50) &&
+        number(cJSON_GetObjectItemCaseSensitive(doc,"setpoint_c"),p.setpoint_c,0,35) &&
+        number(cJSON_GetObjectItemCaseSensitive(doc,"compressor_hz"),p.compressor_hz,0,200);
+    if(ok) {
+        p.schema=static_cast<uint32_t>(schema);
+        p.boot_epoch=boot;p.completed_poll_sequence=seq;
+        p.uart_connected=cJSON_IsTrue(uart);
+        p.complete_decoded_poll=cJSON_IsTrue(complete);
+        if(strcmp(mode->valuestring,"HEAT")==0) p.mode=ObservedPumpMode::Heat;
+        else if(strcmp(mode->valuestring,"OFF")==0) p.mode=ObservedPumpMode::Off;
+        else if(strcmp(mode->valuestring,"OTHER")==0) p.mode=ObservedPumpMode::Other;
+    }
+    cJSON_Delete(doc);
+    if(!ok || p.mode==ObservedPumpMode::Unknown)return false;
+    CN105Telemetry verified{};
+    const auto proof=cn105_source_verifier.accept(p,verified);
+    cn105_source_proof_status.store(static_cast<int>(proof));
+    if(proof==enevina::PumpReadProofStatus::NewRead) {
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        const bool continuous=valid_cn105(pump,now);
+        // A newly verified pump mode or a break in confirmed dwell invalidates
+        // the optimizer's snapshot before the fresh sample is published.
+        if(verified.mode!=pump.mode || !continuous) {
+            ++observed_mode_generation;
+            plan_count=0;
+            last_plan.status=MpcStatus::InvalidInput;
+        }
+        observed_mode_duration.observe(verified.mode,
+            static_cast<uint64_t>(esp_timer_get_time()/1000),continuous);
+        pump=verified;
+        xSemaphoreGive(lock_data);
+        cn105_source_proof_good.fetch_add(1);
+    } else if(proof!=enevina::PumpReadProofStatus::Replay) {
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        pump.received=false;
+        pump.evidence.source_time_verified=false;
+        observed_mode_duration.invalidate();
+        ++observed_mode_generation;
+        plan_count=0;
+        last_plan.status=MpcStatus::InvalidInput;
+        xSemaphoreGive(lock_data);
+    }
+    return true;
+}
 static void set_reason(const char* msg) {
     xSemaphoreTake(lock_data,portMAX_DELAY);
     strlcpy(reason_text,msg,sizeof(reason_text));
@@ -186,11 +280,36 @@ static bool get_http(const char* url,String& result,unsigned timeout_ms=4000) {
     return ok && result.length()==static_cast<unsigned>(body_size);
 }
 static void parse_sse_state(const char* raw) {
-    cJSON* root=cJSON_Parse(raw);
+    cJSON* root=cJSON_ParseWithOpts(raw,nullptr,true);
     if(!root) return;
     const cJSON* key=cJSON_GetObjectItemCaseSensitive(root,"id");
     const int64_t now=clock_ok()?time(nullptr):0;
     if(!cJSON_IsString(key)||!now) {cJSON_Delete(root);return;}
+    if(strcmp(key->valuestring,"text_sensor/Enevina CN105 Verified Snapshot")==0) {
+        if(parse_cn105_proof_event(root,now))cn105_proof_envelope_active=true;
+        else {
+            cn105_source_proof_status.store(
+                static_cast<int>(enevina::PumpReadProofStatus::Unverified));
+            xSemaphoreTake(lock_data,portMAX_DELAY);
+            pump.received=false;
+            pump.evidence.source_time_verified=false;
+            observed_mode_duration.invalidate();
+            ++observed_mode_generation;
+            plan_count=0;
+            last_plan.status=MpcStatus::InvalidInput;
+            xSemaphoreGive(lock_data);
+        }
+        cJSON_Delete(root);
+        return;
+    }
+    // Once the source-signed poll envelope is observed, legacy individual
+    // climate/compressor SSE snapshots cannot overwrite its proven sample.
+    if(cn105_proof_envelope_active &&
+       (strcmp(key->valuestring,"climate/Mitsubishi Electric MSZ-FD25VA")==0 ||
+        strcmp(key->valuestring,"sensor/Compressor Frequency")==0)) {
+        cJSON_Delete(root);
+        return;
+    }
     CN105Telemetry copy;
     xSemaphoreTake(lock_data,portMAX_DELAY);copy=pump;xSemaphoreGive(lock_data);
     bool changed=false,climate_event=false;
@@ -288,6 +407,18 @@ static void sse_worker(void*) {
             } else {
                 sse_stream_active.store(true);
                 sse_connections.fetch_add(1);
+                cn105_source_verifier.reconnect();
+                cn105_proof_envelope_active=false;
+                cn105_source_proof_status.store(
+                    static_cast<int>(enevina::PumpReadProofStatus::Unverified));
+                xSemaphoreTake(lock_data,portMAX_DELAY);
+                pump.received=false;
+                pump.evidence.source_time_verified=false;
+                observed_mode_duration.invalidate();
+                ++observed_mode_generation;
+                plan_count=0;
+                last_plan.status=MpcStatus::InvalidInput;
+                xSemaphoreGive(lock_data);
                 WiFiClient* stream=request.getStreamPtr();
                 HttpChunkDecoder decoder;
                 SseStateParser parser([](const char* json,void*) {
@@ -321,9 +452,11 @@ static void sse_worker(void*) {
         // Resume conservatively with zero confirmed dwell age.
         xSemaphoreTake(lock_data,portMAX_DELAY);
         observed_mode_duration.invalidate();
-        // A disconnected stream resets dwell even if the mode looks
-        // unchanged when SSE reconnects. Invalidate the cached plan AND
-        // in-flight optimizer snapshot under the same mutex.
+        // A disconnected SSE stream is neither a fresh pump read nor
+        // evidence of unchanged dwell. Revoke both freshness and all
+        // cached/in-flight optimizer plans under the same data lock.
+        pump.received=false;
+        pump.evidence.source_time_verified=false;
         ++observed_mode_generation;
         plan_count=0;
         last_plan.status=MpcStatus::InvalidInput;
@@ -865,6 +998,8 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"sse_climate_events",sse_climate_events.load());
     cJSON_AddNumberToObject(root,"sse_compressor_events",sse_compressor_events.load());
     cJSON_AddNumberToObject(root,"sse_link_events",sse_link_events.load());
+    cJSON_AddNumberToObject(root,"cn105_proof_state",cn105_source_proof_status.load());
+    cJSON_AddNumberToObject(root,"cn105_proven_uart_polls",cn105_source_proof_good.load());
     // Device link uptime cannot make a stale climate/compressor reading fresh.
     cJSON_AddNumberToObject(root,"cn105_climate_utc",static_cast<double>(climate_time));
     cJSON_AddNumberToObject(root,"cn105_compressor_utc",static_cast<double>(compressor_time));
@@ -882,6 +1017,7 @@ static void status_endpoint() {
                             static_cast<double>(weather.fetched_utc));
     cJSON_AddNumberToObject(root,"weather_points",weather.points);
     cJSON_AddNumberToObject(root,"uptime_ms",millis());
+    cJSON_AddNumberToObject(root,"boot_reset_reason_code",boot_reset_reason_code);
     cJSON_AddStringToObject(root,"firmware_version","c2.4-dev");
     const esp_partition_t* active=esp_ota_get_running_partition();
     cJSON_AddStringToObject(root,"ota_partition",active?active->label:"unknown");
@@ -1034,6 +1170,8 @@ static void setup_model() {
 }
 void setup() {
     Serial.begin(115200);
+    boot_reset_reason_code=static_cast<int>(esp_reset_reason());
+    Serial.printf("ENEVINA_LITE_BOOT reset_reason_code=%d\n",boot_reset_reason_code);
     lock_data=xSemaphoreCreateMutex();
     if(!lock_data) abort();
     if(ESP.getPsramSize()<7*1024*1024) {

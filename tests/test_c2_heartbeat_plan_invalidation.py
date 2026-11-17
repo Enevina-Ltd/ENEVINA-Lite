@@ -61,6 +61,31 @@ class HeartbeatGapTests(TestCase):
         self.assertIn("plan_count=0;",guarded)
         self.assertIn("last_plan.status=MpcStatus::InvalidInput;",guarded)
 
+    def test_all_verified_source_failures_revoke_cached_and_in_flight_plan(self):
+        # A new CN105 proof envelope introduced additional loss-of-trust
+        # branches. Every dwell invalidation must also revoke the MPC plan.
+        main=(ROOT/"firmware/cottage/src/main.cpp").read_text()
+        token="observed_mode_duration.invalidate();"
+        self.assertEqual(main.count(token),4)
+        from_index=0
+        for _ in range(4):
+            at=main.index(token,from_index)
+            until=main.index("xSemaphoreGive(lock_data);",at)
+            guarded=main[at:until]
+            self.assertIn("++observed_mode_generation;",guarded)
+            self.assertIn("plan_count=0;",guarded)
+            self.assertIn("last_plan.status=MpcStatus::InvalidInput;",guarded)
+            from_index=until+1
+
+    def test_first_verified_new_read_revokes_legacy_mode_plan(self):
+        main=(ROOT/"firmware/cottage/src/main.cpp").read_text()
+        start=main.index("if(proof==enevina::PumpReadProofStatus::NewRead)")
+        end=main.index("pump=verified;",start)
+        clause=main[start:end]
+        self.assertIn("if(verified.mode!=pump.mode || !continuous)",clause)
+        self.assertIn("++observed_mode_generation;",clause)
+        self.assertIn("last_plan.status=MpcStatus::InvalidInput;",clause)
+
     def test_climate_gap_invalidates_plan_even_if_mode_unchanged(self):
         main=(ROOT/"firmware/cottage/src/main.cpp").read_text()
         event=main[main.index("if(climate_event) {"):

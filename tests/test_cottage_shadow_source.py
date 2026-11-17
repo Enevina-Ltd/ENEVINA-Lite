@@ -64,6 +64,21 @@ class ShadowSurfaceTests(unittest.TestCase):
         self.assertIn('cn105_source_verified',ui)
         self.assertIn('cn105_measurement_quality',ui)
 
+    def test_one_shot_reset_reason_is_reported_without_new_watchdog(self):
+        setup = self.main.split("void setup() {", 1)[1].split("void loop() {", 1)[0]
+        status = self.main.split("static void status_endpoint() {", 1)[1].split("static void plan_endpoint()", 1)[0] if "static void plan_endpoint()" in self.main else self.main
+        self.assertIn("boot_reset_reason_code=static_cast<int>(esp_reset_reason());", setup)
+        self.assertIn("ENEVINA_LITE_BOOT reset_reason_code=", setup)
+        self.assertIn('cJSON_AddNumberToObject(root,"boot_reset_reason_code",boot_reset_reason_code)', status)
+        self.assertEqual(self.main.count("esp_reset_reason()"), 1)
+
+    def test_cn105_source_envelope_needs_proof_not_heartbeat(self):
+        self.assertIn("text_sensor/Enevina CN105 Verified Snapshot", self.main)
+        self.assertIn("cn105_source_verifier.accept(p,verified)", self.main)
+        self.assertIn("cn105_source_verifier.reconnect()", self.main)
+        self.assertIn("pump.evidence.source_time_verified=false;", self.main)
+        self.assertIn('cn105_proven_uart_polls', self.main)
+
     def test_c22_diagnostics_do_not_change_shadow_permissions(self):
         for marker in ("sse_connections","sse_disconnects","shelly_reads_ok",
                        "cn105_climate_utc","cn105_compressor_utc",
