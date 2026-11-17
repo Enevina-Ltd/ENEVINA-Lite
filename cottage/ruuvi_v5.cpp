@@ -77,7 +77,7 @@ RuuviAccept RuuviBinding::accept(const RuuviV5& sample,uint64_t ms) {
     if(sample.mac!=bound_mac_)return RuuviAccept::DifferentSensor;
     if(!std::isfinite(sample.temperature_c) ||
        !std::isfinite(sample.relative_humidity_pct)||
-       sample.relative_humidity_pct<0||sample.relative_humidity_pct>100||
+       sample.relative_humidity_pct<=0||sample.relative_humidity_pct>100||
        !std::isfinite(sample.pressure_pa)||sample.pressure_pa<50000||
        sample.pressure_pa>115534||!std::isfinite(sample.battery_v)||
        sample.battery_v<1.6||sample.battery_v>3.646)
