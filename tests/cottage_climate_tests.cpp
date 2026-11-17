@@ -68,6 +68,17 @@ int main() {
     assert(gate.accept(next,2100)==RuuviAccept::Implausible);
     next.temperature_c=24.5;
     assert(gate.accept(next,2100)==RuuviAccept::Accepted);
+    // Codex P2: an RH=0 sample must not advance packet freshness.
+    RuuviBinding moisture_gate;
+    moisture_gate.bind(a.mac);
+    assert(moisture_gate.accept(a,1000)==RuuviAccept::Accepted);
+    for(unsigned seq=1;seq<=5;++seq) {
+        RuuviV5 zero_rh=a;zero_rh.sequence=static_cast<uint16_t>(a.sequence+seq);
+        zero_rh.relative_humidity_pct=0;
+        assert(moisture_gate.accept(zero_rh,1000+seq*60000ULL)==RuuviAccept::Invalid);
+    }
+    assert(!moisture_gate.valid(1000+600001ULL));
+    assert(moisture_gate.age_ms(1000+600001ULL)==600001ULL);
     gate.unbind();
     assert(!gate.valid(2100));
     assert(!parse_ruuvi_mac("FF:FF:FF:FF:FF:FF",official_mac));
