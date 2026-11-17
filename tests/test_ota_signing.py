@@ -1,4 +1,4 @@
-import importlib.util,unittest
+import importlib.util,unittest,contextlib,io,sys,tempfile
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.exceptions import InvalidSignature
@@ -35,6 +35,38 @@ class SignedReleaseTests(unittest.TestCase):
             other.public_key().verify(self.signature,self.message,ec.ECDSA(hashes.SHA256()))
     def test_model_is_bound(self):
         self.assertIn(b"model=esp32s3-n16r8",self.message)
+
+class SignedPullReleaseCapabilityTests(unittest.TestCase):
+    def test_publish_rejects_firmware_without_compiled_ota(self):
+        # A normal ESP image header alone must not make a release signable.
+        image=b"\xE9"+b"\0"*4095
+        self.assertFalse(ota.is_signed_pull_capable_image(image))
+    def test_publisher_accepts_single_compiled_capability_marker(self):
+        image=b"\xE9"+b"\0"*1024+ota.SIGNED_PULL_MARKER
+        self.assertTrue(ota.is_signed_pull_capable_image(image))
+    def test_publisher_rejects_ambiguous_marker(self):
+        image=b"\xE9"+ota.SIGNED_PULL_MARKER*2
+        self.assertFalse(ota.is_signed_pull_capable_image(image))
+    def test_real_publisher_refuses_unsigned_pull_image_before_staging(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            fw=root/"unprovisioned.bin"
+            fw.write_bytes(b"\xE9"+b"\x00"*4095)
+            with patch.object(sys,"argv",["publish","--firmware",str(fw),
+                                           "--version","1","--root",str(root)]):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as caught:
+                        ota.main()
+                self.assertEqual(caught.exception.code,2)
+            self.assertFalse((root/"releases").exists())
+    def test_ota_boot_health_requires_signed_pull(self):
+        root=Path(__file__).resolve().parents[1]
+        source=(root/"firmware/cottage/src/main.cpp").read_text()
+        self.assertIn("const bool healthy=cottage_ota_configured() &&",source)
+        cpp=(root/"firmware/cottage/src/cottage_secure_ota.cpp").read_text()
+        self.assertIn('ENEVINA_C24_SIGNED_PULL_OTA_CAPABLE_V1',cpp)
+        self.assertIn("signed_pull_marker[0]=='E'",cpp)
 
 class ArduinoRollbackSourceGuardTests(unittest.TestCase):
     def test_arduino_early_confirmation_must_be_overridden(self):
