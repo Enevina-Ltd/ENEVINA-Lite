@@ -99,6 +99,15 @@ int main() {
     const std::string literal_escape=R"({"id":"probe","value":"ok\\u0000"})";
     const auto literal_events=parse("event: state\ndata: "+literal_escape+"\n\n",false);
     assert(literal_events.empty());
+
+    // Codex P2: Unicode-escaped backslash in outer JSON can become
+    // a dangerous \\u0000 only after an additional decode.
+    const std::string encoded_slash=R"({"id":"text_sensor/Enevina CN105 Verified Snapshot","value":"{\"mode\":\"HEAT\u005cu0000bad\"}"})";
+    const auto encoded_frame="event: state\n"+std::string("data: ")+encoded_slash+"\n\n";
+    assert(parse(encoded_frame,false).empty());
+    assert(parse(chunks(encoded_frame,3),true).empty());
+    const std::string encoded_digits=R"({"id":"text_sensor/Enevina CN105 Verified Snapshot","value":"{\"mode\":\"HEAT\\u\u0030\u0030\u0030\u0030bad\"}"})";
+    assert(parse("event: state\ndata: "+encoded_digits+"\n\n",false).empty());
     // Invalid hex framing and impossible chunk lengths fail closed.
     HttpChunkDecoder malformed;
     uint8_t b=0;bool emitted=false;
