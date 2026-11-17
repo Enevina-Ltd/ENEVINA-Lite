@@ -47,5 +47,13 @@ int main() {
     CHECK(!d.capabilities.off_command_verified);
     PumpTelemetry sample{};
     CHECK(test.poll(sample) && sample.operating_mode==1);
+    // Both independent PRs must coexist in the SAME PumpTelemetry type.
+    constexpr int64_t now=1800000000;
+    CHECK(assess_measurement(sample.evidence,now,180)==MeasurementQuality::Missing);
+    sample.evidence={now,0,false}; // transport event alone
+    CHECK(assess_measurement(sample.evidence,now,180)==
+          MeasurementQuality::UnverifiedSource);
+    sample.evidence={now,now,true}; // independently proven source timestamp
+    CHECK(verified_fresh(sample.evidence,now,180));
     std::puts("PASS unknown defaults and explicit manufacturer capabilities");
 }
