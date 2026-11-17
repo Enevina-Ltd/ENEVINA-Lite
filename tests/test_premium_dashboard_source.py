@@ -14,12 +14,19 @@ class PremiumDashboardSourceTests(unittest.TestCase):
     def test_flash_backed_local_dashboard(self):
         self.assertIn("premium_dashboard_html[] PROGMEM", UI)
         self.assertIn('web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html)', MAIN)
-        self.assertIn('web.on("/diagnostics",HTTP_GET', MAIN)
-        self.assertIn('web.sendHeader("Location","/#settings")', MAIN)
+        self.assertNotIn('web.on("/diagnostics"', MAIN)
         self.assertNotIn('static const char html[] PROGMEM', MAIN)
         self.assertNotIn('web.send(200,"text/html; charset=utf-8",html)', MAIN)
         self.assertIn('id="ruuvi-bind"', UI)
         self.assertIn('id="alerts-save"', UI)
+        self.assertIn('data-theme="night"', UI)
+        self.assertIn("Europe/Helsinki", UI)
+        self.assertIn("applyAutomaticNightTheme", UI)
+        self.assertIn('id="energy-grade"', UI)
+        self.assertIn('Ei virallinen energiatodistus tai E-luku', UI)
+        self.assertIn('function ownEnergyClass(', UI)
+        self.assertIn('Syötä todellinen 12 kuukauden kulutus', UI)
+        self.assertNotIn('s.shelly_total_wh/8760',UI)
 
     def test_ui_has_no_external_assets_or_mock_sensor_numbers(self):
         self.assertNotIn("https://", UI)
