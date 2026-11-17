@@ -115,11 +115,11 @@ private:
     static bool has_escaped_nul(const char* value) {
         for(const char* p=value;*p;) {
             if(*p!='\\') {++p;continue;}
-            unsigned slashes=0;
-            while(*p=='\\') {++slashes;++p;}
-            // An odd run of slashes leaves a real JSON unicode escape.
-            // An even run encodes literal backslashes, not U+0000.
-            if((slashes&1u) && std::strncmp(p,"u0000",5)==0)
+            while(*p=='\\') ++p;
+            // An SSE state can contain serialized JSON inside JSON. Even
+            // backslash runs may become a real NUL after a second decode.
+            // Fail closed on every spelling to avoid a nested truncation.
+            if(std::strncmp(p,"u0000",5)==0)
                 return true;
         }
         return false;
