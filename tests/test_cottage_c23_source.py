@@ -53,7 +53,8 @@ class C23SourceTests(unittest.TestCase):
         self.assertIn('web.on("/api/air/ack",HTTP_POST',SERVICE)
         self.assertIn("check_token(web)",SERVICE)
         self.assertIn("air-panel", APP)
-        self.assertIn("EI OHJAA",APP)
+        self.assertIn("ERILLINEN OHJAUSLUPA",APP)
+        self.assertIn("tila tai tavoite ei yksin lähetä Mitsubishi-komentoja",APP)
 
     def test_alerts_and_no_wall_certification(self):
         self.assertIn("24ULL*3600000", (ROOT/"cottage/air_humidity.hpp").read_text())
