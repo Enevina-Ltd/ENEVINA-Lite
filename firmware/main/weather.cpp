@@ -1,3 +1,7 @@
+#ifdef ARDUINO
+#include "tls_roots.hpp"
+#include "esp_heap_caps.h"
+#endif
 #include "weather.hpp"
 #include "weather_cache.hpp"
 #include "forecast/fmi.hpp"
@@ -78,7 +82,11 @@ bool fetch_weather(WeatherCache& next) {
     esp_http_client_config_t cfg{};
     cfg.url=url;
     cfg.timeout_ms=12000;
+    #ifdef ARDUINO
+    cfg.cert_pem=enevina_firmware::fmi_ca_pem;
+    #else
     cfg.crt_bundle_attach=esp_crt_bundle_attach;
+    #endif
     esp_http_client_handle_t client=esp_http_client_init(&cfg);
     if(!client) return false;
     bool ok=false;
@@ -87,7 +95,14 @@ bool fetch_weather(WeatherCache& next) {
         esp_http_client_fetch_headers(client);
         if(esp_http_client_get_status_code(client)==200) {
             constexpr size_t limit=60000;
+            #ifdef ARDUINO
+            // Share scarce internal RAM with C2.3 BLE. Large downloads
+            // use external PSRAM; fail closed if unavailable.
+            body=static_cast<char*>(heap_caps_malloc(
+                limit+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+            #else
             body=static_cast<char*>(std::malloc(limit+1));
+            #endif
             if(body) {
                 size_t used=0;
                 int read=0;
@@ -184,5 +199,19 @@ WeatherStatus weather_status() {
     }
     xSemaphoreGive(mutex);
     return result;
+}
+}
+
+namespace enevina_firmware {
+size_t future_weather(enevina::OutdoorPoint* output,size_t capacity) {
+    if(!output || !mutex || !capacity) return 0;
+    const time_t now=time(nullptr);
+    if(now<=1700000000) return 0;
+    size_t n=0;
+    xSemaphoreTake(mutex,portMAX_DELAY);
+    if(cache.fetched_utc>0 && now>=cache.fetched_utc && now-cache.fetched_utc<=6*3600)
+        for(size_t i=0;i<cache.count && n<capacity;++i) output[n++]=cache.points[i];
+    xSemaphoreGive(mutex);
+    return n;
 }
 }

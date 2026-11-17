@@ -1,3 +1,7 @@
+#ifdef ARDUINO
+#include "tls_roots.hpp"
+#include "esp_heap_caps.h"
+#endif
 #include "market.hpp"
 #include "market_cache.hpp"
 #include "forecast/sources.hpp"
@@ -15,7 +19,9 @@
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#ifndef ARDUINO
 #include "esp_netif_sntp.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -84,7 +90,11 @@ bool fetch_day(const char* date, enevina::MarketPrice* output, size_t capacity,
     esp_http_client_config_t cfg{};
     cfg.url=url;
     cfg.timeout_ms=10000;
+    #ifdef ARDUINO
+    cfg.cert_pem=enevina_firmware::nordpool_ca_pem;
+    #else
     cfg.crt_bundle_attach=esp_crt_bundle_attach;
+    #endif
     esp_http_client_handle_t client=esp_http_client_init(&cfg);
     if(!client) return false;
     bool ok=false;
@@ -93,7 +103,14 @@ bool fetch_day(const char* date, enevina::MarketPrice* output, size_t capacity,
         esp_http_client_fetch_headers(client);
         if(esp_http_client_get_status_code(client)==200) {
             constexpr size_t limit=48000;
+            #ifdef ARDUINO
+            // Share scarce internal RAM with C2.3 BLE. Large downloads
+            // use external PSRAM; fail closed if unavailable.
+            body=static_cast<char*>(heap_caps_malloc(
+                limit+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+            #else
             body=static_cast<char*>(std::malloc(limit+1));
+            #endif
             if(body) {
                 size_t used=0;
                 int read=0;
@@ -146,8 +163,10 @@ void poll_prices(void*) {
     // Finland's civil dates are needed only for the API query. Slots remain UTC.
     setenv("TZ","EET-2EEST,M3.5.0/3,M10.5.0/4",1);
     tzset();
+    #ifndef ARDUINO
     esp_sntp_config_t sntp=ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
     esp_netif_sntp_init(&sntp);
+    #endif
     load_cache();
     while(true) {
         const time_t now=time(nullptr);

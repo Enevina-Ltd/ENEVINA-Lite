@@ -87,3 +87,20 @@ thermistor emulation, device-writer or relay switching is implemented.
 The bounded optimizer, supervisor and typed read-only observers have repeatable PC tests;
 see [C0 cottage report](docs/C0-cottage-report.md) and `tools/cottage_reference.py`.
 **This is not a live CN105 integration, ESP32 performance result, or freeze-protection guarantee.**
+
+
+## Mitsubishi C2 Wi-Fi shadow (experimental)
+
+`firmware/cottage/` now includes an **independent Wi-Fi ESP32-S3 PlatformIO
+shadow firmware** based on PR #1's price/FMI readers and PR #4's Cottage MPC.
+It has CN105 /events SSE GET and Shelly read-only RPC GET, Ruuvi RAWv5 BLE,
+local Finnish dashboard, NVS forecast caches, 15-minute trajectory and supervisor.
+[Development, test status and blockers](docs/C2-cottage-report.md).
+
+**No actuator write path is present.** Do not flash the working CN105 bridge.
+The optional `cottage_local_config.hpp` is not committed; see
+`firmware/cottage/include/cottage_local_config.example.hpp`.
+The **default** synthetic-physics flag is 0, which *disables computed price plans*
+until the installation has a validated thermal model and independent temperature
+sensor. Enabling the test model on a separate bench must not be mistaken for
+calibrated safety or economic results.

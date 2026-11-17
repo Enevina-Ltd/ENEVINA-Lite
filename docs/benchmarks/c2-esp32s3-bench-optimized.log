@@ -1,0 +1,17 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x2a (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+C2_BENCH_START AP=1 heap=296464 psram=8371435 freq=240
+C2_BENCH scenario=0 slots=96 ms=355 status=0 cost=3.051305 starts=4 min=8.025 final=10.637 heap=251352 psram=8371475 stack_hwm_words=31012
+C2_BENCH scenario=1 slots=96 ms=261 status=0 cost=6.138770 starts=3 min=8.022 final=10.017 heap=249760 psram=8371475 stack_hwm_words=30244
+C2_BENCH scenario=2 slots=96 ms=354 status=0 cost=5.090182 starts=4 min=8.019 final=10.635 heap=251788 psram=8371475 stack_hwm_words=30244
+C2_BENCH scenario=0 slots=192 ms=799 status=0 cost=5.982818 starts=7 min=8.014 final=10.613 heap=252636 psram=8365315 stack_hwm_words=30244
+C2_BENCH scenario=1 slots=192 ms=630 status=0 cost=12.045706 starts=6 min=8.003 final=10.180 heap=252400 psram=8365315 stack_hwm_words=30244
+C2_BENCH scenario=2 slots=192 ms=780 status=0 cost=9.901584 starts=7 min=8.011 final=10.605 heap=253236 psram=8365315 stack_hwm_words=30244
+C2_BENCH_RESULT PASS runs_pass=6 runs_fail=0 worst_ms=799 http_ok=3 http_fail=0 internal_heap_low=245444 psram_low=7920123

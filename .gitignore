@@ -5,3 +5,7 @@
 /firmware/sdkconfig.old
 __pycache__/
 *.pyc
+
+# Mitsubishi ESP32 local secrets and build artifacts
+firmware/cottage/.pio/
+firmware/cottage/include/cottage_local_config.hpp

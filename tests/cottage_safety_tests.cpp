@@ -55,6 +55,12 @@ int main(){
     check(d.reason==Reason::ProtectionNotVerified); // fail closed without independent protection
     h.independent_temperature.indoor_c=10.2;
     d=supervise(p,h);check(d.reason==Reason::ProtectionNotVerified);
+    // Replayed /events snapshots may have recent SSE receive timestamps,
+    // but no verified UART-origin time. Never treat them as a fresh pump read.
+    CN105Telemetry replay{false,0,9.0,16.0,30.0,ObservedPumpMode::Heat};
+    check(!valid_cn105(replay,h.now_utc));
+    replay.received=true; // a receive flag alone is not source evidence
+    check(!valid_cn105(replay,h.now_utc));
     MitsubishiCN105Adapter mitsubishi;
     check(mitsubishi.accept_reading(h.pump,h.now_utc));
     check(!mitsubishi.accept_reading({true,h.now_utc-1000,10,16,0,ObservedPumpMode::Off},h.now_utc));
@@ -103,5 +109,10 @@ int main(){
     fallback.independent_temperature.indoor_c=13.8;
     d=supervise(raised,fallback);
     check(!d.simulated_heat_16_c && !d.physical_writes_allowed);
+    // A cooling/fan/dry mode must never be silently interpreted as OFF.
+    fallback.pump.mode=ObservedPumpMode::Other;
+    d=supervise(raised,fallback);
+    check(d.mode==ControlMode::Fault && d.reason==Reason::PumpUnavailable &&
+          !d.physical_writes_allowed && !d.simulated_heat_16_c);
     std::puts("PASS all telemetry, read-only, and supervisor fault/fallback tests");
 }

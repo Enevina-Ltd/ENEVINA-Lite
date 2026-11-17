@@ -1,0 +1,218 @@
+[
+  {
+    "case": "mild",
+    "slots": 96,
+    "cpp": {
+      "cost_eur": 3.0513050668799395,
+      "electric_kwh": 16.218556090643702,
+      "minimum_c": 8.02514044479372,
+      "final_c": 10.636660187027552,
+      "starts": 4,
+      "violations": []
+    },
+    "milp": {
+      "cost_eur": 3.050350902127402,
+      "electric_kwh": 16.21622885953995,
+      "minimum_c": 8.009965759068407,
+      "final_c": 10.604099118756706,
+      "starts": 4,
+      "violations": [],
+      "status": 0,
+      "seconds": 11.526,
+      "mip_gap": 0.0009657885184053915,
+      "feasible": true,
+      "objective": 3.2467909021273487
+    },
+    "cost_gap_eur": 0.0009541647525375119,
+    "cost_gap_pct": 0.03128049143041878
+  },
+  {
+    "case": "mild",
+    "slots": 192,
+    "cpp": {
+      "cost_eur": 5.982817918787481,
+      "electric_kwh": 32.15184661631403,
+      "minimum_c": 8.01414455236032,
+      "final_c": 10.612657580152408,
+      "starts": 7,
+      "violations": []
+    },
+    "milp": {
+      "cost_eur": 5.982725683263253,
+      "electric_kwh": 32.15162165162079,
+      "minimum_c": 8.009101594351685,
+      "final_c": 10.619881333564793,
+      "starts": 7,
+      "violations": [],
+      "status": 1,
+      "seconds": 12.009,
+      "mip_gap": 0.03460719511498298,
+      "feasible": true,
+      "objective": 6.345605683262291
+    },
+    "cost_gap_eur": 9.223552422721326e-05,
+    "cost_gap_pct": 0.0015416973652149224
+  },
+  {
+    "case": "cold",
+    "slots": 96,
+    "cpp": {
+      "cost_eur": 6.1387699547064924,
+      "electric_kwh": 23.811852121518196,
+      "minimum_c": 8.022104880720105,
+      "final_c": 10.016979053052872,
+      "starts": 3,
+      "violations": []
+    },
+    "milp": {
+      "cost_eur": 6.038642689573941,
+      "electric_kwh": 23.8201792398275,
+      "minimum_c": 8.002943860619537,
+      "final_c": 10.00043078614016,
+      "starts": 3,
+      "violations": [],
+      "status": 0,
+      "seconds": 3.287,
+      "mip_gap": 0.0009458100197264431,
+      "feasible": true,
+      "objective": 6.175082689573881
+    },
+    "cost_gap_eur": 0.1001272651325511,
+    "cost_gap_pct": 1.6581087883445589
+  },
+  {
+    "case": "cold",
+    "slots": 192,
+    "cpp": {
+      "cost_eur": 12.045706414082595,
+      "electric_kwh": 47.32230100513012,
+      "minimum_c": 8.003121771040579,
+      "final_c": 10.179980737948974,
+      "starts": 6,
+      "violations": []
+    },
+    "milp": {
+      "cost_eur": 12.065664681400387,
+      "electric_kwh": 47.62065352579934,
+      "minimum_c": 8.12125123978057,
+      "final_c": 10.012373559196629,
+      "starts": 5,
+      "violations": [],
+      "status": 1,
+      "seconds": 12.018,
+      "mip_gap": 0.025190870308983794,
+      "feasible": true,
+      "objective": 12.308544681400393
+    },
+    "cost_gap_eur": -0.019958267317791822,
+    "cost_gap_pct": -0.16541374093180794
+  },
+  {
+    "case": "price_spike",
+    "slots": 96,
+    "cpp": {
+      "cost_eur": 5.090181983033389,
+      "electric_kwh": 16.50309353027521,
+      "minimum_c": 8.018598223058733,
+      "final_c": 10.635241864578077,
+      "starts": 4,
+      "violations": []
+    },
+    "milp": {
+      "cost_eur": 5.0895503834457845,
+      "electric_kwh": 16.502428688604045,
+      "minimum_c": 8.012692700732622,
+      "final_c": 10.606244207045282,
+      "starts": 4,
+      "violations": [],
+      "status": 0,
+      "seconds": 9.796,
+      "mip_gap": 0.0007996334030177794,
+      "feasible": true,
+      "objective": 5.273030383443829
+    },
+    "cost_gap_eur": 0.0006315995876047253,
+    "cost_gap_pct": 0.012409732491480696
+  },
+  {
+    "case": "price_spike",
+    "slots": 192,
+    "cpp": {
+      "cost_eur": 9.901583759388918,
+      "electric_kwh": 32.72045350966141,
+      "minimum_c": 8.011009351288095,
+      "final_c": 10.6049200374723,
+      "starts": 7,
+      "violations": []
+    },
+    "milp": {
+      "cost_eur": 9.99368713045324,
+      "electric_kwh": 32.71132991030999,
+      "minimum_c": 8.012112855278215,
+      "final_c": 10.549145509114512,
+      "starts": 8,
+      "violations": [],
+      "status": 1,
+      "seconds": 12.009,
+      "mip_gap": 0.04874929414822915,
+      "feasible": true,
+      "objective": 10.39064713045325
+    },
+    "cost_gap_eur": -0.0921033710643222,
+    "cost_gap_pct": -0.9216155144947447
+  },
+  {
+    "case": "defrost",
+    "slots": 96,
+    "cpp": {
+      "cost_eur": 3.1610485285175023,
+      "electric_kwh": 15.998108974416049,
+      "minimum_c": 8.019021139505949,
+      "final_c": 10.534710631884309,
+      "starts": 4,
+      "violations": []
+    },
+    "milp": {
+      "cost_eur": 3.1337736454766367,
+      "electric_kwh": 15.921867189138876,
+      "minimum_c": 8.002391377782255,
+      "final_c": 10.553142893772163,
+      "starts": 4,
+      "violations": [],
+      "status": 0,
+      "seconds": 11.192,
+      "mip_gap": 0.0009366446272969642,
+      "feasible": true,
+      "objective": 3.3302136454766353
+    },
+    "cost_gap_eur": 0.02727488304086556,
+    "cost_gap_pct": 0.8703526842225751
+  },
+  {
+    "case": "defrost",
+    "slots": 192,
+    "cpp": {
+      "cost_eur": 6.297638498793869,
+      "electric_kwh": 31.933755817537968,
+      "minimum_c": 8.019021139505949,
+      "final_c": 10.652346099166573,
+      "starts": 6,
+      "violations": []
+    },
+    "milp": {
+      "cost_eur": 6.290020549934146,
+      "electric_kwh": 31.915175454465476,
+      "minimum_c": 8.018116208288468,
+      "final_c": 10.639059969475802,
+      "starts": 7,
+      "violations": [],
+      "status": 1,
+      "seconds": 12.011,
+      "mip_gap": 0.036813789121895556,
+      "feasible": true,
+      "objective": 6.652900549934145
+    },
+    "cost_gap_eur": 0.0076179488597230005,
+    "cost_gap_pct": 0.12111166886097369
+  }
+]

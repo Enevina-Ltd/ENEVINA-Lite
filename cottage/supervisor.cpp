@@ -16,7 +16,10 @@ Decision supervise(const Parameters& p,const Health& h) {
         return out;
     }
     out.observed_temperature_c=h.independent_temperature.indoor_c;
-    if(!valid_cn105(h.pump,h.now_utc)) {
+    if(!valid_cn105(h.pump,h.now_utc) ||
+       (h.pump.mode!=ObservedPumpMode::Heat &&
+        h.pump.mode!=ObservedPumpMode::Off)) {
+        // COOL/DRY/FAN and unrecognised modes are not OFF.
         out.mode=ControlMode::Fault;
         out.reason=Reason::PumpUnavailable;
         return out;
