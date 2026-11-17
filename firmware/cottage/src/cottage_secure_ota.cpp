@@ -3,6 +3,8 @@
 #include <Preferences.h>
 #include <esp_http_client.h>
 #include <esp_ota_ops.h>
+#include <esp_partition.h>
+#include "cottage/ota_recovery.hpp"
 #include <esp_heap_caps.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
@@ -22,11 +24,78 @@
 #define ENEVINA_SIGNED_OTA_AVAILABLE 0
 #endif
 
+#if ENEVINA_SIGNED_OTA_AVAILABLE
+// Marker is retained in signed-pull-capable application images. The
+// publisher refuses to sign an app image without this compiled capability.
+// Volatile access prevents the compiler from eliding the ROM evidence.
+static const volatile char signed_pull_marker[] =
+    "ENEVINA_C24_SIGNED_PULL_OTA_CAPABLE_V1";
+#ifndef COTTAGE_OTA_CHANNEL_MARKER
+#error "Signed OTA requires a channel-bound generated cottage_ota_private.hpp"
+#endif
+// Retain the full public trust/endpoint fingerprint in the application image.
+static const volatile char signed_channel_marker[] = COTTAGE_OTA_CHANNEL_MARKER;
+#endif
+
 namespace {
 constexpr const char* magic="ENEVINA_C24_OTA_V1\nmodel=esp32s3-n16r8\n";
 constexpr uint32_t max_image_size=0x640000u;
 std::atomic<uint32_t> last_good{0}, last_candidate{0};
 std::atomic<int> last_status{0}; // 0 idle; 1 disabled; 2 transient; 3 refused; 4 rejected; 5 downloading; 6 rebooting
+namespace ota=enevina::cottage::ota;
+// Compile-time check against the actual ESP-IDF headers in this firmware.
+static_assert(ESP_OTA_IMG_NEW==0u && ESP_OTA_IMG_PENDING_VERIFY==1u &&
+              ESP_OTA_IMG_VALID==2u && ESP_OTA_IMG_INVALID==3u &&
+              ESP_OTA_IMG_ABORTED==4u &&
+              static_cast<uint32_t>(ESP_OTA_IMG_UNDEFINED)==0xffffffffu,
+              "ESP-IDF OTA states changed: update portable decoder");
+std::atomic<bool> confirmation_pending{false};
+bool read_transaction(Preferences& prefs,ota::Transaction& tx) {
+    if(prefs.getBytesLength("txv2")!=sizeof(tx))return false;
+    if(prefs.getBytes("txv2",&tx,sizeof(tx))!=sizeof(tx))return false;
+    return ota::valid(tx);
+}
+bool write_transaction(Preferences& prefs,ota::Transaction tx) {
+    ota::seal(tx);
+    return prefs.putBytes("txv2",&tx,sizeof(tx))==sizeof(tx);
+}
+const esp_partition_t* candidate_partition(const ota::Transaction& tx) {
+    const auto* p=esp_partition_find_first(ESP_PARTITION_TYPE_APP,
+        static_cast<esp_partition_subtype_t>(tx.target_subtype),nullptr);
+    return p && p->address==tx.target_address?p:nullptr;
+}
+bool matching_image(const esp_partition_t* p,const ota::Transaction& tx) {
+    uint8_t digest[32]{};
+    return p && esp_partition_get_sha256(p,digest)==ESP_OK &&
+           std::memcmp(digest,tx.target_image_sha256,32)==0;
+}
+ota::Evidence boot_evidence(const ota::Transaction& tx) {
+    ota::Evidence e{};
+    const auto* running=esp_ota_get_running_partition();
+    const auto* boot=esp_ota_get_boot_partition();
+    const auto* target=candidate_partition(tx);
+    e.running_source=running && running->address==tx.source_address;
+    e.running_target=running && running->address==tx.target_address &&
+                     running->subtype==tx.target_subtype;
+    e.selected_target=boot && boot->address==tx.target_address;
+    e.target_hash_matches=matching_image(target,tx);
+    esp_ota_img_states_t state=ESP_OTA_IMG_UNDEFINED;
+    if(target && esp_ota_get_state_partition(target,&state)==ESP_OK)
+        e.target_state=ota::decode_esp_idf_image_state(static_cast<uint32_t>(state));
+    return e;
+}
+struct NvsConfirm {
+    Preferences& prefs;
+    bool write_good(uint32_t v) {
+        return prefs.putUInt("good",v)==sizeof(uint32_t);
+    }
+    bool remove_legacy_pending() {
+        return !prefs.isKey("pending") || prefs.remove("pending");
+    }
+    bool remove_transaction() {
+        return !prefs.isKey("txv2") || prefs.remove("txv2");
+    }
+};
 struct Release {
     uint32_t version=0;
     uint32_t size=0;
@@ -146,17 +215,12 @@ bool fetch_manifest(Release& out) {
     close_https(client);
     return success;
 }
-bool store_pending(uint32_t version) {
-    Preferences p;
-    if(!p.begin("c24_ota",false))return false;
-    const bool ok=p.putUInt("pending",version)==sizeof(uint32_t);
-    p.end();
-    return ok;
-}
 bool update_app(const Release& release) {
     const esp_partition_t* active=esp_ota_get_running_partition();
     const esp_partition_t* target=esp_ota_get_next_update_partition(nullptr);
     if(!active || !target || target==active || release.size>target->size)return false;
+    esp_ota_img_states_t old_target_state=ESP_OTA_IMG_UNDEFINED;
+    esp_ota_get_state_partition(target,&old_target_state);
     auto client=open_https(COTTAGE_OTA_FIRMWARE_URL,static_cast<int>(release.size));
     if(!client)return false;
     esp_ota_handle_t handle=0;
@@ -195,48 +259,157 @@ bool update_app(const Release& release) {
         return false;
     }
     if(esp_ota_end(handle)!=ESP_OK)return false; // app image verified by IDF
-    if(!store_pending(release.version))return false;
-    if(esp_ota_set_boot_partition(target)!=ESP_OK) {
-        Preferences p;
-        if(p.begin("c24_ota",false)){p.remove("pending");p.end();}
+    ota::Transaction tx{};
+    tx.version=release.version;
+    tx.source_address=active->address;
+    tx.target_address=target->address;
+    tx.target_subtype=target->subtype;
+    tx.previous_target_state=ota::decode_esp_idf_image_state(static_cast<uint32_t>(old_target_state));
+    tx.phase=ota::Phase::Prepared;
+    // The exact partition image hash, not just a version number, binds
+    // recovery to this flashed candidate, even across power loss.
+    if(esp_partition_get_sha256(target,tx.target_image_sha256)!=ESP_OK)
         return false;
+    Preferences p;
+    if(!p.begin("c24_ota",false))return false;
+    if(p.isKey("txv2") || p.isKey("pending") ||
+       !write_transaction(p,tx)) {
+        p.end();return false;
+    }
+    p.end();
+    if(esp_ota_set_boot_partition(target)!=ESP_OK) {
+        // A failed activation is not a failed boot. If NVS cleanup itself
+        // fails, initialize() will discard this Prepared intent next boot.
+        Preferences cleanup;
+        if(cleanup.begin("c24_ota",false)){
+            cleanup.remove("txv2");cleanup.end();
+        }
+        return false;
+    }
+    // The bootloader's NEW record is durable now. A power cut before this
+    // Armed update still safely boots the candidate; successful candidate
+    // startup proves activation. Ambiguous failed boots are not quarantined.
+    tx.phase=ota::Phase::Armed;
+    Preferences armed;
+    if(armed.begin("c24_ota",false)) {
+        if(!write_transaction(armed,tx))
+            Serial.println("C24_OTA_RECOVERY: activation armed marker deferred");
+        armed.end();
     }
     return true;
 }
 #endif // ENABLED
 }
-bool cottage_ota_configured(){return ENEVINA_SIGNED_OTA_AVAILABLE!=0;}
+bool cottage_ota_configured(){
+#if ENEVINA_SIGNED_OTA_AVAILABLE
+    return signed_pull_marker[0]=='E' && signed_channel_marker[0]=='E';
+#else
+    return false;
+#endif
+}
 void cottage_ota_initialize() {
+    confirmation_pending.store(false);
     Preferences p;
-    if(!p.begin("c24_ota",false))return;
-    const auto good=p.getUInt("good",0);
+    if(!p.begin("c24_ota",false)) {
+        last_status.store(3);return;
+    }
+    const uint32_t good=p.getUInt("good",0);
     last_good.store(good);
-    const auto pending=p.getUInt("pending",0);
-    if(pending) {
-        const esp_partition_t* running=esp_ota_get_running_partition();
-        esp_ota_img_states_t state=ESP_OTA_IMG_UNDEFINED;
-        const bool still_pending=running &&
-            esp_ota_get_state_partition(running,&state)==ESP_OK &&
-            state==ESP_OTA_IMG_PENDING_VERIFY;
-        if(!still_pending) {
-            // Old valid image booted after a failed candidate: quarantine it.
-            p.putUInt("bad",std::max(p.getUInt("bad",0),pending));
-            p.remove("pending");
+    const uint32_t legacy=p.getUInt("pending",0);
+    ota::Transaction tx{};
+    bool has_tx=read_transaction(p,tx);
+    if(p.isKey("txv2") && !has_tx) {
+        // Corrupt/partial transaction cannot authorize an update or a
+        // quarantine. Never erase it speculatively.
+        last_status.store(3);p.end();return;
+    }
+    if(!has_tx && legacy) {
+        if(good>=legacy) {
+            // Crash between good write and legacy cleanup.
+            if(!p.remove("pending"))last_status.store(3);
+        } else {
+            const auto* running=esp_ota_get_running_partition();
+            const auto* old=esp_ota_get_next_update_partition(nullptr);
+            esp_ota_img_states_t image_state=ESP_OTA_IMG_UNDEFINED;
+            const bool candidate=running && old &&
+                esp_ota_get_state_partition(running,&image_state)==ESP_OK &&
+                image_state==ESP_OTA_IMG_PENDING_VERIFY;
+            if(candidate) {
+                // Pre-v2 signed releases persisted only pending/version.
+                // Migrate ONLY a bootloader-proven first-boot candidate;
+                // never infer identity from the NVS version alone.
+                tx=ota::Transaction{};
+                tx.version=legacy;
+                tx.source_address=old->address;
+                tx.target_address=running->address;
+                tx.target_subtype=running->subtype;
+                tx.phase=ota::Phase::Armed;
+                if(esp_partition_get_sha256(running,tx.target_image_sha256)==ESP_OK &&
+                   write_transaction(p,tx))has_tx=true;
+                else last_status.store(3);
+            } else {
+                // An unproven legacy intent on the old VALID image may
+                // be pre-activation; it is NOT evidence of a failed boot.
+                if(!p.remove("pending"))last_status.store(3);
+            }
         }
+    }
+    if(has_tx) {
+        const ota::Evidence e=boot_evidence(tx);
+        const auto action=ota::decide(tx,e);
+        if(action==ota::Recovery::AwaitCandidateHealth) {
+            confirmation_pending.store(true);
+        } else if(action==ota::Recovery::QuarantineRealRollback) {
+            // The bootloader, selected slot and SHA prove this attempt.
+            // Never erase the recovery record before durable bad-version
+            // quarantine has succeeded.
+            const uint32_t bad=std::max(p.getUInt("bad",0),tx.version);
+            if(p.putUInt("bad",bad)==sizeof(uint32_t) &&
+               (!p.isKey("pending") || p.remove("pending")) &&
+               p.remove("txv2")) {
+                Serial.println("C24_OTA_RECOVERY: verified rollback quarantined");
+            } else last_status.store(3);
+        } else if(action==ota::Recovery::DiscardNeverActivated) {
+            // A power cut during store_pending or set_boot_partition is
+            // not a failed installation. Keep the signed version eligible.
+            if(!p.remove("txv2") ||
+               (p.isKey("pending") && !p.remove("pending")))
+                last_status.store(3);
+        } else if(action==ota::Recovery::Blocked) {
+            // Unknown partition/image or ambiguous bootloader state:
+            // neither confirm nor quarantine; block new OTA until known.
+            last_status.store(3);
+        }
+        // KeepForActivation: do not force reboot or corrupt boot selection.
     }
     p.end();
 }
-void cottage_ota_confirm_boot() {
+bool cottage_ota_confirmation_pending() {
+    return confirmation_pending.load();
+}
+bool cottage_ota_confirm_boot() {
     Preferences p;
-    if(!p.begin("c24_ota",false))return;
-    const auto pending=p.getUInt("pending",0);
-    if(pending) {
-        const auto good=std::max(p.getUInt("good",0),pending);
-        if(p.putUInt("good",good)==sizeof(uint32_t)) {
-            p.remove("pending");last_good.store(good);
-        }
+    if(!p.begin("c24_ota",false))return false;
+    ota::Transaction tx{};
+    if(!read_transaction(p,tx)) {
+        p.end();return false;
+    }
+    const auto e=boot_evidence(tx);
+    // The bootloader VALID state is necessary but not sufficient:
+    // commit only an identical flashed image running from the target.
+    if(!e.running_target || !e.target_hash_matches ||
+       e.target_state!=ota::ImageState::Valid) {
+        p.end();return false;
+    }
+    const uint32_t good=p.getUInt("good",0);
+    NvsConfirm store{p};
+    const bool success=ota::confirm_persistence(store,tx,good);
+    if(success) {
+        last_good.store(std::max(good,tx.version));
+        confirmation_pending.store(false);
     }
     p.end();
+    return success;
 }
 uint32_t cottage_ota_good_version(){return last_good.load();}
 uint32_t cottage_ota_last_candidate(){return last_candidate.load();}
@@ -251,6 +424,9 @@ void cottage_ota_worker(void*) {
     // LAN host + signing key access is the approval step.
     vTaskDelay(pdMS_TO_TICKS(90000));
     while(true) {
+        // Retry transient NVS cleanup/reconciliation without any new
+        // watcher, reset loop or physical flash operation.
+        cottage_ota_initialize();
         if(WiFi.status()!=WL_CONNECTED || time(nullptr)<1700000000) {
             last_status.store(2);
         } else if(!enevina_firmware::network_budget_acquire(200,
@@ -270,13 +446,17 @@ void cottage_ota_worker(void*) {
                     good=p.getUInt("good",0);
                     bad=p.getUInt("bad",0);
                     pending=p.getUInt("pending",0);
+                    // txv2 is authoritative for all new OTA releases.
+                    // Even after a good write, a failed deletion must
+                    // block new installs until idempotent cleanup succeeds.
+                    if(p.isKey("txv2"))pending=1;
                     p.end();
                 }
                 if(!store_ready) {
                     // Refuse all OTA if persistent anti-rollback state
                     // cannot be read; never treat NVS failure as version zero.
                     last_status.store(3);
-                } else if(r.version<=good || r.version<=bad || pending) {
+                } else if(!ota::signed_version_eligible(r.version,good,bad,pending!=0)) {
                     last_status.store(0);
                 } else {
                     last_status.store(5);
