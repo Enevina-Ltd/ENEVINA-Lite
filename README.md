@@ -4,7 +4,6 @@
 
 > **Paikalliset valmistaja-Wi-Fi-integraatiot (tutkimus, eivät valmista tuotetukea):** [yhteensopivuusmatriisi](docs/integrations/LOCAL_WIFI_COMPATIBILITY.md) · [valmistajakohtaiset yhdistämisohjeet](docs/integrations/LOCAL_WIFI_CONNECTION_GUIDE.md) · [kellarin Midean read-only-pilotti](docs/integrations/MIDEA_CELLAR_PILOT.md). Midea V3:n kertaluonteinen pilviavain ei täytä täyden pilvettömyyden vaatimusta.
 
-
 Enevina Lite on Enevina Coresta erillinen, valmistajariippumattoman ytimen ja mallikohtaisten adapterien varaan rakentuva kevyt ohjain, jonka tavoitteena on minimoida lämpöpumpun lämmityskustannukset ja soveltuvilla laitteilla myös käyttöveden kustannukset turvallisesti. **Lite ei sisällä tekoälyä**, ei edellytä Home Assistantia eikä tarvitse Linuxia tai pilvipalvelua normaalissa käytössä.
 
 > **Ensimmäinen pilotti, ei tuotteen valmistajarajaus (16.11.2026):** pihamökin **Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA**. ESP32-S3 Wi-Fi + lokakuussa 2026 read-only-tilassa toiminut CN105; uusi Lite-kytkentä ja ohjauskomennot vielä testaamatta. Shelly Plus 1PM vain kulutusmittaukseen. Mökin tavoiteltu ylläpitolämpö noin +5 °C, ennakoiva turvamarginaali +8 °C; pumpun alin lämmityspyynti +16 °C, joten suunniteltu ohjaus on HEAT 16 °C / OFF. **Tämä ilma–ilmapumppu ei käytä menoveden tai käyttöveden optimointia.** Katso [pilottisuunnitelma](docs/cottage-mitsubishi-fd25va.md). Oikeaa laitetta ei vielä ohjata.
