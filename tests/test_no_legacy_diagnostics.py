@@ -1,4 +1,4 @@
-"""Single flash-backed premium UI, legacy route only redirects."""
+"""Single premium UI; no diagnostics route or duplicate HTML."""
 from pathlib import Path
 import unittest
 
@@ -8,13 +8,12 @@ UI=(ROOT/"firmware/cottage/include/cottage_premium_dashboard.hpp").read_text()
 AIR=(ROOT/"firmware/cottage/src/cottage_air_service.cpp").read_text()
 
 class SingleDashboardTests(unittest.TestCase):
-    def test_legacy_ui_is_gone_but_bookmark_redirects(self):
+    def test_legacy_ui_and_route_are_gone(self):
         self.assertNotIn('static const char html[] PROGMEM',MAIN)
         self.assertNotIn('id="air-panel"',MAIN)
         self.assertIn('web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html)',MAIN)
-        self.assertIn('web.on("/diagnostics",HTTP_GET',MAIN)
-        self.assertIn('web.sendHeader("Location","/#settings")',MAIN)
-        self.assertIn('web.send(302,"text/plain","")',MAIN)
+        self.assertNotIn('web.on("/diagnostics"',MAIN)
+        self.assertNotIn('web.sendHeader("Location","/#settings")',MAIN)
         self.assertNotIn('href="/diagnostics"',UI)
         self.assertIn('href="/#settings"',UI)
         self.assertIn("window.addEventListener('hashchange'",UI)
