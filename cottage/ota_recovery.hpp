@@ -25,6 +25,8 @@ struct Transaction {
     uint8_t target_image_sha256[32]{};
     uint32_t checksum = 0;
 };
+// One NVS putBytes() writes a fixed-layout, checksummed record.
+static_assert(sizeof(Transaction)==60,"OTA transaction layout changed");
 inline uint32_t checksum(Transaction t) {
     t.checksum = 0;
     uint32_t v = 2166136261u;
