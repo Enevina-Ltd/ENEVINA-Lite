@@ -377,6 +377,10 @@ TemperatureSample c23_temperature_sample() {
     unlock();
     return out;
 }
+bool c23_authorize_local_setting(const char* submitted_token) {
+    return guard && submitted_token && strlen(submitted_token)==strlen(csrf_token) &&
+           strcmp(submitted_token,csrf_token)==0;
+}
 CottageModeConfig c23_mode_config() {
     if(!guard) return CottageModeConfig{};
     lock();const auto snapshot=config;unlock();
