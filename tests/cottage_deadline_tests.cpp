@@ -156,6 +156,7 @@ int main() {
     h.independent_freeze_protection_verified=true;
     h.price_fresh=true;h.weather_fresh=true;h.mpc_ready=true;
     h.pump={true,h.now_utc,9.0,16.0,30,ObservedPumpMode::Heat};
+    h.pump.evidence={h.now_utc,h.now_utc,true}; // mock confirmed pump-side sample
     h.independent_temperature={true,h.now_utc,9.2};
     h.plan.status=MpcStatus::Timeout;
     auto decision=supervise(p,h);
@@ -164,6 +165,13 @@ int main() {
           decision.reason==Reason::MpcUnavailable &&
           decision.simulated_heat_16_c && !decision.physical_writes_allowed,
           "supervisor timeout must choose simulation-only conservative fallback");
+    // An SSE receipt without source evidence must NOT enter fallback MPC.
+    h.pump.evidence.source_time_verified=false;
+    decision=supervise(p,h);
+    check(decision.reason==Reason::PumpUnavailable &&
+          !decision.physical_writes_allowed,
+          "unknown pump-side freshness must block control");
+    h.pump.evidence.source_time_verified=true;
     h.plan.status=MpcStatus::Cancelled;
     decision=supervise(p,h);
     check(decision.reason==Reason::MpcUnavailable &&

@@ -50,6 +50,16 @@ add_executable(pump_measurement_quality_tests tests/pump_measurement_quality_tes
 target_include_directories(pump_measurement_quality_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME pump_measurement_quality_tests COMMAND pump_measurement_quality_tests)
 
+# Manufacturer-independent pump identity and capability regression.
+add_executable(pump_capabilities_tests tests/pump_capabilities_tests.cpp)
+target_include_directories(pump_capabilities_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME pump_capabilities_tests COMMAND pump_capabilities_tests)
+
+# Source-linked serial evidence: counter reset/reconnect/replay host regression.
+add_executable(pump_source_read_proof_tests tests/pump_source_read_proof_tests.cpp)
+target_include_directories(pump_source_read_proof_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME pump_source_read_proof_tests COMMAND pump_source_read_proof_tests)
+
 # Pump-origin serial freshness policy: HTTP transport alone is not proof.
 add_executable(pump_freshness_tests tests/pump_freshness_tests.cpp)
 target_include_directories(pump_freshness_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -100,6 +110,8 @@ if(MSVC)
   target_compile_options(market_cache_tests PRIVATE /UNDEBUG)
   target_compile_options(optimizer_regression_tests PRIVATE /UNDEBUG)
   target_compile_options(pump_freshness_tests PRIVATE /UNDEBUG)
+  target_compile_options(pump_source_read_proof_tests PRIVATE /UNDEBUG)
+  target_compile_options(pump_capabilities_tests PRIVATE /UNDEBUG)
   target_compile_options(pump_measurement_quality_tests PRIVATE /UNDEBUG)
   target_compile_options(weather_cache_tests PRIVATE /UNDEBUG)
 else()
@@ -117,6 +129,8 @@ else()
   target_compile_options(market_cache_tests PRIVATE -UNDEBUG)
   target_compile_options(optimizer_regression_tests PRIVATE -UNDEBUG)
   target_compile_options(pump_freshness_tests PRIVATE -UNDEBUG)
+  target_compile_options(pump_source_read_proof_tests PRIVATE -UNDEBUG)
+  target_compile_options(pump_capabilities_tests PRIVATE -UNDEBUG)
   target_compile_options(pump_measurement_quality_tests PRIVATE -UNDEBUG)
   target_compile_options(weather_cache_tests PRIVATE -UNDEBUG)
 endif()
