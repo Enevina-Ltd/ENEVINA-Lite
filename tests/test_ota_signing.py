@@ -76,6 +76,13 @@ class ArduinoRollbackSourceGuardTests(unittest.TestCase):
         self.assertIn('esp_ota_mark_app_valid_cancel_rollback()',source)
         self.assertIn('ESP_OTA_IMG_PENDING_VERIFY',source)
 
+    def test_signed_pull_worker_must_start_before_pending_image_commit(self):
+        root=Path(__file__).resolve().parents[1]
+        code=(root/"firmware/cottage/src/main.cpp").read_text()
+        self.assertIn("task_optimizer!=nullptr && task_ota!=nullptr;",code)
+        self.assertIn('xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota"',code)
+        self.assertIn('16384,nullptr,1,&task_ota,1)!=pdPASS',code)
+        self.assertIn('task_ota=nullptr;',code)
     def test_regular_platformio_usb_upload_is_fail_closed(self):
         import subprocess
         root=Path(__file__).resolve().parents[1]
