@@ -11,7 +11,7 @@
 namespace enevina::cottage {
 enum class BootstrapAction : uint8_t { Unavailable, HeatSetpoint, Off, Hold };
 enum class BootstrapReason : uint8_t {
-    MissingTemperature, MissingPrices, TemperatureLow, TemperatureHigh,
+    MissingTemperature, MissingPrices, NoHeatingRequested, TemperatureLow, TemperatureHigh,
     CheapWindow, ExpensiveWindow, Hysteresis
 };
 struct BootstrapInput {
@@ -106,6 +106,7 @@ inline const char* bootstrap_reason_name(BootstrapReason reason) {
     switch(reason) {
     case BootstrapReason::MissingTemperature:return "RUUVI_STALE";
     case BootstrapReason::MissingPrices:return "PRICES_UNAVAILABLE";
+    case BootstrapReason::NoHeatingRequested:return "NO_HEATING_REQUESTED";
     case BootstrapReason::TemperatureLow:return "BELOW_ROOM_TARGET";
     case BootstrapReason::TemperatureHigh:return "ABOVE_ROOM_TARGET";
     case BootstrapReason::CheapWindow:return "LOW_COST_WINDOW";
