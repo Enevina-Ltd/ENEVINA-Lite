@@ -22,6 +22,7 @@ int main(){
     h.independent_freeze_protection_verified=true;
     h.price_fresh=true;h.weather_fresh=true;
     h.pump={true,h.now_utc,9.0,16.0,30,ObservedPumpMode::Heat};
+    h.pump.evidence={h.now_utc,h.now_utc,true}; // mock source proof
     h.independent_temperature={true,h.now_utc,9.2};
     h.mpc_ready=true;h.plan.status=MpcStatus::Ok;h.plan.count=96;
     h.plan.minimum_c=8.5;h.plan.heat_16_c[0]=0;
@@ -29,6 +30,11 @@ int main(){
     check(d.mode==ControlMode::Shadow);
     check(d.proposed_mode==ControlMode::PriceOptimization);
     check(!d.physical_writes_allowed && !d.simulated_heat_16_c);
+    // Regression: fresh Wi-Fi/SSE receipt does NOT prove a new pump read.
+    h.pump.evidence.source_time_verified=false;
+    d=supervise(p,h);
+    check(d.reason==Reason::PumpUnavailable && !d.physical_writes_allowed);
+    h.pump.evidence.source_time_verified=true;
     h.independent_temperature.indoor_c=7.8;
     d=supervise(p,h);
     check(d.proposed_mode==ControlMode::FreezeProtection && d.simulated_heat_16_c);
@@ -62,6 +68,9 @@ int main(){
     replay.received=true; // a receive flag alone is not source evidence
     check(!valid_cn105(replay,h.now_utc));
     MitsubishiCN105Adapter mitsubishi;
+    auto unverified=h.pump;
+    unverified.evidence.source_time_verified=false;
+    check(!mitsubishi.accept_reading(unverified,h.now_utc));
     check(mitsubishi.accept_reading(h.pump,h.now_utc));
     check(!mitsubishi.accept_reading({true,h.now_utc-1000,10,16,0,ObservedPumpMode::Off},h.now_utc));
     ShellyPowerObserver shelly;
@@ -88,6 +97,7 @@ int main(){
     fallback.calibrated=true;
     fallback.independent_freeze_protection_verified=true;
     fallback.pump={true,fallback.now_utc,12.2,16.0,0,ObservedPumpMode::Off};
+    fallback.pump.evidence={fallback.now_utc,fallback.now_utc,true};
     fallback.independent_temperature={true,fallback.now_utc,12.2};
     d=supervise(raised,fallback);
     check(d.mode==ControlMode::Shadow &&

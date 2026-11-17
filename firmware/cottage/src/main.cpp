@@ -252,6 +252,9 @@ static void parse_sse_state(const char* raw) {
         // closed: never make receipt time look like fresh pump telemetry.
         copy.captured_utc=0;
         copy.received=false;
+        // The legacy CN105 bridge exposes only SSE receipt time. Explicit
+        // unverified provenance must never turn cached SSE into pump freshness.
+        copy.evidence={now,0,false};
         pump=copy;
         xSemaphoreGive(lock_data);
     }
@@ -803,11 +806,24 @@ static void status_endpoint() {
     cJSON* root=cJSON_CreateObject();
     cJSON_AddStringToObject(root,"mode","VARJOTILA_EI_KOMENTOJA");
     cJSON_AddBoolToObject(root,"physical_writes",false);
+    const auto pump_quality=enevina::assess_measurement(cp.evidence,now,180);
     cJSON_AddBoolToObject(root,"cn105",valid_cn105(cp,now));
-    // Explicit provenance: SSE receipt is not a pump-origin timestamp.
+    // Distinguish network message receipt from a proven pump-side read.
+    // The present bridge has NO verified UART-read source contract.
     cJSON_AddBoolToObject(root,"cn105_source_verified",false);
     cJSON_AddStringToObject(root,"cn105_measurement_quality","UNVERIFIED_SOURCE");
-    cJSON_AddStringToObject(root,"pump_mode",cp.mode==ObservedPumpMode::Heat?
+    cJSON_AddStringToObject(root,"pump_source_quality",
+                            enevina::quality_name(pump_quality));
+    cJSON_AddBoolToObject(root,"pump_source_time_verified",
+                          cp.evidence.source_time_verified);
+    cJSON_AddNumberToObject(root,"pump_received_utc",
+                            static_cast<double>(cp.evidence.received_utc));
+    if(cp.evidence.source_time_verified && cp.evidence.source_utc>0)
+        cJSON_AddNumberToObject(root,"pump_source_utc",
+                                static_cast<double>(cp.evidence.source_utc));
+    else cJSON_AddNullToObject(root,"pump_source_utc");
+    cJSON_AddStringToObject(root,"pump_mode",!valid_cn105(cp,now)?
+        "EI VAHVISTETTU":cp.mode==ObservedPumpMode::Heat?
         "HEAT":cp.mode==ObservedPumpMode::Off?"OFF":"MUU/EI");
     if(valid_cn105(cp,now)) {
         cJSON_AddNumberToObject(root,"pump_indoor_c",cp.indoor_c);

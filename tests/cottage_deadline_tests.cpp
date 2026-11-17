@@ -156,6 +156,7 @@ int main() {
     h.independent_freeze_protection_verified=true;
     h.price_fresh=true;h.weather_fresh=true;h.mpc_ready=true;
     h.pump={true,h.now_utc,9.0,16.0,30,ObservedPumpMode::Heat};
+    h.pump.evidence={h.now_utc,h.now_utc,true}; // mock confirmed pump-side sample
     h.independent_temperature={true,h.now_utc,9.2};
     h.plan.status=MpcStatus::Timeout;
     auto decision=supervise(p,h);

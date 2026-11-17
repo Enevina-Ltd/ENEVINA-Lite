@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "pump/measurement_quality.hpp"
 
 namespace enevina {
 // Unknown is the only safe default: a manufacturer's name or capability
@@ -30,6 +31,8 @@ struct PumpTelemetry {
     double compressor_hz=0;
     bool defrosting=false;
     int operating_mode=-1;
+    // Propagate verified original pump-read evidence, not network receipt time.
+    MeasurementEvidence evidence{};
 };
 
 // V1 is deliberately read-only. A future command interface must be gated by

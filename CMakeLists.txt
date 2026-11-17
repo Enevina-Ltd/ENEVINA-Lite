@@ -45,6 +45,11 @@ add_executable(market_cache_tests tests/market_cache_tests.cpp)
 target_link_libraries(market_cache_tests PRIVATE enevina_core)
 add_test(NAME market_cache_tests COMMAND market_cache_tests)
 
+# Manufacturer-independent pump-side source/receive timestamp quality regression.
+add_executable(pump_measurement_quality_tests tests/pump_measurement_quality_tests.cpp)
+target_include_directories(pump_measurement_quality_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME pump_measurement_quality_tests COMMAND pump_measurement_quality_tests)
+
 # Manufacturer-independent adapter identity and capability regression.
 add_executable(pump_capabilities_tests tests/pump_capabilities_tests.cpp)
 target_include_directories(pump_capabilities_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

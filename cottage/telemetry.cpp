@@ -7,7 +7,8 @@ bool age_ok(int64_t stamp,int64_t now,int64_t limit) {
 }
 }
 bool valid_cn105(const CN105Telemetry& s,int64_t now,int64_t age) {
-    return s.received && age_ok(s.captured_utc,now,age) &&
+    return s.received && enevina::verified_fresh(s.evidence,now,age) &&
+        age_ok(s.captured_utc,now,age) &&
         std::isfinite(s.indoor_c) && s.indoor_c>=-10 && s.indoor_c<=50 &&
         std::isfinite(s.setpoint_c) && s.setpoint_c>=0 && s.setpoint_c<=35 &&
         std::isfinite(s.compressor_hz) && s.compressor_hz>=0 &&
