@@ -222,6 +222,8 @@ void c23_initialize() {
              static_cast<unsigned long>(esp_random()));
     Preferences prefs;
     bool config_loaded=false;
+    std::array<uint8_t,6> stored_indoor_mac{};
+    bool stored_indoor_mac_valid=false;
     if(prefs.begin("cottage_air",true)) {
         config_loaded=true;
         const uint8_t m=prefs.getUChar("mode",0);
@@ -245,6 +247,11 @@ void c23_initialize() {
             warning_limits.low_battery_v=low_v;
         alarm_engine.update_limits(warning_limits);
         read_mac_setting(prefs,"indoor",COTTAGE_RUUVI_MAC,indoor_binding);
+        // Do not mistake a compile-time fallback for an NVS-proven owner
+        // of an old hourly_v1 series. Persisted identity is separate.
+        const String persisted_id=prefs.getString("indoor","");
+        stored_indoor_mac_valid=parse_ruuvi_mac(
+            persisted_id.c_str(),stored_indoor_mac);
         #ifdef COTTAGE_OUTDOOR_RUUVI_MAC
         read_mac_setting(prefs,"outdoor",COTTAGE_OUTDOOR_RUUVI_MAC,outdoor_binding);
         #else
@@ -261,14 +268,38 @@ void c23_initialize() {
             outdoor_binding.bind(mac);
         #endif
     }
+    const bool origin_verified=verified_history_origin(
+        stored_indoor_mac_valid,stored_indoor_mac,indoor_binding);
+    // Existing hourly_v1 has no embedded MAC. An unseen/changed compiler
+    // fallback is not allowed to relabel another RuuviTag's history.
+    indoor_binding_persisted=origin_verified || !indoor_binding.bound();
+    bool old_history_cleared=false;
     Preferences hp;
-    if(hp.begin("cottage_hist",true)) {
-        if(hp.getBytesLength("hourly_v1")==sizeof(AirHistoryDump)) {
-            AirHistoryDump stored{};
-            hp.getBytes("hourly_v1",&stored,sizeof(stored));
-            history.restore(stored); // checksum and monotonic time validation
+    if(hp.begin("cottage_hist",origin_verified)) {
+        if(origin_verified) {
+            if(hp.getBytesLength("hourly_v1")==sizeof(AirHistoryDump)) {
+                AirHistoryDump stored{};
+                if(hp.getBytes("hourly_v1",&stored,sizeof(stored))==
+                   sizeof(stored))
+                    history.restore(stored); // CRC and UTC consistency
+            }
+        } else {
+            // Purge unknown-origin history BEFORE persisting a new
+            // compile-time fallback binding. A crash between these steps
+            // cannot make A's old history appear to belong to B.
+            old_history_cleared=hp.getBytesLength("hourly_v1")==0 ||
+                                hp.remove("hourly_v1");
         }
         hp.end();
+    }
+    if(!origin_verified && indoor_binding.bound()) {
+        // Preserve persistent history for compiler-only provisioning after
+        // the old untagged series is safely cleared. No purge or NVS config
+        // failure can authorize a future checkpoint for the new binding.
+        if(!old_history_cleared || !save_config()) {
+            indoor_binding_persisted=false;
+            Serial.println("C23_HISTORY_SOURCE_UNVERIFIED: checkpoint blocked");
+        }
     }
     last_store_ms=uptime_ms();
 }

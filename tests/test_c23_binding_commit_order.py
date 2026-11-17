@@ -40,5 +40,25 @@ class BindingCommitTests(unittest.TestCase):
         self.assertIn('history_changed=false;',checkpoint)
         self.assertIn('// NVS failure keeps history_changed set',checkpoint)
 
+    def test_boot_history_recovery_requires_persisted_mac_identity(self):
+        init=SRC.split("void c23_initialize() {",1)[1].split("void c23_ble_worker",1)[0]
+        self.assertIn('const String persisted_id=prefs.getString("indoor","")',init)
+        self.assertIn("stored_indoor_mac_valid=parse_ruuvi_mac(",init)
+        self.assertIn("verified_history_origin(",init)
+        self.assertIn("if(origin_verified) {",init)
+        self.assertIn("history.restore(stored);",init)
+        self.assertIn('hp.remove("hourly_v1")',init)
+        self.assertIn("if(!old_history_cleared || !save_config())",init)
+        self.assertIn("indoor_binding_persisted=false;",init)
+        # A was compiled/persisted in an older firmware; reflash with B
+        # without a saved MAC must discard unowned legacy history before
+        # first persisting B. Never restore or checkpoint through a purge
+        # or config-write failure.
+        self.assertLess(init.index('hp.remove("hourly_v1")'),
+                        init.index("!save_config()"))
+        self.assertLess(init.index("if(origin_verified) {"),
+                        init.index("history.restore(stored);"))
+        self.assertIn("indoor_binding_persisted=origin_verified || !indoor_binding.bound()",init)
+
 if __name__=="__main__":
     unittest.main()
