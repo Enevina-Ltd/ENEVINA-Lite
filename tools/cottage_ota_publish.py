@@ -6,6 +6,9 @@ from cryptography.hazmat.primitives import hashes,serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 MAGIC="ENEVINA_C24_OTA_V1"
 MODEL="esp32s3-n16r8"
+SIGNED_PULL_MARKER=b"ENEVINA_C24_SIGNED_PULL_OTA_CAPABLE_V1"
+def is_signed_pull_capable_image(data):
+    return data.count(SIGNED_PULL_MARKER)==1
 def canonical(version,size,digest):
     return (f"{MAGIC}\nmodel={MODEL}\nversion={version}\nsize={size}\nsha256={digest}\n").encode("ascii")
 def previous_version(path):
@@ -30,6 +33,8 @@ def main():
     if a.version<1 or a.version>2147483647:p.error("invalid version")
     data=a.firmware.read_bytes()
     if not 1024<=len(data)<=0x640000 or data[0]!=0xE9:p.error("invalid ESP32 image or partition size")
+    if not is_signed_pull_capable_image(data):
+        p.error("OTA release image lacks verified signed-pull capability marker")
     folder=a.root/"releases"
     folder.mkdir(mode=0o700,parents=True,exist_ok=True)
     if a.version<=previous_version(folder/"manifest.txt"):p.error("non-increasing version")
