@@ -95,7 +95,7 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-const state={status:null,prices:null,plan:null,history:null,mode:0};
+const state={status:null,prices:null,plan:null,history:null,mode:0,settingsDirty:false};
 const fmt=(v,d=1)=>Number.isFinite(v)?v.toLocaleString('fi-FI',{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
 const text=(id,value)=>{const e=$(id);if(e)e.textContent=value==null?'—':String(value);};
 const time=sec=>Number.isFinite(sec)&&sec>1700000000?new Date(sec*1000).toLocaleString('fi-FI',{timeZone:'Europe/Helsinki',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'Ei aikaa';
@@ -146,11 +146,14 @@ function showStatus(){
   text('device-ram',number(s.free_internal_heap)!==null?fmt(s.free_internal_heap/1024,0)+' KiB':'—');
   text('device-psram',number(s.free_psram)!==null?fmt(s.free_psram/1048576,2)+' MiB':'—');
   text('device-ota',s.ota_upload_enabled===true?'Kyllä':'Ei');
-  document.querySelectorAll('[data-mode]').forEach(b=>{b.classList.toggle('selected',Number(b.dataset.mode)===mode);b.disabled=false;});
-  if(document.activeElement!==$('setting-hold'))$('setting-hold').value=number(a.hold_target_c)===null?'':a.hold_target_c;
-  if(document.activeElement!==$('setting-delta'))$('setting-delta').value=number(a.drying_delta_c)===null?'':a.drying_delta_c;
+  if(!state.settingsDirty) {
+    state.mode=mode;
+    document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('selected',Number(b.dataset.mode)===mode));
+    $('setting-hold').value=number(a.hold_target_c)===null?'':a.hold_target_c;
+    $('setting-delta').value=number(a.drying_delta_c)===null?'':a.drying_delta_c;
+  }
+  document.querySelectorAll('[data-mode]').forEach(b=>b.disabled=false);
   $('save-mode').disabled=!a.config_token;
-  state.mode=mode;
 }
 function showPrices(){
   const p=state.prices||{},rows=p.valid===true&&Array.isArray(p.slots)?p.slots.filter(x=>Number.isFinite(x.spot)): [];
@@ -189,11 +192,28 @@ function showHistory(){
   const note=document.createElement('p');note.className='tiny muted';note.textContent='Näkyvät lämpötilat: '+fmt(min)+'–'+fmt(max)+' °C · '+vals.length+' tuntipistettä';host.append(note);
 }
 async function fetchJSON(path){const r=await fetch(path,{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);return r.json();}
-async function reloadStatus(){try{state.status=await fetchJSON('/api/status');showStatus();}catch(e){state.status=null;state.plan={valid:false};text('connection','Yhteys poikki');$('connection-dot').className='dot bad';text('home-temp','Ei yhteyttä');text('home-sensor','Mittaukset eivät päivity');text('home-rh','—');text('home-price','—');text('home-total','—');text('home-watts','—');text('price-now','—');text('home-air-status','Yhteys poikki');showPlan();$('save-mode').disabled=true;document.querySelectorAll('[data-mode]').forEach(b=>b.disabled=true);}}
+async function reloadStatus(){try{state.status=await fetchJSON('/api/status');showStatus();}catch(e){
+  // Never leave the last good readings looking live across a status failure.
+  state.status=null;state.plan={valid:false};
+  text('connection','Yhteys poikki');$('connection-dot').className='dot bad';
+  const stale={
+    'clock':'Ei yhteyttä','home-temp':'Ei yhteyttä','home-mode':'Tila ei tiedossa',
+    'home-sensor':'Mittaukset eivät päivity','home-rh':'—','home-dew':'—',
+    'home-air-status':'Yhteys poikki','home-outside':'—','home-watts':'—',
+    'home-price':'—','home-total':'—','price-now':'—','price-updated':'Ei yhteyttä',
+    'device-version':'—','device-wifi':'Ei yhteyttä','device-cn105':'Ei yhteyttä',
+    'device-shelly':'Ei yhteyttä','device-ram':'—','device-psram':'—',
+    'device-ota':'Ei yhteyttä'
+  };
+  Object.entries(stale).forEach(([id,value])=>text(id,value));
+  showPlan();$('save-mode').disabled=true;
+  document.querySelectorAll('[data-mode]').forEach(b=>b.disabled=true);
+}}
 async function reloadPrices(){try{state.prices=await fetchJSON('/api/prices');showPrices();}catch(e){state.prices={valid:false,slots:[]};showPrices();}}
 async function reloadPlan(){try{state.plan=await fetchJSON('/api/plan');showPlan();}catch(e){state.plan={valid:false};showPlan();}}
 async function reloadHistory(){try{state.history=await fetchJSON('/api/air/history');showHistory();}catch(e){state.history={hours:[]};showHistory();}}
-document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>{state.mode=Number(b.dataset.mode);document.querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('selected',x===b));}));
+document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>{state.settingsDirty=true;state.mode=Number(b.dataset.mode);document.querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('selected',x===b));}));
+['setting-hold','setting-delta'].forEach(id=>$(id).addEventListener('input',()=>{state.settingsDirty=true;}));
 $('save-mode').addEventListener('click',async()=>{
   const a=state.status&&state.status.air,btn=$('save-mode');if(!a||!a.config_token){text('feedback','Tiedot puuttuvat.');return;}
   const hold=Number($('setting-hold').value),delta=Number($('setting-delta').value);
@@ -202,7 +222,8 @@ $('save-mode').addEventListener('click',async()=>{
   try{const body=new URLSearchParams({token:a.config_token,mode:String(state.mode),hold:String(hold),delta:String(delta)});
     const r=await fetch('/api/air/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
     if(!r.ok)throw Error('HTTP '+r.status);
-    text('feedback','Asetukset tallennettu. Lämpöpumpulle ei lähetetty käskyä.');await reloadStatus();
+    text('feedback','Asetukset tallennettu. Lämpöpumpulle ei lähetetty käskyä.');
+    state.settingsDirty=false;await reloadStatus();
   }catch(e){text('feedback','Tallennus ei onnistunut.');}finally{btn.disabled=false;}
 });
 // One request at a time on first load: avoid opening four TCP connections to ESP32.
