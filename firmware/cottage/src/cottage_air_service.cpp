@@ -389,6 +389,13 @@ bool c23_authorize_local_setting(const char* submitted_token) {
 // Same mode target and outside-FMI/Ruuvi inputs as /api/status.
 CottageModePlan c23_current_mode_plan() {
     if(!guard)return CottageModePlan{};
+    const auto weather=enevina_firmware::weather_status();
+    const int64_t now_utc=utc_valid_now();
+    const bool forecast_ok=now_utc && weather.available &&
+      weather.fetched_utc>0 && now_utc>=weather.fetched_utc &&
+      now_utc-weather.fetched_utc<=6*3600 &&
+      weather.next_utc>=now_utc && weather.next_utc<=now_utc+3600 &&
+      std::isfinite(weather.next_temperature_c);
     lock();
     const uint64_t ms=uptime_ms();
     const bool fresh=has_indoor&&indoor_binding.valid(ms);
