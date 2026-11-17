@@ -232,6 +232,13 @@ static bool parse_cn105_proof_event(const cJSON* root,int64_t now) {
     if(proof==enevina::PumpReadProofStatus::NewRead) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
         const bool continuous=valid_cn105(pump,now);
+        // A newly verified pump mode or a break in confirmed dwell invalidates
+        // the optimizer's snapshot before the fresh sample is published.
+        if(verified.mode!=pump.mode || !continuous) {
+            ++observed_mode_generation;
+            plan_count=0;
+            last_plan.status=MpcStatus::InvalidInput;
+        }
         observed_mode_duration.observe(verified.mode,
             static_cast<uint64_t>(esp_timer_get_time()/1000),continuous);
         pump=verified;
@@ -242,6 +249,9 @@ static bool parse_cn105_proof_event(const cJSON* root,int64_t now) {
         pump.received=false;
         pump.evidence.source_time_verified=false;
         observed_mode_duration.invalidate();
+        ++observed_mode_generation;
+        plan_count=0;
+        last_plan.status=MpcStatus::InvalidInput;
         xSemaphoreGive(lock_data);
     }
     return true;
@@ -284,6 +294,9 @@ static void parse_sse_state(const char* raw) {
             pump.received=false;
             pump.evidence.source_time_verified=false;
             observed_mode_duration.invalidate();
+            ++observed_mode_generation;
+            plan_count=0;
+            last_plan.status=MpcStatus::InvalidInput;
             xSemaphoreGive(lock_data);
         }
         cJSON_Delete(root);
@@ -402,6 +415,9 @@ static void sse_worker(void*) {
                 pump.received=false;
                 pump.evidence.source_time_verified=false;
                 observed_mode_duration.invalidate();
+                ++observed_mode_generation;
+                plan_count=0;
+                last_plan.status=MpcStatus::InvalidInput;
                 xSemaphoreGive(lock_data);
                 WiFiClient* stream=request.getStreamPtr();
                 HttpChunkDecoder decoder;
