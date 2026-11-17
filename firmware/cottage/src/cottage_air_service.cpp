@@ -274,16 +274,18 @@ void c23_ble_worker(void*) {
     scan->setActiveScan(false);
     ble_initialized.store(true);
     for(;;) {
-        // BLE must not overlap the Nord Pool/FMI TLS handshake; the old
-        // esp_get_free_heap_size() check included PSRAM and was insufficient.
-        enevina_firmware::NetworkBudgetLease lease(0,96*1024,24*1024);
-        if(lease.held()) {
-            scan->start(4,false);
-            enevina_firmware::network_budget_sample();
-            scan->clearResults();
-        } else {
-            low_heap_skips++;
-        }
+        {
+            // The network-memory lock is needed only during BLE scanning.
+            // Release it BEFORE the 12-second sleep so TLS and OTA can run.
+            enevina_firmware::NetworkBudgetLease lease(0,96*1024,24*1024);
+            if(lease.held()) {
+                scan->start(4,false);
+                enevina_firmware::network_budget_sample();
+                scan->clearResults();
+            } else {
+                low_heap_skips++;
+            }
+        } // lease destructor releases network budget before waiting
         vTaskDelay(pdMS_TO_TICKS(12000));
     }
 }
