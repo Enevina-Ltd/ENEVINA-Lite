@@ -46,8 +46,9 @@ int main(){
     // Power cut after writing intent, before boot partition activation.
     assert(decide(tx,state(true,ImageState::Valid))==
            Recovery::DiscardNeverActivated);
-    assert(decide(tx,state(true,ImageState::Aborted))==
-           Recovery::DiscardNeverActivated); // stale otadata, no false bad
+    assert(decide(candidate(Phase::Prepared,ImageState::Aborted),
+                  state(true,ImageState::Aborted))==
+           Recovery::DiscardNeverActivated); // unchanged stale otadata
     // Activation committed but app never booted.
     assert(decide(tx,state(true,ImageState::New,true))==
            Recovery::KeepForActivation);
