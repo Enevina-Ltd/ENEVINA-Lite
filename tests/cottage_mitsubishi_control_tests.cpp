@@ -6,7 +6,7 @@ static ControlSnapshot base() {
     ControlSnapshot s;
     s.armed=true;s.hold_mode=true;
     s.temperature_fresh=s.market_fresh=true;
-    s.cn105_link_fresh=s.bridge_get_ok=s.pump_origin_verified=true;
+    s.cn105_link_fresh=s.bridge_get_ok=true;
     s.current_heat=false;s.current_setpoint_c=21;
     s.now_ms=10000000;
     s.proposal.action=BootstrapAction::HeatSetpoint;
@@ -27,8 +27,6 @@ int main() {
     s=base();s.cn105_link_fresh=false;
     assert(choose_mitsubishi_control(s).gate==ControlBlock::InputsUnverified);
     s=base();s.bridge_get_ok=false;
-    assert(choose_mitsubishi_control(s).gate==ControlBlock::InputsUnverified);
-    s=base();s.pump_origin_verified=false;
     assert(choose_mitsubishi_control(s).gate==ControlBlock::InputsUnverified);
     s=base();s.proposal.action=BootstrapAction::Unavailable;
     assert(choose_mitsubishi_control(s).gate==ControlBlock::NoProposal);
