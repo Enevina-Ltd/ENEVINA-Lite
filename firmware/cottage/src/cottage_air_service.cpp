@@ -15,6 +15,7 @@
 #include "cottage_config.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
+#include "cottage/memory_policy.hpp"
 #include <atomic>
 #include "cottage/ruuvi_v5.hpp"
 #include "cottage/air_humidity.hpp"
@@ -339,7 +340,8 @@ void c23_ble_worker(void*) {
         {
             // The network-memory lock is needed only during BLE scanning.
             // Release it BEFORE the 12-second sleep so TLS and OTA can run.
-            enevina_firmware::NetworkBudgetLease lease(0,96*1024,24*1024);
+            enevina_firmware::NetworkBudgetLease lease(0,
+                ble_scan_min_internal_bytes,ble_scan_min_contiguous_bytes);
             if(lease.held()) {
                 scan->start(4,false);
                 enevina_firmware::network_budget_sample();
