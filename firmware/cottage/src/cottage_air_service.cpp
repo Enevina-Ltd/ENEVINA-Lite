@@ -36,6 +36,9 @@ bool history_changed=false;
 // Fail closed: a newly bound sensor's hourly history is not persisted
 // until its MAC has been successfully saved to configuration NVS.
 bool indoor_binding_persisted=true;
+// Protected by guard. A failed boot-time purge must block ALL later config
+// writes until the unowned legacy history is really removed.
+bool history_origin_clean=true;
 uint32_t samples_ok=0,samples_rejected=0,samples_duplicate=0,stores=0;
 uint32_t low_heap_skips=0;
 char csrf_token[24]={};
@@ -146,6 +149,25 @@ bool save_config() {
     CottageModeConfig cfg{};
     String indoor_id,outdoor_id;
     lock();
+    if(!history_origin_clean) {
+        // A failed boot purge must not be bypassed by /air/config,
+        // /air/thresholds or a same-MAC /air/bind. Retry the purge
+        // under the same mutex used by the hourly checkpoint.
+        Preferences hp;
+        bool purged=false;
+        if(hp.begin("cottage_hist",false)) {
+            purged=!hp.isKey("hourly_v1")||hp.remove("hourly_v1");
+            hp.end();
+        }
+        if(!purged) {
+            indoor_binding_persisted=false;
+            unlock();
+            return false;
+        }
+        history=AirHistory{};
+        history_changed=false;
+        history_origin_clean=true;
+    }
     cfg=config;
     const AdvisoryLimits limits=warning_limits;
     indoor_id=indoor_binding.bound()?mac_string(indoor_binding.mac()):String("none");
@@ -178,7 +200,8 @@ void checkpoint() {
     // Bind and checkpoint must serialize the full NVS write with the
     // same guard. Taking a snapshot and unlocking before putBytes()
     // allows an old sensor's checkpoint to race behind a MAC change.
-    if(!indoor_binding_persisted || !history_changed ||
+    if(!history_origin_clean || !indoor_binding_persisted ||
+       !history_changed ||
        !history.count() ||
        history.newest(0).hour_utc>=0x80000000u) {
         unlock();return;
@@ -289,6 +312,7 @@ void c23_initialize() {
         }
         hp.end();
     }
+    history_origin_clean=origin_verified || old_history_cleared;
     if(!origin_verified && indoor_binding.bound()) {
         // Preserve persistent history for compiler-only provisioning after
         // the old untagged series is safely cleared. No purge or NVS config
@@ -570,6 +594,7 @@ void c23_register_routes(WebServer& web) {
                     web.send(500,"text/plain","History NVS purge failed");
                     return;
                 }
+                history_origin_clean=true;
                 // Blocking persistence immediately prevents BLE history
                 // checkpoint even if save_config later fails or is delayed.
                 indoor_binding_persisted=false;
