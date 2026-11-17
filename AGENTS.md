@@ -1,5 +1,27 @@
 # AGENTS.md — Enevina Lite
 
+## PAKOLLINEN GITHUB-PR-KATSELMOINTI (17.11.2026 alkaen)
+
+**Järjestys on aina oma katselmointi → omat korjaukset ja testit → Codex-katselmointi → Codex-havaintojen korjaukset ja tarvittaessa uusi Codex-katselmointi → lopullinen hyväksyntä → merge.** Älä muuta tätä järjestystä oikoteillä.
+
+1. **Oma katselmointi ensin.** Lue PR:n todellinen head/base ja koko diff, riippuvuudet, testit sekä aiemmat katselmoinnit. Kirjaa konkreettiset P0/P1-havainnot GitHub-reviewksi ennen Codex-kutsua. Tarkista ainakin mittaustiedon alkuperä ja tuoreus, reset- ja muistirajat, OTA/A-B-osioiden sopivuus sekä ohjausrajapinnan riskit silloin, kun muutokset koskevat niitä. Älä päättele fyysistä PASSia host-/käännöstestistä.
+2. **Korjaa itse löydetyt virheet** pienimmällä perustellulla muutoksella ja lisää negatiivinen regressiotesti. Aja soveltuvat Debug/Release, Python ja firmwarebuildit. Kirjaa SHA:t, testitulokset ja keskeneräiset fyysiset kokeet. Älä lisää turhia watchdogeja tai poista ohjauksen kehitystä.
+3. **Pyydä Codex vasta oman katselmoinnin ja korjausten jälkeen** PR:n GitHub-keskustelussa täsmällisesti viestillä `@codex review`. Tämä on pyyntö, ei hyväksyntä. Varmista GitHubista, että Codex todella julkaisi katselmointinsa. Pelkkä @-maininta, emoji, kommentti tai CI-build ei korvaa katselmointia.
+4. **Korjaa Codexin perustellut P0/P1-havainnot**, lisää regressiot, tarkista korjaus itse ja aja testit uudelleen. Jos korjaukset muuttavat PR:n head-SHA:ta, pyydä Codexia tarkistamaan uusin versio uudestaan. Älä ohita havaintoa ilman dokumentoitua teknistä perustelua.
+5. **Merge on kielletty**, kun uusimmasta muutossarjasta puuttuu Codex-katselmointi, olennaisia havaintoja on auki, soveltuvat regressiot ovat punaisina, todellista laitehyväksyntää väitetään ilman näyttöä tai käyttäjä ei ole hyväksynyt käyttöönottoa. Pidä PR luonnoksena tai merkitse BLOCKED. Älä automergeä pinottuja PR:iä.
+6. **Oma GitHub-review ja Codex ovat erillisiä.** PR:n tekijä ei voi GitHubissa hyväksyä omaa PR:äänsä virallisena riippumattomana hyväksyntänä; oma COMMENT-review on auditointinäyttö. Lopullinen hyväksyminen tehdään GitHub-oikeuksien ja mahdollisen branch protection -säännöstön mukaisesti.
+
+**Huom:** `AGENTS.md` ohjaa agentteja mutta ei teknisesti estä GitHubin merge-painiketta. Kovaan pakotukseen vaaditaan repositoryn branch protection / ruleset ja tarvittavat required review-/status check -ehdot. Älä koskaan väitä näitä asetetuksi ilman GitHubista vahvistettua näyttöä.
+
+### Code Review Rules
+
+- **Lähdetuoreus:** SSE/HTTP-viestin vastaanotto tai syötteen kasvava laskuri ei yksin todista ajantasaista pumppumittausta. Lähteen todistettu aika ja vastaanottoaika verrataan oikeaan nykyhetkeen; replay, counter reset ja lähdekellon virheet eivät saa hyväksyä vanhaa arvoa.
+- **Laiteturvallisuus:** Fyysiset pumpun komennot vaativat laitekohtaisen hyväksytyn koesuunnitelman ja Supervisorin rajat; älä tulkitse pelkkää adapterin kyvykkyysbittiä kirjoitusluvaksi. Host/mock-testit eivät oikeuta fyysistä käyttöönottoa.
+- **Ei turhia vahtimekanismeja:** Korjaa resetin tai jumittumisen juurisyy; älä ehdota uusia watchdogeja, automaattisia restart-silmukoita tai ohjaustoimintojen poistamista ilman todistettua tarvetta.
+
+---
+
+
 ## 0. KEHITYSPÄÄTÖS: ENEINA LITE ENSIN TOIMIVAKSI (16.11.2026)
 
 **Käyttäjän uusin nimenomainen päätös on etusijalla:** Enevina Lite kehitetään ensin oikeasti toimivaksi yhden lämpöpumpun paikalliseksi energianhallinta- ja optimointituotteeksi. Älä lukitse V1:tä monitoring-only-tilaan, poista ohjauspolkuja, kiellä optimoinnin kehitystä tai siirrä niitä automaattisesti V2:een. Kaupallistamisen ominaisuusrajat päätetään myöhemmin mitatun toimintakyvyn perusteella.
