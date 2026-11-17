@@ -11,7 +11,11 @@ int main() {
     BootstrapInput in{};
     assert(bootstrap_price_decision(in).reason==BootstrapReason::MissingTemperature);
     in.indoor_fresh=true;in.indoor_c=15.0;
-    assert(bootstrap_price_decision(in).reason==BootstrapReason::MissingPrices);
+    auto no_prices=bootstrap_price_decision(in);
+    assert(no_prices.action==BootstrapAction::HeatSetpoint);
+    assert(no_prices.reason==BootstrapReason::ThermostatWithoutPrices);
+    assert(!no_prices.price_data_valid);
+    assert(near(no_prices.heat_setpoint_c,16.5)); // default target is 16C
     in.next_total_prices=cheap;in.price_count=8;
     in.prices_contiguous_and_fresh=true;in.desired_room_c=18.0;
     auto d=bootstrap_price_decision(in);
@@ -36,15 +40,9 @@ int main() {
     assert(d.reason==BootstrapReason::CheapWindow);
     assert(near(d.heat_setpoint_c,19.0));
     in.next_total_prices=expensive;
-    in.confirmed_minutes_in_mode=10;
     assert(bootstrap_price_decision(in).reason==BootstrapReason::ExpensiveWindow);
-    in.actuator_dwell_verified=true;
-    assert(bootstrap_price_decision(in).action==BootstrapAction::Hold);
-    in.confirmed_minutes_in_mode=60;in.currently_heating=true;in.indoor_c=18.0;
-    assert(bootstrap_price_decision(in).action==BootstrapAction::Hold);
-    in.currently_heating=false;
+    // Manufacturer-unverified minimum mode/command waiting periods removed.
     assert(bootstrap_price_decision(in).action==BootstrapAction::Off);
-    in.actuator_dwell_verified=false;
     in.next_total_prices=cheap;
     in.desired_room_c=24.0;in.indoor_c=15.0;
     d=bootstrap_price_decision(in);
@@ -65,9 +63,19 @@ int main() {
     assert(d.action==BootstrapAction::Off);
     assert(std::strcmp(bootstrap_reason_name(d.reason),"ABOVE_ROOM_TARGET")==0);
     in.price_count=7;
-    assert(bootstrap_price_decision(in).reason==BootstrapReason::MissingPrices);
+    auto fallback=bootstrap_price_decision(in);
+    assert(fallback.action==BootstrapAction::Off);
+    assert(fallback.reason==BootstrapReason::ThermostatWithoutPrices);
+    assert(!fallback.price_data_valid);
     in.price_count=8;in.prices_contiguous_and_fresh=false;
-    assert(bootstrap_price_decision(in).reason==BootstrapReason::MissingPrices);
+    fallback=bootstrap_price_decision(in);
+    assert(fallback.action==BootstrapAction::Off);
+    assert(fallback.reason==BootstrapReason::ThermostatWithoutPrices);
+    // The room deadband makes no unrequested command when prices are missing.
+    in.indoor_c=12.1;in.desired_room_c=12.0;
+    fallback=bootstrap_price_decision(in);
+    assert(fallback.action==BootstrapAction::Hold);
+    assert(fallback.reason==BootstrapReason::ThermostatWithoutPrices);
     in.prices_contiguous_and_fresh=true;
     in.indoor_c=std::numeric_limits<double>::quiet_NaN();
     assert(bootstrap_price_decision(in).reason==BootstrapReason::MissingTemperature);
@@ -77,8 +85,8 @@ int main() {
     in.desired_room_c=18.0;
     const double corrupted[]={0.8,0.1,0.2,0.3,0.4,0.5,std::numeric_limits<double>::quiet_NaN(),0.7};
     in.next_total_prices=corrupted;
-    assert(bootstrap_price_decision(in).reason==BootstrapReason::MissingPrices);
+    assert(bootstrap_price_decision(in).reason==BootstrapReason::ThermostatWithoutPrices);
     in.next_total_prices=cheap;
     in.price_count=97;
-    assert(bootstrap_price_decision(in).reason==BootstrapReason::MissingPrices);
+    assert(bootstrap_price_decision(in).reason==BootstrapReason::ThermostatWithoutPrices);
 }
