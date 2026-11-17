@@ -22,9 +22,9 @@
 ---
 
 
-## 0. KEHITYSPÄÄTÖS: ENEVINA LITE ENSIN TOIMIVAKSI (16.11.2026)
+## 0. KEHITYSPÄÄTÖS: ENEVINA LITE MONIMERKKISENÄ OHJAIMENA ENSIN TOIMIVAKSI (16.11.2026)
 
-**Käyttäjän uusin nimenomainen päätös on etusijalla:** Enevina Lite kehitetään ensin oikeasti toimivaksi yhden lämpöpumpun paikalliseksi energianhallinta- ja optimointituotteeksi. Älä lukitse V1:tä monitoring-only-tilaan, poista ohjauspolkuja, kiellä optimoinnin kehitystä tai siirrä niitä automaattisesti V2:een. Kaupallistamisen ominaisuusrajat päätetään myöhemmin mitatun toimintakyvyn perusteella.
+**Käyttäjän uusin nimenomainen päätös on etusijalla:** Enevina Lite kehitetään monimerkkiseksi, yhden lämpöpumpun paikalliseksi energianhallinta- ja optimointituotteeksi. Mitsubishi Electric on ensimmäinen pilotti, ei yleisen arkkitehtuurin tai käyttöliittymän rajoitus. Älä lukitse V1:tä monitoring-only-tilaan, poista ohjauspolkuja, kiellä optimoinnin kehitystä tai siirrä niitä automaattisesti V2:een. Kaupallistamisen ominaisuusrajat päätetään myöhemmin mitatun toimintakyvyn perusteella.
 
 **Ei uusia turhia watchdogeja, watchdog-kerroksia, health-watcher-silmukoita, reset-ajastimia eikä automaattisia käynnistysketjuja.** Alkuperäinen Enevina Core kärsi ylenpalttisesta valvonta- ja resetlogiikasta. Selvitä juurisyy, mittaa ongelma ja korjaa koodi. Älä lisää uutta restart-mekanismia vain varmuuden vuoksi. Säilytä jo käytössä olevat perustellut ESP-IDF/Arduino-suojat; niiden korvaaminen tai muuttaminen vaatii erillisen todistettuun vikaan perustuvan päätöksen.
 
@@ -50,13 +50,15 @@
 
 ## 1. Tuotteen tehtävä ja ehdottomat rajaukset
 
-**Enevina Lite on yhden lämpöpumpun paikallinen energianhallinta- ja optimointiohjain, josta kehitetään Enevina Oy:n ensimmäinen kaupallinen tuote. Kehitystä ei lukita monitoring-onlyksi.**
+**Enevina Lite on monimerkkinen, yhden lämpöpumpun paikallinen energianhallinta- ja optimointiohjain, josta kehitetään Enevina Oy:n ensimmäinen kaupallinen tuote. Kehitystä ei lukita monitoring-onlyksi.**
+
+**Adapterisopimus:** Yhteinen fysiikka, optimointi, hinnat, sää, turvaportti, laatu-/tuoreustiedot, käyttöliittymä ja OTA eivät saa riippua yhden valmistajan protokollasta. Mallikohtaiset kyvykkyydet, rajat, kuittaukset, kompressori-/sulatustiedot ja varatila kuuluvat adapteriin. Mallit, joissa lähdettä ei voida todentaa, eivät saa väittää vastaanottoaikaa alkuperäiseksi pumppumittaukseksi. Adapterit voivat hyödyntää paikallista langatonta yhteyttä tai erillistä langatonta yhdyskäytävää; tekninen ja turvallinen yhteensopivuus todistetaan mallikohtaisesti. Potentiaalisia sovittimia ovat Mitsubishi CN105, Panasonic/HeishaMon ja NIBE Modbus, eikä luettelo ole hyväksyntä. Älä lisää monipumppuorkestrointia tämän päätöksen perusteella.
 
 - **Tasan yksi lämpöpumppu per Lite-laite.** Älä lisää monen pumpun orkestrointia, keskitettyä ohjausta, energia-akkujen, aurinkosähkön, EV-latauksen tai koko talon EMS:n hallintaa.
 - **Ei tekoälyä.** Älä lisää koneoppimista, neuroverkkoja, LLM:iä, AI-palveluita, mallien koulutusta tai AI-riippuvuuksia. Deterministinen rakennus- ja lämpöpumppufysiikan laskenta sekä matemaattinen optimointi ovat sallittuja.
 - **Ei Linuxia, Raspberry Pi -vaatimusta, Dockeria, tietokantaa tai Home Assistant -riippuvuutta laitteeseen.** Myös internetin katkettua laitteen on kyettävä toimimaan turvallisesti paikallisesti.
 - Alustava laitevalinta: **ESP32-S3 N16R8** (16 Mt Flash, 8 Mt PSRAM), **2,4 GHz Wi-Fi ensimmäisessä Mitsubishi-pilotissa**, Ethernet muissa laiteversioissa tarvittaessa. C++ ja ESP-IDF; laitekokoonpano on varmistettava.
-- **Ensimmäinen todellinen pilotti: Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA, ilma–ilmapumppu**, ks. [pihamökin Mitsubishi-pilotti](docs/cottage-mitsubishi-fd25va.md). Panasonic/HeishaMon jää erilliseksi myöhemmäksi adapteriksi. CN105 on tarkistettava todellisesta pumpusta ennen komentoja.
+- **Ensimmäinen todellinen pilotti: Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA, ilma–ilmapumppu**, ks. [pihamökin Mitsubishi-pilotti](docs/cottage-mitsubishi-fd25va.md). Panasonic/HeishaMon, NIBE/Modbus ja muut dokumentoidut paikalliset protokollat ovat erillisiä mallikohtaisesti todennettavia adapteriperheitä; älä oleta niiden valmiutta. CN105 on tarkistettava todellisesta pumpusta ennen komentoja.
 - Erottele Lite Enevina Coresta, Enevina Adaptive Intelligencestä, Finance-koneen tehtävistä sekä olemassa olevista tuotantojärjestelmistä. Älä muuta niiden repositoryja tai tuotantokonfiguraatioita.
 
 Jos ehdotus rikkoo näitä rajoja, älä toteuta sitä. Kerro ristiriita ja ehdota rajaukseen sopiva ratkaisu.
