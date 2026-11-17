@@ -386,6 +386,22 @@ bool c23_authorize_local_setting(const char* submitted_token) {
     return guard && submitted_token && strlen(submitted_token)==strlen(csrf_token) &&
            strcmp(submitted_token,csrf_token)==0;
 }
+// Same mode target and outside-FMI/Ruuvi inputs as /api/status.
+CottageModePlan c23_current_mode_plan() {
+    if(!guard)return CottageModePlan{};
+    lock();
+    const uint64_t ms=uptime_ms();
+    const bool fresh=has_indoor&&indoor_binding.valid(ms);
+    const bool outside_fresh=has_outdoor&&outdoor_binding.valid(ms);
+    const bool outside_ok=outside_fresh||forecast_ok;
+    const double outside_c=outside_fresh?outdoor_air.temperature_c:
+                            weather.next_temperature_c;
+    const CottageModePlan plan=evaluate_cottage_mode(
+        config,indoor_air,fresh,outside_ok,outside_c,
+        alarm_engine.high70_duration_ms(ms));
+    unlock();
+    return plan;
+}
 uint32_t c23_config_generation() {
     if(!guard)return 0;
     lock();const uint32_t g=config_generation;unlock();return g;
