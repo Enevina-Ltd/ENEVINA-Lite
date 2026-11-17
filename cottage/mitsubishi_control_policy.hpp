@@ -20,7 +20,6 @@ struct ControlSnapshot {
     bool market_fresh=false;
     bool cn105_link_fresh=false;
     bool bridge_get_ok=false; // fresh GET from device, not pump-UART proof
-    bool pump_origin_verified=false; // successful fresh 0x02/03/06 UART source proof
     bool current_heat=false;
     double current_setpoint_c=0;
     uint64_t now_ms=0;
@@ -40,7 +39,7 @@ inline ControlProposal choose_mitsubishi_control(const ControlSnapshot& s) {
     if(!s.armed)return out;
     if(!s.hold_mode) {out.gate=ControlBlock::NotInHoldMode;return out;}
     if(!s.temperature_fresh||!s.market_fresh||!s.cn105_link_fresh||
-       !s.bridge_get_ok||!s.pump_origin_verified) {
+       !s.bridge_get_ok) {
         out.gate=ControlBlock::InputsUnverified;return out;
     }
     if(s.proposal.action==BootstrapAction::Unavailable ||
