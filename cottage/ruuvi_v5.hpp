@@ -41,4 +41,14 @@ private:
     uint16_t restart_candidate_sequence_=0;
     bool bound_=false,has_sample_=false,restart_candidate_=false;
 };
+// Legacy NVS hourly_v1 has no sensor ID in the payload: it may be restored
+// only when the configured sensor identity was already durably stored and
+// matches the binding selected for THIS boot. Compile-time fallback alone
+// is not proof of the old checkpoint's origin.
+inline bool verified_history_origin(bool persisted_mac_valid,
+                                    const std::array<uint8_t,6>& persisted_mac,
+                                    const RuuviBinding& active) {
+    return persisted_mac_valid && active.bound() &&
+           persisted_mac==active.mac();
+}
 } // namespace enevina::cottage
