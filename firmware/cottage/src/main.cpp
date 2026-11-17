@@ -527,8 +527,7 @@ static enevina::Tariff tariff(bool night=false) {
 // exists. A 2-hour window must contain 8 contiguous verified 15-minute
 // TOTAL marginal-cost slots. This function never emits an actuator command.
 static BootstrapDecision bootstrap_preview(int64_t now,
-                                            const TemperatureSample& t,
-                                            const CN105Telemetry& confirmed) {
+                                            const TemperatureSample& t) {
     BootstrapInput input{};
     input.indoor_fresh=valid_temperature(t,now);
     input.indoor_c=t.indoor_c;
@@ -548,10 +547,6 @@ static BootstrapDecision bootstrap_preview(int64_t now,
         return {}; // Cannot make up a drying temperature without outside data.
     }
     input.desired_room_c=target_plan.target_c;
-    input.currently_heating=confirmed.mode==ObservedPumpMode::Heat &&
-                            valid_cn105(confirmed,now);
-    // A replayed SSE snapshot must never certify HEAT/OFF dwell.
-    input.confirmed_minutes_in_mode=0;
     const auto market=enevina_firmware::market_status();
     constexpr size_t N=8;
     std::array<enevina_firmware::PricePoint,N> points{};
@@ -649,10 +644,6 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
        !wifi_ok.load() || !clock_ok())return false;
     const int64_t now=time(nullptr);
     const auto current_temp=c23_temperature_sample();
-    CN105Telemetry observed{};
-    xSemaphoreTake(lock_data,portMAX_DELAY);
-    observed=sse_observed_pump;
-    xSemaphoreGive(lock_data);
     // A direct CN105 HTTP GET is the live device check. An unrelated SSE
     // heartbeat or a proprietary "Verified Snapshot" is not required.
     const CottageMode current_mode=c23_mode_config().mode;
@@ -660,7 +651,7 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
        !valid_temperature(current_temp,now))return false;
     bool bridge_heat=false;double bridge_setpoint=0;
     if(!cn105_bridge_get(bridge_heat,bridge_setpoint))return false;
-    const auto latest=bootstrap_preview(now,current_temp,observed);
+    const auto latest=bootstrap_preview(now,current_temp);
     if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
        (latest.action!=BootstrapAction::HeatSetpoint ||
         std::fabs(latest.heat_setpoint_c-required_target)>0.001))return false;
@@ -694,13 +685,7 @@ static void cottage_control_tick() {
     const uint32_t config_generation=c23_config_generation();
     const auto sample=c23_temperature_sample();
     const int64_t now=time(nullptr);
-    CN105Telemetry pump_snapshot{};
-    int64_t link_utc=0;
-    xSemaphoreTake(lock_data,portMAX_DELAY);
-    pump_snapshot=pump;
-    link_utc=cn105_link_event_utc;
-    xSemaphoreGive(lock_data);
-    const auto proposal=bootstrap_preview(now,sample,pump_snapshot);
+    const auto proposal=bootstrap_preview(now,sample);
     // CN105 direct GET is authoritative enough for this local pilot;
     // optional SSE callbacks do not block physical control.
     if((mode.mode!=CottageMode::Cold &&
@@ -992,7 +977,7 @@ static void status_endpoint() {
     t.spot_eur_per_kwh=price.current_spot_eur_per_kwh;
     const bool valid_total=price.current_price_valid &&
         enevina::calculate_total_price(t,total);
-    const BootstrapDecision bootstrap=bootstrap_preview(now,te,cp);
+    const BootstrapDecision bootstrap=bootstrap_preview(now,te);
     cJSON* root=cJSON_CreateObject();
     cJSON_AddStringToObject(root,"mode",control_armed.load()?
         "CN105_AUTOMAATIO_KAYTOSSA":"VARJOTILA_EI_KOMENTOJA");
@@ -1035,7 +1020,9 @@ static void status_endpoint() {
         cJSON_AddNullToObject(root,"bootstrap_heat_setpoint_c");
         cJSON_AddNullToObject(root,"bootstrap_mitsubishi_command_preview");
     }
-    if(bootstrap.action!=BootstrapAction::Unavailable) {
+    cJSON_AddBoolToObject(root,"bootstrap_price_data_valid",
+                             bootstrap.price_data_valid);
+    if(bootstrap.price_data_valid) {
         cJSON_AddNumberToObject(root,"bootstrap_total_now",
                                 bootstrap.current_total_eur_per_kwh);
         cJSON_AddNumberToObject(root,"bootstrap_median_2h",
