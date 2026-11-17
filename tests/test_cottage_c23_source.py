@@ -52,9 +52,10 @@ class C23SourceTests(unittest.TestCase):
         self.assertIn('web.on("/api/air/bind",HTTP_POST',SERVICE)
         self.assertIn('web.on("/api/air/ack",HTTP_POST',SERVICE)
         self.assertIn("check_token(web)",SERVICE)
-        self.assertIn("air-panel", APP)
-        self.assertIn("ERILLINEN OHJAUSLUPA",APP)
-        self.assertIn("tila tai tavoite ei yksin lähetä Mitsubishi-komentoja",APP)
+        # Legacy diagnostics HTML was removed to free flash.
+        self.assertNotIn('static const char html[] PROGMEM',APP)
+        self.assertIn('web.on("/api/air/config",HTTP_POST',SERVICE)
+        self.assertIn('web.on("/api/air/ack",HTTP_POST',SERVICE)
 
     def test_alerts_and_no_wall_certification(self):
         self.assertIn("24ULL*3600000", (ROOT/"cottage/air_humidity.hpp").read_text())
@@ -62,7 +63,8 @@ class C23SourceTests(unittest.TestCase):
         self.assertIn("air_engine",SERVICE.lower().replace("alarm_engine","air_engine"))
         self.assertIn("possible_drying",SERVICE)
         self.assertIn("estimate_ventilation",SERVICE)
-        self.assertIn("Rakenteen kosteus- tai",APP)
+        self.assertIn("Ilman RH-arvot eivät yksin osoita rakenteiden kosteusturvallisuutta.",
+                      (ROOT/"firmware/cottage/include/cottage_premium_dashboard.hpp").read_text())
 
 
 if __name__ == "__main__":
