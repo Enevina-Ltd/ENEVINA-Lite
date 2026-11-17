@@ -377,6 +377,11 @@ TemperatureSample c23_temperature_sample() {
     unlock();
     return out;
 }
+CottageModeConfig c23_mode_config() {
+    if(!guard) return CottageModeConfig{};
+    lock();const auto snapshot=config;unlock();
+    return snapshot;
+}
 void c23_append_status(cJSON* root) {
     // Use an actual outdoor RuuviTag when bound; otherwise FMI is
     // explicitly only a forecast for a thermal offset, NEVER an RH source.
