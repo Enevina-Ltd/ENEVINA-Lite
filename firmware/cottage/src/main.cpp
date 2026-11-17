@@ -533,12 +533,21 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     input.indoor_fresh=valid_temperature(t,now);
     input.indoor_c=t.indoor_c;
     const CottageModeConfig mode=c23_mode_config();
-    // Distinct user-configured room targets: occupied living and
-    // maintenance are never overwritten by switching to the other mode.
-    // Cold/Drying retain their existing non-actuating preview baseline.
-    input.desired_room_c=mode.mode==CottageMode::Occupied?
-        mode.occupied_target_c:
-        mode.mode==CottageMode::Hold?mode.hold_target_c:16.0;
+    // Use the actual target from the same mode physics shown in /api/status.
+    // Drying is outside-temperature+delta (can be BELOW pump's 16C setting),
+    // so the controller uses HEAT 16C only when room temperature needs it.
+    const CottageModePlan target_plan=c23_current_mode_plan();
+    if(mode.mode==CottageMode::Cold) {
+        BootstrapDecision off{};
+        off.action=BootstrapAction::Off;
+        off.reason=BootstrapReason::NoHeatingRequested;
+        return off; // Explicit user-selected "Kylmillään".
+    }
+    if(!target_plan.has_target ||
+       !std::isfinite(target_plan.target_c)) {
+        return {}; // Cannot make up a drying temperature without outside data.
+    }
+    input.desired_room_c=target_plan.target_c;
     input.currently_heating=confirmed.mode==ObservedPumpMode::Heat &&
                             valid_cn105(confirmed,now);
     // A replayed SSE snapshot must never certify HEAT/OFF dwell.
@@ -637,21 +646,20 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     // Network-budget wait is a cancellation point. Never dispatch a command
     // prepared before a completed DISARM, mode or target configuration change.
     if(!control_armed.load() || c23_config_generation()!=config_generation ||
-       (c23_mode_config().mode!=CottageMode::Hold &&
-        c23_mode_config().mode!=CottageMode::Occupied) || !wifi_ok.load() ||
-       !clock_ok())return false;
+       !wifi_ok.load() || !clock_ok())return false;
     const int64_t now=time(nullptr);
     const auto current_temp=c23_temperature_sample();
     CN105Telemetry observed{};
-    int64_t current_link_utc=0;
     xSemaphoreTake(lock_data,portMAX_DELAY);
-    observed=sse_observed_pump;current_link_utc=cn105_link_event_utc;
+    observed=sse_observed_pump;
     xSemaphoreGive(lock_data);
-    // ESPHome GET returns the bridge's reported state. The optional
-    // Verified Snapshot UART proof is never a prerequisite for this pilot.
-    if(!valid_temperature(current_temp,now) ||
-       !sse_stream_active.load() || current_link_utc<=0 ||
-       now<current_link_utc || now-current_link_utc>180)return false;
+    // A direct CN105 HTTP GET is the live device check. An unrelated SSE
+    // heartbeat or a proprietary "Verified Snapshot" is not required.
+    const CottageMode current_mode=c23_mode_config().mode;
+    if(current_mode!=CottageMode::Cold &&
+       !valid_temperature(current_temp,now))return false;
+    bool bridge_heat=false;double bridge_setpoint=0;
+    if(!cn105_bridge_get(bridge_heat,bridge_setpoint))return false;
     const auto latest=bootstrap_preview(now,current_temp,observed);
     if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
        (latest.action!=BootstrapAction::HeatSetpoint ||
@@ -665,9 +673,7 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     if(!req.begin(client,url))return false;
     req.addHeader("Content-Type","application/x-www-form-urlencoded");
     // Last cancellation point after all potentially blocking preparation.
-    if(!control_armed.load() || c23_config_generation()!=config_generation ||
-       (c23_mode_config().mode!=CottageMode::Hold &&
-        c23_mode_config().mode!=CottageMode::Occupied)) {
+    if(!control_armed.load() || c23_config_generation()!=config_generation) {
         req.end();
         return false;
     }
@@ -695,26 +701,12 @@ static void cottage_control_tick() {
     link_utc=cn105_link_event_utc;
     xSemaphoreGive(lock_data);
     const auto proposal=bootstrap_preview(now,sample,pump_snapshot);
-    // The source-link heartbeat is necessary but not sufficient:
-    // direct bridge GET and subsequent state readback are required as well.
-    const bool link_fresh=sse_stream_active.load() &&
-        link_utc>0 && now>=link_utc && now-link_utc<=180;
-    if((mode.mode!=CottageMode::Hold && mode.mode!=CottageMode::Occupied)) {
-        control_gate.store(static_cast<int>(ControlBlock::NotInHeatingMode));
-        return;
-    }
-    if(!valid_temperature(sample,now) ||
-       proposal.action==BootstrapAction::Unavailable || !link_fresh) {
+    // CN105 direct GET is authoritative enough for this local pilot;
+    // optional SSE callbacks do not block physical control.
+    if((mode.mode!=CottageMode::Cold &&
+        !valid_temperature(sample,now)) ||
+       proposal.action==BootstrapAction::Unavailable) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
-        return;
-    }
-    // After a failed write/readback do not retry for 15 minutes.
-    static uint64_t last_failed_ms=0;
-    static bool failure_present=false;
-    const uint64_t now_ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
-    if(failure_present && (now_ms<last_failed_ms ||
-        now_ms-last_failed_ms<900000ULL)) {
-        control_gate.store(static_cast<int>(ControlBlock::RateLimited));
         return;
     }
     bool current_heat=false;
@@ -723,52 +715,28 @@ static void cottage_control_tick() {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
     }
-    static bool last_command_present=false;
-    static uint64_t last_command_ms=0;
-    static bool mode_change_present=false;
-    static uint64_t last_mode_change_ms=0;
-    static bool last_bridge_heat_known=false;
-    static bool last_bridge_heat=false;
-    static uint64_t last_bridge_get_ms=0;
-    // A new externally commanded mode or a prolonged loss of bridge
-    // observations resets the minimum mode-dwell window. It is not inferred
-    // from the optional Verified Snapshot event.
-    const bool bridge_gap=last_bridge_heat_known &&
-        (now_ms<last_bridge_get_ms ||
-         now_ms-last_bridge_get_ms>180000ULL);
-    if(!mode_change_present || bridge_gap ||
-       (last_bridge_heat_known && last_bridge_heat!=current_heat)) {
-        mode_change_present=true;
-        last_mode_change_ms=now_ms;
-    }
-    last_bridge_heat=current_heat;
-    last_bridge_heat_known=true;
-    last_bridge_get_ms=now_ms;
     // Preflight GET can block: old sensor, mode and user authorization
     // snapshots must never be carried into the physical POST.
     if(!control_armed.load() ||
        config_generation!=c23_config_generation() ||
-       (c23_mode_config().mode!=CottageMode::Hold &&
-        c23_mode_config().mode!=CottageMode::Occupied) ||
-       !valid_temperature(c23_temperature_sample(),time(nullptr))) {
+       (mode.mode!=CottageMode::Cold &&
+        !valid_temperature(c23_temperature_sample(),time(nullptr)))) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
     }
     ControlSnapshot candidate{};
     candidate.armed=control_armed.load();
-    candidate.heating_mode=mode.mode==CottageMode::Hold ||
-                        mode.mode==CottageMode::Occupied;
+    candidate.heating_mode=(mode.mode==CottageMode::Cold ||
+          mode.mode==CottageMode::Drying ||
+          mode.mode==CottageMode::Hold ||
+          mode.mode==CottageMode::Occupied);
     candidate.temperature_fresh=valid_temperature(sample,now);
     candidate.market_fresh=proposal.action!=BootstrapAction::Unavailable;
-    candidate.cn105_link_fresh=link_fresh;
+    candidate.cn105_link_fresh=true; // direct bridge GET above succeeded
     candidate.bridge_get_ok=true; // separate live ESPHome GET succeeded
     candidate.current_heat=current_heat;
     candidate.current_setpoint_c=current_setpoint;
     candidate.now_ms=now_ms;
-    candidate.has_last_command=last_command_present;
-    candidate.last_command_ms=last_command_ms;
-    candidate.has_confirmed_mode_change=mode_change_present;
-    candidate.last_mode_change_ms=last_mode_change_ms;
     candidate.proposal=proposal;
     const auto decision=choose_mitsubishi_control(candidate);
     control_gate.store(static_cast<int>(decision.gate));
@@ -780,19 +748,9 @@ static void cottage_control_tick() {
         decision.step==ControlStep::SetHeat?MitsubishiMode::Heat:
                                             MitsubishiMode::Off);
     if(!request.valid || !control_armed.load())return;
-    // Timestamp from the attempted command, regardless of HTTP status;
-    // prevents retry floods on abrupt gateway or LAN failures.
-    last_command_present=true;
-    last_command_ms=now_ms;
     control_last_step.store(static_cast<int>(decision.step));
     control_last_command_utc.store(now);
     control_commands_sent.fetch_add(1);
-    // Record any mode POST attempt as a potentially applied transition,
-    // including cases where the network reply or subsequent readback fails.
-    if(decision.step!=ControlStep::Setpoint) {
-        mode_change_present=true;
-        last_mode_change_ms=now_ms;
-    }
     const bool sent=cn105_bridge_post(request,config_generation,
                                       decision.step,decision.target_c);
     // ESPHome may acknowledge the POST before updating its REST state.
@@ -814,24 +772,17 @@ static void cottage_control_tick() {
     if(confirmed) {
         control_commands_confirmed.fetch_add(1);
         control_last_ack_utc.store(time(nullptr));
-        failure_present=false;
-        if(decision.step!=ControlStep::Setpoint) {
-            last_mode_change_ms=now_ms;
-            mode_change_present=true;
-        }
     } else {
         control_commands_failed.fetch_add(1);
-        last_failed_ms=now_ms;
-        failure_present=true;
     }
 }
 static void cottage_control_registration() {
-    // Every boot and every OTA update starts DISARMED. A previously saved
-    // arm must not silently resume physical writes after reboot.
+    // Preserve the user's own explicit enable/disable selection across OTA.
+    // No prior opt-in or blank NVS always defaults to OFF.
     control_armed.store(false);
     Preferences prefs;
-    if(prefs.begin("cottage_ctl",false)) {
-        if(prefs.getBool("armed",false))prefs.putBool("armed",false);
+    if(prefs.begin("cottage_ctl",true)) {
+        control_armed.store(prefs.getBool("armed",false));
         prefs.end();
     }
     web.on("/api/control/arm",HTTP_POST,[]() {
