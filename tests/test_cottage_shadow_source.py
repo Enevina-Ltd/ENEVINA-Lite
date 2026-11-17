@@ -10,12 +10,20 @@ class ShadowSurfaceTests(unittest.TestCase):
         cls.main = (ROOT / "firmware/cottage/src/main.cpp").read_text(encoding="utf8")
         cls.config = (ROOT / "firmware/cottage/include/cottage_config.hpp").read_text(encoding="utf8")
 
-    def test_no_actuator_command_routes(self):
-        self.assertNotRegex(self.main, r"HTTP_(?:POST|PUT|DELETE|PATCH)")
-        self.assertNotRegex(self.main, r"(?:\.POST|\.PUT|\.PATCH|\.DELETE)\s*\(")
-        self.assertNotRegex(self.main, r"rpc/(?:Switch\.Set|Switch\.Toggle|Switch\.SetConfig)")
-        self.assertNotIn("setClimate", self.main)
-        self.assertNotIn("setSetpoint", self.main)
+    def test_no_shelly_writes_and_explicit_cn105_arm_gate(self):
+        # This regression intentionally replaced the obsolete C2 rule
+        # forbidding all writes. New F08 limits a single local pump endpoint.
+        self.assertNotRegex(self.main,r"rpc/(?:Switch\\.Set|Switch\\.Toggle|Switch\\.SetConfig)")
+        self.assertNotIn("setClimate",self.main)
+        self.assertNotIn("setSetpoint",self.main)
+        self.assertIn('static std::atomic<bool> control_armed{false}',self.main)
+        self.assertIn('web.on("/api/control/arm",HTTP_POST',self.main)
+        self.assertIn('c23_authorize_local_setting(web.arg("token").c_str())',self.main)
+        self.assertIn('control_armed.store(prefs.getBool("armed",false))',self.main)
+        self.assertIn('mode.mode!=CottageMode::Hold',self.main)
+        self.assertIn('valid_temperature(sample,now)',self.main)
+        self.assertIn('control_last_bridge_read_utc',self.main)
+
 
     def test_only_read_only_http_requests(self):
         self.assertIn('request.GET()', self.main)
@@ -87,7 +95,8 @@ class ShadowSurfaceTests(unittest.TestCase):
                        "market_last_fetch_utc","weather_last_fetch_utc",
                        "independent_freeze_protection_verified", "safety_reason"):
             self.assertIn(marker,self.main)
-        self.assertIn('cJSON_AddBoolToObject(root,"physical_writes",false)',self.main)
+        self.assertIn('cJSON_AddBoolToObject(root,"physical_writes",control_armed.load())',self.main)
+        self.assertIn('cJSON_AddBoolToObject(root,"control_armed",control_armed.load())',self.main)
         self.assertIn('health.independent_freeze_protection_verified=false;',self.main)
 
 if __name__=="__main__":
