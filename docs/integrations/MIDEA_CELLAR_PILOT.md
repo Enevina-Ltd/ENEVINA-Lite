@@ -66,7 +66,7 @@ Keskeytä testi, jos lämpöpumpun normaali toiminta muuttuu, yhteydet häviäv�
 ## Vaihe D — adapterin kehityspolku
 
 1. Kiinnitä C++-testivektorit löydettyyn protokollaversioon ja todelliseen (salaisuuksista siivottuun) vastaukseen.
-2. Toteuta `MideaLanAdapter` vain **luku-/shadow-tilassa**: paikallinen discovery, V1/V2/V3-versiologiikka, tarvittaessa valmiiksi provisionoidun avaimen turvallinen käyttö, parsin virhetilat, aidon lähdetuoreuden valvonta, uudelleenyhdistys.
+2. Toteuta `MideaLanAdapter` vain **luku-/shadow-tilassa**: paikallinen discovery, V1/V2/V3-versiologiikka, tarvittaessa valmiiksi provisionoidun avaimen turvallinen käyttö, jäsentimen virhetilat, aidon lähdetuoreuden valvonta, uudelleenyhdistys.
 3. Aja mock-/negatiiviset testit: ei laitetta, väärä IP, väärä laite, väärä avain, katkennut LAN, vanha tilatieto, epävalidi paketti, restart ja katkennut internet.
 4. Vasta erillisessä hyväksytyssä fyysisessä koesuunnitelmassa: rajattu lämmön asetusarvo **Supervisorin kautta**, kuittaus, todellinen palautus. Ei sähkökatkaisua releellä.
 
