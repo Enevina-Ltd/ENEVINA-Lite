@@ -152,6 +152,13 @@ static void parse_sse_state(const char* raw) {
     if(changed) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
         if(climate_event) {
+            // A cached shadow schedule assumes a specific current pump mode
+            // and dwell. Any mode transition invalidates that schedule
+            // immediately (also HEAT <-> OFF and unsupported COOL/DRY/FAN).
+            if(copy.mode!=pump.mode) {
+                plan_count=0;
+                last_plan.status=MpcStatus::InvalidInput;
+            }
             const bool continuous=climate_utc>0 && now>=climate_utc &&
                 now-climate_utc<=180;
             observed_mode_duration.observe(copy.mode,
@@ -396,6 +403,7 @@ static void optimizer_worker(void*) {
                 xSemaphoreGive(lock_data);
             }
             if(!valid_cn105(cp,now) || !valid_temperature(ts,now) ||
+               (cp.mode!=ObservedPumpMode::Heat && cp.mode!=ObservedPumpMode::Off) ||
                !ms.current_price_valid || !ws.available) {
                 xSemaphoreTake(lock_data,portMAX_DELAY);
                 plan_count=0;
@@ -621,6 +629,7 @@ static void plan_endpoint() {
     const bool ok=rows && p.status==MpcStatus::Ok && n>0 && n<=192 &&
         current_utc>=computed_utc && current_utc-computed_utc<900 &&
         valid_cn105(cp,current_utc) && valid_temperature(ts,current_utc) &&
+        (cp.mode==ObservedPumpMode::Heat || cp.mode==ObservedPumpMode::Off) &&
         COTTAGE_SYNTHETIC_TEST_MODEL;
     snprintf(buf,sizeof(buf),
       "{\"valid\":%s,\"count\":%u,\"cost_eur\":%.8f,\"minimum_c\":%.5f,\"slots\":[",
