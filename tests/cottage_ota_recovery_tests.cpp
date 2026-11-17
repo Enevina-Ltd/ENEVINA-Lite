@@ -39,6 +39,23 @@ static Evidence state(bool old_running,ImageState image,bool selected=false,
     e.target_state=image;return e;
 }
 int main(){
+    // Exact ESP-IDF 4.4 (Arduino 2.0.17) numeric values. A raw cast
+    // silently shifts every bootloader state and rejects healthy OTA.
+    assert(decode_esp_idf_image_state(0u)==ImageState::New);
+    assert(decode_esp_idf_image_state(1u)==ImageState::PendingVerify);
+    assert(decode_esp_idf_image_state(2u)==ImageState::Valid);
+    assert(decode_esp_idf_image_state(3u)==ImageState::Invalid);
+    assert(decode_esp_idf_image_state(4u)==ImageState::Aborted);
+    assert(decode_esp_idf_image_state(0xffffffffu)==ImageState::Undefined);
+    assert(decode_esp_idf_image_state(99u)==ImageState::Undefined);
+    // Real IDF PENDING=1 and VALID=2 MUST enter confirmation/retry.
+    auto idf_candidate=candidate();
+    assert(decide(idf_candidate,
+           state(false,decode_esp_idf_image_state(1u)))==
+           Recovery::AwaitCandidateHealth);
+    assert(decide(idf_candidate,
+           state(false,decode_esp_idf_image_state(2u)))==
+           Recovery::AwaitCandidateHealth);
     // Download incomplete: no persistent candidate; existing image untouched.
     auto tx=candidate(Phase::Prepared);
     assert(decide(tx,state(true,ImageState::Undefined))==
