@@ -61,5 +61,24 @@ class HeartbeatGapTests(TestCase):
         self.assertIn("plan_count=0;",guarded)
         self.assertIn("last_plan.status=MpcStatus::InvalidInput;",guarded)
 
+    def test_climate_gap_invalidates_plan_even_if_mode_unchanged(self):
+        main=(ROOT/"firmware/cottage/src/main.cpp").read_text()
+        event=main[main.index("if(climate_event) {"):
+                   main.index("observed_mode_duration.observe(",main.index("if(climate_event) {"))]
+        self.assertIn("const bool continuous=climate_utc>0",event)
+        self.assertIn("now-climate_utc<=180;",event)
+        self.assertIn("if(copy.mode!=pump.mode || !continuous)",event)
+        self.assertIn("++observed_mode_generation;",event)
+        self.assertIn("plan_count=0;",event)
+        self.assertIn("last_plan.status=MpcStatus::InvalidInput;",event)
+        self.assertLess(event.index("++observed_mode_generation;"),
+                        event.index("observed_mode_duration.observe(")
+                        if "observed_mode_duration.observe(" in event else len(event))
+        # Source-level scenario: HEAT before/after the event, gap=181s.
+        same_mode=True
+        for gap,expected_invalid in [(179,False),(180,False),(181,True),(900,True)]:
+            continuous=(gap<=180)
+            self.assertEqual(not same_mode or not continuous,expected_invalid)
+
 if __name__=="__main__":
     import unittest;unittest.main()
