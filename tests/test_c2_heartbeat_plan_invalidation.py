@@ -40,7 +40,7 @@ class HeartbeatGapTests(TestCase):
             self.assertEqual(result["serial_error"],0)
     def test_plan_source_invalidated_on_mode_switch(self):
         main=(ROOT/"firmware/cottage/src/main.cpp").read_text()
-        self.assertIn("if(copy.mode!=pump.mode)",main)
+        self.assertIn("if(copy.mode!=pump.mode || !continuous)",main)
         self.assertIn("plan_count=0;\n                last_plan.status=MpcStatus::InvalidInput;",main)
         self.assertIn("cp.mode==ObservedPumpMode::Heat || cp.mode==ObservedPumpMode::Off",main)
 
