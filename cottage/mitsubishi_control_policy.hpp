@@ -9,13 +9,13 @@
 namespace enevina::cottage {
 enum class ControlStep : uint8_t { None, Setpoint, SetHeat, SetOff };
 enum class ControlBlock : uint8_t {
-    Disabled, NotInHoldMode, InputsUnverified, NoProposal,
+    Disabled, NotInHeatingMode, InputsUnverified, NoProposal,
     UnsupportedCommand, AlreadyApplied, ModeDwell, RateLimited,
     Ready
 };
 struct ControlSnapshot {
     bool armed=false;
-    bool hold_mode=false;
+    bool heating_mode=false;
     bool temperature_fresh=false;
     bool market_fresh=false;
     bool cn105_link_fresh=false;
@@ -37,7 +37,7 @@ struct ControlProposal {
 inline ControlProposal choose_mitsubishi_control(const ControlSnapshot& s) {
     ControlProposal out{};
     if(!s.armed)return out;
-    if(!s.hold_mode) {out.gate=ControlBlock::NotInHoldMode;return out;}
+    if(!s.heating_mode) {out.gate=ControlBlock::NotInHeatingMode;return out;}
     if(!s.temperature_fresh||!s.market_fresh||!s.cn105_link_fresh||
        !s.bridge_get_ok) {
         out.gate=ControlBlock::InputsUnverified;return out;
@@ -86,7 +86,7 @@ inline ControlProposal choose_mitsubishi_control(const ControlSnapshot& s) {
 inline const char* control_gate_name(ControlBlock x) {
     switch(x) {
     case ControlBlock::Disabled:return "DISABLED";
-    case ControlBlock::NotInHoldMode:return "NOT_HOLD_MODE";
+    case ControlBlock::NotInHeatingMode:return "NOT_HEATING_MODE";
     case ControlBlock::InputsUnverified:return "INPUTS_UNVERIFIED";
     case ControlBlock::NoProposal:return "NO_PROPOSAL";
     case ControlBlock::UnsupportedCommand:return "INVALID_SETPOINT";
