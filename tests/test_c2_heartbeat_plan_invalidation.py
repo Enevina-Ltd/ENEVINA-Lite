@@ -53,5 +53,13 @@ class HeartbeatGapTests(TestCase):
         assert main.index("if(mode_changed) {") < main.index("last_plan=result;")
         assert main.index("last_plan=result;") < main.index("xSemaphoreGive(lock_data);",main.index("if(mode_changed) {"))
 
+    def test_sse_drop_invalidates_cached_and_in_flight_plan(self):
+        main=(ROOT/"firmware/cottage/src/main.cpp").read_text()
+        drop=main.index("observed_mode_duration.invalidate();")
+        guarded=main[drop:main.index("xSemaphoreGive(lock_data);",drop)]
+        self.assertIn("++observed_mode_generation;",guarded)
+        self.assertIn("plan_count=0;",guarded)
+        self.assertIn("last_plan.status=MpcStatus::InvalidInput;",guarded)
+
 if __name__=="__main__":
     import unittest;unittest.main()
