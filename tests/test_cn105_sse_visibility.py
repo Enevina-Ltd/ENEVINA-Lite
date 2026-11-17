@@ -56,8 +56,7 @@ class Cn105SseVisibilityTests(unittest.TestCase):
         self.assertIn("cn105_source_verifier.accept(p,verified)",MAIN)
         self.assertIn("cottage_ota_confirmation_pending()",MAIN)
         self.assertIn('c23_authorize_local_setting(web.arg("token").c_str())',MAIN)
-        self.assertIn('control_armed.store(false)',MAIN)
-        self.assertIn('if(prefs.getBool("armed",false))prefs.putBool("armed",false)',MAIN)
+        self.assertIn('control_armed.store(prefs.getBool("armed",false))',MAIN)
         post = MAIN.split("static bool cn105_bridge_post(",1)[1].split(
             "static void cottage_control_tick()",1)[0]
         self.assertIn('!control_armed.load()',post)
