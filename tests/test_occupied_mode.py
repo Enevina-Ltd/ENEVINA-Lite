@@ -28,6 +28,12 @@ class OccupiedModeTests(unittest.TestCase):
         self.assertIn("mode.mode!=CottageMode::Occupied", MAIN)
         self.assertIn("c23_config_generation()!=config_generation", MAIN)
         self.assertIn("cottage_control_tick()", MAIN)
+        self.assertIn('<option value="3">Asuttu</option>', MAIN)
+        self.assertIn('id="air-occupied"', MAIN)
+        self.assertIn("occupied:document.getElementById('air-occupied').value", MAIN)
+        self.assertIn("a.occupied_target_c??21", MAIN)
+        self.assertIn("const modes=['Kylmillään','Kuivanapito','Ylläpitolämpö','Asuttu']", MAIN)
+
 
     def test_user_controls_and_backward_compatibility(self):
         self.assertIn('data-mode="3">Asuttu</button>', UI)
