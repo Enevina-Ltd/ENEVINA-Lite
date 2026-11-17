@@ -4,8 +4,13 @@ import argparse,hashlib,os
 from pathlib import Path
 from cryptography.hazmat.primitives import hashes,serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cottage_ota_channel import channel_tag
 MAGIC="ENEVINA_C24_OTA_V1"
 MODEL="esp32s3-n16r8"
+SIGNED_PULL_MARKER=b"ENEVINA_C24_SIGNED_PULL_OTA_CAPABLE_V1"
+def is_signed_pull_capable_image(data, expected_channel):
+    return (data.count(SIGNED_PULL_MARKER)==1
+            and data.count(expected_channel.encode("ascii"))==1)
 def canonical(version,size,digest):
     return (f"{MAGIC}\nmodel={MODEL}\nversion={version}\nsize={size}\nsha256={digest}\n").encode("ascii")
 def previous_version(path):
@@ -26,10 +31,21 @@ def main():
     p.add_argument("--firmware",type=Path,required=True)
     p.add_argument("--version",type=int,required=True)
     p.add_argument("--root",type=Path,required=True)
+    p.add_argument("--manifest-url",required=True)
+    p.add_argument("--firmware-url",required=True)
     a=p.parse_args()
     if a.version<1 or a.version>2147483647:p.error("invalid version")
     data=a.firmware.read_bytes()
     if not 1024<=len(data)<=0x640000 or data[0]!=0xE9:p.error("invalid ESP32 image or partition size")
+    try:
+        expected_channel=channel_tag(
+            a.manifest_url,a.firmware_url,
+            (a.root/"ca-public.pem").read_text("ascii"),
+            (a.root/"publisher-public.pem").read_text("ascii"))
+    except (ValueError,OSError,UnicodeError) as exc:
+        p.error("missing or invalid OTA channel public trust settings: "+str(exc))
+    if not is_signed_pull_capable_image(data,expected_channel):
+        p.error("OTA image signed-pull capability or trust/endpoint channel mismatch")
     folder=a.root/"releases"
     folder.mkdir(mode=0o700,parents=True,exist_ok=True)
     if a.version<=previous_version(folder/"manifest.txt"):p.error("non-increasing version")

@@ -68,16 +68,18 @@ bool decode_ruuvi_v5(const uint8_t* d,size_t n,int rssi,RuuviV5& out) {
 }
 void RuuviBinding::bind(const std::array<uint8_t,6>& mac) {
     bound_=valid_mac(mac);bound_mac_=mac;has_sample_=false;accepted_ms_=0;
+    restart_candidate_=false;restart_candidate_ms_=0;restart_candidate_sequence_=0;
 }
 void RuuviBinding::unbind() {
     bound_=false;has_sample_=false;accepted_ms_=0;bound_mac_={};
+    restart_candidate_=false;restart_candidate_ms_=0;restart_candidate_sequence_=0;
 }
 RuuviAccept RuuviBinding::accept(const RuuviV5& sample,uint64_t ms) {
     if(!bound_)return RuuviAccept::Unbound;
     if(sample.mac!=bound_mac_)return RuuviAccept::DifferentSensor;
     if(!std::isfinite(sample.temperature_c) ||
        !std::isfinite(sample.relative_humidity_pct)||
-       sample.relative_humidity_pct<0||sample.relative_humidity_pct>100||
+       sample.relative_humidity_pct<=0||sample.relative_humidity_pct>100||
        !std::isfinite(sample.pressure_pa)||sample.pressure_pa<50000||
        sample.pressure_pa>115534||!std::isfinite(sample.battery_v)||
        sample.battery_v<1.6||sample.battery_v>3.646)
@@ -87,8 +89,30 @@ RuuviAccept RuuviBinding::accept(const RuuviV5& sample,uint64_t ms) {
         const unsigned distance=(static_cast<unsigned>(sample.sequence)+
            65535-static_cast<unsigned>(latest_.sequence))%65535;
         if(distance==0)return RuuviAccept::Duplicate;
-        if(distance>32767)return RuuviAccept::OldSequence;
         const uint64_t elapsed_ms=ms-accepted_ms_;
+        if(distance>32767) {
+            // A RuuviTag sequence can restart on battery change. A single
+            // old/replayed frame must not reset the sequence high-water.
+            // Only after the old sample is stale, require TWO consecutive,
+            // strictly advancing frames from a plausible new sequence.
+            if(elapsed_ms<=600000)
+                return RuuviAccept::OldSequence;
+            const unsigned candidate_step=
+                (static_cast<unsigned>(sample.sequence)+65535-
+                 static_cast<unsigned>(restart_candidate_sequence_))%65535;
+            if(!restart_candidate_ || candidate_step!=1 ||
+               ms<=restart_candidate_ms_ ||
+               ms-restart_candidate_ms_>120000) {
+                restart_candidate_=true;
+                restart_candidate_sequence_=sample.sequence;
+                restart_candidate_ms_=ms;
+                return RuuviAccept::OldSequence;
+            }
+            // Two-frame restart confirmed: the sample becomes the new
+            // sequence baseline without treating the first candidate as fresh.
+        } else {
+            restart_candidate_=false;
+        }
         if(elapsed_ms<300000 &&
            std::fabs(sample.temperature_c-latest_.temperature_c)>5)
             return RuuviAccept::Implausible;
@@ -98,6 +122,7 @@ RuuviAccept RuuviBinding::accept(const RuuviV5& sample,uint64_t ms) {
             return RuuviAccept::Implausible;
     }
     latest_=sample;accepted_ms_=ms;has_sample_=true;
+    restart_candidate_=false;
     return RuuviAccept::Accepted;
 }
 bool RuuviBinding::valid(uint64_t ms,uint64_t age_ms_limit)const {

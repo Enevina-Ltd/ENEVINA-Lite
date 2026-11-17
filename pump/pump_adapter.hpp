@@ -31,7 +31,7 @@ struct PumpTelemetry {
     double compressor_hz=0;
     bool defrosting=false;
     int operating_mode=-1;
-    // Generic provenance; adapters report Unknown until source-side proof exists.
+    // Propagate verified original pump-read evidence, not network receipt time.
     MeasurementEvidence evidence{};
 };
 
