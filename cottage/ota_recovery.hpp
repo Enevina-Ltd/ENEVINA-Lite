@@ -48,6 +48,18 @@ enum class Recovery {
     Blocked, AwaitCandidateHealth, KeepForActivation,
     DiscardNeverActivated, QuarantineRealRollback
 };
+// NVS writes are not atomic with bootloader VALID. Keep the transaction
+// until every durable step succeeds; another call (even after reboot)
+// can safely complete any partially applied good/cleanup sequence.
+template<class Store>
+bool confirm_persistence(Store& store,const Transaction& tx,uint32_t current_good) {
+    if(!valid(tx))return false;
+    if(current_good<tx.version && !store.write_good(tx.version))
+        return false;
+    if(!store.remove_legacy_pending())return false;
+    if(!store.remove_transaction())return false;
+    return true;
+}
 inline Recovery decide(const Transaction& tx,const Evidence& e) {
     if(!valid(tx))return Recovery::Blocked;
     if(e.running_target) {
