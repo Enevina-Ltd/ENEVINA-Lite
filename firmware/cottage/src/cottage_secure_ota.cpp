@@ -22,6 +22,14 @@
 #define ENEVINA_SIGNED_OTA_AVAILABLE 0
 #endif
 
+#if ENEVINA_SIGNED_OTA_AVAILABLE
+// Marker is retained in signed-pull-capable application images. The
+// publisher refuses to sign an app image without this compiled capability.
+// Volatile access prevents the compiler from eliding the ROM evidence.
+static const volatile char signed_pull_marker[] =
+    "ENEVINA_C24_SIGNED_PULL_OTA_CAPABLE_V1";
+#endif
+
 namespace {
 constexpr const char* magic="ENEVINA_C24_OTA_V1\nmodel=esp32s3-n16r8\n";
 constexpr uint32_t max_image_size=0x640000u;
@@ -205,7 +213,13 @@ bool update_app(const Release& release) {
 }
 #endif // ENABLED
 }
-bool cottage_ota_configured(){return ENEVINA_SIGNED_OTA_AVAILABLE!=0;}
+bool cottage_ota_configured(){
+#if ENEVINA_SIGNED_OTA_AVAILABLE
+    return signed_pull_marker[0]=='E';
+#else
+    return false;
+#endif
+}
 void cottage_ota_initialize() {
     Preferences p;
     if(!p.begin("c24_ota",false))return;
