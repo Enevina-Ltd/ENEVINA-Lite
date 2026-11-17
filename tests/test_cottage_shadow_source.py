@@ -47,7 +47,9 @@ class ShadowSurfaceTests(unittest.TestCase):
         self.assertNotIn("pump=copy",link)
         self.assertIn("copy.captured_utc=0;",self.main)
         self.assertIn("copy.received=false;",self.main)
-        self.assertIn('cJSON_AddBoolToObject(root,"cn105_source_verified",false)',self.main)
+        self.assertIn('cp.evidence.source_time_verified',self.main)
+        self.assertIn('cJSON_AddBoolToObject(root,"cn105_source_verified",verified_uart)',self.main)
+        self.assertIn('"SSE_SNAPSHOT_UART_UNVERIFIED"',self.main)
         self.assertIn('"UNVERIFIED_SOURCE"',self.main)
 
     def test_replayed_sse_snapshot_is_not_promoted_to_verified_pump_data(self):
