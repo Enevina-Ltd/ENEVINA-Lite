@@ -86,6 +86,7 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
     <div class="grid">
       <article class="card span7"><h2>Pihamökin toimintatila</h2><p class="tiny muted">Asetukset vaikuttavat laskentaan ja varoituksiin. Todellinen Mitsubishi säilyttää oman ohjauksensa.</p><div class="mode" role="group" aria-label="Laskennallinen tila"><button type="button" data-mode="0">Kylmillään</button><button type="button" data-mode="1">Kuivanapito</button><button type="button" data-mode="2">Ylläpitolämpö</button></div><div class="fieldrow" style="margin-top:17px"><label class="field">Ylläpitotavoite °C<input id="setting-hold" type="number" min="5" max="24" step=".5" inputmode="decimal"></label><label class="field">Kuivanapito Δ°C<input id="setting-delta" type="number" min="3" max="5" step=".5" inputmode="decimal"></label><button class="primary" id="save-mode" type="button" disabled>Tallenna asetukset</button></div><div id="feedback" role="status"></div></article>
       <article class="card span5"><h2>Laitteen tila</h2><div class="statusgrid"><span>Ohjelmistoversio</span><span id="device-version">—</span><span>Wi-Fi RSSI</span><span id="device-wifi">—</span><span>CN105-telemetria</span><span id="device-cn105">—</span><span>Shelly-mittaus</span><span id="device-shelly">—</span><span>Sisäinen vapaa RAM</span><span id="device-ram">—</span><span>PSRAM vapaana</span><span id="device-psram">—</span><span>OTA-lataus käytössä</span><span id="device-ota">—</span></div><p class="foot"><a href="/diagnostics" style="text-decoration:underline">Avaa alkuperäinen tekninen diagnostiikka</a></p></article>
+      <article class="card span12"><h2>Mitsubishi CN105 · vastaanotettu data</h2><div class="statusgrid"><span>Viimeisin SSE-tilaviesti</span><span id="mitsubishi-read-status">—</span><span>Pumpun tila (SSE)</span><span id="mitsubishi-read-mode">—</span><span>Pumpun sisälämpötila (SSE)</span><span id="mitsubishi-read-temp">—</span><span>Asetuslämpötila (SSE)</span><span id="mitsubishi-read-setpoint">—</span><span>Kompressori (SSE)</span><span id="mitsubishi-read-hz">—</span><span>Kompressoriviestin ikä</span><span id="mitsubishi-compressor-age">—</span></div><p class="foot">ESPHome /events -rajapinnasta vastaanotettu viimeisin tilatieto. Viestin vastaanottoaika ei todista uutta CN105-UART-lukua, eikä näitä arvoja käytetä optimoinnin turvallisuushyväksyntään.</p></article>
       <article class="card span12"><h2>Sisäilman historia · RuuviTag</h2><div id="history-chart" class="chart"><div class="empty">Historiatietoja odotetaan</div></div><p class="foot">Viimeisimmät mittaukset, ei rakenteen kosteusmittaus. Offline-ajalta tallennettuja aikaleimoja ei esitetä UTC-aikana.</p></article>
     </div>
   </section>
@@ -141,7 +142,19 @@ function showStatus(){
   text('home-watts',number(s.shelly_w)!==null?fmt(s.shelly_w,0)+' W':'—');
   text('price-now',priceFmt(s.spot));text('price-updated','Viimeisin haku: '+time(s.market_last_fetch_utc));
   text('device-version',s.firmware_version||'—');text('device-wifi',number(s.wifi_rssi_dbm)!==null?fmt(s.wifi_rssi_dbm,0)+' dBm':'Ei Wi-Fiä');
-  text('device-cn105',s.cn105===true?'Tuore':'Ei tuoretta lukemaa');
+  const hasSse=s.cn105_sse_climate_received===true;
+  const climateAge=number(s.cn105_sse_climate_age_s);
+  const compressorAge=number(s.cn105_sse_compressor_age_s);
+  text('device-cn105',s.cn105_source_verified===true?'UART-lähde varmennettu':hasSse?'SSE-lukemia, UART-todiste puuttuu':'Ei CN105-lukemia');
+  text('mitsubishi-read-status',s.cn105_source_verified===true?'UART-mittaus varmennettu':hasSse?
+    'SSE vastaanotettu '+(climateAge===null?'(ikä ei tiedossa)':fmt(climateAge,0)+' s sitten')+' · ei UART-todistetta':'Ei tilatietoja');
+  text('mitsubishi-read-mode',s.cn105_source_verified===true?s.pump_mode:s.cn105_sse_mode);
+  text('mitsubishi-read-temp',(s.cn105_source_verified===true?number(s.pump_indoor_c):number(s.cn105_sse_indoor_c))===null?'—':
+    fmt(s.cn105_source_verified===true?s.pump_indoor_c:s.cn105_sse_indoor_c,1)+' °C');
+  text('mitsubishi-read-setpoint',number(s.cn105_sse_setpoint_c)===null?'—':fmt(s.cn105_sse_setpoint_c,1)+' °C (SSE)');
+  text('mitsubishi-read-hz',(s.cn105_source_verified===true?number(s.compressor_hz):number(s.cn105_sse_compressor_hz))===null?'—':
+    fmt(s.cn105_source_verified===true?s.compressor_hz:s.cn105_sse_compressor_hz,0)+' Hz');
+  text('mitsubishi-compressor-age',compressorAge===null?'Ei vastaanottoa':fmt(compressorAge,0)+' s sitten (vain SSE)');
   text('device-shelly',number(s.shelly_w)!==null?'Käytössä':'Ei lukemaa');
   text('device-ram',number(s.free_internal_heap)!==null?fmt(s.free_internal_heap/1024,0)+' KiB':'—');
   text('device-psram',number(s.free_psram)!==null?fmt(s.free_psram/1048576,2)+' MiB':'—');
@@ -211,6 +224,9 @@ async function reloadStatus(){
     'home-air-status':'Yhteys poikki','home-outside':'—','home-watts':'—',
     'home-price':'—','home-total':'—','price-now':'—','price-updated':'Ei yhteyttä',
     'device-version':'—','device-wifi':'Ei yhteyttä','device-cn105':'Ei yhteyttä',
+    'mitsubishi-read-status':'Ei yhteyttä','mitsubishi-read-mode':'—',
+    'mitsubishi-read-temp':'—','mitsubishi-read-setpoint':'—',
+    'mitsubishi-read-hz':'—','mitsubishi-compressor-age':'Ei yhteyttä',
     'device-shelly':'Ei yhteyttä','device-ram':'—','device-psram':'—',
     'device-ota':'Ei yhteyttä'
   };
