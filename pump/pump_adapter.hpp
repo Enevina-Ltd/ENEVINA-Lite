@@ -35,8 +35,10 @@ struct PumpTelemetry {
     MeasurementEvidence evidence{};
 };
 
-// V1 is deliberately read-only. A future command interface must be gated by
-// Supervisor and verified for each exact pump/HeishaMon combination.
+// One-pump, manufacturer-independent telemetry and capability interface.
+// Command-path development remains in scope; actual writes require the
+// separately tested, model-specific command adapter and Supervisor approval.
+// Merely reporting a capability must never authorize physical commands.
 class PumpAdapter {
 public:
     virtual ~PumpAdapter() = default;
