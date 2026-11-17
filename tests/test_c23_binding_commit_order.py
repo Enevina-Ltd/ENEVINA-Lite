@@ -22,5 +22,23 @@ class BindingCommitTests(unittest.TestCase):
         self.assertIn('History NVS purge failed',reject)
         self.assertIn('return;',reject)
 
+    def test_config_failure_blocks_new_history_checkpoint_until_saved(self):
+        save=SRC.split("bool save_config() {",1)[1].split("void checkpoint() {",1)[0]
+        route=SRC.split('web.on("/api/air/bind",HTTP_POST',1)[1].split('web.on("/api/air/ack",HTTP_POST',1)[0]
+        checkpoint=SRC.split("void checkpoint() {",1)[1].split("bool parse_float(",1)[0]
+        guard=route.index("indoor_binding_persisted=false;")
+        bind=route.index("indoor_binding.bind(mac)")
+        persist=route.index("const bool saved=save_config()")
+        self.assertLess(guard,bind)
+        self.assertLess(bind,persist)
+        self.assertIn("if(saved)",save)
+        self.assertIn("indoor_binding_persisted=true;",save)
+        self.assertIn("if(!indoor_binding_persisted || !history_changed ||",checkpoint)
+        self.assertLess(checkpoint.index("if(!indoor_binding_persisted"),checkpoint.index('prefs.putBytes("hourly_v1"'))
+        self.assertLess(checkpoint.index("lock();"),checkpoint.index('prefs.putBytes("hourly_v1"'))
+        self.assertGreater(checkpoint.index("unlock();",checkpoint.index('prefs.putBytes("hourly_v1"')),checkpoint.index('prefs.putBytes("hourly_v1"'))
+        self.assertIn('history_changed=false;',checkpoint)
+        self.assertIn('// NVS failure keeps history_changed set',checkpoint)
+
 if __name__=="__main__":
     unittest.main()
