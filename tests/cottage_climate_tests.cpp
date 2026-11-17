@@ -206,6 +206,16 @@ int main() {
     dry=evaluate_cottage_mode(cfg,wet,true,true,8,7ULL*3600000);
     assert(dry.has_target&&dry.advisory_heat_needed &&
            dry.direct_setpoint_below_mitsubishi_min && !dry.physical_writes_allowed);
+    // Codex P2: monitor exposure remains above clear threshold 65% even
+    // while current RH dips to 69%. Do not thrash drying advice at 70%.
+    auto hysteresis_air=calculate_air_moisture(10,69);
+    auto held=evaluate_cottage_mode(cfg,hysteresis_air,true,true,8,7ULL*3600000);
+    assert(held.advisory_heat_needed);
+    assert(held.advisory==ModeAdvisory::UnsupportedBelow16);
+    auto clear_air=calculate_air_moisture(10,64);
+    auto cleared=evaluate_cottage_mode(cfg,clear_air,true,true,8,0);
+    assert(!cleared.advisory_heat_needed);
+    assert(cleared.advisory==ModeAdvisory::MonitoringHumidity);
     cfg.mode=CottageMode::Hold;cfg.hold_target_c=12;
     auto hold=evaluate_cottage_mode(cfg,wet,true,true,0,0);
     assert(hold.has_target && near(hold.target_c,12) &&
