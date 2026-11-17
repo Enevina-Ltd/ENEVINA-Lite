@@ -1077,13 +1077,16 @@ refresh();setInterval(refresh,15000);</script>
 +16 °C on pumpun normaali alin lämmitysasetus. Rakenteen kosteus- tai
 jäätymisturvallisuutta ei voi vahvistaa pelkällä huoneilman anturilla.</p>
 <dl id="air-metrics"><dt>RuuviTag</dt><dd>Ei mittausta</dd></dl>
-<h3>Toimintatila – vain laskenta</h3>
+<h3>Toimintatila ja lämpötilatavoitteet</h3>
 <form id="air-config">
 <label for="air-mode">Toimintatila</label>
 <select id="air-mode"><option value="0">Kylmillään</option>
-<option value="1">Kuivanapito</option><option value="2">Ylläpitolämpö</option></select>
+<option value="1">Kuivanapito</option><option value="2">Ylläpitolämpö</option>
+<option value="3">Asuttu</option></select>
 <label for="air-hold">Ylläpitolämmön tavoite °C</label>
 <input id="air-hold" type="number" step="0.5" min="5" max="24" value="12">
+<label for="air-occupied">Asuttu-tilan lämpötila °C</label>
+<input id="air-occupied" type="number" step="0.5" min="16" max="26" value="21">
 <label for="air-delta">Kuivanapidon ulkolämpötilaero °C (kokeellinen)</label>
 <input id="air-delta" type="number" step="0.5" min="3" max="5" value="4">
 <button type="submit">Tallenna laskennallinen tila</button>
@@ -1131,7 +1134,7 @@ let c23token='',c23initialized=false,c23lastHistory=0;
 const fmt2=v=>typeof v==='number' && Number.isFinite(v)?v.toFixed(2):'Ei mittausta';
 const airNames=['Pitkä RH >70 %','RH >80 % pitkään plusasteissa',
 'RuuviTag ei ole tuore','RuuviTag-paristo heikko','Sisäilma pakkasen puolella'];
-const modes=['Kylmillään','Kuivanapito','Ylläpitolämpö'];
+const modes=['Kylmillään','Kuivanapito','Ylläpitolämpö','Asuttu'];
 const notes=['Ei lämmitystä','Anturi puuttuu tai ei tuore','RH:n pitkäaikaisseurantaa',
 'Mahdollinen kuivanapidon tarve','Laskennallinen lämmitystarve',
 'Alle 16 °C ei toteudu pumpun suoralla asetuksella',
@@ -1149,6 +1152,7 @@ document.getElementById('air-config').addEventListener('submit',async e=>{
  await airPost('/api/air/config',{
  mode:document.getElementById('air-mode').value,
  hold:document.getElementById('air-hold').value,
+ occupied:document.getElementById('air-occupied').value,
  delta:document.getElementById('air-delta').value});
  document.getElementById('air-settings-status').textContent='Tila tallennettu. CN105-ohjaus edellyttää erillistä käyttöönottoa.';
  }catch(err){document.getElementById('air-settings-status').textContent=err.message;}
@@ -1180,6 +1184,7 @@ async function airRefresh(){
  if(!c23initialized){
  document.getElementById('air-mode').value=String(a.mode);
  document.getElementById('air-hold').value=a.hold_target_c;
+ document.getElementById('air-occupied').value=a.occupied_target_c??21;
  document.getElementById('air-delta').value=a.drying_delta_c;
  document.getElementById('air-rh70').value=a.warning_rh70;
  document.getElementById('air-rh80').value=a.warning_rh80;
@@ -1187,7 +1192,9 @@ async function airRefresh(){
  c23initialized=true;
  }
  const rows=[
- ['Tila (laskennallinen)',modes[a.mode]||'Tuntematon'],
+ ['Tila',modes[a.mode]||'Tuntematon'],
+ ['Asuttu-tavoite °C',fmt2(a.occupied_target_c)],
+ ['Ylläpitotavoite °C',fmt2(a.hold_target_c)],
  ['Sidottu RuuviTag',a.bound_mac||'Ei sidottua anturia'],
  ['Läheltä löytynyt RuuviTag',a.discovered_mac||'Ei havaintoa'],
  ['Anturi tuore',a.sensor_fresh],
@@ -1224,7 +1231,8 @@ async function airRefresh(){
  '. Lämmitystarvearvio: '+(a.advisory_heat_needed?'kyllä':'ei')+
  '. Todellinen pumpun tila: '+(s.pump_mode||'ei tietoa')+
  '. '+(a.target_below_16?'Tavoite alle +16 °C ei ole suora Mitsubishi-asetus. ':'')+
- 'Vain varjotila; fyysisiä ohjauksia ei ole.';
+ (s.control_armed===true?'Automaattiohjaus sallittu (portti '+(s.control_gate||'tuntematon')+').':
+                           'Automaattiohjaus pois päältä.');
  const alerts=document.getElementById('air-alerts');
  alerts.replaceChildren();
  for(const item of a.alerts||[]){
