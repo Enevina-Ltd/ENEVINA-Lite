@@ -53,6 +53,15 @@ int main() {
     RuuviBinding gate;
     assert(gate.accept(a,1000)==RuuviAccept::Unbound);
     gate.bind(official_mac);
+    // Codex P2: older hourly_v1 has no MAC in the record. Restoration
+    // requires a durable matching NVS identity, not compiler fallback.
+    assert(verified_history_origin(true,official_mac,gate));
+    assert(!verified_history_origin(false,official_mac,gate));
+    auto recompiled_mac=official_mac;
+    recompiled_mac[0]^=0x02;
+    assert(!verified_history_origin(true,recompiled_mac,gate));
+    RuuviBinding unbound_history{};
+    assert(!verified_history_origin(true,official_mac,unbound_history));
     assert(gate.accept(a,1000)==RuuviAccept::Accepted);
     assert(gate.accept(a,1200)==RuuviAccept::Duplicate);
     assert(gate.valid(500000));
