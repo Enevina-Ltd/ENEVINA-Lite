@@ -82,8 +82,12 @@ inline Recovery decide(const Transaction& tx,const Evidence& e) {
     const bool previously_failed=
         tx.previous_target_state==ImageState::Aborted ||
         tx.previous_target_state==ImageState::Invalid;
-    if(e.target_hash_matches && failed && !previously_failed &&
-       tx.phase==Phase::Armed)
+    // An Armed record was stored only AFTER successful boot selection,
+    // which replaces even a previously ABORTED OTA-state with NEW.
+    // A Prepared record also proves a rollback if the old state was not
+    // already failed; the tiny pre-Armed power-cut window is then covered.
+    if(e.target_hash_matches && failed &&
+       (tx.phase==Phase::Armed || !previously_failed))
         return Recovery::QuarantineRealRollback;
     // A Prepared record may predate esp_ota_set_boot_partition. A
     // power failure here is NEVER evidence of a defective release.
