@@ -938,7 +938,7 @@ section{background:white;padding:16px;border-radius:12px;margin:15px 0}
 dl{display:grid;grid-template-columns:1fr auto;gap:10px}dt,dd{margin:0}
 small{color:#64746d}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:7px;text-align:left}
 </style><main><h1>Enevina Lite – Pihamökki</h1>
-<p class="notice"><strong>VARJOTILA – EI OHJAA LÄMPÖPUMPPUA</strong></p>
+<p class="notice"><strong>CN105-OHJAUS</strong> – tarkista käynnissä oleva käyttötila API-diagnostiikasta ja premium-dashboardista.</p>
 <section><h2>Tila ja mittaukset</h2><dl id="metrics"></dl><p id="reason"></p>
 <small>Pumpun oma lämpötila ei korvaa riippumatonta jäätymissuoja-anturia.
 CN105-yhteyden uptime ei tee vanhoista pumpun mittauksista tuoreita.
@@ -995,7 +995,7 @@ x.heat?'HEAT 16 °C':'OFF',x.indoor_c.toFixed(2),x.kwh.toFixed(3),x.eur.toFixed(
 refresh();setInterval(refresh,15000);</script>
 <section id="air-panel">
 <h2>Pihamökki – sisäilma ja kuivanapito</h2>
-<p class="notice"><strong>VAIN VARJOTILA</strong> – tila tai tavoite ei ohjaa Mitsubishiä.
+<p class="notice"><strong>ERILLINEN OHJAUSLUPA</strong> – tila tai tavoite ei yksin lähetä Mitsubishi-komentoja.
 +16 °C on pumpun normaali alin lämmitysasetus. Rakenteen kosteus- tai
 jäätymisturvallisuutta ei voi vahvistaa pelkällä huoneilman anturilla.</p>
 <dl id="air-metrics"><dt>RuuviTag</dt><dd>Ei mittausta</dd></dl>
@@ -1072,7 +1072,7 @@ document.getElementById('air-config').addEventListener('submit',async e=>{
  mode:document.getElementById('air-mode').value,
  hold:document.getElementById('air-hold').value,
  delta:document.getElementById('air-delta').value});
- document.getElementById('air-settings-status').textContent='Laskennallinen tila tallennettu. Ei laiteohjausta.';
+ document.getElementById('air-settings-status').textContent='Tila tallennettu. CN105-ohjaus edellyttää erillistä käyttöönottoa.';
  }catch(err){document.getElementById('air-settings-status').textContent=err.message;}
 });
 document.getElementById('air-thresholds').addEventListener('submit',async e=>{
@@ -1226,7 +1226,8 @@ static void status_endpoint() {
         enevina::calculate_total_price(t,total);
     const BootstrapDecision bootstrap=bootstrap_preview(now,te,cp);
     cJSON* root=cJSON_CreateObject();
-    cJSON_AddStringToObject(root,"mode","VARJOTILA_EI_KOMENTOJA");
+    cJSON_AddStringToObject(root,"mode",control_armed.load()?
+        "CN105_AUTOMAATIO_KAYTOSSA":"VARJOTILA_EI_KOMENTOJA");
     cJSON_AddBoolToObject(root,"physical_writes",control_armed.load());
     cJSON_AddBoolToObject(root,"control_armed",control_armed.load());
     cJSON_AddStringToObject(root,"control_gate",
