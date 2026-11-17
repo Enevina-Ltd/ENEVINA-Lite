@@ -3,6 +3,8 @@
 #include <Preferences.h>
 #include <esp_http_client.h>
 #include <esp_ota_ops.h>
+#include <esp_partition.h>
+#include "cottage/ota_recovery.hpp"
 #include <esp_heap_caps.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
@@ -40,6 +42,54 @@ constexpr const char* magic="ENEVINA_C24_OTA_V1\nmodel=esp32s3-n16r8\n";
 constexpr uint32_t max_image_size=0x640000u;
 std::atomic<uint32_t> last_good{0}, last_candidate{0};
 std::atomic<int> last_status{0}; // 0 idle; 1 disabled; 2 transient; 3 refused; 4 rejected; 5 downloading; 6 rebooting
+namespace ota=enevina::cottage::ota;
+std::atomic<bool> confirmation_pending{false};
+bool read_transaction(Preferences& prefs,ota::Transaction& tx) {
+    if(prefs.getBytesLength("txv2")!=sizeof(tx))return false;
+    if(prefs.getBytes("txv2",&tx,sizeof(tx))!=sizeof(tx))return false;
+    return ota::valid(tx);
+}
+bool write_transaction(Preferences& prefs,ota::Transaction tx) {
+    ota::seal(tx);
+    return prefs.putBytes("txv2",&tx,sizeof(tx))==sizeof(tx);
+}
+const esp_partition_t* candidate_partition(const ota::Transaction& tx) {
+    const auto* p=esp_partition_find_first(ESP_PARTITION_TYPE_APP,
+        static_cast<esp_partition_subtype_t>(tx.target_subtype),nullptr);
+    return p && p->address==tx.target_address?p:nullptr;
+}
+bool matching_image(const esp_partition_t* p,const ota::Transaction& tx) {
+    uint8_t digest[32]{};
+    return p && esp_partition_get_sha256(p,digest)==ESP_OK &&
+           std::memcmp(digest,tx.target_image_sha256,32)==0;
+}
+ota::Evidence boot_evidence(const ota::Transaction& tx) {
+    ota::Evidence e{};
+    const auto* running=esp_ota_get_running_partition();
+    const auto* boot=esp_ota_get_boot_partition();
+    const auto* target=candidate_partition(tx);
+    e.running_source=running && running->address==tx.source_address;
+    e.running_target=running && running->address==tx.target_address &&
+                     running->subtype==tx.target_subtype;
+    e.selected_target=boot && boot->address==tx.target_address;
+    e.target_hash_matches=matching_image(target,tx);
+    esp_ota_img_states_t state=ESP_OTA_IMG_UNDEFINED;
+    if(target && esp_ota_get_state_partition(target,&state)==ESP_OK)
+        e.target_state=static_cast<ota::ImageState>(state);
+    return e;
+}
+struct NvsConfirm {
+    Preferences& prefs;
+    bool write_good(uint32_t v) {
+        return prefs.putUInt("good",v)==sizeof(uint32_t);
+    }
+    bool remove_legacy_pending() {
+        return !prefs.isKey("pending") || prefs.remove("pending");
+    }
+    bool remove_transaction() {
+        return !prefs.isKey("txv2") || prefs.remove("txv2");
+    }
+};
 struct Release {
     uint32_t version=0;
     uint32_t size=0;
