@@ -76,6 +76,13 @@ public:
     using Callback=void (*)(const char* json,void* context);
     explicit SseStateParser(Callback cb,void* context):cb_(cb),ctx_(context){}
     void feed(uint8_t byte) {
+        // Never allow a wire NUL to truncate the C-string passed to the
+        // strict JSON parser, hiding malformed trailing content.
+        if(byte==0) {
+            if(!invalid_)++rejected_;
+            invalid_=true;
+            return;
+        }
         if(byte=='\r')return;
         if(byte=='\n') {
             const bool blank=line_size_==0;
@@ -105,6 +112,18 @@ private:
     unsigned rejected_=0;
     Callback cb_;
     void* ctx_;
+    static bool has_escaped_nul(const char* value) {
+        for(const char* p=value;*p;) {
+            if(*p!='\\') {++p;continue;}
+            unsigned slashes=0;
+            while(*p=='\\') {++slashes;++p;}
+            // An odd run of slashes leaves a real JSON unicode escape.
+            // An even run encodes literal backslashes, not U+0000.
+            if((slashes&1u) && std::strncmp(p,"u0000",5)==0)
+                return true;
+        }
+        return false;
+    }
     void reset() {
         payload_size_=0;state_event_=false;invalid_=false;
     }
@@ -112,7 +131,11 @@ private:
         if(line_size_==0) {
             if(state_event_ && payload_size_ && cb_) {
                 payload_[payload_size_]=0;
-                cb_(payload_,ctx_);
+                // cJSON decodes \u0000 into an embedded C-string NUL:
+                // reject it before an outer or nested JSON parser can
+                // silently accept only the valid prefix.
+                if(has_escaped_nul(payload_)) ++rejected_;
+                else cb_(payload_,ctx_);
             }
             reset();
             return;
