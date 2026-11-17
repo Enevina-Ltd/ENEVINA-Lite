@@ -7,10 +7,70 @@ static const char premium_dashboard_html[] PROGMEM = R"ENEVINA_UI(<!doctype html
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f5f5f0">
+<script>
+// Automatic Finnish-time day/night UI. Visual only: never changes heating.
+(function(){
+  function applyAutomaticNightTheme() {
+    let night=false;
+    try {
+      const now=new Date();
+      if(now.getTime()<1700000000000)throw Error('Device clock unavailable');
+      const h=Number(new Intl.DateTimeFormat('en-GB',{
+        timeZone:'Europe/Helsinki',hour:'2-digit',hourCycle:'h23'
+      }).format(now))%24;
+      if(!Number.isFinite(h))throw Error('No clock hour');
+      night=h>=21||h<7;
+    } catch(_) {
+      night=!!(window.matchMedia &&
+               window.matchMedia('(prefers-color-scheme: dark)').matches);
+    }
+    document.documentElement.dataset.theme=night?'night':'day';
+    const themeColor=document.querySelector('meta[name="theme-color"]');
+    if(themeColor)themeColor.setAttribute('content',night?'#0c1a17':'#f5f5f0');
+  }
+  applyAutomaticNightTheme();
+  // Recheck while a dashboard remains open and whenever a sleeping iPad wakes.
+  setInterval(applyAutomaticNightTheme,60000);
+  window.addEventListener('focus',applyAutomaticNightTheme);
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden)applyAutomaticNightTheme();
+  });
+})();
+</script>
 <title>Enevina Lite | Energianhallinta</title>
 <style>
 :root{--bg:#f5f5f0;--paper:#ffffff;--ink:#17352e;--muted:#697a73;--edge:#e2e9e2;--green:#276b52;--deep:#103d31;--mint:#e5f2e7;--warning:#8c6418;--warnbg:#fff6e6;--red:#af4c3f;--shadow:0 7px 24px rgba(29,60,47,.05)}
+/* Night colors override presentation only. Timezone and DST come from
+   Intl.DateTimeFormat('Europe/Helsinki'), independent of iPad settings. */
+:root[data-theme="night"]{
+  color-scheme:dark;
+  --bg:#0c1a17;--paper:#172925;--ink:#e6f2ea;--muted:#adbbb4;
+  --edge:#314740;--green:#8ad4aa;--deep:#225f4b;--mint:#234237;
+  --warning:#f5cf8b;--warnbg:#372b1d;--red:#f2a69d;
+  --shadow:0 8px 28px rgba(0,0,0,.24)
+}
+:root[data-theme="night"] .sidebar{background:#12231f}
+:root[data-theme="night"] .brand-mark{background:#2d7459}
+:root[data-theme="night"] .nav button{color:#b9cbc1}
+:root[data-theme="night"] .nav button.active{color:#d8f5e4}
+:root[data-theme="night"] .chip{background:#20352e;color:#d8e7df}
+:root[data-theme="night"] .notice{border-color:#665031;color:#f0d1a0}
+:root[data-theme="night"] .mode button{background:#20352e;color:#e6f2ea}
+:root[data-theme="night"] .mode button.selected{background:#275a42;color:#f2fff6}
+:root[data-theme="night"] .field input,
+:root[data-theme="night"] .field select{background:#11211c;border-color:#4b655b;color:#e6f2ea}
+:root[data-theme="night"] .primary{background:#317859;color:#f8fff9}
+:root[data-theme="night"] .pill{background:#244735;color:#cef0d8}
+:root[data-theme="night"] .callout{background:#213d30;color:#d0e8d9}
+:root[data-theme="night"] .callout.warn{background:#3d311f;color:#f6d8a4}
+:root[data-theme="night"] .empty{border-color:#4d685e}
+:root[data-theme="night"] .bar{background:#669e84}
+:root[data-theme="night"] .bar.cheap{background:#54b98a}
+:root[data-theme="night"] .bar.high{background:#d2a35f}
+:root[data-theme="night"] .bar.current{outline-color:#dbf9e9}
+:root[data-theme="night"] .temperature{background:linear-gradient(130deg,#20634e,#103c31)}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
 button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:none}h1,h2,h3,p{margin-top:0}h1{font-size:30px;line-height:1.2;letter-spacing:-.8px}h2{font-size:18px;letter-spacing:-.3px}h3{font-size:15px}
 .shell{max-width:1640px;min-height:100vh;margin:auto;display:grid;grid-template-columns:220px minmax(0,1fr)}
@@ -62,6 +122,14 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
       <article class="card span5"><div class="eyebrow">Sähkön hinta nyt</div><div class="metric small" id="home-price">—</div><p class="muted tiny" id="home-price-label">Spot-hinta · ilman arvonlisäveroa</p><div class="statline"><span>Arvio kokonaishinnasta</span><span id="home-total">—</span></div><div class="statline"><span>Ulkolämpötila / ennuste</span><span id="home-outside">—</span></div><div class="statline"><span>Mittauskulutus</span><span id="home-watts">—</span></div></article>
       <article class="card span4"><div class="eyebrow">Ilmankosteus</div><div class="metric small" id="home-rh">—</div><p class="muted tiny">RuuviTag · suhteellinen kosteus</p><div class="statline"><span>Kastepiste</span><span id="home-dew">—</span></div><div class="statline"><span>Anturin tila</span><span id="home-air-status">—</span></div></article>
       <article class="card span8"><div class="flex"><h2>Sähkön tulevat hinnat</h2><span class="muted tiny">15 minuutin jaksot</span></div><div id="home-chart" class="chart"><div class="empty">Hintadataa odotetaan</div></div><div class="flex" style="margin-top:12px"><span class="muted tiny" id="home-cheap">Halvinta jaksoa ei tiedossa</span><button class="primary" id="go-prices" type="button">Kaikki hinnat</button></div></article>
+      <article class="card span12"><div class="flex"><h2>Oma energiankulutusluokka</h2><span class="chip">Epävirallinen</span></div>
+      <div class="fieldrow">
+        <div><div class="metric small" id="energy-grade">—</div><p class="muted tiny" id="energy-intensity">Vuoden kulutustieto puuttuu</p></div>
+        <label class="field">Lämmitetty pinta-ala m²<input id="energy-area" type="number" min="1" step=".5" inputmode="decimal" value="17"></label>
+        <label class="field">Vuotuinen sähkönkulutus kWh<input id="energy-annual" type="number" min="1" step="1" inputmode="numeric" placeholder="Syötä vuosikulutus"></label>
+        <button id="energy-calculate" class="primary" type="button">Laske luokka</button>
+      </div>
+      <p class="tiny muted" id="energy-feedback" role="status">Oma havainnollistava A–G-asteikko: alle 60 / 100 / 150 / 200 / 250 / 350 kWh/m²/v. G yli 350. Ei virallinen energiatodistus tai E-luku; ei huomioi lämmitysmuotoja tai sääkorjausta. Tiedot säilyvät vain tässä selaimessa.</p></article>
       <article class="card span12"><div class="flex"><h2>Optimoinnin seuraava toimenpide</h2><span class="chip" id="home-plan-state">Ei suunnitelmaa</span></div><p id="home-plan-next">Hyväksyttyä optimointisuunnitelmaa ei vielä ole.</p><div class="callout" id="home-plan-reason">Optimointi näkyy vasta, kun käytettävissä on kelvollinen, turvallinen ja kalibroitu laskentapohja.</div></article>
     </div>
   </section>
@@ -82,7 +150,7 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
     </div>
   </section>
   <section class="view" id="view-settings">
-    <div class="heading"><div><div class="eyebrow">Olosuhteet ja laite</div><h1>Asetukset ja diagnostiikka</h1><p>Paikallinen huonetavoite ja erikseen käyttöönotettava CN105-lämmitysohjaus.</p></div></div>
+    <div class="heading"><div><div class="eyebrow">Olosuhteet ja laite</div><h1>Asetukset</h1><p>Paikallinen huonetavoite ja erikseen käyttöönotettava CN105-lämmitysohjaus.</p></div></div>
     <div class="grid">
       <article class="card span7"><h2>Pihamökin toimintatila</h2><p class="tiny muted">Ylläpitolämpö ja Asuttu käyttävät omia, toisistaan riippumattomia huonetavoitteitaan. Hintaohjaus voi säätää Mitsubishin pyyntilämpötilaa.</p><div class="mode" role="group" aria-label="Laskennallinen tila"><button type="button" data-mode="0">Kylmillään</button><button type="button" data-mode="1">Kuivanapito</button><button type="button" data-mode="2">Ylläpitolämpö</button><button type="button" data-mode="3">Asuttu</button></div><div class="fieldrow" style="margin-top:17px"><label class="field">Ylläpitotavoite °C<input id="setting-hold" type="number" min="5" max="24" step=".5" inputmode="decimal"></label><label class="field">Asuttu °C<input id="setting-occupied" type="number" min="16" max="26" step=".5" inputmode="decimal"></label><label class="field">Kuivanapito Δ°C<input id="setting-delta" type="number" min="3" max="5" step=".5" inputmode="decimal"></label><button class="primary" id="save-mode" type="button" disabled>Tallenna asetukset</button></div><div id="feedback" role="status"></div><p class="tiny muted">Valitse Ylläpitolämpö tai Asuttu sekä kyseisen tilan huonetavoite. Hintaehdotus laskee Mitsubishille 16–26 °C pyyntilämpötilan 0,5 °C askelin; komennot sallitaan vain erillisellä käyttöönotolla.</p></article>
       <article class="card span12"><h2>Mitsubishi · automaattinen lämpötilan säätö</h2><p class="tiny muted">Laskenta käyttää RuuviTagia ja sähkön kokonaishintaa. Lämmitystä ohjataan Ylläpitolämpö- ja Asuttu-tiloissa. Komento lähtee CN105:lle, ja tavoitelämpötila tarkistetaan takaisinlukemalla. Käyttöönotto on aina erillinen valinta eikä firmwarepäivitys käynnistä sitä.</p><div class="flex"><span class="chip" id="control-state">Ohjaus ei käytössä</span><span id="control-last">Ei komentoja</span><button type="button" id="control-enable" class="primary">Ota automaattiohjaus käyttöön</button><button type="button" id="control-disable">Poista automaattiohjaus käytöstä</button></div><p id="control-feedback" role="status"></p></article>
@@ -110,13 +178,67 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-const state={status:null,prices:null,plan:null,history:null,mode:0,settingsDirty:false,settingsRevision:0,settingsSaving:false,statusRequestSequence:0,alertSettingsLoaded:false};
+const state={status:null,prices:null,plan:null,history:null,mode:0,settingsDirty:false,settingsRevision:0,settingsSaving:false,statusRequestSequence:0,alertSettingsLoaded:false,
+  alertSettingsDirty:false,alertSettingsSaving:false,alertSettingsRevision:0};
 const fmt=(v,d=1)=>Number.isFinite(v)?v.toLocaleString('fi-FI',{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
 const text=(id,value)=>{const e=$(id);if(e)e.textContent=value==null?'—':String(value);};
 const time=sec=>Number.isFinite(sec)&&sec>1700000000?new Date(sec*1000).toLocaleString('fi-FI',{timeZone:'Europe/Helsinki',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'Ei aikaa';
 const number=v=>typeof v==='number'&&Number.isFinite(v)?v:null;
 const modes=['Kylmillään','Kuivanapito','Ylläpitolämpö','Asuttu'];
 const priceFmt=v=>number(v)===null?'—':fmt(v*100,2)+' snt/kWh';
+
+// Illustrative electrical-consumption intensity: NOT the Finnish energy
+// certificate E-value. Never annualize a lifetime meter total of unknown age.
+function ownEnergyClass(annualKwh,heatedM2) {
+  if(!Number.isFinite(annualKwh)||annualKwh<=0||
+     !Number.isFinite(heatedM2)||heatedM2<=0)return null;
+  const intensity=annualKwh/heatedM2;
+  const limits=[60,100,150,200,250,350];
+  const labels=['A','B','C','D','E','F','G'];
+  let index=0;
+  while(index<limits.length && intensity>=limits[index])++index;
+  return {grade:labels[index],intensity};
+}
+function restoreEnergyForm() {
+  try {
+    const raw=localStorage.getItem('enevina_lite_own_energy_v1');
+    if(raw) {
+      const settings=JSON.parse(raw);
+      if(typeof settings.area==='number'&&settings.area>0)
+        $('energy-area').value=settings.area;
+      if(typeof settings.annual==='number'&&settings.annual>0)
+        $('energy-annual').value=settings.annual;
+    }
+  } catch(_) {} // Storage is optional, e.g. Safari private windows.
+  showEnergyGrade();
+}
+function showEnergyGrade() {
+  const calculated=ownEnergyClass(Number($('energy-annual').value),
+                                 Number($('energy-area').value));
+  text('energy-grade',calculated?calculated.grade:'—');
+  text('energy-intensity',calculated?
+      fmt(calculated.intensity,1)+' kWh/m² vuodessa':
+      'Syötä todellinen 12 kuukauden kulutus');
+  return calculated;
+}
+$('energy-calculate').addEventListener('click',()=>{
+  const calculated=showEnergyGrade();
+  if(!calculated) {
+    text('energy-feedback','Syötä yli nollan oleva lämmitetty pinta-ala ja täyden vuoden kulutus.');
+    return;
+  }
+  try {
+    localStorage.setItem('enevina_lite_own_energy_v1',JSON.stringify({
+      area:Number($('energy-area').value),
+      annual:Number($('energy-annual').value)
+    }));
+    text('energy-feedback','Vertailuluokka tallennettu tähän selaimeen. Ei virallinen energiatodistus tai E-luku.');
+  } catch(_) {
+    text('energy-feedback','Vertailuluokka laskettu; selain ei sallinut paikallista tallennusta.');
+  }
+});
+restoreEnergyForm();
+
 function switchView(name){
   if(!['home','prices','plan','settings'].includes(name))return;
   document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id==='view-'+name));
@@ -196,7 +318,8 @@ function showStatus(){
   $('save-mode').disabled=state.settingsSaving||!a.config_token;
   text('ruuvi-bound',a.bound_mac||'Ei sidottu');
   text('ruuvi-discovered',a.discovered_mac||'Ei havaintoa');
-  if(!state.alertSettingsLoaded && a.config_token) {
+  if(!state.alertSettingsLoaded && !state.alertSettingsDirty &&
+     !state.alertSettingsSaving && a.config_token) {
     $('alert-rh70').value=a.warning_rh70??'';
     $('alert-rh80').value=a.warning_rh80??'';
     $('alert-battery').value=a.warning_battery_v??'';
@@ -359,7 +482,13 @@ $('ruuvi-bind').addEventListener('click',async()=>{
   } catch(e){text('ruuvi-feedback',e.message);}
   finally{$('ruuvi-bind').disabled=false;}
 });
+['alert-rh70','alert-rh80','alert-battery'].forEach(id=>
+  $(id).addEventListener('input',()=>{
+    state.alertSettingsDirty=true;
+    ++state.alertSettingsRevision;
+  }));
 $('alerts-save').addEventListener('click',async()=>{
+  if(state.alertSettingsSaving)return;
   const rh70=Number($('alert-rh70').value),
     rh80=Number($('alert-rh80').value),
     battery=Number($('alert-battery').value);
@@ -368,14 +497,27 @@ $('alerts-save').addEventListener('click',async()=>{
      !Number.isFinite(battery)||battery<2||battery>3.2){
     text('alerts-feedback','Tarkista varoitusarvot');return;
   }
+  const revision=state.alertSettingsRevision;
+  state.alertSettingsSaving=true;
   $('alerts-save').disabled=true;
   try {
     await airPostLocal('/api/air/thresholds',{rh70:String(rh70),
       rh80:String(rh80),battery:String(battery)});
-    text('alerts-feedback','Varoitusrajat tallennettu.');
-    state.alertSettingsLoaded=false;await reloadStatus();
+    if(state.alertSettingsRevision===revision){
+      state.alertSettingsDirty=false;
+      state.alertSettingsLoaded=false;
+      text('alerts-feedback','Varoitusrajat tallennettu.');
+    } else {
+      // A new edit made while POST was in flight must remain in the form.
+      state.alertSettingsDirty=true;
+      text('alerts-feedback','Aiemmat varoitusrajat tallennettu. Uudet muutokset odottavat tallennusta.');
+    }
+    await reloadStatus();
   }catch(e){text('alerts-feedback',e.message);}
-  finally{$('alerts-save').disabled=false;}
+  finally{
+    state.alertSettingsSaving=false;
+    $('alerts-save').disabled=false;
+  }
 });
 
 document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>{state.settingsDirty=true;++state.settingsRevision;state.mode=Number(b.dataset.mode);document.querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('selected',x===b));}));
