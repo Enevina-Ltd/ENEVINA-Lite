@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <cstring>
 using namespace enevina::cottage;
 static bool near(double a,double b){return std::fabs(a-b)<1e-8;}
 int main() {
@@ -16,6 +17,7 @@ int main() {
     auto d=bootstrap_price_decision(in);
     assert(d.action==BootstrapAction::HeatSetpoint && !d.executable);
     assert(d.reason==BootstrapReason::TemperatureLow);
+    assert(std::strcmp(bootstrap_reason_name(d.reason),"BELOW_ROOM_TARGET")==0);
     assert(near(d.requested_room_c,18.0));
     assert(near(d.heat_setpoint_c,20.0));
     assert(near(d.compared_median_eur_per_kwh,0.45));
@@ -25,6 +27,8 @@ int main() {
     assert(near(d.heat_setpoint_c,18.5));
     in.indoor_c=18.7;
     assert(bootstrap_price_decision(in).action==BootstrapAction::Off);
+    assert(std::strcmp(bootstrap_reason_name(
+        bootstrap_price_decision(in).reason),"ABOVE_ROOM_TARGET")==0);
     in.indoor_c=18.0;
     assert(bootstrap_price_decision(in).reason==BootstrapReason::ExpensiveWindow);
     in.next_total_prices=cheap;
@@ -52,7 +56,9 @@ int main() {
     d=bootstrap_price_decision(in);
     assert(d.action==BootstrapAction::HeatSetpoint && near(d.heat_setpoint_c,16.0));
     in.indoor_c=12.8;
-    assert(bootstrap_price_decision(in).action==BootstrapAction::Off);
+    d=bootstrap_price_decision(in);
+    assert(d.action==BootstrapAction::Off);
+    assert(std::strcmp(bootstrap_reason_name(d.reason),"ABOVE_ROOM_TARGET")==0);
     in.price_count=7;
     assert(bootstrap_price_decision(in).reason==BootstrapReason::MissingPrices);
     in.price_count=8;in.prices_contiguous_and_fresh=false;
