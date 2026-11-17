@@ -736,7 +736,6 @@ static void cottage_control_tick() {
     candidate.bridge_get_ok=true; // separate live ESPHome GET succeeded
     candidate.current_heat=current_heat;
     candidate.current_setpoint_c=current_setpoint;
-    candidate.now_ms=now_ms;
     candidate.proposal=proposal;
     const auto decision=choose_mitsubishi_control(candidate);
     control_gate.store(static_cast<int>(decision.gate));
