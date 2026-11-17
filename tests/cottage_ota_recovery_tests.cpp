@@ -67,10 +67,21 @@ int main(){
            Recovery::QuarantineRealRollback);
     assert(decide(tx,state(true,ImageState::New,true))==
            Recovery::KeepForActivation);
-    // A stale prior ABORTED otadata does not prove new candidate was booted.
-    auto stale=candidate(Phase::Armed,ImageState::Aborted);
+    // A stale prior ABORTED otadata alone is not enough: Prepared
+    // preserves the prior state and cannot prove an attempted boot.
+    auto stale=candidate(Phase::Prepared,ImageState::Aborted);
     assert(decide(stale,state(true,ImageState::Aborted))==
            Recovery::DiscardNeverActivated);
+    // Armed is written only AFTER set_boot_partition has reset the
+    // bootloader's state to NEW. A subsequent ABORTED proves rollback.
+    stale.phase=Phase::Armed;seal(stale);
+    assert(decide(stale,state(true,ImageState::Aborted))==
+           Recovery::QuarantineRealRollback);
+    // Even without durable Armed write, a changed previous image-state
+    // makes the rollback unambiguous.
+    auto interrupted=candidate(Phase::Prepared,ImageState::Valid);
+    assert(decide(interrupted,state(true,ImageState::Aborted))==
+           Recovery::QuarantineRealRollback);
     // Slot/hash mismatch MUST NOT accept or quarantine wrong firmware.
     assert(decide(tx,state(false,ImageState::Valid,false,false))==
            Recovery::Blocked);
