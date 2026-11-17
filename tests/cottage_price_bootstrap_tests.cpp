@@ -23,6 +23,10 @@ int main() {
     in.next_total_prices=expensive;
     assert(bootstrap_price_decision(in).reason==BootstrapReason::ExpensiveWindow);
     in.confirmed_minutes_in_mode=10;
+    // Advice-only has no verified actuator history: offer an honest price
+    // proposal instead of permanently locking into HOLD.
+    assert(bootstrap_price_decision(in).reason==BootstrapReason::ExpensiveWindow);
+    in.actuator_dwell_verified=true;
     assert(bootstrap_price_decision(in).action==BootstrapAction::Hold);
     in.confirmed_minutes_in_mode=60;in.currently_heating=true;in.indoor_c=16.0;
     assert(bootstrap_price_decision(in).action==BootstrapAction::Hold);
