@@ -181,16 +181,31 @@ function showPrices(){
 }
 function showPlan(){
   const p=state.plan||{},s=state.status||{},ok=p.valid===true&&Array.isArray(p.slots)&&p.slots.length>0;
-  text('home-plan-state',ok?'Laskelma saatavilla':'Ei hyväksyttyä suunnitelmaa');
-  text('plan-status',ok?String(p.count)+' jaksoa':'Ei käytössä');
+  const bootstrap=s.bootstrap_action;
+  const proposed=bootstrap==='HEAT_16'?'HEAT 16 °C':bootstrap==='OFF'?'OFF':
+                 bootstrap==='HOLD'?'Pidä nykyinen tila':null;
+  const hasFallback=!ok&&proposed!==null;
+  text('home-plan-state',ok?'MPC-laskelma':hasFallback?'Hintaohjauksen ehdotus':'Ei hyväksyttyä suunnitelmaa');
+  text('plan-status',ok?String(p.count)+' jaksoa':hasFallback?'Lähtötason hintaohjaus':'Ei käytössä');
   text('plan-time',ok?'Laskettu '+time(s.optimized_utc):'Ei kelvollista laskelmaa');
   text('plan-cost',ok&&number(p.cost_eur)!==null?fmt(p.cost_eur,2)+' €':'—');
   text('plan-min',ok&&number(p.minimum_c)!==null?fmt(p.minimum_c,1)+' °C':'—');
-  text('home-plan-next',ok?'Seuraava jakso '+time(p.slots[0].utc)+': '+(p.slots[0].heat?'HEAT 16 °C':'OFF'):'Hyväksytty optimointisuunnitelma puuttuu.');
-  text('home-plan-reason',ok?'Simuloitu ehdotus. Ei ohjaa todellista Mitsubishi-lämpöpumppua.':'Laskelmia ei näytetä ilman kelvollista mallia ja tuoreita lähtötietoja. Laite toimii vain varjotilassa.');
-  text('plan-warning',ok?'Ehdotukset ovat laskennallisia. Fyysiset ohjauskäskyt ovat estettyjä.':'Suunnitelma ei ole saatavilla: puuttuva tai vanhentunut mittaus, ennuste, kalibrointi tai muu turvaraja voi estää sen. Ei fyysisiä käskyjä.');
+  text('home-plan-next',ok?'Seuraava jakso '+time(p.slots[0].utc)+': '+(p.slots[0].heat?'HEAT 16 °C':'OFF'):
+    hasFallback?'Lähtötason ehdotus: '+proposed:'Hyväksytty optimointisuunnitelma puuttuu.');
+  text('home-plan-reason',ok?'Simuloitu MPC-ehdotus. Ei fyysistä ohjausta.':
+    hasFallback?'Ruuvi + 15 min kokonaishinnat; syy: '+(s.bootstrap_reason||'—')+
+      '. Ei kalibroitua MPC:tä eikä ohjauskäskyjä.':
+    'Ehdotus estetty: '+(s.bootstrap_reason||'puutteelliset lähtötiedot')+'. Ei fyysisiä käskyjä.');
+  text('plan-warning',ok?'Ehdotukset ovat laskennallisia. Fyysiset ohjauskäskyt ovat estettyjä.':
+    hasFallback?'Lähtötason hintaohjaus: '+proposed+' (ehdotus, ei käsky). Kalibroitua MPC-suunnitelmaa ei ole vielä saatavilla.':
+    'Optimointiehdotus ei ole saatavilla. Puuttuva lämpötila tai puutteellinen hintajakso estää laskennan. Ei fyysisiä käskyjä.');
   const body=$('plan-rows');body.replaceChildren();
-  if(!ok){const tr=body.insertRow();tr.insertCell().colSpan=5;tr.cells[0].textContent='Suunnitelma ei saatavilla.';return;}
+  if(!ok){
+    const tr=body.insertRow();tr.insertCell().colSpan=5;
+    tr.cells[0].textContent=hasFallback?'Nykyinen ehdotus: '+proposed+'. Mallinnettu tuntien lämpötila- ja kustannusennuste puuttuu.':
+      'Suunnitelma ei saatavilla.';
+    return;
+  }
   p.slots.slice(0,96).forEach(x=>{const tr=body.insertRow();[time(x.utc),x.heat?'HEAT 16 °C':'OFF',fmt(number(x.indoor_c),1),fmt(number(x.kwh),3),fmt(number(x.eur),3)].forEach((v,i)=>{const cell=tr.insertCell();cell.textContent=v;if(i===1)cell.className=x.heat?'heat':'off';});});
 }
 function showHistory(){
