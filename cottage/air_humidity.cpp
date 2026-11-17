@@ -56,6 +56,11 @@ bool AirHistory::add(const AirMoisture& air,int64_t utc) {
 }
 bool AirHistory::add_offline(const AirMoisture& air,uint64_t ms) {
     if(!air.valid)return false;
+    // NVS may have restored real UTC hours before NTP is available.
+    // Unknown boot-relative time must never enter that same UTC series
+    // and erase it when the clock subsequently synchronizes.
+    if(count_ && !(newest(0).hour_utc&0x80000000u))
+        return false;
     return add_hour(air,0x80000000u |
                   static_cast<uint32_t>((ms/3600000)%0x7fffffffu));
 }
