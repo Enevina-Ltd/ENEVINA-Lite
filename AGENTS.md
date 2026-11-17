@@ -22,11 +22,11 @@
 ---
 
 
-## 0. KEHITYSPÄÄTÖS: ENEINA LITE ENSIN TOIMIVAKSI (16.11.2026)
+## 0. KEHITYSPÄÄTÖS: ENEVINA LITE ENSIN TOIMIVAKSI (16.11.2026)
 
 **Käyttäjän uusin nimenomainen päätös on etusijalla:** Enevina Lite kehitetään ensin oikeasti toimivaksi yhden lämpöpumpun paikalliseksi energianhallinta- ja optimointituotteeksi. Älä lukitse V1:tä monitoring-only-tilaan, poista ohjauspolkuja, kiellä optimoinnin kehitystä tai siirrä niitä automaattisesti V2:een. Kaupallistamisen ominaisuusrajat päätetään myöhemmin mitatun toimintakyvyn perusteella.
 
-**Ei uusia turhia watchd'ogeja, watchdog-kerroksia, health-watcher-silmukoita, reset-ajastimia eikä automaattisia käynnistysketjuja.** Alkuperäinen Enevina Core kärsi ylenpalttisesta valvonta- ja resetlogiikasta. Selvitä juurisyy, mittaa ongelma ja korjaa koodi. Älä lisää uutta restart-mekanismia vain varmuuden vuoksi. Säilytä jo käytössä olevat perustellut ESP-IDF/Arduino-suojat; niiden korvaaminen tai muuttaminen vaatii erillisen todistettuun vikaan perustuvan päätöksen.
+**Ei uusia turhia watchdogeja, watchdog-kerroksia, health-watcher-silmukoita, reset-ajastimia eikä automaattisia käynnistysketjuja.** Alkuperäinen Enevina Core kärsi ylenpalttisesta valvonta- ja resetlogiikasta. Selvitä juurisyy, mittaa ongelma ja korjaa koodi. Älä lisää uutta restart-mekanismia vain varmuuden vuoksi. Säilytä jo käytössä olevat perustellut ESP-IDF/Arduino-suojat; niiden korvaaminen tai muuttaminen vaatii erillisen todistettuun vikaan perustuvan päätöksen.
 
 ### Ensisijainen toimivuusjono F01–F09
 
