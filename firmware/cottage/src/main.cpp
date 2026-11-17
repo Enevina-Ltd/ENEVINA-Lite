@@ -154,16 +154,18 @@ static void parse_sse_state(const char* raw) {
     if(changed) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
         if(climate_event) {
-            // A cached shadow schedule assumes a specific current pump mode
-            // and dwell. Any mode transition invalidates that schedule
-            // immediately (also HEAT <-> OFF and unsupported COOL/DRY/FAN).
-            if(copy.mode!=pump.mode) {
+            const bool continuous=climate_utc>0 && now>=climate_utc &&
+                now-climate_utc<=180;
+            // The MPC snapshot assumes both its original pump mode AND
+            // confirmed uninterrupted dwell age. A gap >180s or a clock
+            // discontinuity resets dwell even when HEAT/OFF is unchanged.
+            // Change generation under lock_data so a concurrently running
+            // optimizer cannot publish a schedule built on stale dwell.
+            if(copy.mode!=pump.mode || !continuous) {
                 ++observed_mode_generation;
                 plan_count=0;
                 last_plan.status=MpcStatus::InvalidInput;
             }
-            const bool continuous=climate_utc>0 && now>=climate_utc &&
-                now-climate_utc<=180;
             observed_mode_duration.observe(copy.mode,
                 static_cast<uint64_t>(esp_timer_get_time()/1000),continuous);
         }
