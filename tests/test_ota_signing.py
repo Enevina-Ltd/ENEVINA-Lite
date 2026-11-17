@@ -76,6 +76,16 @@ class ArduinoRollbackSourceGuardTests(unittest.TestCase):
         self.assertIn('esp_ota_mark_app_valid_cancel_rollback()',source)
         self.assertIn('ESP_OTA_IMG_PENDING_VERIFY',source)
 
+    def test_regular_platformio_usb_upload_is_fail_closed(self):
+        import subprocess
+        root=Path(__file__).resolve().parents[1]
+        ini=(root/"firmware/cottage/platformio.ini").read_text()
+        self.assertIn("upload_protocol = custom",ini)
+        self.assertIn("upload_command = python3 block_usb_upload.py",ini)
+        block=root/"firmware/cottage/block_usb_upload.py"
+        proc=subprocess.run([sys.executable,str(block)],capture_output=True,text=True)
+        self.assertNotEqual(proc.returncode,0)
+        self.assertIn("ENEVINA_LITE_USB_UPLOAD_BLOCKED",proc.stderr)
     def test_bootloader_rollback_compiled_in_build_recipe(self):
         source=(Path(__file__).resolve().parents[1]/
                 "firmware/cottage/bootloader-rollback-idf55/sdkconfig.defaults").read_text()
