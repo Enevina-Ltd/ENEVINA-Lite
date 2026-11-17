@@ -112,15 +112,24 @@ private:
     unsigned rejected_=0;
     Callback cb_;
     void* ctx_;
-    static bool has_escaped_nul(const char* value) {
+    static bool has_ambiguous_unicode_escape(const char* value) {
+        // The CN105 proof includes a serialized JSON string inside JSON.
+        // Decoding \u005c (backslash), \u0075 ('u') or encoded hex digits
+        // can create \u0000 only after the next JSON parse. Field telemetry
+        // requires ASCII keys/numbers, not JSON Unicode escape syntax.
+        auto hex=[](char c) {
+            return (c>='0'&&c<='9') || (c>='a'&&c<='f') ||
+                   (c>='A'&&c<='F');
+        };
         for(const char* p=value;*p;) {
             if(*p!='\\') {++p;continue;}
             while(*p=='\\') ++p;
-            // An SSE state can contain serialized JSON inside JSON. Even
-            // backslash runs may become a real NUL after a second decode.
-            // Fail closed on every spelling to avoid a nested truncation.
-            if(std::strncmp(p,"u0000",5)==0)
-                return true;
+            if(*p!='u')continue;
+            bool encoded=true;
+            for(unsigned i=1;i<=4;i++) {
+                if(p[i]=='\0' || !hex(p[i])) {encoded=false;break;}
+            }
+            if(encoded)return true; // reject all Unicode escapes, fail closed
         }
         return false;
     }
@@ -131,10 +140,9 @@ private:
         if(line_size_==0) {
             if(state_event_ && payload_size_ && cb_) {
                 payload_[payload_size_]=0;
-                // cJSON decodes \u0000 into an embedded C-string NUL:
-                // reject it before an outer or nested JSON parser can
-                // silently accept only the valid prefix.
-                if(has_escaped_nul(payload_)) ++rejected_;
+                // Reject Unicode escape syntax before either layer of JSON
+                // decoding can construct a truncated C string.
+                if(has_ambiguous_unicode_escape(payload_)) ++rejected_;
                 else cb_(payload_,ctx_);
             }
             reset();
