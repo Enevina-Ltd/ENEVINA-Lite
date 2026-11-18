@@ -54,6 +54,11 @@ class WifiOnboardingSource(unittest.TestCase):
         self.assertIn("prefers-color-scheme:dark", PAGE)
         self.assertIn("url_numeric", PAGE)  # mDNS fallback always shown
 
+    def test_ssid_submitted_verbatim(self):
+        # Codex P2 (PR #30): leading/trailing spaces are part of an SSID.
+        self.assertIn("const ssid=$('ssid').value,", PAGE)
+        self.assertNotIn("$('ssid').value.trim()", PAGE)
+
     def test_main_wiring(self):
         self.assertIn("cottage_wifi_begin(web);", MAIN)
         self.assertIn("cottage_wifi_loop();", MAIN)

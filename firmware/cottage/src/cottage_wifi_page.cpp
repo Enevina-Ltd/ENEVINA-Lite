@@ -65,8 +65,8 @@ async function poll(){try{const s=await status();
  if(s.last_result==='CONNECTED'&&s.phase==='ONLINE'){finished(s);return}
  say(reasons[s.last_result]||reasons.FAILED,'bad')}catch(e){
  say('Puhelimen yhteys laitteeseen katkesi hetkeksi. Yhdistä tarvittaessa uudelleen verkkoon '+(window.apName||'Enevina-Lite')+'.','mut')}}
-$('go').onclick=async()=>{const ssid=$('ssid').value.trim(),pw=$('pw').value;
- if(!ssid){say('Valitse tai kirjoita verkon nimi.','bad');return}
+$('go').onclick=async()=>{const ssid=$('ssid').value,pw=$('pw').value;
+ if(!ssid.trim()){say('Valitse tai kirjoita verkon nimi.','bad');return}
  if(pw&&pw.length<8){say('Wi-Fi-salasanassa on vähintään 8 merkkiä.','bad');return}
  $('go').disabled=true;say('Yhdistetään…');
  try{const r=await fetch('/api/wifi/connect',{method:'POST',body:new URLSearchParams({ssid,password:pw,token})});
