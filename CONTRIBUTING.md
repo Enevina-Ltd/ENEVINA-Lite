@@ -1,7 +1,7 @@
 # Contributing to Enevina Lite
 
 Enevina Lite is a **source-available, noncommercial** project developed by
-Enevina Oy. You are welcome to open issues, report bugs, and suggest hardware
+Enevina Ltd (registered in Finland as Enevina Oy). You are welcome to open issues, report bugs, and suggest hardware
 and heat-pump compatibility improvements.
 
 ## Before submitting code
