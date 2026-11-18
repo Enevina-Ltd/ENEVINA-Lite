@@ -1450,6 +1450,58 @@ static void plan_endpoint() {
     web.sendContent("]}");
     web.sendContent("");
 }
+// Read-only hourly Finnish Meteorological Institute temperature forecast.
+// Uses the same mutex-protected, validated cache as the optimizer; does not
+// issue a new HTTPS request, infer missing data or alter heating controls.
+static void weather_forecast_endpoint() {
+    const auto weather=enevina_firmware::weather_status();
+    constexpr size_t max_forecast_points=64;
+    constexpr size_t max_emitted_points=48;
+    auto* points=static_cast<enevina::OutdoorPoint*>(
+        heap_caps_malloc(sizeof(enevina::OutdoorPoint)*max_forecast_points,
+                         MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    if(!points) {
+        web.sendHeader("Cache-Control","no-store");
+        web.send(503,"application/json; charset=utf-8",
+                 "{\"valid\":false,\"slots\":[]}");
+        return;
+    }
+    const int64_t now=time(nullptr);
+    const size_t count=weather.available?
+        enevina_firmware::future_weather(points,max_forecast_points):0;
+    size_t available=0;
+    for(size_t i=0;i<count;++i) {
+        const auto& point=points[i];
+        if(point.timestamp_utc>=now && point.timestamp_utc<=now+48*3600 &&
+           std::isfinite(point.temperature_c) && point.temperature_c>=-60 &&
+           point.temperature_c<=60 && ++available>=max_emitted_points)break;
+    }
+    web.sendHeader("Cache-Control","no-store");
+    web.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    web.send(200,"application/json; charset=utf-8","");
+    char line[180];
+    snprintf(line,sizeof(line),
+        "{\"valid\":%s,\"source\":\"FMI Harmonie\",\"fetched_utc\":%lld,\"slots\":[",
+        available?"true":"false",static_cast<long long>(available?weather.fetched_utc:0));
+    web.sendContent(line);
+    size_t emitted=0;
+    for(size_t i=0;i<count && emitted<max_emitted_points;++i) {
+        const auto& point=points[i];
+        if(point.timestamp_utc<now || point.timestamp_utc>now+48*3600 ||
+           !std::isfinite(point.temperature_c) ||
+           point.temperature_c < -60 || point.temperature_c > 60)
+            continue;
+        snprintf(line,sizeof(line),
+             "%s{\"utc\":%lld,\"temperature_c\":%.3f}",
+             emitted++?",":"",static_cast<long long>(point.timestamp_utc),
+             point.temperature_c);
+        web.sendContent(line);
+        if(i%12==11) delay(1);
+    }
+    web.sendContent("]}");
+    web.sendContent("");
+    heap_caps_free(points);
+}
 // C2.5: Small, read-only 15-minute price feed for the local premium dashboard.
 // Do not manufacture price points when the clock or market data is stale.
 static void prices_endpoint() {
@@ -1564,6 +1616,7 @@ void setup() {
     web.on("/api/status",HTTP_GET,status_endpoint);
     web.on("/api/plan",HTTP_GET,plan_endpoint);
     web.on("/api/prices",HTTP_GET,prices_endpoint);
+    web.on("/api/weather",HTTP_GET,weather_forecast_endpoint);
     c23_register_routes(web);
     site_settings_register_routes(web);
     cottage_control_registration(); // restore prior explicit choice only
