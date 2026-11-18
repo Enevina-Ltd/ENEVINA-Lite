@@ -54,7 +54,7 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
 </aside>
 <main class="main">
   <div class="top"><div><div class="eyebrow">Energia · Pihamökki</div><strong id="clock">Aikaa ei ole synkronoitu</strong></div><span class="chip"><span id="connection-dot" class="dot"></span><span id="connection">Yhdistetään</span></span></div>
-  <div class="notice" role="status"><strong>VARJOTILA</strong><span>Tämä versio seuraa ja laskee ehdotuksia, mutta ei ohjaa lämpöpumppua. Näytettävä suunnitelma ei ole käsky.</span></div>
+  <div class="notice" role="status"><strong id="pilot-state-heading">OHJAUS POIS</strong><span id="pilot-state-text">Ota CN105-automaattiohjaus käyttöön Asetukset-näkymästä. Optimointiehdotus ei yksin lähetä käskyjä.</span></div>
   <section class="view active" id="view-home">
     <div class="heading"><div><div class="eyebrow">Yleisnäkymä</div><h1>Pihamökin olosuhteet</h1><p>Mittaukset, sähkön hinta ja tuleva lämmityssuunnitelma.</p></div></div>
     <div class="grid">
@@ -76,15 +76,16 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
     </div>
   </section>
   <section class="view" id="view-plan">
-    <div class="heading"><div><div class="eyebrow">Ennakoiva lämmitys</div><h1>Optimointisuunnitelma</h1><p>Fysiikkapohjainen laskenta. Varjotilassa yhtään käskyä ei lähetetä.</p></div></div>
+    <div class="heading"><div><div class="eyebrow">Ennakoiva lämmitys</div><h1>Optimointisuunnitelma</h1><p>Hintaohjaus tuottaa ehdotuksen; CN105-komennot edellyttävät erillistä käyttöönottoa.</p></div></div>
     <div class="grid"><article class="card span4"><div class="eyebrow">Suunnitelma</div><div class="metric small" id="plan-status">—</div><p class="tiny muted" id="plan-time">Ei kelvollista laskelmaa</p></article><article class="card span4"><div class="eyebrow">Ennustettu kustannus</div><div class="metric small" id="plan-cost">—</div><p class="tiny muted">Mallin kokonaisarvio, jos kelvollinen</p></article><article class="card span4"><div class="eyebrow">Ennustettu alin lämpötila</div><div class="metric small" id="plan-min">—</div><p class="tiny muted">Laskettu, ei anturimittaus</p></article>
       <article class="card span12"><div id="plan-warning" class="callout warn">Hyväksyttyä suunnitelmaa ei ole. Lämpöpumppu ei saa tältä käyttöliittymältä komentoja.</div><div class="tablewrap"><table><thead><tr><th>Alkaa</th><th>Ehdotus</th><th>Ennuste °C</th><th>Sähkö kWh</th><th>Arvio €</th></tr></thead><tbody id="plan-rows"><tr><td colspan="5">Suunnitelma ei saatavilla.</td></tr></tbody></table></div></article>
     </div>
   </section>
   <section class="view" id="view-settings">
-    <div class="heading"><div><div class="eyebrow">Olosuhteet ja laite</div><h1>Asetukset ja diagnostiikka</h1><p>Vain paikalliset laskennalliset tavoitteet. Ei lämpöpumpun käskyjä.</p></div></div>
+    <div class="heading"><div><div class="eyebrow">Olosuhteet ja laite</div><h1>Asetukset ja diagnostiikka</h1><p>Paikallinen huonetavoite ja erikseen käyttöönotettava CN105-lämmitysohjaus.</p></div></div>
     <div class="grid">
-      <article class="card span7"><h2>Pihamökin toimintatila</h2><p class="tiny muted">Asetukset vaikuttavat laskentaan ja varoituksiin. Todellinen Mitsubishi säilyttää oman ohjauksensa.</p><div class="mode" role="group" aria-label="Laskennallinen tila"><button type="button" data-mode="0">Kylmillään</button><button type="button" data-mode="1">Kuivanapito</button><button type="button" data-mode="2">Ylläpitolämpö</button></div><div class="fieldrow" style="margin-top:17px"><label class="field">Ylläpitotavoite °C<input id="setting-hold" type="number" min="5" max="24" step=".5" inputmode="decimal"></label><label class="field">Kuivanapito Δ°C<input id="setting-delta" type="number" min="3" max="5" step=".5" inputmode="decimal"></label><button class="primary" id="save-mode" type="button" disabled>Tallenna asetukset</button></div><div id="feedback" role="status"></div><p class="tiny muted">Valitse Ylläpitolämpö ja oma huonetavoite. Hintaehdotus laskee Mitsubishille 16–26 °C pyyntilämpötilan 0,5 °C askelin; komentoja ei vielä lähetetä.</p></article>
+      <article class="card span7"><h2>Pihamökin toimintatila</h2><p class="tiny muted">Ylläpitotavoite ohjaa laskentaa. Kun CN105-automaattiohjaus otetaan erikseen käyttöön, Lite säätää pumpun pyyntilämpötilaa.</p><div class="mode" role="group" aria-label="Laskennallinen tila"><button type="button" data-mode="0">Kylmillään</button><button type="button" data-mode="1">Kuivanapito</button><button type="button" data-mode="2">Ylläpitolämpö</button></div><div class="fieldrow" style="margin-top:17px"><label class="field">Ylläpitotavoite °C<input id="setting-hold" type="number" min="5" max="24" step=".5" inputmode="decimal"></label><label class="field">Kuivanapito Δ°C<input id="setting-delta" type="number" min="3" max="5" step=".5" inputmode="decimal"></label><button class="primary" id="save-mode" type="button" disabled>Tallenna asetukset</button></div><div id="feedback" role="status"></div><p class="tiny muted">Valitse Ylläpitolämpö ja oma huonetavoite. Hintaehdotus laskee Mitsubishille 16–26 °C pyyntilämpötilan 0,5 °C askelin; komennot sallitaan vain erillisellä käyttöönotolla.</p></article>
+      <article class="card span12"><h2>Mitsubishi · automaattinen lämpötilan säätö</h2><p class="tiny muted">Laskenta käyttää RuuviTagia ja sähkön kokonaishintaa. Lämmitystä ohjataan vain Ylläpitolämpö-tilassa. Komento lähtee CN105:lle, ja tavoitelämpötila tarkistetaan takaisinlukemalla. Käyttöönotto on aina erillinen valinta eikä firmwarepäivitys käynnistä sitä.</p><div class="flex"><span class="chip" id="control-state">Ohjaus ei käytössä</span><span id="control-last">Ei komentoja</span><button type="button" id="control-enable" class="primary">Ota automaattiohjaus käyttöön</button><button type="button" id="control-disable">Poista automaattiohjaus käytöstä</button></div><p id="control-feedback" role="status"></p></article>
       <article class="card span5"><h2>Laitteen tila</h2><div class="statusgrid"><span>Ohjelmistoversio</span><span id="device-version">—</span><span>Wi-Fi RSSI</span><span id="device-wifi">—</span><span>CN105-telemetria</span><span id="device-cn105">—</span><span>Shelly-mittaus</span><span id="device-shelly">—</span><span>Sisäinen vapaa RAM</span><span id="device-ram">—</span><span>PSRAM vapaana</span><span id="device-psram">—</span><span>OTA-lataus käytössä</span><span id="device-ota">—</span></div><p class="foot"><a href="/diagnostics" style="text-decoration:underline">Avaa alkuperäinen tekninen diagnostiikka</a></p></article>
       <article class="card span12"><h2>Mitsubishi CN105 · vastaanotettu data</h2><div class="statusgrid"><span>Viimeisin SSE-tilaviesti</span><span id="mitsubishi-read-status">—</span><span>Pumpun tila (SSE)</span><span id="mitsubishi-read-mode">—</span><span>Pumpun sisälämpötila (SSE)</span><span id="mitsubishi-read-temp">—</span><span>Asetuslämpötila (SSE)</span><span id="mitsubishi-read-setpoint">—</span><span>Kompressori (SSE)</span><span id="mitsubishi-read-hz">—</span><span>Kompressoriviestin ikä</span><span id="mitsubishi-compressor-age">—</span></div><p class="foot">ESPHome /events -rajapinnasta vastaanotettu viimeisin tilatieto. Viestin vastaanottoaika ei todista uutta CN105-UART-lukua, eikä näitä arvoja käytetä optimoinnin turvallisuushyväksyntään.</p></article>
       <article class="card span12"><h2>Sisäilman historia · RuuviTag</h2><div id="history-chart" class="chart"><div class="empty">Historiatietoja odotetaan</div></div><p class="foot">Viimeisimmät mittaukset, ei rakenteen kosteusmittaus. Offline-ajalta tallennettuja aikaleimoja ei esitetä UTC-aikana.</p></article>
@@ -141,6 +142,17 @@ function showStatus(){
   text('home-outside',number(a.outside_temperature_c)!==null?fmt(a.outside_temperature_c,1)+' °C':number(s.weather_c)!==null?fmt(s.weather_c,1)+' °C':'—');
   text('home-watts',number(s.shelly_w)!==null?fmt(s.shelly_w,0)+' W':'—');
   text('price-now',priceFmt(s.spot));text('price-updated','Viimeisin haku: '+time(s.market_last_fetch_utc));
+  text('pilot-state-heading',s.control_armed===true?'CN105-OHJAUS SALLITTU':'OHJAUS POIS');
+  text('pilot-state-text',s.control_armed===true?
+    'Automaattiohjaus on kytketty. Käskyjä lähetetään vain Ylläpitolämpö-tilassa, kun mittaus- ja yhteysportit ovat kunnossa.':
+    'Automaattiohjaus ei ole päällä. Laskenta näyttää ehdotuksia ilman fyysisiä käskyjä.');
+  text('control-state',s.control_armed===true?
+    'Automaattiohjaus valittu · '+(s.control_gate||'odottaa'): 'Automaattiohjaus pois');
+  text('control-last', 'Komentoja '+(s.control_commands_sent||0)+
+    ' · sillalta kuitattu '+(s.control_commands_confirmed||0)+
+    ' · virheitä '+(s.control_commands_failed||0));
+  $('control-enable').disabled=s.control_armed===true || !a.config_token;
+  $('control-disable').disabled=s.control_armed!==true || !a.config_token;
   text('device-version',s.firmware_version||'—');text('device-wifi',number(s.wifi_rssi_dbm)!==null?fmt(s.wifi_rssi_dbm,0)+' dBm':'Ei Wi-Fiä');
   const hasSse=s.cn105_sse_climate_received===true;
   const climateAge=number(s.cn105_sse_climate_age_s);
@@ -158,7 +170,7 @@ function showStatus(){
   text('device-shelly',number(s.shelly_w)!==null?'Käytössä':'Ei lukemaa');
   text('device-ram',number(s.free_internal_heap)!==null?fmt(s.free_internal_heap/1024,0)+' KiB':'—');
   text('device-psram',number(s.free_psram)!==null?fmt(s.free_psram/1048576,2)+' MiB':'—');
-  text('device-ota',s.ota_upload_enabled===true?'Kyllä':'Ei');
+  text('device-ota',s.ota_signed_pull_enabled===true?'Kyllä · allekirjoitettu':'Ei');
   if(!state.settingsDirty) {
     state.mode=mode;
     document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('selected',Number(b.dataset.mode)===mode));
@@ -193,14 +205,14 @@ function showPlan(){
   text('plan-min',ok&&number(p.minimum_c)!==null?fmt(p.minimum_c,1)+' °C':'—');
   text('home-plan-next',ok?'Seuraava jakso '+time(p.slots[0].utc)+': '+(p.slots[0].heat?'HEAT 16 °C':'OFF'):
     hasFallback?'Lähtötason ehdotus: '+proposed:'Hyväksytty optimointisuunnitelma puuttuu.');
-  text('home-plan-reason',ok?'Simuloitu MPC-ehdotus. Ei fyysistä ohjausta.':
+  text('home-plan-reason',ok?'Simuloitu MPC-ehdotus. Automaattiohjaus toimii erillisellä hintaohjauspolulla.':
     hasFallback?'Ruuvi + 15 min kokonaishinnat; huonetavoite '+
       fmt(s.bootstrap_room_target_c,1)+' °C; syy: '+(s.bootstrap_reason||'—')+
       '. Ehdotus ei ole kalibroitu MPC eikä lähetä ohjauskäskyjä.':
-    'Ehdotus estetty: '+(s.bootstrap_reason||'puutteelliset lähtötiedot')+'. Ei fyysisiä käskyjä.');
+    'Ehdotus estetty: '+(s.bootstrap_reason||'puutteelliset lähtötiedot')+'.');
   text('plan-warning',ok?'Ehdotukset ovat laskennallisia. Fyysiset ohjauskäskyt ovat estettyjä.':
     hasFallback?'Lähtötason hintaohjaus: '+proposed+' (ehdotus, ei käsky). Kalibroitua MPC-suunnitelmaa ei ole vielä saatavilla.':
-    'Optimointiehdotus ei ole saatavilla. Puuttuva lämpötila tai puutteellinen hintajakso estää laskennan. Ei fyysisiä käskyjä.');
+    'Optimointiehdotus ei ole saatavilla. Puuttuva lämpötila tai puutteellinen hintajakso estää laskennan.');
   const body=$('plan-rows');body.replaceChildren();
   if(!ok){
     const tr=body.insertRow();tr.insertCell().colSpan=5;
@@ -245,7 +257,8 @@ async function reloadStatus(){
     'mitsubishi-read-temp':'—','mitsubishi-read-setpoint':'—',
     'mitsubishi-read-hz':'—','mitsubishi-compressor-age':'Ei yhteyttä',
     'device-shelly':'Ei yhteyttä','device-ram':'—','device-psram':'—',
-    'device-ota':'Ei yhteyttä'
+    'device-ota':'Ei yhteyttä','control-state':'Yhteys poikki',
+    'control-last':'Ei tuoretta tilaa'
   };
   Object.entries(stale).forEach(([id,value])=>text(id,value));
   showPlan();$('save-mode').disabled=true;
@@ -254,6 +267,32 @@ async function reloadStatus(){
 async function reloadPrices(){try{state.prices=await fetchJSON('/api/prices');showPrices();}catch(e){state.prices={valid:false,slots:[]};showPrices();}}
 async function reloadPlan(){try{state.plan=await fetchJSON('/api/plan');showPlan();}catch(e){state.plan={valid:false};showPlan();}}
 async function reloadHistory(){try{state.history=await fetchJSON('/api/air/history');showHistory();}catch(e){state.history={hours:[]};showHistory();}}
+async function setControlArmed(enabled) {
+  const a=state.status&&state.status.air;
+  if(!a||!a.config_token) {
+    text('control-feedback','Laite ei vastaa tai vahvistustunniste puuttuu.');
+    return;
+  }
+  $('control-enable').disabled=true;
+  $('control-disable').disabled=true;
+  text('control-feedback','Tallennetaan ohjauksen käyttöönottoa…');
+  try {
+    const body=new URLSearchParams({token:a.config_token,enabled:enabled?'true':'false'});
+    const r=await fetch('/api/control/arm',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
+    const j=await r.json();
+    if(!r.ok||j.saved!==true)throw Error('Asetuksen tallennus epäonnistui');
+    text('control-feedback',enabled?
+      'Automaattiohjaus sallittu. Ensimmäinen ohjaus odottaa tuoreita tietoja ja Ylläpitolämpö-tilaa.':
+      'Automaattiohjaus poistettu käytöstä.');
+    await reloadStatus();
+  }catch(e) {
+    text('control-feedback',e.message||'Ohjauksen asetusta ei tallennettu');
+    await reloadStatus();
+  }
+}
+$('control-enable').addEventListener('click',()=>setControlArmed(true));
+$('control-disable').addEventListener('click',()=>setControlArmed(false));
 document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>{state.settingsDirty=true;++state.settingsRevision;state.mode=Number(b.dataset.mode);document.querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('selected',x===b));}));
 ['setting-hold','setting-delta'].forEach(id=>$(id).addEventListener('input',()=>{state.settingsDirty=true;++state.settingsRevision;}));
 $('save-mode').addEventListener('click',async()=>{

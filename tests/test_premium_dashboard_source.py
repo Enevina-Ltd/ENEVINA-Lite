@@ -20,7 +20,9 @@ class PremiumDashboardSourceTests(unittest.TestCase):
         self.assertNotIn("https://", UI)
         self.assertNotIn("http://", UI.replace("http://www.w3.org/2000/svg", ""))
         self.assertNotRegex(UI, r"<script\s+src=")
-        self.assertIn("VARJOTILA", UI)
+        self.assertIn("OHJAUS POIS", UI)
+        self.assertIn("control-armed" if False else "control-enable", UI)
+        self.assertIn("pilot-state-heading", UI)
         self.assertIn("Ei tuoretta mittausta", UI)
 
     def test_read_only_market_endpoint(self):

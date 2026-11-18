@@ -3,6 +3,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
+#include <Preferences.h>
 #include <esp_task_wdt.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
@@ -33,6 +34,7 @@
 #include "cottage/mode_timing.hpp"
 #include "cottage/price_bootstrap.hpp"
 #include "cottage/mitsubishi_climate_command.hpp"
+#include "cottage/mitsubishi_control_policy.hpp"
 #include "cottage/finnish_tariff.hpp"
 #include "cottage/sse_transport.hpp"
 #include "cottage/cn105_source_proof.hpp"
@@ -92,6 +94,16 @@ static TaskHandle_t task_sse=nullptr,task_shelly=nullptr;
 static TaskHandle_t task_ruuvi=nullptr,task_optimizer=nullptr;
 static TaskHandle_t task_ota=nullptr;
 static bool shelly_relay_on=false;
+// Production control is explicitly ARMED via local setting, never by OTA.
+static std::atomic<bool> control_armed{false};
+static std::atomic<int> control_gate{static_cast<int>(ControlBlock::Disabled)};
+static std::atomic<int> control_last_step{static_cast<int>(ControlStep::None)};
+static std::atomic<uint32_t> control_commands_sent{0};
+static std::atomic<uint32_t> control_commands_confirmed{0};
+static std::atomic<uint32_t> control_commands_failed{0};
+static std::atomic<int64_t> control_last_command_utc{0};
+static std::atomic<int64_t> control_last_ack_utc{0};
+static std::atomic<int64_t> control_last_bridge_read_utc{0};
 static char reason_text[80]="Käynnistys";
 struct Row {
     int64_t utc=0;
@@ -559,6 +571,286 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     input.prices_contiguous_and_fresh=valid_prices;
     return bootstrap_price_decision(input);
 }
+// CN105 is a separate local ESPHome gateway. These HTTP calls are the only
+// physical write path and are permitted solely by an explicitly armed
+// pilot plus fresh independent sensor, prices and gateway telemetry.
+static String cn105_local_url(const char* suffix) {
+    if(!suffix || !valid_cn105_events_url(COTTAGE_CN105_URL))return {};
+    String root(COTTAGE_CN105_URL);
+    root.remove(root.length()-strlen("/events"));
+    root+=suffix;
+    return root;
+}
+static bool cn105_bridge_get(bool& heating,double& target) {
+    const String url=cn105_local_url(
+        "/climate/Mitsubishi%20Electric%20MSZ-FD25VA?detail=all");
+    if(url.isEmpty()||!wifi_ok.load())return false;
+    enevina_firmware::NetworkBudgetLease lease(1000,72*1024,16*1024);
+    if(!lease.held())return false;
+    WiFiClient client;
+    HTTPClient req;
+    req.setConnectTimeout(1500);req.setTimeout(1800);
+    req.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+    if(!req.begin(client,url))return false;
+    req.addHeader("Cache-Control","no-cache");
+    const int code=req.GET();
+    const int body_size=req.getSize();
+    bool good=false;
+    if(code==200&&body_size>0&&body_size<1800) {
+        const String body=req.getString();
+        if(body.length()==static_cast<unsigned>(body_size)) {
+            cJSON* root=cJSON_ParseWithOpts(body.c_str(),nullptr,true);
+            if(root) {
+                const cJSON* id=cJSON_GetObjectItemCaseSensitive(root,"id");
+                const cJSON* mode=cJSON_GetObjectItemCaseSensitive(root,"mode");
+                const cJSON* set=cJSON_GetObjectItemCaseSensitive(root,"target_temperature");
+                double setpoint=0;
+                if(cJSON_IsString(id) && cJSON_IsString(mode) &&
+                    strcmp(id->valuestring,
+                           "climate/Mitsubishi Electric MSZ-FD25VA")==0 &&
+                    number(set,setpoint,16,26) &&
+                    mitsubishi_valid_setpoint(setpoint) &&
+                    (strcmp(mode->valuestring,"HEAT")==0 ||
+                     strcmp(mode->valuestring,"OFF")==0)) {
+                    heating=strcmp(mode->valuestring,"HEAT")==0;
+                    target=setpoint;
+                    good=true;
+                }
+                cJSON_Delete(root);
+            }
+        }
+    }
+    req.end();
+    if(good)control_last_bridge_read_utc.store(time(nullptr));
+    return good;
+}
+static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
+                              uint32_t config_generation,ControlStep step,
+                              double required_target) {
+    if(!command.valid || !control_armed.load() || !wifi_ok.load())return false;
+    const String url=cn105_local_url(command.path.data());
+    if(url.isEmpty())return false;
+    enevina_firmware::NetworkBudgetLease lease(1000,72*1024,16*1024);
+    if(!lease.held())return false;
+    // Network-budget wait is a cancellation point. Never dispatch a command
+    // prepared before a completed DISARM, mode or target configuration change.
+    if(!control_armed.load() || c23_config_generation()!=config_generation ||
+       c23_mode_config().mode!=CottageMode::Hold || !wifi_ok.load() ||
+       !clock_ok())return false;
+    const int64_t now=time(nullptr);
+    const auto current_temp=c23_temperature_sample();
+    CN105Telemetry observed{};
+    int64_t current_link_utc=0;
+    xSemaphoreTake(lock_data,portMAX_DELAY);
+    observed=sse_observed_pump;current_link_utc=cn105_link_event_utc;
+    xSemaphoreGive(lock_data);
+    // ESPHome GET returns the bridge's reported state. The optional
+    // Verified Snapshot UART proof is never a prerequisite for this pilot.
+    if(!valid_temperature(current_temp,now) ||
+       !sse_stream_active.load() || current_link_utc<=0 ||
+       now<current_link_utc || now-current_link_utc>180)return false;
+    const auto latest=bootstrap_preview(now,current_temp,observed);
+    if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
+       (latest.action!=BootstrapAction::HeatSetpoint ||
+        std::fabs(latest.heat_setpoint_c-required_target)>0.001))return false;
+    if(step==ControlStep::SetOff && latest.action!=BootstrapAction::Off)
+        return false;
+    WiFiClient client;
+    HTTPClient req;
+    req.setConnectTimeout(1500);req.setTimeout(1800);
+    req.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+    if(!req.begin(client,url))return false;
+    req.addHeader("Content-Type","application/x-www-form-urlencoded");
+    // Last cancellation point after all potentially blocking preparation.
+    if(!control_armed.load() || c23_config_generation()!=config_generation ||
+       c23_mode_config().mode!=CottageMode::Hold) {
+        req.end();
+        return false;
+    }
+    const int code=req.POST("");
+    req.end();
+    return code>=200 && code<300;
+}
+// Called only in the existing optimizer task, no additional RTOS stack,
+// watchdog or scheduled foreground WebServer blocking.
+static void cottage_control_tick() {
+    control_gate.store(static_cast<int>(ControlBlock::Disabled));
+    if(!control_armed.load())return;
+    if(!wifi_ok.load() || !clock_ok()) {
+        control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
+        return;
+    }
+    const CottageModeConfig mode=c23_mode_config();
+    const uint32_t config_generation=c23_config_generation();
+    const auto sample=c23_temperature_sample();
+    const int64_t now=time(nullptr);
+    CN105Telemetry pump_snapshot{};
+    int64_t link_utc=0;
+    xSemaphoreTake(lock_data,portMAX_DELAY);
+    pump_snapshot=pump;
+    link_utc=cn105_link_event_utc;
+    xSemaphoreGive(lock_data);
+    const auto proposal=bootstrap_preview(now,sample,pump_snapshot);
+    // The source-link heartbeat is necessary but not sufficient:
+    // direct bridge GET and subsequent state readback are required as well.
+    const bool link_fresh=sse_stream_active.load() &&
+        link_utc>0 && now>=link_utc && now-link_utc<=180;
+    if(mode.mode!=CottageMode::Hold) {
+        control_gate.store(static_cast<int>(ControlBlock::NotInHoldMode));
+        return;
+    }
+    if(!valid_temperature(sample,now) ||
+       proposal.action==BootstrapAction::Unavailable || !link_fresh) {
+        control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
+        return;
+    }
+    // After a failed write/readback do not retry for 15 minutes.
+    static uint64_t last_failed_ms=0;
+    static bool failure_present=false;
+    const uint64_t now_ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
+    if(failure_present && (now_ms<last_failed_ms ||
+        now_ms-last_failed_ms<900000ULL)) {
+        control_gate.store(static_cast<int>(ControlBlock::RateLimited));
+        return;
+    }
+    bool current_heat=false;
+    double current_setpoint=0;
+    if(!cn105_bridge_get(current_heat,current_setpoint)) {
+        control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
+        return;
+    }
+    static bool last_command_present=false;
+    static uint64_t last_command_ms=0;
+    static bool mode_change_present=false;
+    static uint64_t last_mode_change_ms=0;
+    static bool last_bridge_heat_known=false;
+    static bool last_bridge_heat=false;
+    static uint64_t last_bridge_get_ms=0;
+    // A new externally commanded mode or a prolonged loss of bridge
+    // observations resets the minimum mode-dwell window. It is not inferred
+    // from the optional Verified Snapshot event.
+    const bool bridge_gap=last_bridge_heat_known &&
+        (now_ms<last_bridge_get_ms ||
+         now_ms-last_bridge_get_ms>180000ULL);
+    if(!mode_change_present || bridge_gap ||
+       (last_bridge_heat_known && last_bridge_heat!=current_heat)) {
+        mode_change_present=true;
+        last_mode_change_ms=now_ms;
+    }
+    last_bridge_heat=current_heat;
+    last_bridge_heat_known=true;
+    last_bridge_get_ms=now_ms;
+    // Preflight GET can block: old sensor, mode and user authorization
+    // snapshots must never be carried into the physical POST.
+    if(!control_armed.load() ||
+       config_generation!=c23_config_generation() ||
+       c23_mode_config().mode!=CottageMode::Hold ||
+       !valid_temperature(c23_temperature_sample(),time(nullptr))) {
+        control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
+        return;
+    }
+    ControlSnapshot candidate{};
+    candidate.armed=control_armed.load();
+    candidate.hold_mode=mode.mode==CottageMode::Hold;
+    candidate.temperature_fresh=valid_temperature(sample,now);
+    candidate.market_fresh=proposal.action!=BootstrapAction::Unavailable;
+    candidate.cn105_link_fresh=link_fresh;
+    candidate.bridge_get_ok=true; // separate live ESPHome GET succeeded
+    candidate.current_heat=current_heat;
+    candidate.current_setpoint_c=current_setpoint;
+    candidate.now_ms=now_ms;
+    candidate.has_last_command=last_command_present;
+    candidate.last_command_ms=last_command_ms;
+    candidate.has_confirmed_mode_change=mode_change_present;
+    candidate.last_mode_change_ms=last_mode_change_ms;
+    candidate.proposal=proposal;
+    const auto decision=choose_mitsubishi_control(candidate);
+    control_gate.store(static_cast<int>(decision.gate));
+    if(decision.step==ControlStep::None)return;
+    MitsubishiHttpRequest request{};
+    if(decision.step==ControlStep::Setpoint)
+        request=mitsubishi_setpoint_request(decision.target_c);
+    else request=mitsubishi_mode_request(
+        decision.step==ControlStep::SetHeat?MitsubishiMode::Heat:
+                                            MitsubishiMode::Off);
+    if(!request.valid || !control_armed.load())return;
+    // Timestamp from the attempted command, regardless of HTTP status;
+    // prevents retry floods on abrupt gateway or LAN failures.
+    last_command_present=true;
+    last_command_ms=now_ms;
+    control_last_step.store(static_cast<int>(decision.step));
+    control_last_command_utc.store(now);
+    control_commands_sent.fetch_add(1);
+    // Record any mode POST attempt as a potentially applied transition,
+    // including cases where the network reply or subsequent readback fails.
+    if(decision.step!=ControlStep::Setpoint) {
+        mode_change_present=true;
+        last_mode_change_ms=now_ms;
+    }
+    const bool sent=cn105_bridge_post(request,config_generation,
+                                      decision.step,decision.target_c);
+    // ESPHome may acknowledge the POST before updating its REST state.
+    // Confirm only what the bridge GET reports, never claim UART proof.
+    bool confirmed=false;
+    if(sent) {
+        for(unsigned attempt=0;attempt<5 && control_armed.load();++attempt) {
+            vTaskDelay(pdMS_TO_TICKS(600));
+            bool read_heating=false;
+            double read_setpoint=0;
+            if(!cn105_bridge_get(read_heating,read_setpoint))continue;
+            confirmed=decision.step==ControlStep::Setpoint ?
+                std::fabs(read_setpoint-decision.target_c)<=0.001 :
+                decision.step==ControlStep::SetHeat ? read_heating :
+                !read_heating;
+            if(confirmed)break;
+        }
+    }
+    if(confirmed) {
+        control_commands_confirmed.fetch_add(1);
+        control_last_ack_utc.store(time(nullptr));
+        failure_present=false;
+        if(decision.step!=ControlStep::Setpoint) {
+            last_mode_change_ms=now_ms;
+            mode_change_present=true;
+        }
+    } else {
+        control_commands_failed.fetch_add(1);
+        last_failed_ms=now_ms;
+        failure_present=true;
+    }
+}
+static void cottage_control_registration() {
+    // Every boot and every OTA update starts DISARMED. A previously saved
+    // arm must not silently resume physical writes after reboot.
+    control_armed.store(false);
+    Preferences prefs;
+    if(prefs.begin("cottage_ctl",false)) {
+        if(prefs.getBool("armed",false))prefs.putBool("armed",false);
+        prefs.end();
+    }
+    web.on("/api/control/arm",HTTP_POST,[]() {
+        if(!web.hasArg("token") ||
+           !c23_authorize_local_setting(web.arg("token").c_str())) {
+            web.send(403,"application/json","{\"saved\":false}");
+            return;
+        }
+        if(!web.hasArg("enabled") ||
+           (web.arg("enabled")!="true"&&web.arg("enabled")!="false")) {
+            web.send(400,"application/json","{\"saved\":false}");
+            return;
+        }
+        const bool requested=web.arg("enabled")=="true";
+        Preferences p;
+        bool stored=false;
+        if(p.begin("cottage_ctl",false)) {
+            stored=p.putBool("armed",requested)>0;
+            p.end();
+        }
+        if(stored)control_armed.store(requested);
+        web.send(stored?200:500,"application/json",
+            stored?"{\"saved\":true}":"{\"saved\":false}");
+    });
+}
 // Use 64-bit monotonic ESP timer for an actual deadline (not post-hoc wall time).
 static uint64_t cottage_now_ms(void*) {
     return static_cast<uint64_t>(esp_timer_get_time()/1000);
@@ -701,6 +993,7 @@ static void optimizer_worker(void*) {
                     sizeof(reason_text));
             xSemaphoreGive(lock_data);
         }
+        cottage_control_tick();
         // Recompute on quarter-hour boundary, retries every minute when offline.
         const time_t t=time(nullptr);
         int sleep_s=clock_ok()?static_cast<int>(900-(t%900)):60;
@@ -717,7 +1010,7 @@ section{background:white;padding:16px;border-radius:12px;margin:15px 0}
 dl{display:grid;grid-template-columns:1fr auto;gap:10px}dt,dd{margin:0}
 small{color:#64746d}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:7px;text-align:left}
 </style><main><h1>Enevina Lite – Pihamökki</h1>
-<p class="notice"><strong>VARJOTILA – EI OHJAA LÄMPÖPUMPPUA</strong></p>
+<p class="notice"><strong>CN105-OHJAUS</strong> – tarkista käynnissä oleva käyttötila API-diagnostiikasta ja premium-dashboardista.</p>
 <section><h2>Tila ja mittaukset</h2><dl id="metrics"></dl><p id="reason"></p>
 <small>Pumpun oma lämpötila ei korvaa riippumatonta jäätymissuoja-anturia.
 CN105-yhteyden uptime ei tee vanhoista pumpun mittauksista tuoreita.
@@ -774,7 +1067,7 @@ x.heat?'HEAT 16 °C':'OFF',x.indoor_c.toFixed(2),x.kwh.toFixed(3),x.eur.toFixed(
 refresh();setInterval(refresh,15000);</script>
 <section id="air-panel">
 <h2>Pihamökki – sisäilma ja kuivanapito</h2>
-<p class="notice"><strong>VAIN VARJOTILA</strong> – tila tai tavoite ei ohjaa Mitsubishiä.
+<p class="notice"><strong>ERILLINEN OHJAUSLUPA</strong> – tila tai tavoite ei yksin lähetä Mitsubishi-komentoja.
 +16 °C on pumpun normaali alin lämmitysasetus. Rakenteen kosteus- tai
 jäätymisturvallisuutta ei voi vahvistaa pelkällä huoneilman anturilla.</p>
 <dl id="air-metrics"><dt>RuuviTag</dt><dd>Ei mittausta</dd></dl>
@@ -851,7 +1144,7 @@ document.getElementById('air-config').addEventListener('submit',async e=>{
  mode:document.getElementById('air-mode').value,
  hold:document.getElementById('air-hold').value,
  delta:document.getElementById('air-delta').value});
- document.getElementById('air-settings-status').textContent='Laskennallinen tila tallennettu. Ei laiteohjausta.';
+ document.getElementById('air-settings-status').textContent='Tila tallennettu. CN105-ohjaus edellyttää erillistä käyttöönottoa.';
  }catch(err){document.getElementById('air-settings-status').textContent=err.message;}
 });
 document.getElementById('air-thresholds').addEventListener('submit',async e=>{
@@ -1005,8 +1298,23 @@ static void status_endpoint() {
         enevina::calculate_total_price(t,total);
     const BootstrapDecision bootstrap=bootstrap_preview(now,te,cp);
     cJSON* root=cJSON_CreateObject();
-    cJSON_AddStringToObject(root,"mode","VARJOTILA_EI_KOMENTOJA");
-    cJSON_AddBoolToObject(root,"physical_writes",false);
+    cJSON_AddStringToObject(root,"mode",control_armed.load()?
+        "CN105_AUTOMAATIO_KAYTOSSA":"VARJOTILA_EI_KOMENTOJA");
+    cJSON_AddBoolToObject(root,"physical_writes",control_armed.load());
+    cJSON_AddBoolToObject(root,"control_armed",control_armed.load());
+    cJSON_AddStringToObject(root,"control_gate",
+        control_gate_name(static_cast<ControlBlock>(control_gate.load())));
+    cJSON_AddStringToObject(root,"control_last_step",
+        control_step_name(static_cast<ControlStep>(control_last_step.load())));
+    cJSON_AddNumberToObject(root,"control_commands_sent",control_commands_sent.load());
+    cJSON_AddNumberToObject(root,"control_commands_confirmed",control_commands_confirmed.load());
+    cJSON_AddNumberToObject(root,"control_commands_failed",control_commands_failed.load());
+    cJSON_AddNumberToObject(root,"control_last_command_utc",
+                            static_cast<double>(control_last_command_utc.load()));
+    cJSON_AddNumberToObject(root,"control_last_ack_utc",
+                            static_cast<double>(control_last_ack_utc.load()));
+    cJSON_AddNumberToObject(root,"control_last_bridge_read_utc",
+                            static_cast<double>(control_last_bridge_read_utc.load()));
     cJSON_AddStringToObject(root,"bootstrap_action",
                              bootstrap_action_name(bootstrap.action));
     cJSON_AddStringToObject(root,"bootstrap_reason",
@@ -1352,7 +1660,8 @@ void setup() {
     web.on("/api/status",HTTP_GET,status_endpoint);
     web.on("/api/plan",HTTP_GET,plan_endpoint);
     web.on("/api/prices",HTTP_GET,prices_endpoint);
-    c23_register_routes(web); // mode/config persistence, NO actuator writes
+    c23_register_routes(web);
+    cottage_control_registration(); // explicit local arming; defaults OFF
     web.onNotFound([](){web.send(404,"text/plain","Ei löydy");});
     web.begin();
     boot_ui_started=true;
@@ -1368,7 +1677,7 @@ void setup() {
     enevina_firmware::start_weather_reader();
     xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",8192,nullptr,2,&task_sse,0);
     xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,&task_shelly,0);
-    // BLE already running. No physical actuator command is ever sent.
+    // BLE already running. CN105 writes are gated by explicit local arming.
     xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
     if(cottage_ota_configured() &&
         xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota",
@@ -1376,7 +1685,7 @@ void setup() {
         task_ota=nullptr;
         Serial.println("C24_OTA_ERROR: signed OTA task creation failed");
     }
-    Serial.println("ENEVINA LITE C2 SHADOW: NO ACTUATOR PATH");
+    Serial.println("ENEVINA LITE: optional CN105 controller, default DISARMED");
 }
 void loop() {
     wifi_ok.store(WiFi.status()==WL_CONNECTED);

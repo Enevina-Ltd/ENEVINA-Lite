@@ -46,13 +46,38 @@ class Cn105SseVisibilityTests(unittest.TestCase):
         self.assertIn("ei todista uutta CN105-UART-lukua", PREMIUM)
         self.assertNotIn("s.cn105_sse_climate_recent===true?'UART-lähde", PREMIUM)
 
-    def test_no_real_pump_writes_or_source_gate_bypass(self):
-        self.assertIn('cJSON_AddBoolToObject(root,"physical_writes",false)',MAIN)
+    def test_physical_commands_are_pilot_armed_not_source_gate_bypasses(self):
+        # CN105 writes are now a separately armed path, not a promotion of SSE
+        # into verified pump-origin telemetry or calibration.
+        self.assertIn('static std::atomic<bool> control_armed{false}',MAIN)
+        self.assertIn('cJSON_AddBoolToObject(root,"control_armed",control_armed.load())',MAIN)
+        self.assertIn('cJSON_AddBoolToObject(root,"bootstrap_executable",false)',MAIN)
         self.assertIn("health.independent_freeze_protection_verified=false;",MAIN)
-        self.assertNotRegex(MAIN,r'HTTP_(?:POST|PUT|PATCH|DELETE)')
-        self.assertNotRegex(MAIN,r'\.POST\s*\(')
         self.assertIn("cn105_source_verifier.accept(p,verified)",MAIN)
         self.assertIn("cottage_ota_confirmation_pending()",MAIN)
+        self.assertIn('c23_authorize_local_setting(web.arg("token").c_str())',MAIN)
+        self.assertIn('control_armed.store(false)',MAIN)
+        self.assertIn('if(prefs.getBool("armed",false))prefs.putBool("armed",false)',MAIN)
+        post = MAIN.split("static bool cn105_bridge_post(",1)[1].split(
+            "static void cottage_control_tick()",1)[0]
+        self.assertIn('!control_armed.load()',post)
+        self.assertIn('valid_cn105_events_url(COTTAGE_CN105_URL)',MAIN)
+        self.assertIn('HTTPC_DISABLE_FOLLOW_REDIRECTS',post)
+        self.assertIn('req.POST("")',post)
+        self.assertIn('const auto decision=choose_mitsubishi_control(candidate);',MAIN)
+        controller = MAIN.split("static bool cn105_bridge_post(",1)[1].split(
+            "static void cottage_control_registration()",1)[0]
+        self.assertNotIn("valid_cn105(", controller)
+        self.assertNotIn("source_time_verified", controller)
+        self.assertNotIn("cn105_source_proof_good", controller)
+        self.assertIn("cn105_bridge_get", controller)
+        self.assertIn("bootstrap_preview", controller)
+        self.assertIn("c23_config_generation()!=config_generation", controller)
+
+        self.assertIn("confirmed=decision.step==ControlStep::Setpoint",MAIN)
+        self.assertIn("if(!cn105_bridge_get(read_heating,read_setpoint))continue",MAIN)
+        self.assertNotRegex(MAIN,r'Switch\\.(?:Set|Toggle|SetConfig)')
+
 
 
 if __name__ == "__main__":
