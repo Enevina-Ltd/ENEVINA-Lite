@@ -8,12 +8,16 @@ Enevina Lite is an ESP32-S3-based controller for **one heat pump per device**, d
 
 ## License and commercial use
 
-- **License:** [PolyForm Noncommercial 1.0.0](LICENSE) permits use, modification and distribution for purposes covered by its terms. This is **source-available**, **not OSI-approved open source**.
-- **Commercial use or commercial distribution of the software**, including its incorporation into products sold commercially, requires a separate written license from **Enevina Oy**.
-- Enevina names, product branding and logos are not granted for third-party commercial branding under the software license.
-- Third-party components remain subject to their own licenses. Publication of this repository is not a license grant for any separately owned third-party code.
+**Enevina Lite is source-available, not OSI-approved open source.**
 
-For commercial licensing requests, contact Enevina Oy.
+- **Community license:** [Enevina Lite Noncommercial Community License 1.0](LICENSE).
+- **Free noncommercial use:** study, hobby use, experiments, modifications and free noncommercial sharing are permitted under the license terms.
+- **No third-party sales or commercial exploitation:** selling or commercially distributing Enevina Lite software or firmware, or manufacturing and selling controllers that include it, requires a **separate written commercial license from Enevina Oy**.
+- **Third-party libraries and assets** keep their own licenses, which may impose additional obligations. This community license applies only to rights Enevina Oy can legally grant.
+- **Contributions:** see [CONTRIBUTING.md](CONTRIBUTING.md) before submitting code intended for possible inclusion in Enevina Oy's commercial products.
+- The Enevina name and logo are not freely licensed as product brands.
+
+These are software-license conditions. They do not override mandatory legal rights or separately licensed third-party components. This license is under legal review before any public release.
 
 ## Tekninen kehitysdokumentaatio
 
