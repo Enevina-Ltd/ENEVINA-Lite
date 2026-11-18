@@ -14,7 +14,7 @@ No ESP32 hardware, heat pump, Wi-Fi credentials, cloud service or Home Assistant
 ## 2. Download and run the native tests
 
 ```sh
-git clone https://github.com/linkki79-pixel/ENEVINA-Lite.git
+git clone https://github.com/Enevina-Ltd/ENEVINA-Lite.git
 cd ENEVINA-Lite
 cmake -S . -B build
 cmake --build build
@@ -48,8 +48,8 @@ The development Wi-Fi onboarding uses an **open setup access point** only for Wi
 
 ## 5. Questions and contributions
 
-- [GitHub Discussions](https://github.com/linkki79-pixel/ENEVINA-Lite/discussions): general questions, ideas and model-specific experience
-- [GitHub Issues](https://github.com/linkki79-pixel/ENEVINA-Lite/issues): reproducible defects and tracked requests
+- [GitHub Discussions](https://github.com/Enevina-Ltd/ENEVINA-Lite/discussions): general questions, ideas and model-specific experience
+- [GitHub Issues](https://github.com/Enevina-Ltd/ENEVINA-Lite/issues): reproducible defects and tracked requests
 - [Contribution rules](../CONTRIBUTING.md): licensing and code-review requirements
 
 Never attach device secrets, private IP addresses, non-public test-site details, Wi-Fi passwords, private OTA keys, or unredacted logs.
