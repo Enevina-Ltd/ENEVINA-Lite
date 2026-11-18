@@ -42,6 +42,36 @@ class WifiOnboardingSource(unittest.TestCase):
         self.assertNotIn("putString", persist)
         self.assertIn("blob.magic==StoredWifi{}.magic", WIFI)
 
+    def test_migrate_legacy_wifi_nvs_without_exposing_credentials(self):
+        # Existing 2026111604 firmware stored separate ssid and pass strings.
+        read = WIFI.split("bool load_stored(WifiCredentials& c) {", 1)[1]\
+            .split("bool persist(const WifiCredentials& c) {", 1)[0]
+        self.assertIn('p.getBytesLength("cred1")', read)
+        self.assertIn('if(!ok && stored_size==0)', read)
+        self.assertIn('p.getString("ssid","")', read)
+        self.assertIn('p.getString("pass","")', read)
+        self.assertIn('valid_ssid(legacy.ssid)', read)
+        self.assertIn('valid_wifi_password(legacy.password)', read)
+        self.assertIn('if(migrate_legacy) legacy_migration_pending=true', read)
+        self.assertNotIn('persist(c)', read)
+        loop = WIFI.split("void cottage_wifi_loop() {", 1)[1]
+        self.assertIn('if(legacy_migration_pending && got_ip.load()', loop)
+        self.assertIn('persist(machine.stored()))', loop)
+        self.assertNotIn('Serial.printf', read)
+        self.assertNotIn('Serial.print(legacy_', read)
+        # Never replace a newer but invalid record with potentially stale keys.
+        self.assertNotIn('if(!ok) {\n            const String legacy_ssid', read)
+
+    def test_compiled_fallback_persists_only_after_verified_ip(self):
+        load = WIFI.split("bool load_stored(WifiCredentials& c) {", 1)[1]\
+            .split("bool persist(const WifiCredentials& c) {", 1)[0]
+        self.assertIn('if(!ok && strlen(COTTAGE_WIFI_SSID))', load)
+        fallback = load.split('if(!ok && strlen(COTTAGE_WIFI_SSID))', 1)[1]
+        self.assertIn('if(ok) legacy_migration_pending=true;', fallback)
+        self.assertNotIn('persist(c)', load)
+        loop = WIFI.split("void cottage_wifi_loop() {", 1)[1]
+        self.assertIn('legacy_migration_pending && got_ip.load()', loop)
+
     def test_home_wifi_password_never_logged_or_returned(self):
         for line in WIFI.splitlines():
             if "Serial.print" in line:
