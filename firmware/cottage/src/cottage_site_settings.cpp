@@ -193,16 +193,25 @@ void site_settings_register_routes(WebServer& web) {
             web.send(400,"application/json","{\"saved\":false,\"error\":\"INVALID\"}");
             return;
         }
+        const SiteSettings previous=site_settings_snapshot();
+        const bool endpoint_changed=
+            strcmp(previous.cn105_url,next.cn105_url)!=0 ||
+            strcmp(previous.pump_adapter,next.pump_adapter)!=0;
+        // Durable revocation MUST precede new site commit. Otherwise an
+        // immediate reset could reinstate the old pump permission when the
+        // user later selects the previous URL again.
+        if(endpoint_changed && !cottage_control_revoke_saved_intent()) {
+            web.send(500,"application/json",
+                     "{\"saved\":false,\"error\":\"CONTROL_NVS\"}");
+            return;
+        }
         // Durable first: RAM changes only after NVS accepted the full blob.
         if(!persist(next)) {
             web.send(500,"application/json","{\"saved\":false,\"error\":\"NVS\"}");
             return;
         }
         xSemaphoreTake(guard,portMAX_DELAY);
-        // Codex P1 (PR #30): a different pump endpoint/adapter is a different
-        // device; its write authorization must be given again explicitly.
-        const bool endpoint_changed=strcmp(current.cn105_url,next.cn105_url)!=0 ||
-            strcmp(current.pump_adapter,next.pump_adapter)!=0;
+        // The previous endpoint's NVS authorization was already revoked.
         current=next;
         loaded_from_nvs=true;
         xSemaphoreGive(guard);

@@ -764,17 +764,29 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
 }
 // Called only in the existing optimizer task, no additional RTOS stack,
 // watchdog or scheduled foreground WebServer blocking.
-static void cottage_control_disarm() {
+static bool control_current_image_sha256(uint8_t out[32]) {
+    const esp_partition_t* running=esp_ota_get_running_partition();
+    return running && esp_partition_get_sha256(running,out)==ESP_OK;
+}
+// Also called from the site-settings HTTP handler BEFORE it commits a changed
+// endpoint. The current physical command is stopped first, then the previous
+// device-specific NVS authorization is durably revoked.
+bool cottage_control_revoke_saved_intent() {
     control_armed.store(false);
+    uint8_t digest[32]{};
+    (void)control_current_image_sha256(digest); // disabled intent needs no hash
+    const auto record=control_intent_for(
+        site_settings_snapshot(),false,digest);
     Preferences prefs;
-    if(prefs.begin("cottage_ctl",false)) {
-        // Revoke the one atomic persisted intent as well as the RAM state.
-        // Endpoint edits cannot restore old authorization after a restart.
-        const auto record=control_intent_for(site_settings_snapshot(),false);
-        if(prefs.putBytes("intent1",&record,sizeof(record))!=sizeof(record))
-            Serial.println("CONTROL_WARN: durable disarm write failed");
-        prefs.end();
-    }
+    if(!prefs.begin("cottage_ctl",false))return false;
+    const bool stored=
+        prefs.putBytes("intent1",&record,sizeof(record))==sizeof(record);
+    prefs.end();
+    return stored;
+}
+static void cottage_control_disarm() {
+    if(!cottage_control_revoke_saved_intent())
+        Serial.println("CONTROL_WARN: durable disarm write failed");
 }
 static void cottage_control_tick() {
     control_gate.store(static_cast<int>(ControlBlock::Disabled));
@@ -875,23 +887,44 @@ static void cottage_control_tick() {
     }
 }
 static void cottage_control_registration() {
-    // Restore only the user's PREVIOUSLY explicit enable, bound to the same
-    // pump identity. Never arm a new/unconfigured unit or a changed endpoint.
-    // The existing live sensor, price, Wi-Fi, clock and CN105 GET checks
-    // still run on every control cycle before any physical command.
+    // User's previously chosen automation survives a same-image restart.
+    // A new OTA image (including pending validation) does NOT inherit it.
+    // The pump identity AND the full running firmware image must match.
     control_armed.store(false);
+    uint8_t running_image_sha256[32]{};
+    const bool valid_image=control_current_image_sha256(
+        running_image_sha256);
+    const esp_partition_t* running=esp_ota_get_running_partition();
+    esp_ota_img_states_t image_state=ESP_OTA_IMG_UNDEFINED;
+    const bool pending_ota=running &&
+        esp_ota_get_state_partition(running,&image_state)==ESP_OK &&
+        image_state==ESP_OTA_IMG_PENDING_VERIFY;
+    const bool activating_ota=pending_ota ||
+        cottage_ota_confirmation_pending();
+
     Preferences prefs;
     bool restore=false;
+    bool must_revoke=false;
     if(prefs.begin("cottage_ctl",true)) {
         StoredControlIntent saved{};
-        if(prefs.getBytesLength("intent1")==sizeof(saved) &&
-           prefs.getBytes("intent1",&saved,sizeof(saved))==sizeof(saved))
-            restore=control_intent_restorable(saved,site_settings_snapshot());
+        const size_t stored_size=prefs.getBytesLength("intent1");
+        if(stored_size==sizeof(saved) &&
+           prefs.getBytes("intent1",&saved,sizeof(saved))==sizeof(saved)) {
+            restore=valid_image && !activating_ota &&
+                control_intent_restorable(saved,site_settings_snapshot(),
+                                          running_image_sha256);
+            must_revoke=saved.enabled!=0 && !restore;
+        } else if(stored_size!=0) {
+            // An older / incompatible authorization is never inherited.
+            must_revoke=true;
+        }
         prefs.end();
     }
     control_armed_endpoint.store(site_settings_endpoint_generation());
-    control_reset_mode_history(); // Unknown previous physical mode on boot.
-    control_armed.store(restore);
+    control_reset_mode_history();
+    if(must_revoke && !cottage_control_revoke_saved_intent())
+        Serial.println("CONTROL_WARN: stale authorization revoke failed");
+    control_armed.store(restore && !must_revoke);
     web.on("/api/control/arm",HTTP_POST,[]() {
         if(!web.hasArg("token") ||
            !c23_authorize_local_setting(web.arg("token").c_str())) {
@@ -904,11 +937,23 @@ static void cottage_control_registration() {
             return;
         }
         const bool requested=web.arg("enabled")=="true";
-        const auto record=control_intent_for(site_settings_snapshot(),requested);
+        uint8_t digest[32]{};
+        // Never grant authorization when firmware identity cannot be read,
+        // or when a new OTA image still awaits confirmation.
+        const esp_partition_t* running=esp_ota_get_running_partition();
+        esp_ota_img_states_t image_state=ESP_OTA_IMG_UNDEFINED;
+        const bool pending_ota=running &&
+            esp_ota_get_state_partition(running,&image_state)==ESP_OK &&
+            image_state==ESP_OTA_IMG_PENDING_VERIFY;
+        const bool allowed=requested ?
+            control_current_image_sha256(digest) &&
+            !pending_ota && !cottage_ota_confirmation_pending() : true;
+        const auto record=control_intent_for(
+            site_settings_snapshot(),requested && allowed,digest);
         Preferences p;
         bool stored=false;
-        if(p.begin("cottage_ctl",false)) {
-            // One atomic value for enable + exact pump/adapter identity.
+        if(allowed && p.begin("cottage_ctl",false)) {
+            // Exact pump/adapter AND signed/USB image identity together.
             stored=p.putBytes("intent1",&record,sizeof(record))==sizeof(record);
             p.end();
         }
