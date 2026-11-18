@@ -17,7 +17,7 @@ Enevina Lite is an ESP32-S3-based controller for **one heat pump per device**, d
 - **Contributions:** see [CONTRIBUTING.md](CONTRIBUTING.md) before submitting code intended for possible inclusion in Enevina Oy's commercial products.
 - The Enevina name and logo are not freely licensed as product brands.
 
-These are software-license conditions. They do not override mandatory legal rights or separately licensed third-party components. This license is under legal review before any public release.
+These are software-license conditions. They do not override mandatory legal rights or separately licensed third-party components. The repository and first developer preview are public. This custom license has **not yet received independent legal review**; publication is not a legal endorsement. See [third-party notices](THIRD_PARTY_NOTICES.md) and [release audit](docs/release/RELEASE_READINESS.md).
 
 ## Product scope
 

@@ -1,0 +1,20 @@
+name: Source publication hygiene
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  source-hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Verify scanner tests
+        run: python3 -m unittest discover -s tests -p 'test_release_hygiene.py' -v
+      - name: Scan tracked source
+        run: python3 tools/check_release_hygiene.py
