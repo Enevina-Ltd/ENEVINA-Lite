@@ -7,6 +7,7 @@
 #include <cstring>
 #ifdef ARDUINO
 #include <esp32s3/rom/miniz.h>
+#include <esp_heap_caps.h>
 #endif
 namespace enevina_firmware {
 inline uint32_t met_gzip_le32(const uint8_t* p) {
@@ -40,6 +41,40 @@ inline bool met_gzip_payload(const uint8_t* input,size_t length,
     return true;
 }
 #ifdef ARDUINO
+// Do NOT use tinfl_decompress_mem_to_mem() here: its helper creates an
+// approximately 11-KiB tinfl_decompressor on the weather task's 8-KiB stack.
+// The low-level ROM inflater takes an explicit state allocated in PSRAM.
+// On PSRAM allocation failure, reject this weather response without fallback.
+inline bool met_inflate_psram(const uint8_t* compressed,size_t compressed_size,
+                              char* output,size_t output_capacity,
+                              size_t& produced,bool zlib_header) {
+    produced=0;
+    if(!compressed || compressed_size==0 || !output || output_capacity<2)
+        return false;
+    auto* state=static_cast<tinfl_decompressor*>(
+        heap_caps_malloc(sizeof(tinfl_decompressor),
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if(!state)return false;
+    tinfl_init(state);
+    size_t source_bytes=compressed_size;
+    size_t output_bytes=output_capacity-1;
+    const mz_uint32 flags=TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF |
+        (zlib_header?TINFL_FLAG_PARSE_ZLIB_HEADER:0);
+    const tinfl_status status=tinfl_decompress(
+        state,compressed,&source_bytes,
+        reinterpret_cast<mz_uint8*>(output),
+        reinterpret_cast<mz_uint8*>(output),
+        &output_bytes,flags);
+    heap_caps_free(state);
+    // Require complete input consumption, exactly one complete compressed
+    // stream, a bounded output, and a valid zlib Adler-32 where applicable.
+    if(status!=TINFL_STATUS_DONE || source_bytes!=compressed_size ||
+       output_bytes>=output_capacity)return false;
+    output[output_bytes]='\0';
+    produced=output_bytes;
+    return true;
+}
+
 inline bool met_expand_http(const char* encoding,const uint8_t* src,size_t used,
                             char* out,size_t out_capacity,size_t& decoded) {
     decoded=0;
@@ -53,23 +88,17 @@ inline bool met_expand_http(const char* encoding,const uint8_t* src,size_t used,
         size_t from=0,to=0;uint32_t crc=0,isize=0;
         if(!met_gzip_payload(src,used,from,to,crc,isize)||
            isize>=out_capacity)return false;
-        const size_t produced=tinfl_decompress_mem_to_mem(
-            out,out_capacity-1,src+from,to-from,
-            TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
-        if(produced==TINFL_DECOMPRESS_MEM_TO_MEM_FAILED ||
-           produced!=isize)return false;
+        size_t produced=0;
+        if(!met_inflate_psram(src+from,to-from,out,out_capacity,
+                              produced,false) || produced!=isize)
+            return false;
         if(static_cast<uint32_t>(
             mz_crc32(MZ_CRC32_INIT,reinterpret_cast<const unsigned char*>(out),
                      produced))!=crc)return false;
-        out[produced]='\0';decoded=produced;return true;
+        decoded=produced;return true;
     }
     if(std::strcmp(encoding,"deflate")==0) {
-        const size_t produced=tinfl_decompress_mem_to_mem(
-            out,out_capacity-1,src,used,
-            TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF |
-            TINFL_FLAG_PARSE_ZLIB_HEADER);
-        if(produced==TINFL_DECOMPRESS_MEM_TO_MEM_FAILED)return false;
-        out[produced]='\0';decoded=produced;return true;
+        return met_inflate_psram(src,used,out,out_capacity,decoded,true);
     }
     return false; // Unknown compression: never parse or trust bytes.
 }
