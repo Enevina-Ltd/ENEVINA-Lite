@@ -25,6 +25,7 @@ struct Stored {
 SemaphoreHandle_t guard=nullptr;
 SiteSettings current{};
 std::atomic<uint32_t> generation{0};
+std::atomic<uint32_t> endpoint_generation{0};
 bool loaded_from_nvs=false;
 
 SiteSettings compiled_defaults() {
@@ -151,6 +152,7 @@ SiteSettings site_settings_snapshot() {
     return copy;
 }
 uint32_t site_settings_generation() { return generation.load(); }
+uint32_t site_settings_endpoint_generation() { return endpoint_generation.load(); }
 bool site_slot_total_price(int64_t utc,double spot,double& total) {
     const SiteSettings s=site_settings_snapshot();
     return enevina::cottage::site_total_price(s.tariff,utc,spot,total);
@@ -197,11 +199,17 @@ void site_settings_register_routes(WebServer& web) {
             return;
         }
         xSemaphoreTake(guard,portMAX_DELAY);
+        // Codex P1 (PR #30): a different pump endpoint/adapter is a different
+        // device; its write authorization must be given again explicitly.
+        const bool endpoint_changed=strcmp(current.cn105_url,next.cn105_url)!=0 ||
+            strcmp(current.pump_adapter,next.pump_adapter)!=0;
         current=next;
         loaded_from_nvs=true;
         xSemaphoreGive(guard);
+        if(endpoint_changed) endpoint_generation.fetch_add(1);
         generation.fetch_add(1);
-        web.send(200,"application/json","{\"saved\":true}");
+        web.send(200,"application/json",endpoint_changed?
+            "{\"saved\":true,\"control_disarmed\":true}":"{\"saved\":true}");
     });
 }
 #endif // COTTAGE_BENCH_MODE

@@ -82,6 +82,23 @@ class SiteSettingsSource(unittest.TestCase):
         self.assertLess(post.index("site_settings_generation()!=site_generation"),
                         post.index('req.POST("")'))
 
+    def test_endpoint_change_revokes_armed_control(self):
+        # Codex P1 (PR #30): authorization is bound to the configured pump.
+        self.assertIn("endpoint_changed) endpoint_generation.fetch_add(1)", SITE)
+        self.assertIn("strcmp(current.cn105_url,next.cn105_url)!=0", SITE)
+        tick = MAIN.split("static void cottage_control_tick() {", 1)[1].split(
+            "ControlSnapshot candidate", 1)[0]
+        self.assertIn("control_armed_endpoint.load()!=site_settings_endpoint_generation()", tick)
+        self.assertIn("cottage_control_disarm();", tick)
+        disarm = MAIN.split("static void cottage_control_disarm() {", 1)[1].split("}", 3)
+        self.assertIn('prefs.putBool("armed",false)', "}".join(disarm))
+        post = MAIN.split("static bool cn105_bridge_post(", 1)[1].split(
+            "static void cottage_control_tick()", 1)[0]
+        self.assertIn("control_armed_endpoint.load()!=site_settings_endpoint_generation()", post)
+        arm = MAIN.split('web.on("/api/control/arm"', 1)[1]
+        self.assertLess(arm.index("control_armed_endpoint.store("),
+                        arm.index("control_armed.store(requested)"))
+
     def test_only_firmware_adapters_selectable(self):
         self.assertIn("adapter_selectable_in_lite_firmware(next.pump_adapter)", SITE)
 

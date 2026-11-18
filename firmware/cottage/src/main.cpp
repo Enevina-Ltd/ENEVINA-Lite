@@ -98,6 +98,8 @@ static TaskHandle_t task_ota=nullptr;
 static bool shelly_relay_on=false;
 // Production control is explicitly ARMED via local setting, never by OTA.
 static std::atomic<bool> control_armed{false};
+// Pump identity (CN105 URL/adapter) the current arming was given for.
+static std::atomic<uint32_t> control_armed_endpoint{0};
 static std::atomic<int> control_gate{static_cast<int>(ControlBlock::Disabled)};
 static std::atomic<int> control_last_step{static_cast<int>(ControlStep::None)};
 static std::atomic<uint32_t> control_commands_sent{0};
@@ -657,7 +659,8 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     // A browser settings change (URL, tariff) supersedes an in-flight command
     // exactly like a mode change does; no new gate, same cancellation points.
     const uint32_t site_generation=site_settings_generation();
-    if(!command.valid || !control_armed.load() || !wifi_ok.load()) {
+    if(!command.valid || !control_armed.load() || !wifi_ok.load() ||
+       control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
         control_post_stage.store(-1);return false;
     }
     const String url=cn105_local_url(command.path.data());
@@ -722,9 +725,23 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
 }
 // Called only in the existing optimizer task, no additional RTOS stack,
 // watchdog or scheduled foreground WebServer blocking.
+static void cottage_control_disarm() {
+    control_armed.store(false);
+    Preferences prefs;
+    if(prefs.begin("cottage_ctl",false)) {
+        if(prefs.getBool("armed",false))prefs.putBool("armed",false);
+        prefs.end();
+    }
+}
 static void cottage_control_tick() {
     control_gate.store(static_cast<int>(ControlBlock::Disabled));
     if(!control_armed.load())return;
+    // Arming is bound to the configured pump. A changed CN105 endpoint or
+    // adapter revokes it (same as reboot/OTA); the user re-enables locally.
+    if(control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
+        cottage_control_disarm();
+        return;
+    }
     if(!wifi_ok.load() || !clock_ok()) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
@@ -838,7 +855,10 @@ static void cottage_control_registration() {
             stored=p.putBool("armed",requested)>0;
             p.end();
         }
-        if(stored)control_armed.store(requested);
+        if(stored) {
+            control_armed_endpoint.store(site_settings_endpoint_generation());
+            control_armed.store(requested);
+        }
         web.send(stored?200:500,"application/json",
             stored?"{\"saved\":true}":"{\"saved\":false}");
     });

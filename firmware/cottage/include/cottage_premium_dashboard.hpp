@@ -580,7 +580,7 @@ $('site-save').addEventListener('click',async()=>{const token=state.status&&stat
  $('site-save').disabled=true;
  try{const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({...fields,token})});
   const j=await r.json().catch(()=>({}));
-  if(j.saved===true){text('site-feedback','Tallennettu. Uudet hinnat ja osoitteet ovat heti käytössä.');await reloadSite();await reloadPrices();}
+  if(j.saved===true){text('site-feedback',j.control_disarmed?'Tallennettu. Lämpöpumpun yhteys vaihtui, joten automaattiohjaus poistettiin käytöstä: ota se uudelleen käyttöön uudelle laitteelle.':'Tallennettu. Uudet hinnat ja osoitteet ovat heti käytössä.');await reloadSite();await reloadPrices();await reloadStatus();}
   else text('site-feedback',(siteErrors[j.error]||'Tallennus epäonnistui')+(j.key?' ('+j.key+')':''));}
  catch(e){text('site-feedback','Laite ei vastannut.');}finally{$('site-save').disabled=false;}});
 async function initialRefresh(){await reloadStatus();await reloadPrices();await reloadPlan();await reloadHistory();await reloadSite();}

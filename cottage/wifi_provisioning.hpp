@@ -117,6 +117,7 @@ public:
         if(!valid_ssid(c.ssid) || !valid_wifi_password(c.password)) return false;
         candidate_=c;
         trying_=true;
+        attempt_started_=false; // evidence counts only after the attempt starts
         try_started_ms_=now_ms;
         result_=WifiResult::None;
         ap_=true;                 // keep the phone's link while testing
@@ -127,6 +128,13 @@ public:
     // reason recorded since the current attempt began (0 = none).
     void tick(uint32_t now_ms,bool sta_has_ip,uint16_t disconnect_reason) {
         if(trying_) {
+            // Codex P1 (PR #30): before the firmware has started the candidate
+            // (take_connect_request + fresh evidence), got_ip / disconnect
+            // reasons belong to the PREVIOUS connection and must not decide it.
+            if(!attempt_started_) {
+                try_started_ms_=now_ms;
+                return;
+            }
             if(sta_has_ip) {
                 stored_=candidate_;
                 has_stored_=true;
@@ -169,9 +177,13 @@ public:
     }
     bool ap_should_run() const { return ap_; }
     // One-shot: the firmware calls WiFi.begin() for this target.
+    // The caller MUST reset its got_ip / disconnect-reason evidence when it
+    // starts the returned attempt; candidate results are evaluated only from
+    // the next tick() on.
     ConnectTarget take_connect_request() {
         const ConnectTarget t=connect_request_;
         connect_request_=ConnectTarget::None;
+        if(t==ConnectTarget::Candidate) attempt_started_=true;
         return t;
     }
     // One-shot: persist stored() to NVS now (only after a verified join).
@@ -184,6 +196,7 @@ private:
     WifiTimings timings_;
     WifiCredentials stored_{},candidate_{};
     bool has_stored_=false,trying_=false,ap_=false,commit_pending_=false,was_online_=false;
+    bool attempt_started_=false;
     uint32_t try_started_ms_=0,last_online_ms_=0,online_since_ms_=0;
     WifiResult result_=WifiResult::None;
     ConnectTarget connect_request_=ConnectTarget::None;

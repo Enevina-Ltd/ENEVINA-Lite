@@ -248,13 +248,15 @@ void cottage_wifi_loop() {
     if(!server) return;
     const uint32_t now=millis();
     if(ap_active) dns.processNextRequest();
-    machine.tick(now,got_ip.load(),last_reason.load());
+    // Start any pending attempt FIRST (resets got_ip / last_reason), then
+    // evaluate: the old connection's evidence never decides a new candidate.
     switch(machine.take_connect_request()) {
     case ConnectTarget::Stored: connect_to(machine.stored()); break;
     case ConnectTarget::Candidate: connect_to(machine.candidate()); break;
     case ConnectTarget::Disconnect: WiFi.disconnect(false,false); break;
     case ConnectTarget::None: break;
     }
+    machine.tick(now,got_ip.load(),last_reason.load());
     if(machine.take_commit() && !persist(machine.stored()))
         Serial.println("WIFI_WARN: verified network could not be stored in NVS");
     if(machine.ap_should_run() && !ap_active) start_ap();

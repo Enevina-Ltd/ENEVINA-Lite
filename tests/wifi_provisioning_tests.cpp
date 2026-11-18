@@ -43,6 +43,7 @@ static void wrong_password_keeps_ap_and_retries() {
     assert(w.take_connect_request()==ConnectTarget::Disconnect);
     // A new attempt is possible immediately, without USB.
     assert(w.submit(creds("Koti","oikeasalasana"),4000));
+    assert(w.take_connect_request()==ConnectTarget::Candidate);
     w.tick(9000,true,0);
     assert(w.take_commit() && std::strcmp(w.stored().password,"oikeasalasana")==0);
 }
@@ -50,9 +51,12 @@ static void not_found_and_timeout() {
     WifiProvisioning w;
     w.begin(nullptr,0);
     w.submit(creds("Naapuri","salasana123"),0);
+    w.take_connect_request();
     w.tick(2000,false,201);
     assert(w.last_result()==WifiResult::NetworkNotFound);
     w.submit(creds("Koti","salasana123"),3000);
+    w.take_connect_request();
+    w.tick(3000,false,0);
     w.tick(3000+24999,false,0);
     assert(w.phase(27999)==WifiPhase::Trying);
     w.tick(3000+25000,false,0);
@@ -128,7 +132,50 @@ static void addresses_without_mdns() {
     const uint8_t none[4]={0,0,0,0};
     assert(!local_addresses(true,"x",none,a));
 }
+// Codex P1 regressions (PR #30): the firmware loop may tick() before it has
+// consumed the connect request. Old-connection evidence must not decide.
+static void online_submit_not_decided_by_old_connection() {
+    WifiProvisioning w;
+    const auto old=creds("Vanha","vanhasalasana");
+    w.begin(&old,0);
+    w.take_connect_request();
+    w.tick(1000,true,0);
+    assert(w.submit(creds("Uusi","vaarasalasana"),2000));
+    w.tick(2010,true,0);            // still the OLD network's IP
+    assert(!w.take_commit() && w.phase(2010)==WifiPhase::Trying);
+    assert(w.take_connect_request()==ConnectTarget::Candidate);
+    w.tick(2020,false,204);         // new attempt: wrong password
+    assert(w.last_result()==WifiResult::WrongPassword && !w.take_commit());
+    assert(std::strcmp(w.stored().ssid,"Vanha")==0);
+    assert(w.take_connect_request()==ConnectTarget::Stored);
+}
+static void retry_not_decided_by_previous_failure_reason() {
+    WifiProvisioning w;
+    w.begin(nullptr,0);
+    w.submit(creds("Koti","vaarasalasana"),0);
+    w.take_connect_request();
+    w.tick(1000,false,15);
+    assert(w.last_result()==WifiResult::WrongPassword);
+    assert(w.take_connect_request()==ConnectTarget::Disconnect);
+    assert(w.submit(creds("Koti","oikeasalasana"),2000));
+    w.tick(2001,false,15);          // stale reason from the previous attempt
+    assert(w.phase(2001)==WifiPhase::Trying);
+    assert(w.take_connect_request()==ConnectTarget::Candidate);
+    w.tick(5000,true,0);
+    assert(w.take_commit() && std::strcmp(w.stored().password,"oikeasalasana")==0);
+    // Timeout counts from the actual start of the attempt.
+    w.submit(creds("Muu","salasana123"),10000);
+    w.tick(40000,false,0);          // not started yet: no timeout
+    assert(w.phase(40000)==WifiPhase::Trying);
+    w.take_connect_request();
+    w.tick(40000+24999,false,0);
+    assert(w.phase(64999)==WifiPhase::Trying);
+    w.tick(40000+25000,false,0);
+    assert(w.last_result()==WifiResult::Timeout);
+}
 int main() {
+    online_submit_not_decided_by_old_connection();
+    retry_not_decided_by_previous_failure_reason();
     first_boot_ap_then_success();
     wrong_password_keeps_ap_and_retries();
     not_found_and_timeout();
