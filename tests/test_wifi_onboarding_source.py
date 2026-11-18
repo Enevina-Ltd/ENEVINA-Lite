@@ -15,6 +15,8 @@ PAGE = (FW / "src" / "cottage_wifi_page.cpp").read_text(encoding="utf-8") \
     .split('R"HTML(', 1)[1].split(')HTML"', 1)[0]
 MAIN = (FW / "src" / "main.cpp").read_text(encoding="utf-8")
 SITE = (FW / "src" / "cottage_site_settings.cpp").read_text(encoding="utf-8")
+AIR = (FW / "src" / "cottage_air_service.cpp").read_text(encoding="utf-8")
+WIFI_HDR = (FW / "include" / "cottage_wifi.hpp").read_text(encoding="utf-8")
 UI = (FW / "include" / "cottage_premium_dashboard.hpp").read_text(encoding="utf-8")
 
 
@@ -69,6 +71,33 @@ class WifiOnboardingSource(unittest.TestCase):
         self.assertLess(MAIN.index("c23_initialize();"), MAIN.index("cottage_wifi_begin(web);"))
         self.assertLess(MAIN.index("site_settings_initialize();"),
                         MAIN.index("enevina_firmware::start_weather_reader();"))
+
+    def test_setup_ap_exposes_wifi_only_even_while_home_connected(self):
+        # Codex P1 (PR #30): a public, intentionally passwordless setup AP
+        # must never expose a physical pump command or phase-2 settings.
+        self.assertIn("web.client().localIP()==WiFi.softAPIP()", WIFI)
+        self.assertIn("bool cottage_wifi_require_home_lan(WebServer& web)", WIFI_HDR)
+        self.assertIn("if(!cottage_wifi_request_via_ap(web)) return true;", WIFI)
+        self.assertIn('web.send(403,"application/json"', WIFI)
+        arm = MAIN.split('web.on("/api/control/arm",HTTP_POST', 1)[1]
+        self.assertLess(arm.index("cottage_wifi_require_home_lan(web)"),
+                        arm.index('web.hasArg("token")'))
+        for endpoint in ("status", "plan", "prices"):
+            self.assertIn('web.on("/api/'+endpoint+'",HTTP_GET,[](){', MAIN)
+            self.assertIn("if(cottage_wifi_require_home_lan(web))"+
+                          endpoint+"_endpoint();", MAIN)
+        for endpoint in ("config", "thresholds", "bind", "ack"):
+            handler = AIR.split('web.on("/api/air/'+endpoint+'",HTTP_POST', 1)[1]
+            self.assertLess(handler.index("cottage_wifi_require_home_lan(web)"),
+                            handler.index("check_token(web)"))
+        self.assertIn("if(cottage_wifi_require_home_lan(web))c23_history_http(web);", AIR)
+        self.assertIn("if(cottage_wifi_require_home_lan(web))send_settings(web);", SITE)
+        settings_post = SITE.split('web.on("/api/settings",HTTP_POST', 1)[1]
+        self.assertLess(settings_post.index("cottage_wifi_require_home_lan(web)"),
+                        settings_post.index('web.hasArg("token")'))
+        # Wi-Fi setup remains usable from the AP.
+        self.assertIn('web.on("/api/wifi/connect",HTTP_POST,connect_route);', WIFI)
+        self.assertIn('web.on("/api/wifi/status",HTTP_GET,status_route);', WIFI)
 
     def test_captive_probes_and_mdns_fallback(self):
         for probe in ("/generate_204", "/hotspot-detect.html", "/connecttest.txt"):
