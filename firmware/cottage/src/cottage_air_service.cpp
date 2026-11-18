@@ -183,6 +183,7 @@ bool save_config() {
     bool saved=true;
     saved &= p.putUChar("mode",static_cast<uint8_t>(cfg.mode))>0;
     saved &= p.putFloat("target",static_cast<float>(cfg.hold_target_c))>0;
+    saved &= p.putFloat("occupied",static_cast<float>(cfg.occupied_target_c))>0;
     saved &= p.putFloat("dryadd",static_cast<float>(cfg.drying_delta_c))>0;
     saved &= p.putFloat("rh70",static_cast<float>(limits.monitor_rh))>0;
     saved &= p.putFloat("rh80",static_cast<float>(limits.review_rh))>0;
@@ -252,11 +253,14 @@ void c23_initialize() {
     if(prefs.begin("cottage_air",true)) {
         config_loaded=true;
         const uint8_t m=prefs.getUChar("mode",0);
-        if(m<=2)config.mode=static_cast<CottageMode>(m);
+        if(m<=3)config.mode=static_cast<CottageMode>(m);
         const double target=prefs.getFloat("target",12.0f);
         const double dryadd=prefs.getFloat("dryadd",4.0f);
         if(std::isfinite(target)&&target>=5&&target<=24)
             config.hold_target_c=target;
+        const double occupied=prefs.getFloat("occupied",21.0f);
+        if(std::isfinite(occupied)&&occupied>=16&&occupied<=26)
+            config.occupied_target_c=occupied;
         if(std::isfinite(dryadd)&&dryadd>=3&&dryadd<=5)
             config.drying_delta_c=dryadd;
         const double rh70=prefs.getFloat("rh70",70.0f);
@@ -418,6 +422,7 @@ void c23_append_status(cJSON* root) {
         have_out_t,exterior_c,alarm_engine.high70_duration_ms(ms));
     cJSON_AddNumberToObject(air,"mode",static_cast<int>(config.mode));
     cJSON_AddNumberToObject(air,"hold_target_c",config.hold_target_c);
+    cJSON_AddNumberToObject(air,"occupied_target_c",config.occupied_target_c);
     cJSON_AddNumberToObject(air,"drying_delta_c",config.drying_delta_c);
     cJSON_AddNumberToObject(air,"warning_rh70",warning_limits.monitor_rh);
     cJSON_AddNumberToObject(air,"warning_rh80",warning_limits.review_rh);
@@ -547,17 +552,29 @@ void c23_register_routes(WebServer& web) {
             web.send(400,"text/plain","Missing mode values");return;
         }
         const String mode_s=web.arg("mode");
-        double hold=0,delta=0;
-        if(mode_s!="0"&&mode_s!="1"&&mode_s!="2") {
+        double hold=0,delta=0,occupied=0;
+        if(mode_s!="0"&&mode_s!="1"&&mode_s!="2"&&mode_s!="3") {
             web.send(400,"text/plain","Invalid mode");return;
         }
         if(!parse_float(web.arg("hold"),hold)||hold<5||hold>24 ||
            !parse_float(web.arg("delta"),delta)||delta<3||delta>5) {
             web.send(400,"text/plain","Invalid target");return;
         }
+        // Existing clients may omit the newly introduced occupied value:
+        // preserve the currently stored value instead of resetting it.
+        if(web.hasArg("occupied")) {
+            if(!parse_float(web.arg("occupied"),occupied) ||
+               occupied<16||occupied>26 ||
+               std::fabs(occupied*2.0-std::round(occupied*2.0))>1e-7) {
+                web.send(400,"text/plain","Invalid occupied target");return;
+            }
+        } else {
+            lock();occupied=config.occupied_target_c;unlock();
+        }
         lock();
         config.mode=static_cast<CottageMode>(mode_s.toInt());
         config.hold_target_c=hold;
+        config.occupied_target_c=occupied;
         config.drying_delta_c=delta;
         ++config_generation; // invalidates any in-flight command preparation
         log_event(3,static_cast<uint8_t>(config.mode));

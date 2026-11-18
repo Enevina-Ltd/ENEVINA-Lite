@@ -235,7 +235,30 @@ int main() {
     cfg.hold_target_c=18;
     hold=evaluate_cottage_mode(cfg,wet,true,true,0,0);
     assert(!hold.direct_setpoint_below_mitsubishi_min);
-    assert(!hold.physical_writes_allowed); // still shadow even when possible
+    assert(!hold.physical_writes_allowed); // advisory evaluator is still pure
 
-    std::puts("PASS official RAWv2, bonding, duplicate/stale, dewpoint, history, alarms and all 3 shadow modes");
+    // Living mode owns a separate room target; switching modes must not
+    // overwrite the existing maintenance target.
+    cfg.hold_target_c=12;
+    cfg.mode=CottageMode::Occupied;
+    cfg.occupied_target_c=21.0;
+    auto lived=evaluate_cottage_mode(cfg,wet,true,true,0,0);
+    assert(lived.mode==CottageMode::Occupied &&
+           lived.has_target && near(lived.target_c,21.0) &&
+           lived.advisory_heat_needed && !lived.direct_setpoint_below_mitsubishi_min);
+    assert(cfg.hold_target_c==12.0);
+    cfg.occupied_target_c=26.0;
+    lived=evaluate_cottage_mode(cfg,wet,true,false,0,0);
+    assert(lived.has_target && near(lived.target_c,26.0));
+    cfg.occupied_target_c=15.5;
+    lived=evaluate_cottage_mode(cfg,wet,true,true,0,0);
+    assert(!lived.has_target);
+    cfg.occupied_target_c=21.0;
+    lived=evaluate_cottage_mode(cfg,wet,false,true,0,0);
+    assert(!lived.has_target && !lived.advisory_heat_needed);
+    cfg.mode=CottageMode::Hold;
+    hold=evaluate_cottage_mode(cfg,wet,true,true,0,0);
+    assert(hold.has_target && near(hold.target_c,12));
+
+    std::puts("PASS official RAWv2, bonding, duplicate/stale, dewpoint, history, alarms and all 4 cottage modes");
 }

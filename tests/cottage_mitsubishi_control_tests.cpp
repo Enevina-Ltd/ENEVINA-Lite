@@ -4,7 +4,7 @@
 using namespace enevina::cottage;
 static ControlSnapshot base() {
     ControlSnapshot s;
-    s.armed=true;s.hold_mode=true;
+    s.armed=true;s.heating_mode=true;
     s.temperature_fresh=s.market_fresh=true;
     s.cn105_link_fresh=s.bridge_get_ok=true;
     s.current_heat=false;s.current_setpoint_c=21;
@@ -18,8 +18,8 @@ int main() {
     assert(choose_mitsubishi_control(s).step==ControlStep::Setpoint);
     s.armed=false;
     assert(choose_mitsubishi_control(s).gate==ControlBlock::Disabled);
-    s=base();s.hold_mode=false;
-    assert(choose_mitsubishi_control(s).gate==ControlBlock::NotInHoldMode);
+    s=base();s.heating_mode=false;
+    assert(choose_mitsubishi_control(s).gate==ControlBlock::NotInHeatingMode);
     s=base();s.temperature_fresh=false;
     assert(choose_mitsubishi_control(s).gate==ControlBlock::InputsUnverified);
     s=base();s.market_fresh=false;

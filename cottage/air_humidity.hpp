@@ -103,10 +103,11 @@ private:
     void assign(MoistureAlertKind kind,bool active,uint64_t now);
 };
 
-enum class CottageMode : uint8_t { Cold=0,Drying=1,Hold=2 };
+enum class CottageMode : uint8_t { Cold=0,Drying=1,Hold=2,Occupied=3 };
 struct CottageModeConfig {
     CottageMode mode=CottageMode::Cold;
     double hold_target_c=12.0;
+    double occupied_target_c=21.0;
     double drying_delta_c=4.0;
 };
 enum class ModeAdvisory : uint8_t {
