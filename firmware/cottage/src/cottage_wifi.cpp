@@ -20,6 +20,7 @@ DNSServer dns;
 WifiProvisioning machine;
 bool ap_active=false;
 bool mdns_started=false;
+bool legacy_migration_pending=false;
 char ap_ssid[24]="Enevina-Lite";
 char unique_host[24]="enevina-lite";
 std::atomic<uint16_t> last_reason{0};
@@ -47,9 +48,11 @@ struct StoredWifi {
 bool load_stored(WifiCredentials& c) {
     Preferences p;
     bool ok=false;
+    bool migrate_legacy=false;
     if(p.begin("wifi",true)) {
         StoredWifi blob{};
-        if(p.getBytesLength("cred1")==sizeof(blob) &&
+        const size_t stored_size=p.getBytesLength("cred1");
+        if(stored_size==sizeof(blob) &&
            p.getBytes("cred1",&blob,sizeof(blob))==sizeof(blob) &&
            blob.magic==StoredWifi{}.magic && blob.version==1 &&
            blob.size==sizeof(WifiCredentials) &&
@@ -58,13 +61,41 @@ bool load_stored(WifiCredentials& c) {
             c=blob.credentials;
             ok=valid_ssid(c.ssid) && valid_wifi_password(c.password);
         }
+        // C2.4 used two NVS string keys. Migrate them only when the new
+        // atomic record is absent; never override a damaged/newer cred1.
+        if(!ok && stored_size==0) {
+            const String legacy_ssid=p.getString("ssid","");
+            const String legacy_password=p.getString("pass","");
+            if(legacy_ssid.length()>0 &&
+               legacy_ssid.length()<sizeof(c.ssid) &&
+               legacy_password.length()<sizeof(c.password)) {
+                WifiCredentials legacy{};
+                strlcpy(legacy.ssid,legacy_ssid.c_str(),sizeof(legacy.ssid));
+                strlcpy(legacy.password,legacy_password.c_str(),
+                        sizeof(legacy.password));
+                if(valid_ssid(legacy.ssid) &&
+                   valid_wifi_password(legacy.password)) {
+                    c=legacy;
+                    ok=true;
+                    migrate_legacy=true;
+                }
+            }
+        }
         p.end();
     }
+    // Keep the existing credentials until Wi-Fi actually obtains an IP.
+    // Do not persist an unverified legacy network at boot. Keep old NVS keys
+    // intact for rollback to the previous application.
+    if(migrate_legacy) legacy_migration_pending=true;
     if(!ok && strlen(COTTAGE_WIFI_SSID)) {
         // Existing pilot build: compile-time network is only the default.
         strlcpy(c.ssid,COTTAGE_WIFI_SSID,sizeof(c.ssid));
         strlcpy(c.password,COTTAGE_WIFI_PASSWORD,sizeof(c.password));
         ok=valid_ssid(c.ssid) && valid_wifi_password(c.password);
+        // One-time bootstrap from an existing pilot's compiled configuration.
+        // Once DHCP succeeds, persist the verified pair to the atomic cred1.
+        // Subsequent OTA images then need no embedded Wi-Fi credentials.
+        if(ok) legacy_migration_pending=true;
     }
     return ok;
 }
@@ -273,6 +304,9 @@ void cottage_wifi_loop() {
     machine.tick(now,got_ip.load(),last_reason.load());
     if(machine.take_commit() && !persist(machine.stored()))
         Serial.println("WIFI_WARN: verified network could not be stored in NVS");
+    if(legacy_migration_pending && got_ip.load() && machine.has_stored() &&
+       persist(machine.stored()))
+        legacy_migration_pending=false;
     if(machine.ap_should_run() && !ap_active) start_ap();
     else if(!machine.ap_should_run() && ap_active) stop_ap();
     if(got_ip.load() && !mdns_started) {
