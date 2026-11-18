@@ -12,7 +12,8 @@ namespace enevina::cottage {
 enum class BootstrapAction : uint8_t { Unavailable, HeatSetpoint, Off, Hold };
 enum class BootstrapReason : uint8_t {
     MissingTemperature, MissingPrices, NoHeatingRequested, TemperatureLow, TemperatureHigh,
-    CheapWindow, ExpensiveWindow, ThermostatWithoutPrices, NeutralPriceWindow
+    CheapWindow, ExpensiveWindow, ThermostatWithoutPrices, NeutralPriceWindow,
+    DeadbandHold
 };
 struct BootstrapInput {
     double indoor_c=0;
@@ -95,17 +96,24 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
         // Already within target deadband: keep pump's current mode.
         d.action=BootstrapAction::Hold;
         d.reason=BootstrapReason::ThermostatWithoutPrices;
-    } else if(cheap) {
+    } else if(cheap && in.indoor_c<in.desired_room_c) {
+        // Pre-heat only in the LOWER half of the deadband ...
         d.action=BootstrapAction::HeatSetpoint;
         d.reason=BootstrapReason::CheapWindow;
-    } else if(expensive) {
+    } else if(expensive && in.indoor_c>=in.desired_room_c) {
+        // ... and coast only in the UPPER half. A HEAT<->OFF change then
+        // needs >= 0.5 C of real temperature movement or a price-signal
+        // change, never a 0.02 C sensor wobble at a deadband edge
+        // (Codex P1, PR #28).
         d.action=BootstrapAction::Off;
         d.reason=BootstrapReason::ExpensiveWindow;
-    } else {
-        // Inside the room deadband and no material price difference:
-        // behave like a thermostat and keep the pump's current mode.
+    } else if(!cheap && !expensive) {
+        // No material price difference: behave like a thermostat.
         d.action=BootstrapAction::Hold;
         d.reason=BootstrapReason::NeutralPriceWindow;
+    } else {
+        d.action=BootstrapAction::Hold;
+        d.reason=BootstrapReason::DeadbandHold;
     }
     if(d.action==BootstrapAction::HeatSetpoint) {
         // Device HEAT setpoint is not the room target below 16C.
@@ -126,6 +134,7 @@ inline const char* bootstrap_reason_name(BootstrapReason reason) {
     case BootstrapReason::ExpensiveWindow:return "HIGH_COST_WINDOW";
     case BootstrapReason::ThermostatWithoutPrices:return "THERMOSTAT_NO_PRICES";
     case BootstrapReason::NeutralPriceWindow:return "NEUTRAL_COST_WINDOW";
+    case BootstrapReason::DeadbandHold:return "HOLD_IN_DEADBAND";
     }
     return "UNKNOWN";
 }

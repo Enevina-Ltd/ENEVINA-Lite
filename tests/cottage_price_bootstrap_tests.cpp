@@ -35,10 +35,43 @@ int main() {
         bootstrap_price_decision(in).reason),"ABOVE_ROOM_TARGET")==0);
     in.indoor_c=18.0;
     assert(bootstrap_price_decision(in).reason==BootstrapReason::ExpensiveWindow);
+    // Split deadband (Codex P1, PR #28): cheap pre-heat only below target,
+    // expensive coast only at/above target, otherwise hold the current mode.
     in.next_total_prices=cheap;
+    assert(bootstrap_price_decision(in).reason==BootstrapReason::DeadbandHold);
+    in.indoor_c=17.9;
     d=bootstrap_price_decision(in);
     assert(d.reason==BootstrapReason::CheapWindow);
     assert(near(d.heat_setpoint_c,19.0));
+    in.next_total_prices=expensive;
+    assert(bootstrap_price_decision(in).action==BootstrapAction::Hold);
+    assert(std::strcmp(bootstrap_reason_name(
+        bootstrap_price_decision(in).reason),"HOLD_IN_DEADBAND")==0);
+    // Codex repro: target 12, prices [0.8,0.1,...,0.7] (expensive now),
+    // 11.49 -> 11.51 -> 11.49 -> 11.51 must not toggle the pump mode; the
+    // same holds with a cheap current slot near the upper edge.
+    for(const double* prices:{expensive,cheap}) {
+        BootstrapInput w{};
+        w.indoor_fresh=true;w.desired_room_c=12;
+        w.next_total_prices=prices;w.price_count=8;w.prices_contiguous_and_fresh=true;
+        const double lower[]={11.49,11.51,11.49,11.51,11.49};
+        const double upper[]={12.51,12.49,12.51,12.49,12.51};
+        for(const double* seq:{lower,upper}) {
+            bool heating=seq==lower?false:true,first=true;
+            unsigned toggles=0;
+            for(size_t k=0;k<5;++k) {
+                w.indoor_c=seq[k];
+                const auto r=bootstrap_price_decision(w);
+                bool next=heating;
+                if(r.action==BootstrapAction::HeatSetpoint) next=true;
+                else if(r.action==BootstrapAction::Off) next=false;
+                if(!first && next!=heating) ++toggles;
+                heating=next;first=false;
+            }
+            assert(toggles==0);
+        }
+    }
+    in.indoor_c=18.0;
     in.next_total_prices=expensive;
     assert(bootstrap_price_decision(in).reason==BootstrapReason::ExpensiveWindow);
     // Manufacturer-unverified minimum mode/command waiting periods removed.
@@ -100,11 +133,19 @@ int main() {
     in.next_total_prices=slight;
     assert(bootstrap_price_decision(in).action==BootstrapAction::Hold);
     const double clear[]={0.100,0.12,0.12,0.12,0.12,0.12,0.12,0.12};
+    // Split deadband: a clear price advantage pre-heats only below target,
+    // a clear premium coasts only at/above target (otherwise HOLD).
     in.next_total_prices=clear;
+    assert(bootstrap_price_decision(in).reason==BootstrapReason::DeadbandHold);
+    in.indoor_c=17.9;
     assert(bootstrap_price_decision(in).reason==BootstrapReason::CheapWindow);
+    in.indoor_c=18.0;
     const double peak[]={0.140,0.12,0.12,0.12,0.12,0.12,0.12,0.12};
     in.next_total_prices=peak;
     assert(bootstrap_price_decision(in).reason==BootstrapReason::ExpensiveWindow);
+    in.indoor_c=17.9;
+    assert(bootstrap_price_decision(in).reason==BootstrapReason::DeadbandHold);
+    in.indoor_c=18.0;
     // Flat prices still heat below / stop above the room deadband.
     in.next_total_prices=flat;in.indoor_c=17.4;
     assert(bootstrap_price_decision(in).action==BootstrapAction::HeatSetpoint);
