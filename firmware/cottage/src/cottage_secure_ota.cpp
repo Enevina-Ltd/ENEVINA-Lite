@@ -16,6 +16,7 @@
 #include <ctime>
 #include "cottage_secure_ota.hpp"
 #include "cottage_network_budget.hpp"
+#include "cottage/ota_runtime_policy.hpp"
 
 #if __has_include("cottage_ota_private.hpp")
 #include "cottage_ota_private.hpp"
@@ -42,6 +43,11 @@ constexpr const char* magic="ENEVINA_C24_OTA_V1\nmodel=esp32s3-n16r8\n";
 constexpr uint32_t max_image_size=0x640000u;
 std::atomic<uint32_t> last_good{0}, last_candidate{0};
 std::atomic<int> last_status{0}; // 0 idle; 1 disabled; 2 transient; 3 refused; 4 rejected; 5 downloading; 6 rebooting
+std::atomic<bool> pause_readers{false};
+std::atomic<uint32_t> ota_written_bytes{0};
+std::atomic<uint32_t> ota_completed_chunks{0};
+std::atomic<uint32_t> ota_flash_yields{0};
+
 namespace ota=enevina::cottage::ota;
 // Compile-time check against the actual ESP-IDF headers in this firmware.
 static_assert(ESP_OTA_IMG_NEW==0u && ESP_OTA_IMG_PENDING_VERIFY==1u &&
@@ -224,7 +230,9 @@ bool update_app(const Release& release) {
     auto client=open_https(COTTAGE_OTA_FIRMWARE_URL,static_cast<int>(release.size));
     if(!client)return false;
     esp_ota_handle_t handle=0;
-    bool begun=esp_ota_begin(target,release.size,&handle)==ESP_OK;
+    // A full image erase in esp_ota_begin() can block the IDLE watchdog
+    // for seconds. Sequential erase bounds each flash operation to a sector.
+    bool begun=esp_ota_begin(target,OTA_WITH_SEQUENTIAL_WRITES,&handle)==ESP_OK;
     if(!begun){close_https(client);return false;}
     unsigned char data[2048]{},digest[32]{};
     mbedtls_sha256_context sha;
@@ -232,6 +240,9 @@ bool update_app(const Release& release) {
     bool okay=mbedtls_sha256_starts_ret(&sha,0)==0;
     uint32_t done=0;
     unsigned zero_reads=0;
+    ota_written_bytes.store(0);
+    ota_completed_chunks.store(0);
+    ota_flash_yields.store(0);
     while(okay && done<release.size) {
         if(WiFi.status()!=WL_CONNECTED ||
            heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)<24*1024) {
@@ -248,7 +259,13 @@ bool update_app(const Release& release) {
         if(mbedtls_sha256_update_ret(&sha,data,got)!=0 ||
            esp_ota_write(handle,data,got)!=ESP_OK){okay=false;break;}
         done+=got;
-        taskYIELD();
+        ota_written_bytes.store(done);
+        ota_completed_chunks.fetch_add(1);
+        // Yield to *lower-priority* IDLE tasks which service the task-WDT.
+        // taskYIELD() only switches to ready tasks of equal/higher priority.
+        // Do this after every bounded 2 KiB flash write, not just per 64 KiB.
+        vTaskDelay(enevina::cottage::ota_flash_idle_delay_ticks);
+        ota_flash_yields.fetch_add(1);
     }
     if(okay && mbedtls_sha256_finish_ret(&sha,digest)!=0)okay=false;
     mbedtls_sha256_free(&sha);
@@ -414,23 +431,28 @@ bool cottage_ota_confirm_boot() {
 uint32_t cottage_ota_good_version(){return last_good.load();}
 uint32_t cottage_ota_last_candidate(){return last_candidate.load();}
 int cottage_ota_status(){return last_status.load();}
+bool cottage_ota_network_maintenance(){return pause_readers.load();}
+uint32_t cottage_ota_downloaded_bytes(){return ota_written_bytes.load();}
+uint32_t cottage_ota_chunk_count(){return ota_completed_chunks.load();}
+uint32_t cottage_ota_idle_yields(){return ota_flash_yields.load();}
 void cottage_ota_worker(void*) {
 #if !ENEVINA_SIGNED_OTA_AVAILABLE
     last_status.store(1);
     vTaskDelete(nullptr);
 #else
     // This is deliberately an operator-staged, signed pull. No unauthenticated
-    // device-side HTTP POST or firmware upload exists. Publisher login to the
-    // LAN host + signing key access is the approval step.
+    // device-side HTTP POST or firmware upload exists.
     vTaskDelay(pdMS_TO_TICKS(90000));
     while(true) {
-        // Retry transient NVS cleanup/reconciliation without any new
-        // watcher, reset loop or physical flash operation.
+        // Keep normal CN105/Shelly readers running during routine manifest
+        // checks. Briefly pause ONLY after the signed version is eligible.
+        // Every exit path from an attempted update restores reader activity.
         cottage_ota_initialize();
         if(WiFi.status()!=WL_CONNECTED || time(nullptr)<1700000000) {
             last_status.store(2);
         } else if(!enevina_firmware::network_budget_acquire(200,
-                  80*1024,20*1024)) {
+                  enevina::cottage::ota_manifest_min_internal_bytes,
+                  enevina::cottage::ota_min_contiguous_internal_bytes)) {
             last_status.store(3);
         } else {
             Release r{};
@@ -447,27 +469,41 @@ void cottage_ota_worker(void*) {
                     bad=p.getUInt("bad",0);
                     pending=p.getUInt("pending",0);
                     // txv2 is authoritative for all new OTA releases.
-                    // Even after a good write, a failed deletion must
-                    // block new installs until idempotent cleanup succeeds.
                     if(p.isKey("txv2"))pending=1;
                     p.end();
                 }
                 if(!store_ready) {
-                    // Refuse all OTA if persistent anti-rollback state
-                    // cannot be read; never treat NVS failure as version zero.
                     last_status.store(3);
                 } else if(!ota::signed_version_eligible(r.version,good,bad,pending!=0)) {
                     last_status.store(0);
                 } else {
-                    last_status.store(5);
-                    const bool applied=update_app(r);
-                    last_status.store(applied?6:4);
+                    // The manifest TLS session has already been cleaned up.
+                    // Release its shared network lock before allowing readers
+                    // to drain: SSE may hold a separate, persistent socket.
                     enevina_firmware::network_budget_release();
+                    pause_readers.store(true);
+                    vTaskDelay(pdMS_TO_TICKS(
+                        enevina::cottage::ota_readers_release_ms));
+                    bool applied=false;
+                    if(WiFi.status()!=WL_CONNECTED ||
+                       !enevina_firmware::network_budget_acquire(1200,
+                          enevina::cottage::ota_image_min_internal_bytes,
+                          enevina::cottage::ota_min_contiguous_internal_bytes)) {
+                        last_status.store(3);
+                    } else {
+                        last_status.store(5);
+                        applied=update_app(r);
+                        last_status.store(applied?6:4);
+                        enevina_firmware::network_budget_release();
+                    }
+                    pause_readers.store(false);
                     if(applied) {
                         Serial.println("C24_SIGNED_OTA_VERIFIED: rebooting into standby partition");
                         vTaskDelay(pdMS_TO_TICKS(500));
                         esp_restart();
                     }
+                    // A failed image stays non-authoritative. Keep current
+                    // firmware, preserve user settings and avoid retry storms.
                     vTaskDelay(pdMS_TO_TICKS(10*60*1000));
                     continue;
                 }
