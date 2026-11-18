@@ -42,7 +42,7 @@ def inputs(executable, name, periods):
 def replay(d,actions):
     temperature=d['initial_c']; on=d['initial_on']
     age=d['initial_minutes']; minimum=temperature
-    cost=0.;kwh=0.;starts=0;violations=[]
+    cost=0.;kwh=0.;thermal_kwh=0.;maximum=temperature;starts=0;violations=[]
     for i,(slot,command) in enumerate(zip(d['slots'],actions)):
         command=bool(command)
         if command!=on:
@@ -63,14 +63,14 @@ def replay(d,actions):
         energy=.25*(d['heat_standby_kw'] if command else d['off_standby_kw'])
         if command:energy+=.25*thermal/cop
         if command and not on:energy+=d['startup_kwh']
-        kwh+=energy;cost+=energy*price
-        minimum=min(minimum,temperature)
+        kwh+=energy;cost+=energy*price;thermal_kwh+=.25*thermal
+        minimum=min(minimum,temperature);maximum=max(maximum,temperature)
         if not d['minimum_c']-1e-7<=temperature<=d['maximum_c']+1e-7:
             violations.append('temperature_'+str(i))
         on=command
     if temperature<d['initial_c']-1e-7:violations.append('terminal')
-    return dict(cost_eur=cost,electric_kwh=kwh,minimum_c=minimum,
-        final_c=temperature,starts=starts,violations=violations)
+    return dict(cost_eur=cost,electric_kwh=kwh,thermal_kwh=thermal_kwh,minimum_c=minimum,
+        maximum_c=maximum,final_c=temperature,starts=starts,violations=violations)
 
 def solve(d, time_limit):
     n=d['periods'];dim=4*n+1

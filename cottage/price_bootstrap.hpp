@@ -12,7 +12,7 @@ namespace enevina::cottage {
 enum class BootstrapAction : uint8_t { Unavailable, HeatSetpoint, Off, Hold };
 enum class BootstrapReason : uint8_t {
     MissingTemperature, MissingPrices, NoHeatingRequested, TemperatureLow, TemperatureHigh,
-    CheapWindow, ExpensiveWindow, ThermostatWithoutPrices
+    CheapWindow, ExpensiveWindow, ThermostatWithoutPrices, NeutralPriceWindow
 };
 struct BootstrapInput {
     double indoor_c=0;
@@ -26,6 +26,12 @@ struct BootstrapInput {
     size_t price_count=0;
     // True only for consecutive, current-to-future UTC 15-minute slots.
     bool prices_contiguous_and_fresh=false;
+    // A slot is "cheap" (pre-heat) or "expensive" (coast) only when it differs
+    // from the 2 h median by at least this fraction of |median| and by at least
+    // min_price_advantage_eur_per_kwh. Pre-heating at a price equal to the
+    // median only adds heat loss. Audit: docs/OPTIMIZATION_AUDIT_20261118.md.
+    double min_price_advantage_fraction=0.10;
+    double min_price_advantage_eur_per_kwh=0.005;
 };
 struct BootstrapDecision {
     BootstrapAction action=BootstrapAction::Unavailable;
@@ -57,7 +63,12 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
         }
         sorted[i]=v;
     }
-    bool cheap=false;
+    bool cheap=false,expensive=false;
+    if(price_valid && (!std::isfinite(in.min_price_advantage_fraction) ||
+       in.min_price_advantage_fraction<0 || in.min_price_advantage_fraction>1 ||
+       !std::isfinite(in.min_price_advantage_eur_per_kwh) ||
+       in.min_price_advantage_eur_per_kwh<0 ||
+       in.min_price_advantage_eur_per_kwh>1)) price_valid=false;
     if(price_valid) {
         std::sort(sorted.begin(),sorted.begin()+in.price_count);
         const size_t mid=in.price_count/2;
@@ -65,7 +76,10 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
             sorted[mid]:(sorted[mid-1]+sorted[mid])*0.5;
         d.current_total_eur_per_kwh=in.next_total_prices[0];
         d.price_data_valid=true;
-        cheap=in.next_total_prices[0]<=d.compared_median_eur_per_kwh;
+        const double margin=std::max(in.min_price_advantage_eur_per_kwh,
+            in.min_price_advantage_fraction*std::fabs(d.compared_median_eur_per_kwh));
+        cheap=in.next_total_prices[0]<=d.compared_median_eur_per_kwh-margin;
+        expensive=in.next_total_prices[0]>=d.compared_median_eur_per_kwh+margin;
     }
     const bool below=in.indoor_c<=in.desired_room_c-0.5;
     const bool above=in.indoor_c>=in.desired_room_c+0.5;
@@ -84,9 +98,14 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     } else if(cheap) {
         d.action=BootstrapAction::HeatSetpoint;
         d.reason=BootstrapReason::CheapWindow;
-    } else {
+    } else if(expensive) {
         d.action=BootstrapAction::Off;
         d.reason=BootstrapReason::ExpensiveWindow;
+    } else {
+        // Inside the room deadband and no material price difference:
+        // behave like a thermostat and keep the pump's current mode.
+        d.action=BootstrapAction::Hold;
+        d.reason=BootstrapReason::NeutralPriceWindow;
     }
     if(d.action==BootstrapAction::HeatSetpoint) {
         // Device HEAT setpoint is not the room target below 16C.
@@ -106,6 +125,7 @@ inline const char* bootstrap_reason_name(BootstrapReason reason) {
     case BootstrapReason::CheapWindow:return "LOW_COST_WINDOW";
     case BootstrapReason::ExpensiveWindow:return "HIGH_COST_WINDOW";
     case BootstrapReason::ThermostatWithoutPrices:return "THERMOSTAT_NO_PRICES";
+    case BootstrapReason::NeutralPriceWindow:return "NEUTRAL_COST_WINDOW";
     }
     return "UNKNOWN";
 }
