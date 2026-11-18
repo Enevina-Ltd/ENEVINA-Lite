@@ -61,6 +61,15 @@ class WifiOnboardingSource(unittest.TestCase):
         self.assertIn("const ssid=$('ssid').value,", PAGE)
         self.assertNotIn("$('ssid').value.trim()", PAGE)
 
+    def test_setup_ap_guard_registered_first(self):
+        # Codex P1 (PR #30): control/settings must not be reachable via the open AP.
+        begin = WIFI.split("void cottage_wifi_begin(WebServer& web) {", 1)[1]
+        self.assertLess(begin.index("web.addHandler(new SetupApGuard())"), begin.index("web.on("))
+        self.assertIn("!setup_ap_route_allowed(uri.c_str())", WIFI)
+        self.assertLess(MAIN.index("cottage_wifi_begin(web);"), MAIN.index('web.on("/api/status"'))
+        self.assertLess(MAIN.index("cottage_wifi_begin(web);"), MAIN.index("c23_register_routes(web);"))
+        self.assertLess(MAIN.index("cottage_wifi_begin(web);"), MAIN.index("cottage_control_registration();"))
+
     def test_main_wiring(self):
         self.assertIn("cottage_wifi_begin(web);", MAIN)
         self.assertIn("cottage_wifi_loop();", MAIN)

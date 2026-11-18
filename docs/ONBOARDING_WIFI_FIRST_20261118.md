@@ -37,8 +37,14 @@ Muutos ei lisää salasanaa, kirjautumista, watchdogia eikä uutta porttia.
   käyttää olemassa olevaa käynnistyskohtaista CSRF-tunnistetta.
 - **Tunnettu riski:** asennusverkon ollessa auki lähellä oleva henkilö voi liittyä
   siihen ja syöttää laitteelle toisen Wi-Fi-verkon. Uutta verkkoa käytetään vasta,
-  kun siihen saadaan IP-osoite. Pumpun ohjaus ei käynnisty tästä: automaattiohjaus
-  pitää aina ottaa erikseen käyttöön kotiverkon dashboardista.
+  kun siihen saadaan IP-osoite.
+- **Asennusverkko on vain Wi-Fin määritystä varten** (Codex P1, PR #30): sen kautta
+  saapuva pyyntö pääsee vain reitteihin `/`, `/setup`, `/api/wifi/*` ja captive
+  portal -tarkistuksiin. Ohjauksen käyttöönotto, tila- ja sopimusasetukset sekä
+  `/api/status` (jossa on CSRF-tunniste) torjutaan (GET → `/setup`, muut → 403).
+  Automaattiohjaus otetaan siis aina käyttöön vain kotiverkon dashboardista.
+  Korjausta ennen (commitit ennen `3634a2a`:n jälkeistä korjausta) avoimen
+  asennusverkon kautta olisi voinut ottaa ohjauksen käyttöön.
 
 ### Tunnetut rajat (ei testattu oikealla laitteella)
 

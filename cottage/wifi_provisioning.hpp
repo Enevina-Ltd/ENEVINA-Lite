@@ -202,6 +202,20 @@ private:
     ConnectTarget connect_request_=ConnectTarget::None;
 };
 
+// The open setup AP is phase 1 ONLY: Wi-Fi provisioning. Every other route
+// (pump control arming, mode/site settings, status with its CSRF token, OTA)
+// must be refused when the request arrives through the setup AP, so a nearby
+// stranger on the open network can never arm or reconfigure the pump
+// (Codex P1, PR #30). The home-network interface is unaffected.
+inline bool setup_ap_route_allowed(const char* uri) {
+    if(!uri) return false;
+    static const char* const exact[]={"/","/setup","/api/wifi/status","/api/wifi/scan",
+        "/api/wifi/connect","/generate_204","/gen_204","/hotspot-detect.html",
+        "/library/test/success.html","/connecttest.txt","/ncsi.txt"};
+    for(const char* e:exact) if(std::strcmp(uri,e)==0) return true;
+    return false;
+}
+
 // Local addresses shown on the success page. mDNS is preferred but never
 // required: the numeric IP is always listed, so a phone without mDNS
 // (some Android versions) or a router that blocks multicast still works.

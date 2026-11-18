@@ -182,6 +182,31 @@ void connect_route() {
     }
     server->send(202,"application/json","{\"accepted\":true}");
 }
+// Registered FIRST, so it sees every request before any other route. Only
+// requests that arrive through the setup AP AND are not Wi-Fi provisioning
+// routes are intercepted; the home-network interface is never touched.
+class SetupApGuard : public RequestHandler {
+public:
+    bool canHandle(HTTPMethod,String uri) override { return blocked(uri); }
+    bool canUpload(String uri) override { return blocked(uri); }
+    bool canRaw(String uri) override { return blocked(uri); }
+    bool handle(WebServer& web,HTTPMethod method,String) override {
+        if(method==HTTP_GET) {
+            web.sendHeader("Location",String("http://")+WiFi.softAPIP().toString()+"/setup");
+            web.send(302,"text/plain","");
+        } else {
+            web.send(403,"application/json","{\"error\":\"SETUP_NETWORK_WIFI_ONLY\"}");
+        }
+        return true;
+    }
+    void upload(WebServer&,String,HTTPUpload&) override {} // discard
+    void raw(WebServer&,String,HTTPRaw&) override {}
+private:
+    static bool blocked(const String& uri) {
+        return server && cottage_wifi_request_via_ap(*server) &&
+            !setup_ap_route_allowed(uri.c_str());
+    }
+};
 void captive_redirect() {
     server->sendHeader("Location",String("http://")+WiFi.softAPIP().toString()+"/setup");
     server->send(302,"text/plain","");
@@ -193,6 +218,8 @@ bool cottage_wifi_request_via_ap(WebServer& web) {
 }
 void cottage_wifi_begin(WebServer& web) {
     server=&web;
+    // Must be the first handler: the open setup AP may only provision Wi-Fi.
+    web.addHandler(new SetupApGuard());
     uint8_t mac[6]{};
     WiFi.macAddress(mac);
     snprintf(ap_ssid,sizeof(ap_ssid),"Enevina-Lite-%02X%02X",mac[4],mac[5]);
