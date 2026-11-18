@@ -45,6 +45,14 @@ bool indoor_binding_persisted=true;
 bool history_origin_clean=true;
 uint32_t samples_ok=0,samples_rejected=0,samples_duplicate=0,stores=0;
 uint32_t low_heap_skips=0;
+// Cross-task status counters are atomic; never hold the Ruuvi callback lock
+// while sampling heap or when acquiring the shared network memory mutex.
+std::atomic<uint32_t> ble_scan_attempts{0};
+std::atomic<uint32_t> ble_scan_completed{0};
+std::atomic<uint32_t> ble_scan_memory_denials{0};
+std::atomic<uint32_t> ble_scan_busy_denials{0};
+std::atomic<uint32_t> ble_scan_last_free_internal{0};
+std::atomic<uint32_t> ble_scan_last_largest_internal{0};
 std::atomic<bool> ble_initialized{false};
 char csrf_token[24]={};
 struct AirEvent {
@@ -342,17 +350,30 @@ void c23_ble_worker(void*) {
     scan->setActiveScan(false);
     ble_initialized.store(true);
     for(;;) {
+        const auto internal_free=static_cast<uint32_t>(heap_caps_get_free_size(
+            MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+        const auto largest_free=static_cast<uint32_t>(
+            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+        ble_scan_last_free_internal.store(internal_free);
+        ble_scan_last_largest_internal.store(largest_free);
+        const bool heap_ok=internal_memory_admissible(
+            internal_free,largest_free,
+            ble_scan_min_internal_bytes,ble_scan_min_contiguous_bytes);
         {
             // The network-memory lock is needed only during BLE scanning.
             // Release it BEFORE the 12-second sleep so TLS and OTA can run.
             enevina_firmware::NetworkBudgetLease lease(0,
                 ble_scan_min_internal_bytes,ble_scan_min_contiguous_bytes);
             if(lease.held()) {
+                ble_scan_attempts.fetch_add(1);
                 scan->start(4,false);
                 enevina_firmware::network_budget_sample();
                 scan->clearResults();
+                ble_scan_completed.fetch_add(1);
             } else {
                 low_heap_skips++;
+                if(heap_ok)ble_scan_busy_denials.fetch_add(1);
+                else ble_scan_memory_denials.fetch_add(1);
             }
         } // lease destructor releases network budget before waiting
         vTaskDelay(pdMS_TO_TICKS(12000));
@@ -475,6 +496,16 @@ void c23_append_status(cJSON* root) {
     json_number_or_null(air,"absolute_6h_change_gm3",trend_ready,abs_trend);
     cJSON_AddNumberToObject(air,"nvs_checkpoints",stores);
     cJSON_AddNumberToObject(air,"low_heap_scan_skips",low_heap_skips);
+    cJSON_AddNumberToObject(air,"ble_scan_attempts",ble_scan_attempts.load());
+    cJSON_AddNumberToObject(air,"ble_scan_completed",ble_scan_completed.load());
+    cJSON_AddNumberToObject(air,"ble_scan_memory_denials",
+                            ble_scan_memory_denials.load());
+    cJSON_AddNumberToObject(air,"ble_scan_busy_denials",
+                            ble_scan_busy_denials.load());
+    cJSON_AddNumberToObject(air,"ble_scan_last_free_internal",
+                            ble_scan_last_free_internal.load());
+    cJSON_AddNumberToObject(air,"ble_scan_last_largest_internal",
+                            ble_scan_last_largest_internal.load());
     cJSON_AddBoolToObject(air,"sensor_discovered",have_discovered);
     // Local web only; the saved MAC and full sensor ID are not printed
     // to UART logs, external APIs or GitHub.
