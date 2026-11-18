@@ -8,8 +8,8 @@ Enevina Lite is an ESP32-S3-based controller for **one heat pump per device**, d
 
 ## License and commercial use
 
-- **License:** [PolyForm Noncommercial 1.0.0](LICENSE) — publicly readable source code for permitted non-commercial uses. This is **source-available**, **not OSI-approved open source**.
-- **Commercial use, resale or commercial distribution** of the software or products built around it requires a separate written license from **Enevina Oy**.
+- **License:** [PolyForm Noncommercial 1.0.0](LICENSE) permits use, modification and distribution for purposes covered by its terms. This is **source-available**, **not OSI-approved open source**.
+- **Commercial use or commercial distribution of the software**, including its incorporation into products sold commercially, requires a separate written license from **Enevina Oy**.
 - Enevina names, product branding and logos are not granted for third-party commercial branding under the software license.
 - Third-party components remain subject to their own licenses. Publication of this repository is not a license grant for any separately owned third-party code.
 
