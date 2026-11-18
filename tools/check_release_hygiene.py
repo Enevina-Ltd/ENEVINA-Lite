@@ -29,8 +29,8 @@ SECRET_FILE_SUFFIXES = (".p12", ".pfx", ".key")
 TEXT_SUFFIXES = {
     ".md", ".txt", ".py", ".cpp", ".c", ".hpp", ".h", ".ino",
     ".ini", ".csv", ".json", ".js", ".html", ".css", ".yml", ".yaml",
+    ".pem", ".crt", ".key", ".conf", ".toml", ".properties",
 }
-SITE_SCAN_SUFFIXES = {".md", ".txt", ".hpp", ".html", ".yml", ".yaml"}
 
 
 def find_issues(path: str, contents: str) -> list[str]:
@@ -50,9 +50,7 @@ def find_issues(path: str, contents: str) -> list[str]:
         issues.append("private-key-block")
     if TOKEN.search(contents):
         issues.append("possible-access-token")
-    if pathlib.PurePosixPath(lowered).suffix in SITE_SCAN_SUFFIXES and any(
-        term in contents.casefold() for term in PRIVATE_SITE_TERMS
-    ):
+    if any(term in contents.casefold() for term in PRIVATE_SITE_TERMS):
         issues.append("identified-private-test-site")
     return issues
 
@@ -77,7 +75,7 @@ def main() -> int:
                 findings.append((rel, issue))
             continue
         if p.stat().st_size > 2_000_000:
-            print(f"SKIP oversized text file: {rel}")
+            findings.append((rel, "oversized-text-not-checked"))
             continue
         contents = p.read_text(encoding="utf-8", errors="replace")
         scanned += 1

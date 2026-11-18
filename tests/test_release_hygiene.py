@@ -1,6 +1,10 @@
 import importlib.util
 import pathlib
 import unittest
+import contextlib
+import io
+import tempfile
+from unittest.mock import patch
 
 SOURCE = pathlib.Path(__file__).resolve().parents[1] / "tools" / "check_release_hygiene.py"
 SPEC = importlib.util.spec_from_file_location("release_hygiene", SOURCE)
@@ -39,6 +43,36 @@ class ReleaseHygieneTests(unittest.TestCase):
 
     def test_normal_file_passes(self):
         self.assertEqual([], MOD.find_issues("docs/readme.md", "Generic pump control."))
+
+    def test_pem_private_key_blocks_actual_main_scanner(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            pem = root / "signing.pem"
+            pem.write_text("-----BEGIN " + "OPENSSH PRIVATE KEY-----" + "\\nFAKE_TEST_DATA\\n", encoding="utf-8")
+            with patch.object(MOD, "ROOT", root), patch.object(
+                MOD, "tracked_files", return_value=["signing.pem"]
+            ), contextlib.redirect_stdout(io.StringIO()) as output:
+                result = MOD.main()
+            self.assertEqual(1, result)
+            self.assertIn("private-key-block", output.getvalue())
+
+    def test_private_site_in_cpp_blocks_actual_main_scanner(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            source = root / "example.cpp"
+            source.write_text("// " + "Lille" + "villa" + "\\n", encoding="utf-8")
+            with patch.object(MOD, "ROOT", root), patch.object(
+                MOD, "tracked_files", return_value=["example.cpp"]
+            ), contextlib.redirect_stdout(io.StringIO()) as output:
+                result = MOD.main()
+            self.assertEqual(1, result)
+            self.assertIn("identified-private-test-site", output.getvalue())
+
+    def test_site_in_json_is_blocked(self):
+        self.assertIn(
+            "identified-private-test-site",
+            MOD.find_issues("examples/test.json", '{"location": "' + "Kala" + "joki" + '"}'),
+        )
 
     def test_noncompliant_env_is_blocked(self):
         self.assertIn(
