@@ -24,7 +24,10 @@ class OccupiedModeTests(unittest.TestCase):
     def test_connected_to_optimizer_and_actuator_selection(self):
         self.assertIn("const CottageModePlan target_plan=c23_current_mode_plan()", MAIN)
         self.assertIn('mode.mode==CottageMode::Drying &&',MAIN)
-        self.assertIn('!target_plan.advisory_heat_needed',MAIN)
+        # Codex P2 (PR #28): humidity condition gates drying heat; the
+        # momentary T<target-0.5 flag must not become an OFF command.
+        self.assertIn('drying_blocks_heat(target_plan)',MAIN)
+        self.assertNotIn('!target_plan.advisory_heat_needed',MAIN)
         self.assertIn('no_heat.reason=BootstrapReason::NoHeatingRequested',MAIN)
         self.assertIn("input.desired_room_c=target_plan.target_c", MAIN)
         self.assertIn("candidate.heating_mode", MAIN)
