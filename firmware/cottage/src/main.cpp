@@ -31,6 +31,8 @@
 #include "cottage/ruuvi.hpp"
 #include "cottage/url_guard.hpp"
 #include "cottage/mode_timing.hpp"
+#include "cottage/price_bootstrap.hpp"
+#include "cottage/finnish_tariff.hpp"
 #include "cottage/sse_transport.hpp"
 #include "cottage/cn105_source_proof.hpp"
 #include "../../main/market.hpp"
@@ -508,6 +510,49 @@ static enevina::Tariff tariff(bool night=false) {
     t.vat_rate=COTTAGE_VAT_RATE;
     return t;
 }
+// Model-free price-aware heating proposal, used only until calibrated MPC
+// exists. A 2-hour window must contain 8 contiguous verified 15-minute
+// TOTAL marginal-cost slots. This function never emits an actuator command.
+static BootstrapDecision bootstrap_preview(int64_t now,
+                                            const TemperatureSample& t,
+                                            const CN105Telemetry& confirmed) {
+    BootstrapInput input{};
+    input.indoor_fresh=valid_temperature(t,now);
+    input.indoor_c=t.indoor_c;
+    input.currently_heating=confirmed.mode==ObservedPumpMode::Heat &&
+                            valid_cn105(confirmed,now);
+    // A replayed SSE snapshot must never certify HEAT/OFF dwell.
+    input.confirmed_minutes_in_mode=0;
+    const auto market=enevina_firmware::market_status();
+    constexpr size_t N=8;
+    std::array<enevina_firmware::PricePoint,N> points{};
+    std::array<double,N> prices{};
+    const int64_t start=(now/900)*900;
+    const bool eligible=now>=1700000000 && market.clock_trusted &&
+        market.current_price_valid && market.last_fetch_utc<=now &&
+        market.last_fetch_utc>=now-36*3600 &&
+        market.valid_until_utc>=start+static_cast<int64_t>(N)*900;
+    bool valid_prices=eligible && enevina_firmware::future_prices(
+        points.data(),points.size())==N;
+    for(size_t i=0;valid_prices && i<N;++i) {
+        if(points[i].start_utc!=start+static_cast<int64_t>(i)*900) {
+            valid_prices=false;break;
+        }
+        bool day=false;
+        if(!finnish_day_transfer(points[i].start_utc,day)) {
+            valid_prices=false;break;
+        }
+        auto priced=tariff(!day);
+        priced.spot_eur_per_kwh=points[i].spot_eur_per_kwh;
+        if(!enevina::calculate_total_price(priced,prices[i])) {
+            valid_prices=false;break;
+        }
+    }
+    input.next_total_prices=prices.data();
+    input.price_count=N;
+    input.prices_contiguous_and_fresh=valid_prices;
+    return bootstrap_price_decision(input);
+}
 // Use 64-bit monotonic ESP timer for an actual deadline (not post-hoc wall time).
 static uint64_t cottage_now_ms(void*) {
     return static_cast<uint64_t>(esp_timer_get_time()/1000);
@@ -952,9 +997,24 @@ static void status_endpoint() {
     t.spot_eur_per_kwh=price.current_spot_eur_per_kwh;
     const bool valid_total=price.current_price_valid &&
         enevina::calculate_total_price(t,total);
+    const BootstrapDecision bootstrap=bootstrap_preview(now,te,cp);
     cJSON* root=cJSON_CreateObject();
     cJSON_AddStringToObject(root,"mode","VARJOTILA_EI_KOMENTOJA");
     cJSON_AddBoolToObject(root,"physical_writes",false);
+    cJSON_AddStringToObject(root,"bootstrap_action",
+                             bootstrap_action_name(bootstrap.action));
+    cJSON_AddStringToObject(root,"bootstrap_reason",
+                             bootstrap_reason_name(bootstrap.reason));
+    cJSON_AddBoolToObject(root,"bootstrap_executable",false);
+    if(bootstrap.action!=BootstrapAction::Unavailable) {
+        cJSON_AddNumberToObject(root,"bootstrap_total_now",
+                                bootstrap.current_total_eur_per_kwh);
+        cJSON_AddNumberToObject(root,"bootstrap_median_2h",
+                                bootstrap.compared_median_eur_per_kwh);
+    } else {
+        cJSON_AddNullToObject(root,"bootstrap_total_now");
+        cJSON_AddNullToObject(root,"bootstrap_median_2h");
+    }
     const auto pump_quality=enevina::assess_measurement(cp.evidence,now,180);
     const bool verified_uart=valid_cn105(cp,now) &&
         cp.evidence.source_time_verified;
