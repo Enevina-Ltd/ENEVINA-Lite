@@ -35,6 +35,13 @@ class WifiOnboardingSource(unittest.TestCase):
         connect = WIFI.split("void connect_route()", 1)[1].split("void captive_redirect()", 1)[0]
         self.assertNotIn("persist(", connect)
 
+    def test_credentials_stored_as_one_atomic_blob(self):
+        # Codex P2 (PR #30): never two writes that can split SSID/password.
+        persist = WIFI.split("bool persist(const WifiCredentials& c) {", 1)[1].split("\n}", 1)[0]
+        self.assertIn('p.putBytes("cred1",&blob,sizeof(blob))', persist)
+        self.assertNotIn("putString", persist)
+        self.assertIn("blob.magic==StoredWifi{}.magic", WIFI)
+
     def test_home_wifi_password_never_logged_or_returned(self):
         for line in WIFI.splitlines():
             if "Serial.print" in line:

@@ -35,18 +35,30 @@ void on_wifi_event(WiFiEvent_t event,WiFiEventInfo_t info) {
         got_ip.store(false);
     }
 }
+// SSID and password are ONE versioned NVS blob written with a single
+// putBytes(): a reset or failed write can never pair a new SSID with an old
+// password (Codex P2, PR #30). NVS replaces a key atomically.
+struct StoredWifi {
+    uint32_t magic=0x45575731; // "EWW1"
+    uint16_t version=1;
+    uint16_t size=sizeof(WifiCredentials);
+    WifiCredentials credentials{};
+};
 bool load_stored(WifiCredentials& c) {
     Preferences p;
     bool ok=false;
     if(p.begin("wifi",true)) {
-        const String ssid=p.getString("ssid","");
-        const String pass=p.getString("pass","");
-        p.end();
-        if(ssid.length() && ssid.length()<sizeof(c.ssid) && pass.length()<sizeof(c.password)) {
-            strlcpy(c.ssid,ssid.c_str(),sizeof(c.ssid));
-            strlcpy(c.password,pass.c_str(),sizeof(c.password));
+        StoredWifi blob{};
+        if(p.getBytesLength("cred1")==sizeof(blob) &&
+           p.getBytes("cred1",&blob,sizeof(blob))==sizeof(blob) &&
+           blob.magic==StoredWifi{}.magic && blob.version==1 &&
+           blob.size==sizeof(WifiCredentials) &&
+           memchr(blob.credentials.ssid,0,sizeof(blob.credentials.ssid)) &&
+           memchr(blob.credentials.password,0,sizeof(blob.credentials.password))) {
+            c=blob.credentials;
             ok=valid_ssid(c.ssid) && valid_wifi_password(c.password);
         }
+        p.end();
     }
     if(!ok && strlen(COTTAGE_WIFI_SSID)) {
         // Existing pilot build: compile-time network is only the default.
@@ -57,10 +69,11 @@ bool load_stored(WifiCredentials& c) {
     return ok;
 }
 bool persist(const WifiCredentials& c) {
+    StoredWifi blob{};
+    blob.credentials=c;
     Preferences p;
     if(!p.begin("wifi",false)) return false;
-    const bool ok=p.putString("ssid",c.ssid)==strlen(c.ssid) &&
-        p.putString("pass",c.password)==strlen(c.password);
+    const bool ok=p.putBytes("cred1",&blob,sizeof(blob))==sizeof(blob);
     p.end();
     return ok;
 }
