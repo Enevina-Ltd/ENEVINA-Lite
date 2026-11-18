@@ -26,7 +26,7 @@ Enevina Lite suunnitellaan **Enevina Oy:n ensimmäiseksi kaupalliseksi tuotteeks
 ## Todenmukainen tilanne ja laiterajat
 
 - **Main-haara** ei automaattisesti sisällä pinottujen draft-PR:ien #5, #6 ja #7 toteutusta; jokainen agentti tarkistaa todelliset HEAD:t ennen työn aloittamista.
-- **Pihamökissä oleva ESP32-S3** on erillinen kenttäpilotti. Tätä laitetta ei flashata, resetoida eikä kuormiteta pelkän dokumentaatiotehtävän vuoksi.
+- **Kenttätestiin asennettu ESP32-S3** on erillinen koelaite. Tätä laitetta ei flashata, resetoida eikä kuormiteta pelkän dokumentaatiotehtävän vuoksi.
 - **Core-koneen uusi ESP32-S3 N16R8** on regressiotesteihin tarkoitettu kortti, mutta sen bootloader/NVS:n muokkaaminen edellyttää palautussuunnitelmaa ja erillistä hyväksyntää.
 - Kaupallista laitetta ei saa sanoa CE-vaatimustenmukaiseksi tai myyntivalmiiksi ilman porttikohtaista näyttöä. Tämä ei estä toiminnallisen laitteen kehitystä.
 - Tässä dokumentaatiomuutoksessa ei asenneta firmwarea, käynnistetä fyysistä ohjausta eikä yhdistetä PR #5–#7:ää.
