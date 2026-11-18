@@ -64,6 +64,11 @@ class Cn105SseVisibilityTests(unittest.TestCase):
         self.assertIn('valid_cn105_events_url(COTTAGE_CN105_URL)',MAIN)
         self.assertIn('HTTPC_DISABLE_FOLLOW_REDIRECTS',post)
         self.assertIn('req.POST("")',post)
+        self.assertIn('req.addHeader("Content-Length","0")',post)
+        self.assertLess(post.index('req.addHeader("Content-Length","0")'),
+                        post.index('req.POST("")'))
+        # ESPHome returns 411 for the old headerless empty POST. Ensure
+        # the zero-length body header is kept next to the actual command.
         # GET acquires the nonrecursive network lease itself; it cannot be
         # called while the POST owns that same mutex.
         self.assertLess(post.index('cn105_bridge_get(bridge_heat,bridge_setpoint)'),
