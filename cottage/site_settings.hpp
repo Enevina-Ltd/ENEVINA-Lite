@@ -149,9 +149,10 @@ inline bool valid_latlon(const char* s) {
     std::memcpy(lat,s,a);
     std::strcpy(lon,comma+1);
     double y=0,x=0;
-    // Same bounds as parse_location() in firmware/main/weather.cpp (Codex P2,
-    // PR #30): a location the weather reader rejects must not be saved.
-    return parse_decimal(lat,y)&&parse_decimal(lon,x)&&y>=59&&y<=71&&x>=19&&x<=32;
+    // MET Norway Locationforecast 2.0 covers the world, including equator
+    // and prime meridian. Disallow invalid/ambiguous coordinates.
+    return parse_decimal(lat,y)&&parse_decimal(lon,x)&&
+        y>=-90&&y<=90&&x>=-180&&x<=180;
 }
 } // namespace detail
 

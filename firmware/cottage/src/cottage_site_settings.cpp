@@ -12,6 +12,7 @@
 #include "cottage_config.hpp"
 #include "cottage_site_settings.hpp"
 #include "cottage_air_service.hpp"
+#include "../../main/weather.hpp"
 #include "pump/adapter_catalog.hpp"
 
 using enevina::cottage::SiteSettings;
@@ -117,7 +118,7 @@ void send_settings(WebServer& web) {
     cJSON_AddStringToObject(root,"cn105_url",s.cn105_url);
     cJSON_AddStringToObject(root,"shelly_url",s.shelly_url);
     cJSON_AddStringToObject(root,"fmi_latlon",s.fmi_latlon);
-    cJSON_AddStringToObject(root,"fmi_latlon_note","takes effect after next power-up");
+    cJSON_AddStringToObject(root,"fmi_latlon_note","applied immediately after save");
     cJSON_AddStringToObject(root,"pump_adapter",s.pump_adapter);
     cJSON* list=cJSON_AddArrayToObject(root,"adapters");
     for(const auto& e:enevina::adapter_catalog) {
@@ -240,6 +241,11 @@ void site_settings_register_routes(WebServer& web) {
         xSemaphoreGive(guard);
         if(endpoint_changed) endpoint_generation.fetch_add(1);
         generation.fetch_add(1);
+        // Only weather location changed: keep the CN105 control permission.
+        // Persist before updating RAM; the FMI worker invalidates its old
+        // cache and immediately schedules a fetch for this location.
+        if(strcmp(previous.fmi_latlon,next.fmi_latlon)!=0)
+            enevina_firmware::weather_update_location(next.fmi_latlon);
         web.send(200,"application/json",endpoint_changed?
             "{\"saved\":true,\"control_disarmed\":true}":"{\"saved\":true}");
     });

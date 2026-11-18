@@ -13,7 +13,12 @@ struct WeatherStatus {
     int64_t fetched_utc=0;
     size_t points=0;
 };
-void start_weather_reader();
+// Uses persisted site coordinates rather than a hard-coded firmware location.
+// nullptr keeps compatibility with standalone firmware build defaults.
+void start_weather_reader(const char* configured_latlon=nullptr);
+// A validated settings change is applied without restarting ESP32. The
+// previous forecast is immediately invalidated and the worker is awakened.
+bool weather_update_location(const char* configured_latlon);
 WeatherStatus weather_status();
 size_t future_weather(enevina::OutdoorPoint* output,size_t capacity);
 }
