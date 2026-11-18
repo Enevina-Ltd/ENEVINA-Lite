@@ -13,7 +13,7 @@ hydroninen G0 [`benchmarks/esp32-optimization-audit.json`](benchmarks/esp32-opti
 |---|---|---|
 | `cottage/price_bootstrap.hpp` (PR #22) | **Ainoa polku, joka voi lähettää CN105-komennon** (armed-pilotti) | Malliton hintaheuristiikka, ei MPC. |
 | `cottage/mpc.cpp` | Varjotila / dashboard | Ei käytössä ilman `COTTAGE_SYNTHETIC_TEST_MODEL=1`; rakennusmallia ei ole kalibroitu. |
-| `optimizer/optimizer.cpp` (G0) | Hydroninen tutkimusydin | Ei rakennuksen firmwaressa. |
+| `optimizer/optimizer.cpp` (G0) | Hydroninen tutkimusydin | Ei tässä ESP32-ohjauspolussa. |
 
 Asuttu-tila (16–26 °C asetusarvo) toimii vain hintaheuristiikalla: HEAT16/OFF-
 fysiikka on validoitu ≤ 16 °C:lle. Pumpun oman termostaatin mallia ei keksitty.
