@@ -32,7 +32,7 @@ struct BaselineOptions {
     double hysteresis_c=0.25;      // thermostat half band
     double safety_margin_c=0.6;    // forced HEAT when an OFF slot would cross min+margin
     size_t terminal_guard_slots=8; // equal-terminal obligation window (2 h)
-    double terminal_margin_c=0.15;
+    double terminal_margin_c=0.02;
 };
 
 struct BaselineResult {
@@ -99,8 +99,13 @@ inline BaselineResult simulate_baseline(BaselinePolicy policy,const Parameters& 
             const auto idle=advance(p,s,periods[t],false);
             if(idle.next.indoor_c<min_c+o.safety_margin_c) want=true;
         }
-        if(count-t<=o.terminal_guard_slots &&
-           s.indoor_c<initial.indoor_c+o.terminal_margin_c) want=true;
+        if(count-t<=o.terminal_guard_slots && !want) {
+            // End window: OFF only if coasting OFF to the horizon end (same
+            // physics) still meets the equal-terminal obligation.
+            State coast=s;
+            for(size_t k=t;k<count;++k) coast=advance(p,coast,periods[k],false).next;
+            if(coast.indoor_c<initial.indoor_c+o.terminal_margin_c) want=true;
+        }
         if(want && s.indoor_c>=p.maximum_indoor_c-0.05) want=false;
         if(!detail::dwell_allows(p,s,want)) want=s.heat_requested;
         if(want && !s.heat_requested) r.starts++;
@@ -119,5 +124,30 @@ inline BaselineResult simulate_baseline(BaselinePolicy policy,const Parameters& 
     r.count=count;
     r.final_c=s.indoor_c;
     return r;
+}
+// Equal-terminal baseline (Codex P1, PR #30): find the SHORTEST end-of-horizon
+// heating window that makes the rule baseline physically end >= the initial
+// temperature under the same dwell/capacity limits. No hypothetical reheating.
+// `terminal_met` false => the caller must treat the run as NOT_COMPARABLE.
+struct EqualTerminalBaseline {
+    BaselineResult result{};
+    size_t guard_slots=0;
+    bool terminal_met=false;
+};
+inline EqualTerminalBaseline simulate_baseline_equal_terminal(BaselinePolicy policy,
+    const Parameters& p,const State& initial,const Period* periods,size_t count,
+    BaselineOptions o={}) {
+    EqualTerminalBaseline out{};
+    static constexpr size_t windows[]={8,12,16,24,32,48,64,96,128,192};
+    for(size_t w:windows) {
+        const size_t guard=w<count?w:count;
+        o.terminal_guard_slots=guard;
+        out.result=simulate_baseline(policy,p,initial,periods,count,o);
+        out.guard_slots=guard;
+        if(!out.result.ok) return out;
+        if(out.result.final_c>=initial.indoor_c-1e-9) {out.terminal_met=true;return out;}
+        if(guard==count) break;
+    }
+    return out;
 }
 } // namespace enevina::cottage

@@ -161,7 +161,27 @@ static void control_faults() {
     auto stale=s;stale.proposal=d;stale.temperature_fresh=false;
     assert(choose_mitsubishi_control(stale).step==ControlStep::None);
 }
+// Codex P1 (PR #30): baselines must PHYSICALLY meet the same terminal as
+// MPC/MILP; no hypothetical reheating credit.
+static void baselines_meet_equal_terminal() {
+    auto p=model();
+    const State s{10,false,180};
+    for(size_t n:{24u,96u,192u}) {
+        const auto d=periods(n,-8);
+        for(auto policy:{BaselinePolicy::Thermostat,BaselinePolicy::PriceThreshold}) {
+            const auto eq=simulate_baseline_equal_terminal(policy,p,s,d.data(),n);
+            assert(eq.result.ok);
+            if(eq.terminal_met) assert(eq.result.final_c>=10-1e-9);
+            assert(eq.guard_slots>=8 && eq.guard_slots<=n);
+        }
+    }
+    // Physically impossible terminal: reported, never claimed.
+    const auto cold=periods(96,-20);
+    const auto eq=simulate_baseline_equal_terminal(BaselinePolicy::Thermostat,p,s,cold.data(),96);
+    assert(eq.result.ok && !eq.terminal_met && eq.result.final_c<10);
+}
 int main() {
+    baselines_meet_equal_terminal();
     horizons_and_bounds();
     timeout_and_cancel_give_no_plan();
     no_feasible_plan();

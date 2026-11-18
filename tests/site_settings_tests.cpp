@@ -81,6 +81,12 @@ static void parsing() {
     assert(apply_site_setting(s,"fmi_latlon","61.4,24.1")==SettingError::Ok);
     assert(apply_site_setting(s,"fmi_latlon","61,4,24,1")==SettingError::OutOfRange);
     assert(apply_site_setting(s,"fmi_latlon","10,10")==SettingError::OutOfRange);
+    // Codex P2: must match the weather reader (lat 59-71, lon 19-32).
+    assert(apply_site_setting(s,"fmi_latlon","60,18")==SettingError::OutOfRange);
+    assert(apply_site_setting(s,"fmi_latlon","58.9,24")==SettingError::OutOfRange);
+    assert(apply_site_setting(s,"fmi_latlon","59,19")==SettingError::Ok);
+    assert(apply_site_setting(s,"fmi_latlon","71,32")==SettingError::Ok);
+    assert(apply_site_setting(s,"fmi_latlon","71,32.1")==SettingError::OutOfRange);
     assert(apply_site_setting(s,"fmi_latlon","")==SettingError::Ok && !s.fmi_latlon[0]);
     assert(apply_site_setting(s,"cn105_url","http://192.168.1.20/events")==SettingError::Ok);
     assert(apply_site_setting(s,"cn105_url","http://user:pw@192.168.1.20/events")==

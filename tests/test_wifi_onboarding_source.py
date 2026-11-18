@@ -104,6 +104,13 @@ class SiteSettingsSource(unittest.TestCase):
         self.assertLess(arm.index("control_armed_endpoint.store("),
                         arm.index("control_armed.store(requested)"))
 
+    def test_location_bounds_match_weather_reader(self):
+        weather = (ROOT / "firmware" / "main" / "weather.cpp").read_text(encoding="utf-8")
+        settings = (ROOT / "cottage" / "site_settings.hpp").read_text(encoding="utf-8")
+        self.assertIn("latitude>=59 && latitude<=71", weather)
+        self.assertIn("longitude>=19 && longitude<=32", weather)
+        self.assertIn("y>=59&&y<=71&&x>=19&&x<=32", settings)
+
     def test_only_firmware_adapters_selectable(self):
         self.assertIn("adapter_selectable_in_lite_firmware(next.pump_adapter)", SITE)
 

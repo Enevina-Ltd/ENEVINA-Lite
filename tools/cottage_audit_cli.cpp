@@ -131,6 +131,7 @@ int main(int argc,char** argv) {
     const size_t n=s.actual.size();
     std::vector<uint8_t> schedule(n,0);
     std::string status="OK";
+    size_t guard_slots=0;
     double solve_ms_max=0,solve_ms_sum=0;
     unsigned solves=0;
     using clock=std::chrono::steady_clock;
@@ -138,8 +139,11 @@ int main(int argc,char** argv) {
         BaselineOptions o{};
         o.target_c=s.target_c;
         const auto begin=clock::now();
-        const auto r=simulate_baseline(policy=="price"?BaselinePolicy::PriceThreshold:
-            BaselinePolicy::Thermostat,s.p,s.initial,s.actual.data(),n,o);
+        const auto eq=simulate_baseline_equal_terminal(policy=="price"?
+            BaselinePolicy::PriceThreshold:BaselinePolicy::Thermostat,
+            s.p,s.initial,s.actual.data(),n,o);
+        const auto& r=eq.result;
+        guard_slots=eq.guard_slots;
         solve_ms_max=solve_ms_sum=std::chrono::duration<double,std::milli>(
             clock::now()-begin).count();
         solves=1;
@@ -191,8 +195,8 @@ int main(int argc,char** argv) {
     }
     std::printf("{\"policy\":\"%s\",\"status\":\"%s\",\"solves\":%u,"
         "\"solve_ms_max\":%.4f,\"solve_ms_mean\":%.4f,\"peak_rss_kb\":%ld,"
-        "\"total_price\":[",policy.c_str(),status.c_str(),solves,
-        solve_ms_max,solves?solve_ms_sum/solves:0.0,peak_rss_kb());
+        "\"terminal_guard_slots\":%zu,\"total_price\":[",policy.c_str(),status.c_str(),solves,
+        solve_ms_max,solves?solve_ms_sum/solves:0.0,peak_rss_kb(),guard_slots);
     for(size_t i=0;i<n;++i) std::printf("%s%.10f",i?",":"",s.total[i]);
     std::printf("],\"schedule\":[");
     for(size_t i=0;i<n;++i) std::printf("%s%u",i?",":"",static_cast<unsigned>(schedule[i]));

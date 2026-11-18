@@ -14,9 +14,11 @@ Every schedule is replayed by the independent Python model (cottage_reference
 parameters are not a calibrated building and not a Mitsubishi specification.
 
 Terminal fairness: MPC and MILP must end >= the initial temperature. The two
-rule baselines get the same end-of-horizon obligation; any remaining deficit is
-reported and its reheating cost is added in `equalized_cost_eur` (deficit *
-thermal mass / mean COP * mean total price). Savings % use equalized costs.
+rule baselines are re-simulated with the SHORTEST end-of-horizon heating window
+that physically meets the same terminal under the same dwell/capacity limits
+(baseline_policies.hpp). A run that still ends colder, or breaks a limit, is
+NOT_COMPARABLE and gets no saving %. All percentages use real replayed costs;
+`equalized_cost_eur` (hypothetical reheating) is informational only.
 
 usage:
   python3 tools/cottage_optimization_audit.py build-release/cottage_audit_cli \
@@ -217,10 +219,13 @@ def evaluate(exe, case, n, time_limit, workdir):
         rep["objective_eur"] = rep["equalized_cost_eur"] + d["switch_penalty"] * rep["switches"]
         rep.update(status=r["status"], solve_ms_max=r["solve_ms_max"],
                    solve_ms_mean=r["solve_ms_mean"], solves=r["solves"],
-                   peak_rss_kb=r["peak_rss_kb"])
+                   peak_rss_kb=r["peak_rss_kb"],
+                   terminal_guard_slots=r.get("terminal_guard_slots"))
         # Terminal deficits are equalized, other violations are real failures.
         rep["limit_violations"] = [v for v in rep["violations"] if v != "terminal"]
         rep["feasible"] = not rep["limit_violations"]
+        rep["terminal_met"] = "terminal" not in rep["violations"]
+        rep["comparable"] = rep["feasible"] and rep["terminal_met"]
         entry[key] = rep
     d = replay_dict(p, initial, slots, totals)
     m = solve(d, time_limit)
@@ -232,24 +237,21 @@ def evaluate(exe, case, n, time_limit, workdir):
     entry["milp"] = m
     # A baseline that breaks comfort/device limits is not a valid reference:
     # its lower EUR is bought with violations. Never report a "saving" then.
-    entry["thermostat_comparable"] = entry["thermostat"].get("feasible", False) or \
-        not entry["thermostat"].get("limit_violations")
-    entry["price_comparable"] = entry["price"].get("feasible", False) or \
-        not entry["price"].get("limit_violations")
-    base = entry["thermostat"].get("equalized_cost_eur") \
-        if entry["thermostat_comparable"] else None
-    mpc = entry["mpc"].get("equalized_cost_eur") if entry["mpc"].get("feasible") else None
+    entry["thermostat_comparable"] = entry["thermostat"].get("comparable", False)
+    entry["price_comparable"] = entry["price"].get("comparable", False)
+    base = entry["thermostat"].get("cost_eur") if entry["thermostat_comparable"] else None
+    mpc = entry["mpc"].get("cost_eur") if entry["mpc"].get("comparable") else None
     if base and mpc is not None:
         entry["mpc_saving_vs_thermostat_pct"] = 100 * (base - mpc) / base
-    pr = entry["price"].get("equalized_cost_eur") if entry["price_comparable"] else None
+    pr = entry["price"].get("cost_eur") if entry["price_comparable"] else None
     if pr and mpc is not None:
         entry["mpc_saving_vs_price_pct"] = 100 * (pr - mpc) / pr
     if case.startswith("stale_weather_forecast") and mpc is not None and m.get("feasible"):
         # Closed-loop MPC on a wrong forecast vs PERFECT-FORESIGHT MILP:
         # value of information, not an optimality gap.
-        entry["mpc_loss_vs_perfect_foresight_pct"] = 100 * (mpc / m["equalized_cost_eur"] - 1)
+        entry["mpc_loss_vs_perfect_foresight_pct"] = 100 * (mpc / m["cost_eur"] - 1)
     elif mpc is not None and m.get("feasible") and m["cost_eur"] > 0:
-        entry["mpc_gap_vs_milp_pct"] = 100 * (mpc / m["equalized_cost_eur"] - 1)
+        entry["mpc_gap_vs_milp_pct"] = 100 * (mpc / m["cost_eur"] - 1)
         entry["mpc_objective_gap_vs_milp_pct"] = 100 * (
             entry["mpc"]["objective_eur"] / m["objective_eur"] - 1)
     return entry
@@ -272,7 +274,9 @@ def markdown(records):
             if r.get("limit_violations"):
                 notes.append(f"{k}: {len(r['limit_violations'])} rajarikettä")
             if r.get("terminal_deficit_c", 0) > 1e-6:
-                notes.append(f"{k}: loppuvaje {r['terminal_deficit_c']:.2f} °C tasattu")
+                notes.append(f"{k}: loppuehto ei täyty ({r['terminal_deficit_c']:.2f} °C), NOT_COMPARABLE")
+            if (r.get("terminal_guard_slots") or 0) > 8:
+                notes.append(f"{k}: loppuehto {r['terminal_guard_slots']} jakson lämmitysikkunalla")
         m = e["milp"]
         if not m.get("feasible"):
             notes.append(f"MILP: ei ratkaisua (status {m.get('status')})")
@@ -282,10 +286,10 @@ def markdown(records):
             notes.append("MPC: " + e["mpc"]["status"])
         rows.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
             e["case"], e["slots"],
-            fmt(e["thermostat"].get("equalized_cost_eur")),
-            fmt(e["price"].get("equalized_cost_eur")),
-            fmt(e["mpc"].get("equalized_cost_eur") if e["mpc"].get("feasible") else None),
-            fmt(m.get("equalized_cost_eur") if m.get("feasible") else None),
+            fmt(e["thermostat"].get("cost_eur")),
+            fmt(e["price"].get("cost_eur")),
+            fmt(e["mpc"].get("cost_eur")),
+            fmt(m.get("cost_eur") if m.get("feasible") else None),
             fmt(e.get("mpc_saving_vs_thermostat_pct"), 1)
             if e.get("thermostat_comparable") else "NOT_COMPARABLE",
             fmt(e.get("mpc_gap_vs_milp_pct"), 2),
@@ -316,10 +320,10 @@ def main():
             records = list(pool.map(
                 lambda cn: evaluate(args.exe, cn[0], cn[1], args.time_limit, work), jobs))
     for e in records:
-        print(e["case"], e["slots"], "thermo", fmt(e["thermostat"].get("equalized_cost_eur")),
-              "price", fmt(e["price"].get("equalized_cost_eur")),
-              "mpc", fmt(e["mpc"].get("equalized_cost_eur")),
-              "milp", fmt(e["milp"].get("equalized_cost_eur")),
+        print(e["case"], e["slots"], "thermo", fmt(e["thermostat"].get("cost_eur")),
+              "price", fmt(e["price"].get("cost_eur")),
+              "mpc", fmt(e["mpc"].get("cost_eur")),
+              "milp", fmt(e["milp"].get("cost_eur")),
               "gap%", fmt(e.get("mpc_gap_vs_milp_pct"), 2))
     meta = dict(synthetic=True, tariff=TARIFF, base_parameters=BASE,
                 not_in_table=NOT_IN_TABLE,

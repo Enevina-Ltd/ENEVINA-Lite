@@ -33,34 +33,37 @@ C++:ssa firmwaren omalla `finnish_day_transfer` + `calculate_total_price`
 ajat ja sama 8–14,5 °C mukavuusalue. Jokainen aikataulu toistetaan riippumattomasti
 Pythonissa; C++:n omaa kustannusta ei käytetä.
 
-**Loppuehto:** MPC ja MILP päättyvät ≥ alkulämpötilan. Perusohjauksille annetaan
-sama velvoite viimeisille 2 tunnille; jäljelle jäävä vaje lisätään
-`equalized_cost` -kustannukseen (vaje × lämpökapasiteetti / keskim. COP ×
-keskihinta). Jos perusohjaus rikkoo 8 °C:n rajaa, säästöä **ei raportoida**
-(`NOT_COMPARABLE`). MILP:n aikarajalla löytämää ratkaisua ei kutsuta optimiksi.
+**Loppuehto (korjattu Codexin P1-havainnon jälkeen):** MPC ja MILP päättyvät
+≥ alkulämpötilan. Perusohjaukset simuloidaan uudelleen lyhimmällä loppuikkunalla
+(8…192 jaksoa), jossa OFF sallitaan vain, jos samalla fysiikalla horisontin
+loppuun asti OFF-tilassa jäähtyminen vielä täyttää loppuehdon. Ehto täytetään siis
+fyysisesti samoilla viipymä- ja tehorajoilla, ei laskennallisella
+lisälämmityksellä. Jos loppuehto ei täyty tai 8 °C:n raja rikkoutuu, säästöä
+**ei raportoida** (`NOT_COMPARABLE`). Kaikki prosentit lasketaan toistetuista
+todellisista kustannuksista; `equalized_cost_eur` on vain tieto. MILP:n aikarajalla löytämää ratkaisua ei kutsuta optimiksi.
 MPC:n ja MILP:n yhteinen tavoite on € + 0,03 €/kytkentä; siksi raportoidaan
 sekä €-ero että tavoite-ero.
 
 ## 3. Tulokset (mökkimalli, 76 ajoa)
 
 - **Rajarikkeet:** MPC 0 kaikissa täydellisen ennusteen tapauksissa. Perusohjaus
-  ja hintaraja rikkovat 8 °C:n rajan nopeasti jäähtyvässä rakennuksessa (6–40
-  jaksoa) ja nopeassa pakkasen tulossa (1–111 jaksoa).
+  ja hintaraja rikkovat 8 °C:n rajan nopeasti jäähtyvässä rakennuksessa ja
+  nopeassa pakkasen tulossa (6 ajoa / 76, `NOT_COMPARABLE`).
 - **Ero MILP:iin** (todistettu optimi, mip_gap ≤ 0,1 %): suurin €-ero **+2,84 %**
   (hidas rakennus, 192), suurin tavoite-ero +1,81 %. Kaikki ≤ 5 % tavoitteen sisällä.
   Kun MILP osui aikarajaan (10 ajoa), MPC:n ero oli −4,8 %…+1,2 %.
-- **Säästö vs. perusohjaus** (vertailukelpoiset tapaukset): tyypillisesti 10–30 %,
+- **Säästö vs. perusohjaus** (67 vertailukelpoista ajoa): tyypillisesti 10–30 %,
   hintapiikeissä ~70 %, tasaisella hinnalla 2–6 %.
-- **MPC häviää** perusohjaukselle: `hard_frost` 24 (−1,9 %) ja `poor_cold_cop` 24
-  (−0,6 %). Juurisyy: lyhyt horisontti, termostaatti päättyy 0,5–0,8 °C kylmempänä ja
-  tasaus keskihinnalla on sille edullinen arvio; MPC:n tavoitearvo (€ + kytkennät) on
-  silti pienempi. Ei korjattu – kyse on vertailun tasaussäännöstä, ei hakuvirheestä.
+- **MPC häviää** perusohjaukselle täydellisellä ennusteella: `hard_frost` 24 ja
+  `poor_cold_cop` 24 (−0,6 % kumpikin). Molemmissa MPC päättyy ~0,2 °C lämpimämpänä
+  kuin vaadittu (24 jakson DP-ruudukon tarkkuus) ja tekee yhden käynnistyksen;
+  MILP:n optimi on sama kuin MPC:n, joten kyse on 24 jakson ongelmasta, ei hakuvirheestä.
 - **Ei toteuttamiskelpoista:** `fast_outdoor_drop` 192 – pumppu ei pysty pitämään
   8 °C:tta. MPC ja MILP palauttavat INFEASIBLE, ei suunnitelmaa. Perusohjaukset
   rikkovat rajaa ~100 jaksoa ilmoittamatta.
 - **Väärä sääennuste** (+4 °C liian lämmin, suljettu silmukka, uudelleensuunnittelu
   joka jakso): katso kohta 5.
-- **Laskenta-aika:** MPC x86:lla 192 jaksoa ≤ 27 ms.
+- **Laskenta-aika:** MPC x86:lla 192 jaksoa ≤ 16 ms.
   ESP32-S3:n aiempi fyysinen mittaus (`benchmarks/c2-current-mpc-fp32-esp32s3-bench.log`,
   ei tässä työssä): 192 jaksoa pahimmillaan 527 ms ilman samanaikaista kuormaa.
 
@@ -73,7 +76,7 @@ hinnalla *jokainen* jakso oli "halpa", ja hintaraja hävisi termostaatille
 säilytetään nykyinen tila (termostaattikäytös). Tulos: 2,925 € < 2,951 €.
 Regressiot: `tests/cottage_price_bootstrap_tests.cpp`.
 
-**Jäljellä:** hintaraja häviää termostaatille edelleen 23/76 ajossa (enimmäkseen
+**Jäljellä:** hintaraja häviää termostaatille edelleen 21/70 vertailukelpoisessa ajossa (enimmäkseen
 24 jakson horisontit ja leuto sää), koska se nostaa asetusarvoa halvalla
 jaksolla ilman fysiikkamallia. MPC voittaa molemmat. Tämä on syy kalibroida
 rakennusmalli ja siirtää ohjaus MPC:lle – ei vielä tehty.
@@ -101,6 +104,7 @@ Kahden vaihtoehdon portfolio olisi poistanut pienet heikennykset, mutta G0:n
 - Yksi sääntö `site_total_price()` (`cottage/site_settings.hpp`) MPC-sillalle,
   hintarajalle, `/api/status`:lle ja `/api/prices`:lle. Aiemmat kolme
   `localtime_r`-kopiota poistettu.
+- Sääpaikka hyväksytään vain sääennusteen lukijan rajoissa (lev 59–71, pit 19–32).
 - Spot ALV 0 % + ALV kerran; marginaali/siirto/vero voidaan antaa ALV:llisina
   (kuluttajahinnastot) → ALV:ia ei lisätä niihin toiseen kertaan.
 - Yleis-, aika- ja kausisiirto; päivä/yö-tunnit asetettavissa; arvioidaan
@@ -112,20 +116,20 @@ Kahden vaihtoehdon portfolio olisi poistanut pienet heikennykset, mutta G0:n
 Suljettu silmukka: MPC suunnittelee joka jakso uudelleen ennusteella, joka on
 4 °C liian lämmin, ja toteutus tapahtuu oikealla säällä.
 
-| Jaksot | Ilman marginaalia: min °C / rikkeet | 1 °C marginaali: min °C / rikkeet | Marginaalin € vs termostaatti |
+| Jaksot | Ilman marginaalia: min °C / rikkeet / loppuehto | 1 °C marginaali: min °C / rikkeet / loppuehto | Marginaalin säästö vs termostaatti |
 |---:|---|---|---:|
-| 48 | 8,04 / 0 | 8,98 / 0 | −8,9 % |
-| 96 | 8,06 / 0 | 8,97 / 0 | −5,5 % |
-| 192 | **7,93 / 2** | 8,95 / 0 | −5,3 % |
+| 48 | 8,04 / 0 / ei täyty | 8,98 / 0 / täyttyy | 12,7 % |
+| 96 | 8,06 / 0 / ei täyty | 8,97 / 0 / täyttyy | 5,5 % |
+| 192 | **7,93 / 2** / ei täyty | 8,95 / 0 / täyttyy | 5,3 % |
 
 - `planning_uncertainty_c = 0` ei riitä, jos sääennuste voi olla järjestelmällisesti
-  väärä: 192 jakson ajossa 8 °C alittui. 1 °C marginaali poisti rikkeet, hinta
-  +12,8 % täydelliseen ennusteeseen nähden, edelleen termostaattia halvempi.
+  väärä: 192 jakson ajossa 8 °C alittui eikä loppuehto täyttynyt (ei vertailukelpoinen).
+  1 °C marginaali poisti rikkeet ja täytti loppuehdon, edelleen termostaattia halvempi.
 - **Havaittu puute (ei korjattu):** kun huone on suunnittelurajan alapuolella,
   `optimize()` palauttaa `UNSAFE_START` eikä suunnittele palautusta. Silloin
   käytetään varatilaa (pumpun oma HEAT 16 °C). Turvallinen, mutta ei optimaalinen.
   Ehdotus: palautustila, joka sallii alkutilan rajan alla ja vaatii nousun.
-- 24 jaksoa: MPC häviää (−10,6 % / −34 %), koska lyhyt horisontti + väärä
+- 24 jaksoa: MPC häviää (−6,4 % / −30,1 %), koska lyhyt horisontti + väärä
   ennuste johtaa varmuuslämmitykseen. Ei piiloteta.
 - Suositus ennen MPC-ohjausta: aseta `planning_uncertainty_c` ennustevirheen
   mukaan ja mittaa FMI-ennusteen todellinen virhe kohteessa.

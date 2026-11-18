@@ -149,8 +149,9 @@ inline bool valid_latlon(const char* s) {
     std::memcpy(lat,s,a);
     std::strcpy(lon,comma+1);
     double y=0,x=0;
-    // FMI point forecasts: Finland and neighbouring regions only.
-    return parse_decimal(lat,y)&&parse_decimal(lon,x)&&y>=54&&y<=72&&x>=4&&x<=35;
+    // Same bounds as parse_location() in firmware/main/weather.cpp (Codex P2,
+    // PR #30): a location the weather reader rejects must not be saved.
+    return parse_decimal(lat,y)&&parse_decimal(lon,x)&&y>=59&&y<=71&&x>=19&&x<=32;
 }
 } // namespace detail
 
