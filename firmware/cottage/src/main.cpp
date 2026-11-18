@@ -37,6 +37,7 @@
 #include "cottage/mode_timing.hpp"
 #include "cottage/price_bootstrap.hpp"
 #include "cottage/mitsubishi_climate_command.hpp"
+#include "cottage/cn105_read_retry.hpp"
 #include "cottage/mitsubishi_control_policy.hpp"
 #include "cottage/finnish_tariff.hpp"
 #include "cottage/sse_transport.hpp"
@@ -145,6 +146,11 @@ static std::atomic<int64_t> control_last_bridge_read_utc{0};
 static std::atomic<int> control_post_stage{0};
 static std::atomic<int> control_post_http_code{0};
 static std::atomic<int> control_get_http_code{0};
+// Track intermittent read-timeout recovery without logging secrets or IPs.
+static std::atomic<uint32_t> cn105_get_retry_count{0};
+static std::atomic<uint32_t> cn105_get_recovered_count{0};
+static std::atomic<uint32_t> cn105_get_timeout_count{0};
+
 
 static char reason_text[80]="Käynnistys";
 struct Row {
@@ -643,46 +649,76 @@ static String cn105_local_url(const char* suffix) {
 static bool cn105_bridge_get(bool& heating,double& target) {
     const String url=cn105_local_url(
         "/climate/Mitsubishi%20Electric%20MSZ-FD25VA?detail=all");
-    if(url.isEmpty()||!wifi_ok.load())return false;
-    enevina_firmware::NetworkBudgetLease lease(1000,72*1024,16*1024);
-    if(!lease.held())return false;
-    WiFiClient client;
-    HTTPClient req;
-    req.setConnectTimeout(1500);req.setTimeout(1800);
-    req.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    if(!req.begin(client,url))return false;
-    req.addHeader("Cache-Control","no-cache");
-    const int code=req.GET();
-    control_get_http_code.store(code);
-    const int body_size=req.getSize();
-    bool good=false;
-    if(code==200&&body_size>0&&body_size<1800) {
-        const String body=req.getString();
-        if(body.length()==static_cast<unsigned>(body_size)) {
-            cJSON* root=cJSON_ParseWithOpts(body.c_str(),nullptr,true);
-            if(root) {
-                const cJSON* id=cJSON_GetObjectItemCaseSensitive(root,"id");
-                const cJSON* mode=cJSON_GetObjectItemCaseSensitive(root,"mode");
-                const cJSON* set=cJSON_GetObjectItemCaseSensitive(root,"target_temperature");
-                double setpoint=0;
-                if(cJSON_IsString(id) && cJSON_IsString(mode) &&
-                    strcmp(id->valuestring,
-                           "climate/Mitsubishi Electric MSZ-FD25VA")==0 &&
-                    number(set,setpoint,16,26) &&
-                    mitsubishi_valid_setpoint(setpoint) &&
-                    (strcmp(mode->valuestring,"HEAT")==0 ||
-                     strcmp(mode->valuestring,"OFF")==0)) {
-                    heating=strcmp(mode->valuestring,"HEAT")==0;
-                    target=setpoint;
-                    good=true;
-                }
-                cJSON_Delete(root);
+    if(url.isEmpty() || !wifi_ok.load())return false;
+    // ESP32-S3 shares 2.4-GHz radio/internal RAM with BLE and HTTPS. The old
+    // 1.8-second HTTP response deadline intermittently returned -11 even
+    // though the CN105 ESPHome gateway stayed healthy. Retry only READS
+    // after transport timeouts, never physical POST commands.
+    for(unsigned attempt=0;attempt<cn105_read_max_attempts;++attempt) {
+        int code=0;
+        bool verified=false;
+        {
+            // Reacquire the memory/network lease for each attempt. Never hold
+            // its shared mutex while waiting between retries.
+            enevina_firmware::NetworkBudgetLease lease(1000,72*1024,16*1024);
+            if(!lease.held()) {
+                control_get_http_code.store(0);
+                return false;
             }
+            WiFiClient client;
+            HTTPClient req;
+            req.setConnectTimeout(cn105_read_connect_timeout_ms);
+            req.setTimeout(cn105_read_response_timeout_ms);
+            req.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+            if(!req.begin(client,url)) {
+                control_get_http_code.store(0);
+                return false;
+            }
+            req.addHeader("Cache-Control","no-cache");
+            code=req.GET();
+            control_get_http_code.store(code);
+            if(code==cn105_http_read_timeout)
+                cn105_get_timeout_count.fetch_add(1);
+            const int body_size=req.getSize();
+            if(code==200 && body_size>0 && body_size<1800) {
+                const String body=req.getString();
+                if(body.length()==static_cast<unsigned>(body_size)) {
+                    cJSON* root=cJSON_ParseWithOpts(body.c_str(),nullptr,true);
+                    if(root) {
+                        const cJSON* id=cJSON_GetObjectItemCaseSensitive(root,"id");
+                        const cJSON* mode=cJSON_GetObjectItemCaseSensitive(root,"mode");
+                        const cJSON* set=cJSON_GetObjectItemCaseSensitive(root,"target_temperature");
+                        double setpoint=0;
+                        if(cJSON_IsString(id) && cJSON_IsString(mode) &&
+                           strcmp(id->valuestring,
+                                  "climate/Mitsubishi Electric MSZ-FD25VA")==0 &&
+                           number(set,setpoint,16,26) &&
+                           mitsubishi_valid_setpoint(setpoint) &&
+                           (strcmp(mode->valuestring,"HEAT")==0 ||
+                            strcmp(mode->valuestring,"OFF")==0)) {
+                            heating=strcmp(mode->valuestring,"HEAT")==0;
+                            target=setpoint;
+                            verified=true;
+                        }
+                        cJSON_Delete(root);
+                    }
+                }
+            }
+            req.end();
         }
+        if(verified) {
+            if(attempt>0)cn105_get_recovered_count.fetch_add(1);
+            control_last_bridge_read_utc.store(time(nullptr));
+            return true;
+        }
+        // Reject malformed/unauthorized/non-200 responses; only -11 (HTTP
+        // read timeout) and -5 (connection lost) are transient retry cases.
+        if(!cn105_should_retry_read(code,attempt) || !wifi_ok.load())
+            return false;
+        cn105_get_retry_count.fetch_add(1);
+        vTaskDelay(pdMS_TO_TICKS(cn105_read_retry_delay_ms));
     }
-    req.end();
-    if(good)control_last_bridge_read_utc.store(time(nullptr));
-    return good;
+    return false;
 }
 static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
                               uint32_t config_generation,ControlStep step,
@@ -1164,6 +1200,9 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"control_post_stage",control_post_stage.load());
     cJSON_AddNumberToObject(root,"control_post_http_code",control_post_http_code.load());
     cJSON_AddNumberToObject(root,"control_get_http_code",control_get_http_code.load());
+    cJSON_AddNumberToObject(root,"cn105_get_retry_count",cn105_get_retry_count.load());
+    cJSON_AddNumberToObject(root,"cn105_get_recovered_count",cn105_get_recovered_count.load());
+    cJSON_AddNumberToObject(root,"cn105_get_timeout_count",cn105_get_timeout_count.load());
     cJSON_AddNumberToObject(root,"control_last_command_utc",
                             static_cast<double>(control_last_command_utc.load()));
     cJSON_AddNumberToObject(root,"control_last_ack_utc",
