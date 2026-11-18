@@ -1,5 +1,38 @@
 # AGENTS.md — Enevina Lite
 
+## UUSI TUOTEPÄÄTÖS 18.11.2026 – RASPBERRY PI ZERO 2 W, NÄYTÖTÖN JA ITSE KONFIGUROITAVA
+
+**Uusin käyttäjäpäätös ohittaa ristiriitaiset vanhat laitealustarajaukset uuden Pi-version osalta.** Enevina Lite -tuotteen ensisijaiseksi uudeksi laitealustaehdokkaaksi valitaan Raspberry Pi Zero 2 W. Siihen kehitetään oma kevyt Linux-sovellus ja hallittu järjestelmäkuva (ei ESP32-firmwarebinääriä). **Ei näyttöä.** Käyttö toimii puhelimella tai muulla selaimella ilman Linux-komentoriviä, erillistä tietokonetta, Home Assistantia, jatkuvaa pilviyhteyttä tai asennuksen aikaisia käsitöitä. Laite on tavoitteena kaupallinen, koteloitu, virta päälle -tyyppinen ohjain. Alustavalinta ei vielä tarkoita toimivan laitteen tai hyväksytyn ohjauksen olemassaoloa.
+
+### Ensikäyttöönotto on ehdottomasti kaksivaiheinen
+
+**VAIHE 1 – VAIN KODIN WI-FI-VERKON MÄÄRITYS.**
+1. Uusi laite käynnistää oman suojatun Wi-Fi-käyttöönottoverkon (AP). Puhelin yhdistetään siihen ja avataan yksinkertainen paikallinen selainasetussivu. Käytettävä yhteystapa ja yksilöllinen käyttöönoton tunnistautuminen on suunniteltava niin, ettei avoimia tai yhteisellä oletussalasanalla suojattuja laitteita toimiteta asiakkaille.
+2. Käyttäjä valitsee oman Wi-Fi-verkkonsa ja syöttää verkon salasanan. **Tässä vaiheessa EI määritetä lämpöpumppuja, antureita, sähkönhintoja, lämpötiloja, optimointia eikä muita tuoteasetuksia.**
+3. Lite tarkistaa todellisen onnistuneen liittymisen kotiverkkoon. Jos salasana on väärä, verkko ei löydy tai liittyminen epäonnistuu, käyttäjä voi korjata asetukset saman käyttöönottoverkon kautta ilman SD-kortin irrotusta, uudelleenasennusta tai komentoriviä.
+4. Onnistumisen jälkeen käyttöönottoverkko poistuu käytöstä ja käyttäjä ohjataan avaamaan laitteen hallintasivu kotiverkosta. Tavoiteosoite on \`http://enevina-lite.local\`, mutta mDNS:n epäonnistuminen pitää ratkaista osoitteen löytymisen toimivalla varatavalla. Usean Lite-laitteen nimikonfliktit huomioidaan.
+
+**VAIHE 2 – KAIKKI VARSINAISET ASETUKSET VASTA KOTIVERKOSSA.**
+1. Käyttäjä avaa paikallisen selainhallinnan puhelimella, tabletilla tai tietokoneella ilman erillistä sovellusta.
+2. Ohjattu asetusnäkymä kattaa hallinnan tunnistautumisen, lämpöpumppujen merkit/mallit/yhteydet, anturit, sähkösopimuksen ja verot, lämpötilat, optimoinnin ja tarvittavat mallikohtaiset rajat. **Näytä vain kyseisessä pumppumallissa oikeasti vahvistetut ominaisuudet.**
+3. Kaikki asetukset voidaan myöhemmin muuttaa paikallisesti. Myös verkon vaihtaminen, asetusten varmuuskopiointi ja palautus, päivitykset sekä diagnostiikka tehdään selaimesta; asiakkaan ei tarvitse käyttää SSH:ta tai muokata muistikorttia.
+4. Verkkovirheen ja reitittimen vaihtumisen palautuspolku on suunniteltava käyttäjälle selkeäksi ja testattava fyysisesti. Alkuperäinen Wi-Fi-määritys ei saa toistua jokaisella normaalilla käynnistyksellä.
+
+### Uuden Lite-version tuotevaatimukset
+
+- **Mahdollisimman helppo käyttää.** Käyttöliittymä on laadukas, selkeä, suomenkielinen ja mobiiliystävällinen; paikallinen premium-dashboard toimii ilman näyttöä laitteessa.
+- **Kattava monimerkkinen pumppukirjasto.** Uuden Pi-version arkkitehtuurin tulee mahdollistaa useiden eri valmistajien lämpöpumppujen langaton yhteys ja tarvittaessa **useamman pumpun hallinta samalla Pi-laitteella**. Mallikohtainen LAN/BLE/protokolla, mahdollinen langaton yhdyskäytävä, yhtäaikaisten yhteyksien rajat ja kirjoituskyky vahvistetaan testein. Älä väitä Wi-Fi/BLE:tä yleiseksi, automaattisesti kaikkien pumppujen yhteensopivaksi rajapinnaksi.
+- **Säilytä nykyinen toimiva toteutus:** hyödynnä nykyisen repositorion C++17-ydintä (\`physics/\`, \`optimizer/\`, \`forecast/\`, \`pump/\`, \`safety/\`) sekä testejä mahdollisuuksien mukaan; Linuxin verkonhallinta, BLE ja käyttäjäliittymän palvelut eriytetään. Nykyistä ESP32-kehityslinjaa ei rikota.
+- **Ei tekoälyä eikä Home Assistant -riippuvuutta.** Optimointi pysyy paikallisena, fysiikkapohjaisena ja deterministisenä. Nord Pool/FMI ovat verkon ollessa käytettävissä haettavia lisäsyötteitä, eivät turvallisen peruskäytön edellytys.
+- **Tuotteen luotettavuus ja tietoturva:** turvallinen paikallinen kirjautuminen, yksilöllinen käyttöönotto, tarkistetut päivityspaketit, toimiva palautuminen epäonnistuneesta päivityksestä, sähkökatkon jälkeinen käynnistys ja microSD:n eheys ovat tuotannon hyväksymisvaatimuksia. Zero 2 W:n Linux-päivityksiä ei saa olettaa ESP32:n A/B-OTA-malliksi.
+- **Pumpun ohjaus:** säilytä Supervisor-kirjoitusportti ja lähdemittausten tuoreusvaatimukset. Uusien adapterien ja monipumppuorkestroinnin kehittäminen on sallittu testipenkissä, mutta oikeaan pumppuun kirjoittaminen vaatii edelleen käyttäjän erikseen hyväksymän laitekohtaisen kokeen. Ei tuotantolaitteiden muutoksia tämän AGENTS.md-päivityksen perusteella.
+- **Ei vielä varsinaista toteutusohjetta:** käyttäjä on nimenomaisesti lykännyt Pi-version firmware-/ohjelmisto-ohjeen laatimista. Kirjaa nyt vain tuotevaatimukset. Älä aloita porttausta, asennuksia tai laitekirjoituksia tämän dokumentaatiomuutoksen perusteella.
+
+**Rajaus vanhaan ohjeistukseen:** jäljempänä olevat 16.11.2026 ohjeet, joissa kielletään Linux, määrätään ESP32-S3 ensisijaiseksi laitteeksi ja rajataan ohjaus yhteen pumppuun, kuuluvat **nykyiseen ESP32-versioon**. Ne eivät rajoita uutta Raspberry Pi Zero 2 W -versiota. Sen sijaan koodikatselmoinnin, mittaustiedon todennettavuuden, turvallisuuden ja fyysisen kirjoituksen hyväksyntärajat koskevat kumpaakin.
+
+---
+
+
 ## PAKOLLINEN GITHUB-PR-KATSELMOINTI (17.11.2026 alkaen)
 
 **Järjestys on aina oma katselmointi → omat korjaukset ja testit → Codex-katselmointi → Codex-havaintojen korjaukset ja tarvittaessa uusi Codex-katselmointi → lopullinen hyväksyntä → merge.** Älä muuta tätä järjestystä oikoteillä.
@@ -24,7 +57,7 @@
 
 ## 0. KEHITYSPÄÄTÖS: ENEVINA LITE MONIMERKKISENÄ OHJAIMENA ENSIN TOIMIVAKSI (16.11.2026)
 
-**Käyttäjän uusin nimenomainen päätös on etusijalla:** Enevina Lite kehitetään monimerkkiseksi, yhden lämpöpumpun paikalliseksi energianhallinta- ja optimointituotteeksi. Mitsubishi Electric on ensimmäinen pilotti, ei yleisen arkkitehtuurin tai käyttöliittymän rajoitus. Älä lukitse V1:tä monitoring-only-tilaan, poista ohjauspolkuja, kiellä optimoinnin kehitystä tai siirrä niitä automaattisesti V2:een. Kaupallistamisen ominaisuusrajat päätetään myöhemmin mitatun toimintakyvyn perusteella.
+**ESP32-kehityslinjan päätös 16.11.2026 (Pi-version uudempi päätös edellä):** Enevina Lite kehitetään monimerkkiseksi, yhden lämpöpumpun paikalliseksi energianhallinta- ja optimointituotteeksi. Mitsubishi Electric on ensimmäinen pilotti, ei yleisen arkkitehtuurin tai käyttöliittymän rajoitus. Älä lukitse V1:tä monitoring-only-tilaan, poista ohjauspolkuja, kiellä optimoinnin kehitystä tai siirrä niitä automaattisesti V2:een. Kaupallistamisen ominaisuusrajat päätetään myöhemmin mitatun toimintakyvyn perusteella.
 
 **Ei uusia turhia watchdogeja, watchdog-kerroksia, health-watcher-silmukoita, reset-ajastimia eikä automaattisia käynnistysketjuja.** Alkuperäinen Enevina Core kärsi ylenpalttisesta valvonta- ja resetlogiikasta. Selvitä juurisyy, mittaa ongelma ja korjaa koodi. Älä lisää uutta restart-mekanismia vain varmuuden vuoksi. Säilytä jo käytössä olevat perustellut ESP-IDF/Arduino-suojat; niiden korvaaminen tai muuttaminen vaatii erillisen todistettuun vikaan perustuvan päätöksen.
 
@@ -48,16 +81,16 @@
 
 ---
 
-## 1. Tuotteen tehtävä ja ehdottomat rajaukset
+## 1. ESP32-kehityslinjan tehtävä ja rajaukset
 
-**Enevina Lite on monimerkkinen, yhden lämpöpumpun paikallinen energianhallinta- ja optimointiohjain, josta kehitetään Enevina Oy:n ensimmäinen kaupallinen tuote. Kehitystä ei lukita monitoring-onlyksi.**
+**ESP32-Lite on monimerkkinen, yhden lämpöpumpun paikallinen energianhallinta- ja optimointiohjain, josta kehitetään Enevina Oy:n ensimmäinen kaupallinen tuote. Kehitystä ei lukita monitoring-onlyksi.**
 
 **Adapterisopimus:** Yhteinen fysiikka, optimointi, hinnat, sää, turvaportti, laatu-/tuoreustiedot, käyttöliittymä ja OTA eivät saa riippua yhden valmistajan protokollasta. Mallikohtaiset kyvykkyydet, rajat, kuittaukset, kompressori-/sulatustiedot ja varatila kuuluvat adapteriin. Mallit, joissa lähdettä ei voida todentaa, eivät saa väittää vastaanottoaikaa alkuperäiseksi pumppumittaukseksi. Adapterit voivat hyödyntää paikallista langatonta yhteyttä tai erillistä langatonta yhdyskäytävää; tekninen ja turvallinen yhteensopivuus todistetaan mallikohtaisesti. Potentiaalisia sovittimia ovat Mitsubishi CN105, Panasonic/HeishaMon ja NIBE Modbus, eikä luettelo ole hyväksyntä. Älä lisää monipumppuorkestrointia tämän päätöksen perusteella.
 
-- **Tasan yksi lämpöpumppu per Lite-laite.** Älä lisää monen pumpun orkestrointia, keskitettyä ohjausta, energia-akkujen, aurinkosähkön, EV-latauksen tai koko talon EMS:n hallintaa.
+- **Tasan yksi lämpöpumppu per ESP32-Lite-laite tämän kehityslinjan nykyisessä rajauksessa.** Älä lisää monen pumpun orkestrointia, keskitettyä ohjausta, energia-akkujen, aurinkosähkön, EV-latauksen tai koko talon EMS:n hallintaa.
 - **Ei tekoälyä.** Älä lisää koneoppimista, neuroverkkoja, LLM:iä, AI-palveluita, mallien koulutusta tai AI-riippuvuuksia. Deterministinen rakennus- ja lämpöpumppufysiikan laskenta sekä matemaattinen optimointi ovat sallittuja.
-- **Ei Linuxia, Raspberry Pi -vaatimusta, Dockeria, tietokantaa tai Home Assistant -riippuvuutta laitteeseen.** Myös internetin katkettua laitteen on kyettävä toimimaan turvallisesti paikallisesti.
-- Alustava laitevalinta: **ESP32-S3 N16R8** (16 Mt Flash, 8 Mt PSRAM), **2,4 GHz Wi-Fi ensimmäisessä Mitsubishi-pilotissa**, Ethernet muissa laiteversioissa tarvittaessa. C++ ja ESP-IDF; laitekokoonpano on varmistettava.
+- **ESP32-kehityslinjassa ei Linuxia, Raspberry Pi -vaatimusta, Dockeria, tietokantaa tai Home Assistant -riippuvuutta laitteeseen.** Myös internetin katkettua laitteen on kyettävä toimimaan turvallisesti paikallisesti.
+- ESP32-kehityslinjan alustava laitevalinta: **ESP32-S3 N16R8** (16 Mt Flash, 8 Mt PSRAM), **2,4 GHz Wi-Fi ensimmäisessä Mitsubishi-pilotissa**, Ethernet muissa laiteversioissa tarvittaessa. C++ ja ESP-IDF; laitekokoonpano on varmistettava.
 - **Ensimmäinen todellinen pilotti: Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA, ilma–ilmapumppu**, ks. [pihamökin Mitsubishi-pilotti](docs/cottage-mitsubishi-fd25va.md). Panasonic/HeishaMon, NIBE/Modbus ja muut dokumentoidut paikalliset protokollat ovat erillisiä mallikohtaisesti todennettavia adapteriperheitä; älä oleta niiden valmiutta. CN105 on tarkistettava todellisesta pumpusta ennen komentoja.
 - Erottele Lite Enevina Coresta, Enevina Adaptive Intelligencestä, Finance-koneen tehtävistä sekä olemassa olevista tuotantojärjestelmistä. Älä muuta niiden repositoryja tai tuotantokonfiguraatioita.
 
