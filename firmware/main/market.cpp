@@ -18,6 +18,7 @@
 #include <cstring>
 #include <ctime>
 #include <new>
+#include <memory>
 
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
@@ -68,11 +69,13 @@ void load_cache() {
     auto* saved=new(std::nothrow) PriceCache;
     bool migrate_legacy=false;
     if(saved) {
-        CompactPriceCache compact{};
-        size_t size=sizeof(compact);
-        bool ok=nvs_get_blob(handle,"price_v2",&compact,&size)==ESP_OK &&
-            size==sizeof(compact) &&
-            unpack_price_cache(compact,*saved) && valid_prices(*saved);
+        auto compact=std::unique_ptr<CompactPriceCache>(
+            new(std::nothrow) CompactPriceCache);
+        size_t size=sizeof(CompactPriceCache);
+        bool ok=compact &&
+            nvs_get_blob(handle,"price_v2",compact.get(),&size)==ESP_OK &&
+            size==sizeof(*compact) &&
+            unpack_price_cache(*compact,*saved) && valid_prices(*saved);
         if(!ok) {
             size=sizeof(*saved);
             ok=nvs_get_blob(handle,"price_v1",saved,&size)==ESP_OK &&
@@ -89,8 +92,11 @@ void load_cache() {
 }
 
 void save_cache(const PriceCache& value) {
-    CompactPriceCache compact{};
-    if(!pack_price_cache(value,compact)) {
+    // Market reader has a small RTOS stack. The 1.6-KiB packed buffer must
+    // live on heap, not the stack (physical ESP32 stack-canary regression).
+    auto compact=std::unique_ptr<CompactPriceCache>(
+        new(std::nothrow) CompactPriceCache);
+    if(!compact || !pack_price_cache(value,*compact)) {
         ESP_LOGW(tag,"Skipping noncontiguous price cache NVS write");
         return;
     }
@@ -110,7 +116,7 @@ void save_cache(const PriceCache& value) {
         nvs_close(handle);
         return;
     }
-    if(nvs_set_blob(handle,"price_v2",&compact,sizeof(compact))==ESP_OK) {
+    if(nvs_set_blob(handle,"price_v2",compact.get(),sizeof(*compact))==ESP_OK) {
         if(nvs_commit(handle)!=ESP_OK)
             ESP_LOGW(tag,"NVS compact-price commit failed");
     } else {
