@@ -76,7 +76,17 @@ hinnalla *jokainen* jakso oli "halpa", ja hintaraja hävisi termostaatille
 säilytetään nykyinen tila (termostaattikäytös). Tulos: 2,925 € < 2,951 €.
 Regressiot: `tests/cottage_price_bootstrap_tests.cpp`.
 
-**Jäljellä:** hintaraja häviää termostaatille edelleen 21/70 vertailukelpoisessa ajossa (enimmäkseen
+### Korjattu virhe 1b – hintaraja vaihtoi tilaa anturikohinasta (#28, Codex P1)
+
+Kuolleella alueella hintasignaali päätti joka kierroksella riippumatta siitä,
+kummalla puolella tavoitetta huone oli: 11,49 → 11,51 → 11,49 °C tuotti
+HEAT → OFF → HEAT. Nyt halpa jakso esilämmittää vain tavoitteen alapuolella ja
+kallis sammuttaa vain tavoitteessa tai sen yläpuolella; muuten tila säilyy
+(`HOLD_IN_DEADBAND`). **Avoin (omistajan päätös):** vuorottelevilla halpa/kallis-
+jaksoilla aivan tavoitteessa tila voi edelleen vaihtua 15 min välein, koska
+komentopolusta on poistettu vähimmäiskäynti-/seisonta-aika.
+
+**Jäljellä:** hintaraja häviää termostaatille edelleen 20/70 vertailukelpoisessa ajossa (enimmäkseen
 24 jakson horisontit ja leuto sää), koska se nostaa asetusarvoa halvalla
 jaksolla ilman fysiikkamallia. MPC voittaa molemmat. Tämä on syy kalibroida
 rakennusmalli ja siirtää ohjaus MPC:lle – ei vielä tehty.
