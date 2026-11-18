@@ -72,6 +72,36 @@ class WifiOnboardingSource(unittest.TestCase):
         loop = WIFI.split("void cottage_wifi_loop() {", 1)[1]
         self.assertIn('legacy_migration_pending && got_ip.load()', loop)
 
+    def test_persistent_control_intent_bound_to_pump(self):
+        self.assertIn('control_intent_restorable(saved,site_settings_snapshot(),', MAIN)
+        self.assertIn('const size_t stored_size=prefs.getBytesLength("intent1")', MAIN)
+        self.assertIn('control_armed.store(restore && !must_revoke)', MAIN)
+        self.assertIn('p.putBytes("intent1",&record,sizeof(record))==sizeof(record)', MAIN)
+        self.assertIn('control_armed_endpoint.store(site_settings_endpoint_generation())', MAIN)
+        disarm = MAIN.split("static void cottage_control_disarm() {", 1)[1].split(
+            "static void cottage_control_tick()", 1)[0]
+        self.assertIn('cottage_control_revoke_saved_intent()', disarm)
+        self.assertIn('prefs.putBytes("intent1",&record,sizeof(record))', MAIN)
+
+    def test_ota_boot_does_not_inherit_auto_control(self):
+        self.assertIn('esp_partition_get_sha256(running,out)', MAIN)
+        self.assertIn('image_state==ESP_OTA_IMG_PENDING_VERIFY', MAIN)
+        self.assertIn('cottage_ota_confirmation_pending()', MAIN)
+        self.assertIn('valid_image && !activating_ota', MAIN)
+        self.assertIn('must_revoke=saved.enabled!=0 && !restore', MAIN)
+        self.assertIn('cottage_control_revoke_saved_intent()', MAIN)
+        self.assertIn('!pending_ota && !cottage_ota_confirmation_pending()', MAIN)
+
+    def test_endpoint_change_revoked_before_site_nvs_commit(self):
+        post=SITE.split('web.on("/api/settings",HTTP_POST',1)[1]
+        self.assertLess(post.index('cottage_control_revoke_saved_intent()'),
+                        post.index('persist(next)'))
+        self.assertLess(post.index('cottage_control_revoke_saved_intent()'),
+                        post.index('current=next'))
+        self.assertIn('if(endpoint_changed && !cottage_control_revoke_saved_intent())', post)
+        self.assertIn('CONTROL_NVS', post)
+        self.assertIn('if(endpoint_changed) endpoint_generation.fetch_add(1)', post)
+
     def test_home_wifi_password_never_logged_or_returned(self):
         for line in WIFI.splitlines():
             if "Serial.print" in line:
@@ -138,13 +168,14 @@ class SiteSettingsSource(unittest.TestCase):
     def test_endpoint_change_revokes_armed_control(self):
         # Codex P1 (PR #30): authorization is bound to the configured pump.
         self.assertIn("endpoint_changed) endpoint_generation.fetch_add(1)", SITE)
-        self.assertIn("strcmp(current.cn105_url,next.cn105_url)!=0", SITE)
+        self.assertIn("strcmp(previous.cn105_url,next.cn105_url)!=0", SITE)
         tick = MAIN.split("static void cottage_control_tick() {", 1)[1].split(
             "ControlSnapshot candidate", 1)[0]
         self.assertIn("control_armed_endpoint.load()!=site_settings_endpoint_generation()", tick)
         self.assertIn("cottage_control_disarm();", tick)
-        disarm = MAIN.split("static void cottage_control_disarm() {", 1)[1].split("}", 3)
-        self.assertIn('prefs.putBool("armed",false)', "}".join(disarm))
+        revoke = MAIN.split("bool cottage_control_revoke_saved_intent() {", 1)[1].split(
+            "static void cottage_control_disarm()", 1)[0]
+        self.assertIn('prefs.putBytes("intent1",&record,sizeof(record))', revoke)
         post = MAIN.split("static bool cn105_bridge_post(", 1)[1].split(
             "static void cottage_control_tick()", 1)[0]
         self.assertIn("control_armed_endpoint.load()!=site_settings_endpoint_generation()", post)

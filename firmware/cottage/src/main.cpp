@@ -25,6 +25,7 @@
 #include "cottage_network_budget.hpp"
 #include "cottage_secure_ota.hpp"
 #include "cottage_site_settings.hpp"
+#include "cottage/control_intent.hpp"
 #include "cottage_wifi.hpp"
 #include "cottage/physics.hpp"
 #include "cottage/mpc.hpp"
@@ -763,19 +764,35 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
 }
 // Called only in the existing optimizer task, no additional RTOS stack,
 // watchdog or scheduled foreground WebServer blocking.
-static void cottage_control_disarm() {
+static bool control_current_image_sha256(uint8_t out[32]) {
+    const esp_partition_t* running=esp_ota_get_running_partition();
+    return running && esp_partition_get_sha256(running,out)==ESP_OK;
+}
+// Also called from the site-settings HTTP handler BEFORE it commits a changed
+// endpoint. The current physical command is stopped first, then the previous
+// device-specific NVS authorization is durably revoked.
+bool cottage_control_revoke_saved_intent() {
     control_armed.store(false);
+    uint8_t digest[32]{};
+    (void)control_current_image_sha256(digest); // disabled intent needs no hash
+    const auto record=control_intent_for(
+        site_settings_snapshot(),false,digest);
     Preferences prefs;
-    if(prefs.begin("cottage_ctl",false)) {
-        if(prefs.getBool("armed",false))prefs.putBool("armed",false);
-        prefs.end();
-    }
+    if(!prefs.begin("cottage_ctl",false))return false;
+    const bool stored=
+        prefs.putBytes("intent1",&record,sizeof(record))==sizeof(record);
+    prefs.end();
+    return stored;
+}
+static void cottage_control_disarm() {
+    if(!cottage_control_revoke_saved_intent())
+        Serial.println("CONTROL_WARN: durable disarm write failed");
 }
 static void cottage_control_tick() {
     control_gate.store(static_cast<int>(ControlBlock::Disabled));
     if(!control_armed.load())return;
     // Arming is bound to the configured pump. A changed CN105 endpoint or
-    // adapter revokes it (same as reboot/OTA); the user re-enables locally.
+    // adapter revokes it; a reboot restores only the same pump identity.
     if(control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
         cottage_control_disarm();
         return;
@@ -870,14 +887,44 @@ static void cottage_control_tick() {
     }
 }
 static void cottage_control_registration() {
-    // An OTA or reboot must never silently re-enable physical writes.
-    // A fresh local explicit enable is required once each boot.
+    // User's previously chosen automation survives a same-image restart.
+    // A new OTA image (including pending validation) does NOT inherit it.
+    // The pump identity AND the full running firmware image must match.
     control_armed.store(false);
+    uint8_t running_image_sha256[32]{};
+    const bool valid_image=control_current_image_sha256(
+        running_image_sha256);
+    const esp_partition_t* running=esp_ota_get_running_partition();
+    esp_ota_img_states_t image_state=ESP_OTA_IMG_UNDEFINED;
+    const bool pending_ota=running &&
+        esp_ota_get_state_partition(running,&image_state)==ESP_OK &&
+        image_state==ESP_OTA_IMG_PENDING_VERIFY;
+    const bool activating_ota=pending_ota ||
+        cottage_ota_confirmation_pending();
+
     Preferences prefs;
-    if(prefs.begin("cottage_ctl",false)) {
-        if(prefs.getBool("armed",false))prefs.putBool("armed",false);
+    bool restore=false;
+    bool must_revoke=false;
+    if(prefs.begin("cottage_ctl",true)) {
+        StoredControlIntent saved{};
+        const size_t stored_size=prefs.getBytesLength("intent1");
+        if(stored_size==sizeof(saved) &&
+           prefs.getBytes("intent1",&saved,sizeof(saved))==sizeof(saved)) {
+            restore=valid_image && !activating_ota &&
+                control_intent_restorable(saved,site_settings_snapshot(),
+                                          running_image_sha256);
+            must_revoke=saved.enabled!=0 && !restore;
+        } else if(stored_size!=0) {
+            // An older / incompatible authorization is never inherited.
+            must_revoke=true;
+        }
         prefs.end();
     }
+    control_armed_endpoint.store(site_settings_endpoint_generation());
+    control_reset_mode_history();
+    if(must_revoke && !cottage_control_revoke_saved_intent())
+        Serial.println("CONTROL_WARN: stale authorization revoke failed");
+    control_armed.store(restore && !must_revoke);
     web.on("/api/control/arm",HTTP_POST,[]() {
         if(!web.hasArg("token") ||
            !c23_authorize_local_setting(web.arg("token").c_str())) {
@@ -890,10 +937,24 @@ static void cottage_control_registration() {
             return;
         }
         const bool requested=web.arg("enabled")=="true";
+        uint8_t digest[32]{};
+        // Never grant authorization when firmware identity cannot be read,
+        // or when a new OTA image still awaits confirmation.
+        const esp_partition_t* running=esp_ota_get_running_partition();
+        esp_ota_img_states_t image_state=ESP_OTA_IMG_UNDEFINED;
+        const bool pending_ota=running &&
+            esp_ota_get_state_partition(running,&image_state)==ESP_OK &&
+            image_state==ESP_OTA_IMG_PENDING_VERIFY;
+        const bool allowed=requested ?
+            control_current_image_sha256(digest) &&
+            !pending_ota && !cottage_ota_confirmation_pending() : true;
+        const auto record=control_intent_for(
+            site_settings_snapshot(),requested && allowed,digest);
         Preferences p;
         bool stored=false;
-        if(p.begin("cottage_ctl",false)) {
-            stored=p.putBool("armed",requested)>0;
+        if(allowed && p.begin("cottage_ctl",false)) {
+            // Exact pump/adapter AND signed/USB image identity together.
+            stored=p.putBytes("intent1",&record,sizeof(record))==sizeof(record);
             p.end();
         }
         if(stored) {
@@ -1453,7 +1514,7 @@ void setup() {
     web.on("/api/prices",HTTP_GET,prices_endpoint);
     c23_register_routes(web);
     site_settings_register_routes(web);
-    cottage_control_registration(); // explicit local arming; defaults OFF
+    cottage_control_registration(); // restore prior explicit choice only
     web.onNotFound([](){
         if(cottage_wifi_request_via_ap(web)) {
             // Captive portal: any unknown host/path on the setup AP -> /setup.
@@ -1486,7 +1547,7 @@ void setup() {
         task_ota=nullptr;
         Serial.println("C24_OTA_ERROR: signed OTA task creation failed");
     }
-    Serial.println("ENEVINA LITE: optional CN105 controller, default DISARMED");
+    Serial.println("ENEVINA LITE: CN105 controller, persisted local choice");
 }
 void loop() {
     wifi_ok.store(WiFi.status()==WL_CONNECTED);
