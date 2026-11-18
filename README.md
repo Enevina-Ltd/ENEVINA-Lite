@@ -4,7 +4,7 @@
 
 Enevina Lite is a source-available project by **Enevina Ltd** (registered in Finland as **Enevina Oy**). The design is simple: **one heat pump per controller**, a local browser dashboard, and price-aware heating without requiring Home Assistant, a cloud account, or an always-on server. The optimization is deterministic and physics-based — **there is no AI/ML in Lite**.
 
-[English](#english) · [Suomi](#suomi) · [Developer preview v0.1.0-alpha.1](https://github.com/linkki79-pixel/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1) · [Compatibility](docs/COMPATIBILITY.md) · [Getting started](docs/GETTING_STARTED.md)
+[English](#english) · [Suomi](#suomi) · [Developer preview v0.1.0-alpha.1](https://github.com/Enevina-Ltd/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1) · [Compatibility](docs/COMPATIBILITY.md) · [Getting started](docs/GETTING_STARTED.md)
 
 > **Developer preview — not ready for general installation or sale.** The repository contains working prototypes, tested algorithms, experimental device adapters and firmware. It does **not** certify model compatibility, a safe automatic-control installation, or real-world energy savings. There is no approved prebuilt firmware installer in the first release.
 
@@ -52,7 +52,7 @@ The diagram shows the intended architecture. Not every displayed connection is a
 For a safe, **PC-only** introduction (no physical pump commands, firmware flashing or device credentials):
 
 ```sh
-git clone https://github.com/linkki79-pixel/ENEVINA-Lite.git
+git clone https://github.com/Enevina-Ltd/ENEVINA-Lite.git
 cd ENEVINA-Lite
 cmake -S . -B build
 cmake --build build
@@ -63,7 +63,7 @@ Requirements: CMake 3.20+, a C++17 compiler and Git. See [Getting started](docs/
 
 ### Follow or contribute
 
-Interested in local heat-pump protocols, deterministic optimization or testing an adapter? Browse the [latest developer preview](https://github.com/linkki79-pixel/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1), open a [Discussion](https://github.com/linkki79-pixel/ENEVINA-Lite/discussions) to ask a question, or use [Issues](https://github.com/linkki79-pixel/ENEVINA-Lite/issues) for reproducible bugs and well-scoped requests. We especially welcome **model-specific compatibility evidence**; please don't post private IPs, credentials, MAC addresses or unredacted device logs.
+Interested in local heat-pump protocols, deterministic optimization or testing an adapter? Browse the [latest developer preview](https://github.com/Enevina-Ltd/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1), open a [Discussion](https://github.com/Enevina-Ltd/ENEVINA-Lite/discussions) to ask a question, or use [Issues](https://github.com/Enevina-Ltd/ENEVINA-Lite/issues) for reproducible bugs and well-scoped requests. We especially welcome **model-specific compatibility evidence**; please don't post private IPs, credentials, MAC addresses or unredacted device logs.
 
 No verified demonstration video or field-savings figure has been published yet. Contributions must follow [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -75,9 +75,9 @@ Projekti on **kehittäjien esijulkaisu**, ei valmis asiakastuote. Mitsubishi Ele
 
 - [Aloita turvallisesti PC:llä](docs/GETTING_STARTED.md)
 - [Yhteensopivuus ja ominaisuuksien tila](docs/COMPATIBILITY.md)
-- [Ensimmäinen alpha-julkaisu](https://github.com/linkki79-pixel/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1)
-- [Kysy tai esittele oma lämpöpumppumallisi](https://github.com/linkki79-pixel/ENEVINA-Lite/discussions)
-- [Ilmoita toistettava ongelma](https://github.com/linkki79-pixel/ENEVINA-Lite/issues)
+- [Ensimmäinen alpha-julkaisu](https://github.com/Enevina-Ltd/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1)
+- [Kysy tai esittele oma lämpöpumppumallisi](https://github.com/Enevina-Ltd/ENEVINA-Lite/discussions)
+- [Ilmoita toistettava ongelma](https://github.com/Enevina-Ltd/ENEVINA-Lite/issues)
 
 ## Project structure
 
