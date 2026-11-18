@@ -838,6 +838,7 @@ static void cottage_control_registration() {
         prefs.end();
     }
     web.on("/api/control/arm",HTTP_POST,[]() {
+        if(!cottage_wifi_require_home_lan(web))return;
         if(!web.hasArg("token") ||
            !c23_authorize_local_setting(web.arg("token").c_str())) {
             web.send(403,"application/json","{\"saved\":false}");
@@ -1404,9 +1405,15 @@ void setup() {
             "frame-ancestors 'none'; base-uri 'none'");
         web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html);
     });
-    web.on("/api/status",HTTP_GET,status_endpoint);
-    web.on("/api/plan",HTTP_GET,plan_endpoint);
-    web.on("/api/prices",HTTP_GET,prices_endpoint);
+    web.on("/api/status",HTTP_GET,[](){
+        if(cottage_wifi_require_home_lan(web))status_endpoint();
+    });
+    web.on("/api/plan",HTTP_GET,[](){
+        if(cottage_wifi_require_home_lan(web))plan_endpoint();
+    });
+    web.on("/api/prices",HTTP_GET,[](){
+        if(cottage_wifi_require_home_lan(web))prices_endpoint();
+    });
     c23_register_routes(web);
     site_settings_register_routes(web);
     cottage_control_registration(); // explicit local arming; defaults OFF
