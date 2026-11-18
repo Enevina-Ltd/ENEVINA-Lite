@@ -72,6 +72,17 @@ class WifiOnboardingSource(unittest.TestCase):
         loop = WIFI.split("void cottage_wifi_loop() {", 1)[1]
         self.assertIn('legacy_migration_pending && got_ip.load()', loop)
 
+    def test_persistent_control_intent_bound_to_pump(self):
+        self.assertIn('control_intent_restorable(saved,site_settings_snapshot())', MAIN)
+        self.assertIn('prefs.getBytesLength("intent1")==sizeof(saved)', MAIN)
+        self.assertIn('control_armed.store(restore)', MAIN)
+        self.assertIn('p.putBytes("intent1",&record,sizeof(record))==sizeof(record)', MAIN)
+        self.assertIn('control_armed_endpoint.store(site_settings_endpoint_generation())', MAIN)
+        disarm = MAIN.split("static void cottage_control_disarm() {", 1)[1].split(
+            "static void cottage_control_tick()", 1)[0]
+        self.assertIn('control_intent_for(site_settings_snapshot(),false)', disarm)
+        self.assertIn('prefs.putBytes("intent1",&record,sizeof(record))', disarm)
+
     def test_home_wifi_password_never_logged_or_returned(self):
         for line in WIFI.splitlines():
             if "Serial.print" in line:
@@ -144,7 +155,7 @@ class SiteSettingsSource(unittest.TestCase):
         self.assertIn("control_armed_endpoint.load()!=site_settings_endpoint_generation()", tick)
         self.assertIn("cottage_control_disarm();", tick)
         disarm = MAIN.split("static void cottage_control_disarm() {", 1)[1].split("}", 3)
-        self.assertIn('prefs.putBool("armed",false)', "}".join(disarm))
+        self.assertIn('prefs.putBytes("intent1",&record,sizeof(record))', "}".join(disarm))
         post = MAIN.split("static bool cn105_bridge_post(", 1)[1].split(
             "static void cottage_control_tick()", 1)[0]
         self.assertIn("control_armed_endpoint.load()!=site_settings_endpoint_generation()", post)

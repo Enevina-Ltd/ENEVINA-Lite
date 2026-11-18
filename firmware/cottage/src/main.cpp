@@ -25,6 +25,7 @@
 #include "cottage_network_budget.hpp"
 #include "cottage_secure_ota.hpp"
 #include "cottage_site_settings.hpp"
+#include "cottage/control_intent.hpp"
 #include "cottage_wifi.hpp"
 #include "cottage/physics.hpp"
 #include "cottage/mpc.hpp"
@@ -767,7 +768,11 @@ static void cottage_control_disarm() {
     control_armed.store(false);
     Preferences prefs;
     if(prefs.begin("cottage_ctl",false)) {
-        if(prefs.getBool("armed",false))prefs.putBool("armed",false);
+        // Revoke the one atomic persisted intent as well as the RAM state.
+        // Endpoint edits cannot restore old authorization after a restart.
+        const auto record=control_intent_for(site_settings_snapshot(),false);
+        if(prefs.putBytes("intent1",&record,sizeof(record))!=sizeof(record))
+            Serial.println("CONTROL_WARN: durable disarm write failed");
         prefs.end();
     }
 }
@@ -775,7 +780,7 @@ static void cottage_control_tick() {
     control_gate.store(static_cast<int>(ControlBlock::Disabled));
     if(!control_armed.load())return;
     // Arming is bound to the configured pump. A changed CN105 endpoint or
-    // adapter revokes it (same as reboot/OTA); the user re-enables locally.
+    // adapter revokes it; a reboot restores only the same pump identity.
     if(control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
         cottage_control_disarm();
         return;
@@ -870,14 +875,23 @@ static void cottage_control_tick() {
     }
 }
 static void cottage_control_registration() {
-    // An OTA or reboot must never silently re-enable physical writes.
-    // A fresh local explicit enable is required once each boot.
+    // Restore only the user's PREVIOUSLY explicit enable, bound to the same
+    // pump identity. Never arm a new/unconfigured unit or a changed endpoint.
+    // The existing live sensor, price, Wi-Fi, clock and CN105 GET checks
+    // still run on every control cycle before any physical command.
     control_armed.store(false);
     Preferences prefs;
-    if(prefs.begin("cottage_ctl",false)) {
-        if(prefs.getBool("armed",false))prefs.putBool("armed",false);
+    bool restore=false;
+    if(prefs.begin("cottage_ctl",true)) {
+        StoredControlIntent saved{};
+        if(prefs.getBytesLength("intent1")==sizeof(saved) &&
+           prefs.getBytes("intent1",&saved,sizeof(saved))==sizeof(saved))
+            restore=control_intent_restorable(saved,site_settings_snapshot());
         prefs.end();
     }
+    control_armed_endpoint.store(site_settings_endpoint_generation());
+    control_reset_mode_history(); // Unknown previous physical mode on boot.
+    control_armed.store(restore);
     web.on("/api/control/arm",HTTP_POST,[]() {
         if(!web.hasArg("token") ||
            !c23_authorize_local_setting(web.arg("token").c_str())) {
@@ -890,10 +904,12 @@ static void cottage_control_registration() {
             return;
         }
         const bool requested=web.arg("enabled")=="true";
+        const auto record=control_intent_for(site_settings_snapshot(),requested);
         Preferences p;
         bool stored=false;
         if(p.begin("cottage_ctl",false)) {
-            stored=p.putBool("armed",requested)>0;
+            // One atomic value for enable + exact pump/adapter identity.
+            stored=p.putBytes("intent1",&record,sizeof(record))==sizeof(record);
             p.end();
         }
         if(stored) {
@@ -1453,7 +1469,7 @@ void setup() {
     web.on("/api/prices",HTTP_GET,prices_endpoint);
     c23_register_routes(web);
     site_settings_register_routes(web);
-    cottage_control_registration(); // explicit local arming; defaults OFF
+    cottage_control_registration(); // restore prior explicit choice only
     web.onNotFound([](){
         if(cottage_wifi_request_via_ap(web)) {
             // Captive portal: any unknown host/path on the setup AP -> /setup.
@@ -1486,7 +1502,7 @@ void setup() {
         task_ota=nullptr;
         Serial.println("C24_OTA_ERROR: signed OTA task creation failed");
     }
-    Serial.println("ENEVINA LITE: optional CN105 controller, default DISARMED");
+    Serial.println("ENEVINA LITE: CN105 controller, persisted local choice");
 }
 void loop() {
     wifi_ok.store(WiFi.status()==WL_CONNECTED);
