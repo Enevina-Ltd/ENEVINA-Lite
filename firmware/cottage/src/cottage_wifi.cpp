@@ -191,6 +191,12 @@ void captive_redirect() {
 bool cottage_wifi_request_via_ap(WebServer& web) {
     return ap_active && web.client().localIP()==WiFi.softAPIP();
 }
+bool cottage_wifi_require_home_lan(WebServer& web) {
+    if(!cottage_wifi_request_via_ap(web)) return true;
+    web.sendHeader("Cache-Control","no-store");
+    web.send(403,"application/json","{\"error\":\"SETUP_WIFI_ONLY\"}");
+    return false;
+}
 void cottage_wifi_begin(WebServer& web) {
     server=&web;
     uint8_t mac[6]{};
