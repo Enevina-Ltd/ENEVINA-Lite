@@ -1,76 +1,100 @@
 # Enevina Lite
 
-**A local-first, source-available heat pump controller by Enevina Oy.**
+**Local-first heat pump control and electricity-price optimization — running on ESP32-S3.**
 
-Enevina Lite is an ESP32-S3-based controller for **one heat pump per device**, designed for local operation without a mandatory cloud service or Home Assistant. Its goal is to reduce heating costs using electricity prices, weather forecasts and deterministic, physics-based optimization (MPC). **Lite does not contain AI/ML.** Manufacturer/model support depends on separately developed and verified adapters.
+Enevina Lite is a source-available project by **Enevina Oy**. The design is simple: **one heat pump per controller**, a local browser dashboard, and price-aware heating without requiring Home Assistant, a cloud account, or an always-on server. The optimization is deterministic and physics-based — **there is no AI/ML in Lite**.
 
-**Development status:** This is an evolving prototype, not a general claim of compatibility, certified safety or production readiness. Check the model-specific documentation and tests before connecting to a real heat pump. Enevina Core and Adaptive Intelligence are separate products.
+[English](#english) · [Suomi](#suomi) · [Developer preview v0.1.0-alpha.1](https://github.com/linkki79-pixel/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1) · [Compatibility](docs/COMPATIBILITY.md) · [Getting started](docs/GETTING_STARTED.md)
 
-## License and commercial use
+> **Developer preview — not ready for general installation or sale.** The repository contains working prototypes, tested algorithms, experimental device adapters and firmware. It does **not** certify model compatibility, a safe automatic-control installation, or real-world energy savings. There is no approved prebuilt firmware installer in the first release.
 
-**Enevina Lite is source-available, not OSI-approved open source.**
+## English
 
-- **Community license:** [Enevina Lite Noncommercial Community License 1.0](LICENSE).
-- **Free noncommercial use:** study, hobby use, experiments, modifications and free noncommercial sharing are permitted under the license terms.
-- **No third-party sales or commercial exploitation:** selling or commercially distributing Enevina Lite software or firmware, or manufacturing and selling controllers that include it, requires a **separate written commercial license from Enevina Oy**.
-- **Third-party libraries and assets** keep their own licenses, which may impose additional obligations. This community license applies only to rights Enevina Oy can legally grant.
-- **Contributions:** see [CONTRIBUTING.md](CONTRIBUTING.md) before submitting code intended for possible inclusion in Enevina Oy's commercial products.
-- The Enevina name and logo are not freely licensed as product brands.
+### Why Enevina Lite?
 
-These are software-license conditions. They do not override mandatory legal rights or separately licensed third-party components. The repository and first developer preview are public. This custom license has **not yet received independent legal review**; publication is not a legal endorsement. See [third-party notices](THIRD_PARTY_NOTICES.md) and [release audit](docs/release/RELEASE_READINESS.md).
+- **Local by design.** The device runs its own dashboard and local control logic. Electricity-price and weather updates use online data sources, but a continuous cloud connection is not the design requirement.
+- **Electricity prices + weather.** Finnish 15-minute electricity-price periods and FMI weather forecasts are integrated as inputs for monitoring and optimization development.
+- **Predictive control research on an ESP32.** A lightweight thermal model and deterministic MPC can be simulated and benchmarked on the host; the real device's current price-control path is **not yet a field-validated MPC controller**.
+- **Manufacturer adapters, not a one-brand product.** The first integration work targets Mitsubishi Electric / CN105. Other brands require their own verified adapters and model-specific tests.
 
-## Product scope
+### What is available today?
 
-Enevina Lite is a lightweight standalone controller designed for **one heat pump per device**.
-The goal is local operation without requiring Home Assistant, a subscription, or a continuous cloud connection.
-Public electricity prices and weather forecasts can be used for optimization when available, with
-a locally defined fallback during outages.
+| Area | Current evidence | What is *not* yet claimed |
+| --- | --- | --- |
+| ESP32-S3 local dashboard | Firmware implementation, Finnish/English UI and host-side tests | Tested operation on every browser and hardware configuration |
+| Wi-Fi-first setup | Implemented; host-tested onboarding state machine | Generally validated end-user provisioning |
+| 15-min electricity prices | Acquisition, caching and pricing logic in source | Accuracy for every electricity contract |
+| FMI weather forecast | Local forecast integration and 48-hour display development | Calibrated use in production MPC control |
+| RuuviTag and Shelly | Adapter/parser and integration work, selected device tests | Universal sensor compatibility or pump-only power measurement |
+| Mitsubishi CN105 | First model-specific experimental integration | Certified or universally safe control of Mitsubishi models |
+| Thermal model + MPC | Host simulation, independent MILP comparisons and benchmark reports | Verified real-world cost savings; MPC as the active calibrated control loop |
+| Signed OTA / recovery | Implementation and targeted regression/device tests | A universally approved end-user firmware update |
 
-- **Hardware:** ESP32-S3; Wi-Fi, with optional model-specific gateways or interfaces.
-- **Control:** manufacturer-specific local adapters; support must be verified for each model.
-- **Optimization:** deterministic building physics and price-aware MPC, using 15-minute periods; **no AI**.
-- **Measurements:** compatible heat-pump telemetry and optional temperature, humidity, and power sensors.
-- **User interface:** local browser dashboard for status, settings, measurements, and optimization plans.
-- **Updates:** signed OTA and recovery mechanisms are under active development and verification.
+The details and evidence levels are documented in [Compatibility & development status](docs/COMPATIBILITY.md), [optimization audit](docs/OPTIMIZATION_AUDIT_20261118.md) and [release readiness](docs/release/RELEASE_READINESS.md). Historical test reports document their test date, not a blanket claim about current product readiness.
 
-## Architecture
+### How it works
 
-| Component | Responsibility |
-| --- | --- |
-| `pump/` | Model-specific interfaces, capabilities, telemetry, and adapter contracts |
-| `physics/` | Thermal response and heat-pump performance models |
-| `forecast/` | Electricity prices, weather forecasts, and data validation |
-| `optimizer/` | Deterministic heating-cost optimization |
-| `safety/` | Safety constraints, source freshness, command validation, and fallback |
-| `firmware/` | Embedded networking, local UI, sensors, and OTA integration |
-| `tests/` | Host-side tests, simulations, and regression checks |
+```mermaid
+flowchart LR
+    A["15-min electricity prices"] --> D["Local ESP32-S3 controller"]
+    B["FMI weather data"] --> D
+    C["Pump and optional sensor readings"] --> D
+    D --> E["Local dashboard"]
+    D --> F["Price-control / model-based optimization"]
+    F --> G["Model-specific validation and safety gate"]
+    G -. "experimental; subject to validation" .-> H["One compatible heat pump"]
+```
 
-## Development and verification
+The diagram shows the intended architecture. Not every displayed connection is an approved physical control path.
 
-This repository contains prototypes, reference algorithms, test tools, and firmware
-under active development. Features and compatibility are not guaranteed for all heat-pump
-models. Some historical reports refer to earlier test configurations and are not a
-statement of current production readiness.
+### Try the development tools
 
-Build the native C++ project and run its tests:
+For a safe, **PC-only** introduction (no physical pump commands, firmware flashing or device credentials):
 
 ```sh
+git clone https://github.com/linkki79-pixel/ENEVINA-Lite.git
+cd ENEVINA-Lite
 cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The ESP32-S3 firmware uses the toolchain specified in its relevant
-`platformio.ini` or ESP-IDF project files. Review hardware compatibility and
-the model-specific safety requirements before attempting installation.
+Requirements: CMake 3.20+, a C++17 compiler and Git. See [Getting started](docs/GETTING_STARTED.md) for repository structure, further tests and hardware limitations. The ESP32 firmware has separate build configurations and must **not** be flashed onto an unknown board as part of this introduction.
 
-## Safety and contributions
+### Follow or contribute
 
-Never assume that a successful simulation, build, or mocked device response
-proves that physical heat-pump control is safe. Do not interrupt a heat pump's
-mains supply for price optimization. Respect manufacturer limits and verify
-the actual device interface before issuing commands.
+Interested in local heat-pump protocols, deterministic optimization or testing an adapter? Browse the [latest developer preview](https://github.com/linkki79-pixel/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1), open a [Discussion](https://github.com/linkki79-pixel/ENEVINA-Lite/discussions) to ask a question, or use [Issues](https://github.com/linkki79-pixel/ENEVINA-Lite/issues) for reproducible bugs and well-scoped requests. We especially welcome **model-specific compatibility evidence**; please don't post private IPs, credentials, MAC addresses or unredacted device logs.
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) before
-submitting changes. Commercial licensing requires separate written permission
-from Enevina Oy as defined in [LICENSE](LICENSE).
+No verified demonstration video or field-savings figure has been published yet. Contributions must follow [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Suomi
+
+**Enevina Lite on ESP32-S3:lle kehitettävä paikallinen lämpöpumppuohjain.** Yksi laite ohjaa yhtä lämpöpumppua. Tavoitteena ovat lämmityskustannusten optimointi 15 minuutin sähkönhinnoilla, sääennusteella ja rakennuksen fysiikkamallilla, ilman Home Assistant -pakkoa, tilausta tai jatkuvaa pilviyhteyttä. **Lite ei sisällä tekoälyä.**
+
+Projekti on **kehittäjien esijulkaisu**, ei valmis asiakastuote. Mitsubishi Electricin CN105 on ensimmäinen kokeellinen integraatio; muiden lämpöpumppujen tuki varmistetaan mallikohtaisesti. Rakennusmallin ja MPC:n tulokset ovat toistaiseksi pääosin simuloituja, eikä todellisia säästöprosentteja luvata.
+
+- [Aloita turvallisesti PC:llä](docs/GETTING_STARTED.md)
+- [Yhteensopivuus ja ominaisuuksien tila](docs/COMPATIBILITY.md)
+- [Ensimmäinen alpha-julkaisu](https://github.com/linkki79-pixel/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1)
+- [Kysy tai esittele oma lämpöpumppumallisi](https://github.com/linkki79-pixel/ENEVINA-Lite/discussions)
+- [Ilmoita toistettava ongelma](https://github.com/linkki79-pixel/ENEVINA-Lite/issues)
+
+## Project structure
+
+| Path | Purpose |
+| --- | --- |
+| `cottage/` | Air-to-air prototype: price control, thermal model, MPC, telemetry and safety |
+| `physics/`, `optimizer/` | Independent physical model and optimization research |
+| `forecast/` | Weather, electricity prices and data validation |
+| `pump/` | Device adapter interfaces and data-quality contracts |
+| `firmware/cottage/` | ESP32-S3 Wi-Fi firmware, dashboard, sensors and OTA development |
+| `firmware/` | Separate ESP-IDF and benchmark programs |
+| `tests/`, `tools/` | Native regressions, simulation and independent comparisons |
+
+## License, safety and commercial use
+
+**Enevina Lite is source-available, not OSI open source.** The [Enevina Lite Noncommercial Community License 1.0](LICENSE) permits noncommercial study, hobby use, modification and noncommercial sharing under its terms. **Selling Enevina Lite software/firmware or controllers incorporating it requires a separate written commercial license from Enevina Oy.** Third-party components retain their own rights and notices; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The custom license has **not received independent legal review**.
+
+This developer preview is not approved for unattended physical heat-pump control. Do not use price optimization to switch the pump's mains power; respect compressor protection, defrosting and manufacturer limits. Firmware compatibility and OTA/rollback procedures must be verified for the exact board and pump model before installation.
+
+**Enevina Oy** · [enevina.com](https://enevina.com) · [Contributing](CONTRIBUTING.md) · [Release readiness](docs/release/RELEASE_READINESS.md)

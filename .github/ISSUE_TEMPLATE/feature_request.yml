@@ -1,0 +1,30 @@
+name: Feature or device support idea
+description: Propose a model-specific protocol, local integration or user-facing improvement.
+title: "[Idea] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Enevina Lite is **one heat pump per ESP32 controller** and does not embed AI.
+        A manufacturer or model name alone is not proof of compatibility.
+        Please do **not** include private device identifiers, addresses, secrets or unpublished vendor materials.
+  - type: input
+    id: pump
+    attributes:
+      label: Exact heat-pump model (optional)
+      placeholder: "Manufacturer, indoor/outdoor model and public product generation"
+  - type: textarea
+    id: goal
+    attributes:
+      label: What would this enable?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Public protocol references or reproducible observations
+      description: Links to public documentation, tested local APIs or read-only data only.
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Safety and compatibility concerns
