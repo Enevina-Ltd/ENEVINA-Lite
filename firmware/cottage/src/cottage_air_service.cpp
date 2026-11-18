@@ -14,6 +14,7 @@
 #include <string>
 #include "cottage_config.hpp"
 #include "cottage_air_service.hpp"
+#include "cottage_wifi.hpp"
 #include "cottage_network_budget.hpp"
 #include "cottage/memory_policy.hpp"
 #include <atomic>
@@ -568,8 +569,11 @@ void c23_history_http(WebServer& web) {
 }
 void c23_register_routes(WebServer& web) {
     // Only local settings are mutable; NO CN105, Shelly or physical writes.
-    web.on("/api/air/history",HTTP_GET,[&web](){c23_history_http(web);});
+    web.on("/api/air/history",HTTP_GET,[&web](){
+        if(cottage_wifi_require_home_lan(web))c23_history_http(web);
+    });
     web.on("/api/air/config",HTTP_POST,[&web](){
+        if(!cottage_wifi_require_home_lan(web))return;
         if(!check_token(web)) {web.send(403,"text/plain","Token invalid");return;}
         // Atomically validate all supplied fields before changing saved state.
         if(!web.hasArg("mode")||!web.hasArg("hold")||!web.hasArg("delta")) {
@@ -609,6 +613,7 @@ void c23_register_routes(WebServer& web) {
                        "{\"saved\":false,\"physical_writes\":false}");
     });
     web.on("/api/air/thresholds",HTTP_POST,[&web](){
+        if(!cottage_wifi_require_home_lan(web))return;
         if(!check_token(web)) {web.send(403,"text/plain","Invalid token");return;}
         double rh70=0,rh80=0,low_batt=0;
         if(!parse_float(web.arg("rh70"),rh70) ||
@@ -631,6 +636,7 @@ void c23_register_routes(WebServer& web) {
                        "{\"saved\":false,\"physical_writes\":false}");
     });
     web.on("/api/air/bind",HTTP_POST,[&web](){
+        if(!cottage_wifi_require_home_lan(web))return;
         if(!check_token(web)) {web.send(403,"text/plain","Token invalid");return;}
         const String kind=web.arg("which"),value=web.arg("mac");
         if(kind!="indoor"&&kind!="outdoor") {
@@ -688,6 +694,7 @@ void c23_register_routes(WebServer& web) {
                        "{\"saved\":false,\"physical_writes\":false}");
     });
     web.on("/api/air/ack",HTTP_POST,[&web](){
+        if(!cottage_wifi_require_home_lan(web))return;
         if(!check_token(web)||!web.hasArg("alert")) {
             web.send(403,"text/plain","Missing token");return;
         }
