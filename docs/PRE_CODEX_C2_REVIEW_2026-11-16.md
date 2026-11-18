@@ -36,13 +36,13 @@ Erillinen Git-klooni Windows-kehityskoneen tilapäishakemistossa; ei tuotantojä
 | Hintapiikki | 5.090182 | 5.089550 | optimaalisuusraja täyttyi (0,080 % gap) | 0 |
 | Sulatus | 3.161869 | 3.161049 | aikaraja, 2,10 % gap | 0 |
 
-Vertailun parametrit ovat **synteettisiä**, eivät mökin todellisia lämpö- tai säästötuloksia. Uuden yhdistelmän 192 jakson fyysistä ajoa ei ole mitattu.
+Vertailun parametrit ovat **synteettisiä**, eivät rakennuksen todellisia lämpö- tai säästötuloksia. Uuden yhdistelmän 192 jakson fyysistä ajoa ei ole mitattu.
 
 ## P0/P1-käyttöönottoesteet, joita tämä katselmointi EI poista
 
 - **C2-kokonaislaiteajo puuttuu:** täyttä Wi-Fi+CN105 SSE+Shelly GET+Ruuvi BLE+Nord Pool+FMI+Web UI+MPC -firmwarea ei ole flashattu erilliselle testikortille tai ajettu samanaikaisesti oikeilla datalähteillä. Vanha toimiva CN105-silta on jätetty koskemattomaksi.
 - CN105-sillan HTTP/SSE-lukeman pumpun oman sarjaväyläpäivityksen tuoreutta ei ole vielä vahvistettu riippumattomalla laskurilla. Pelkkä yhteys palvelimeen ei riitä C3-ohjauksen tuoreustodisteeksi.
-- Riippumaton mökkilämpömittaus ja erillinen pakkassuoja puuttuvat/ovat vahvistamatta. Rakennuksen lämpökapasiteetti, pumpun HEAT 16 °C -termostaattivaste, COP ja sulatukset ovat edelleen kalibroimatta.
+- Riippumaton rakennuksen lämpötilamittaus ja erillinen pakkassuoja puuttuvat/ovat vahvistamatta. Rakennuksen lämpökapasiteetti, pumpun HEAT 16 °C -termostaattivaste, COP ja sulatukset ovat edelleen kalibroimatta.
 - Kustannusoptimointi on oletusarvoisesti estetty synteettisen fysiikan vuoksi. Lämpöpumpun CN105- tai Shelly-kirjoituspolkua ei lisätä tähän PR:ään.
 - Pitkäkestoiset virta-/verkko-/watchdog-/muistivuototestit ja uuden yhdistelmäalgoritmin fyysinen 192 jakson aikamittaus puuttuvat.
 

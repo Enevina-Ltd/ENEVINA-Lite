@@ -1,6 +1,6 @@
 # Enevina Lite C2.4 – allekirjoitetun OTA:n ja automaattisen rollbackin fyysinen todentaminen (16.11.2026)
 
-**Päätös:** OTA:n onnistunut A/B-päivitys, sovelluksen viivästetty terveysvahvistus ja automaattinen palautuminen viallisen päivityksen jälkeen on todistettu **fyysisellä ESP32-S3 N16R8 -testikortilla**. Tämä ei vielä tarkoita C2.4:n kokonaisvaltaista pihamökkikäyttöön hyväksymistä.
+**Päätös:** OTA:n onnistunut A/B-päivitys, sovelluksen viivästetty terveysvahvistus ja automaattinen palautuminen viallisen päivityksen jälkeen on todistettu **fyysisellä ESP32-S3 N16R8 -testikortilla**. Tämä ei vielä tarkoita C2.4:n kokonaisvaltaista käyttökohteeseen hyväksymistä.
 
 ## Juurisyy ja korjaus
 
@@ -69,7 +69,7 @@ Core-koneen ohjelmistotestissä 18/18 kohdennettua OTA-regressiota ja ESP32-S3 P
 OTA:n yllä kuvattu positiivinen, automaattisen rollbackin ja virheellisen allekirjoituksen fyysinen testaus on valmis. **Koko C2.4:n hyväksyntä ei silti ole valmis:**
 
 1. Pitkä 24/48 h vakauskoe viimeisellä firmwaren, bootloaderin, Wi-Fi:n ja BLE:n yhdistelmällä. Vanhempi C2.4-24h koe keskeytyi OTA-testien vuoksi, eikä sitä saa kutsua läpäistyksi.
-2. BLE-anturi sijaitsee jo pihamökissä ja ESP32 sisällä: sisätiloista puuttuva `sensor_fresh` ei itsessään osoita firmwarevirhettä. Fyysinen BLE-kenttätesti on vielä tekemättä.
+2. BLE-anturi sijaitsee jo testikohteessa ja ESP32 sisällä: sisätiloista puuttuva `sensor_fresh` ei itsessään osoita firmwarevirhettä. Fyysinen BLE-kenttätesti on vielä tekemättä.
 3. CN105 SSE-heartbeat voi pysyä aktiivisena ilman varsinaisen pumpun mittauksen päivitystä. **180 sekunnin fail-closed-raja pysyy**. Ei tehty kirjoituksia.
 4. RAMin pahimman kuorman ja varauspiikkien toistettavuus sekä USB-virtakatkon testi kesken OTA-kirjoituksen ovat edelleen avoimia. Allekirjoitetun version monotoniaportti ja hylättyjen testiversioiden karanteeni on toteutettu, mutta laitteistotason anti-rollback / eFuse-käsittelyä ei ole hyväksytty.
 5. Ei laitteistotason Secure Boot / eFuse -hyväksyntää. Yksityisiä avaimia ei ollut laitteessa eikä eFuseihin tehty muutoksia.
