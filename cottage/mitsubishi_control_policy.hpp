@@ -16,6 +16,34 @@ enum class ControlBlock : uint8_t {
 // (compressor run/off time; AGENTS.md section 11). Setpoint changes are not
 // mode changes and are never delayed.
 constexpr uint32_t mitsubishi_min_mode_dwell_ms=30u*60u*1000u;
+// HEAT<->OFF history feeding ControlSnapshot::ms_since_mode_change.
+// Pure and host-tested; the firmware serializes access. millis()-style
+// uint32 timestamps, wrap-safe by unsigned subtraction.
+//  * construction / reset(now): unknown history -> the dwell starts now
+//  * command_dispatched(now): called right before the actual mode POST
+//  * observe(heat,now): a fresh bridge GET. A mode change, or an observation
+//    gap longer than observation_gap_ms (the pump may have toggled unseen,
+//    Codex P1 post-merge #28), restarts the dwell.
+class MitsubishiModeHistory {
+public:
+    static constexpr uint32_t observation_gap_ms=5u*60u*1000u;
+    void reset(uint32_t now) { last_change_=now; seen_=-1; }
+    void command_dispatched(uint32_t now) { last_change_=now; }
+    void observe(bool heating,uint32_t now) {
+        const int seen=heating?1:0;
+        if(seen_>=0 && (seen!=seen_ ||
+           static_cast<uint32_t>(now-last_observation_)>observation_gap_ms))
+            last_change_=now;
+        seen_=seen;
+        last_observation_=now;
+    }
+    uint32_t since_change(uint32_t now) const {
+        return static_cast<uint32_t>(now-last_change_);
+    }
+private:
+    uint32_t last_change_=0,last_observation_=0;
+    int seen_=-1;
+};
 struct ControlSnapshot {
     bool armed=false;
     bool heating_mode=false;

@@ -103,12 +103,34 @@ static std::atomic<uint32_t> control_armed_endpoint{0};
 // Owner decision 18.11.2026: >= 30 min between HEAT<->OFF changes. Last change
 // = last mode command sent, last change observed via bridge GET, boot or
 // arming (unknown history -> wait). millis()-based, survives NTP jumps.
-static std::atomic<uint32_t> control_mode_change_ms{0};
-static std::atomic<int> control_last_seen_heat{-1}; // web + optimizer tasks
+// Boot = unknown history (dwell starts at millis()==0). Shared by the web
+// task (arming) and the optimizer task, serialized by mode_history_lock.
+static MitsubishiModeHistory control_mode_history{};
+static portMUX_TYPE mode_history_lock=portMUX_INITIALIZER_UNLOCKED;
 static void control_note_observed_mode(bool heating) {
-    const int seen=heating?1:0;
-    const int prior=control_last_seen_heat.exchange(seen);
-    if(prior>=0 && prior!=seen) control_mode_change_ms.store(millis());
+    const uint32_t now=millis();
+    portENTER_CRITICAL(&mode_history_lock);
+    control_mode_history.observe(heating,now);
+    portEXIT_CRITICAL(&mode_history_lock);
+}
+static void control_note_mode_dispatch() {
+    const uint32_t now=millis();
+    portENTER_CRITICAL(&mode_history_lock);
+    control_mode_history.command_dispatched(now);
+    portEXIT_CRITICAL(&mode_history_lock);
+}
+static void control_reset_mode_history() {
+    const uint32_t now=millis();
+    portENTER_CRITICAL(&mode_history_lock);
+    control_mode_history.reset(now);
+    portEXIT_CRITICAL(&mode_history_lock);
+}
+static uint32_t control_ms_since_mode_change() {
+    const uint32_t now=millis();
+    portENTER_CRITICAL(&mode_history_lock);
+    const uint32_t since=control_mode_history.since_change(now);
+    portEXIT_CRITICAL(&mode_history_lock);
+    return since;
 }
 static std::atomic<int> control_gate{static_cast<int>(ControlBlock::Disabled)};
 static std::atomic<int> control_last_step{static_cast<int>(ControlStep::None)};
@@ -727,6 +749,12 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
         req.end();
         return false;
     }
+    // Codex P2 (post-merge #28): start the dwell only when a mode POST is
+    // really dispatched (after every precondition); a failed preparation
+    // must not block the next attempt for 30 min. An uncertain response or
+    // failed readback still counts: the command may have taken effect.
+    if(step==ControlStep::SetHeat || step==ControlStep::SetOff)
+        control_note_mode_dispatch();
     const int code=req.POST("");
     control_post_http_code.store(code);
     control_post_stage.store(code>=200 && code<300?6:-6);
@@ -799,8 +827,7 @@ static void cottage_control_tick() {
     candidate.current_setpoint_c=current_setpoint;
     candidate.proposal=proposal;
     control_note_observed_mode(current_heat);
-    candidate.ms_since_mode_change=static_cast<uint32_t>(
-        millis()-control_mode_change_ms.load());
+    candidate.ms_since_mode_change=control_ms_since_mode_change();
     const auto decision=choose_mitsubishi_control(candidate);
     control_gate.store(static_cast<int>(decision.gate));
     if(decision.step==ControlStep::None)return;
@@ -811,10 +838,6 @@ static void cottage_control_tick() {
         decision.step==ControlStep::SetHeat?MitsubishiMode::Heat:
                                             MitsubishiMode::Off);
     if(!request.valid || !control_armed.load())return;
-    // A mode POST may take effect even if its readback fails: start the
-    // dwell now, conservatively, before dispatch.
-    if(decision.step==ControlStep::SetHeat || decision.step==ControlStep::SetOff)
-        control_mode_change_ms.store(millis());
     control_last_step.store(static_cast<int>(decision.step));
     control_last_command_utc.store(now);
     control_commands_sent.fetch_add(1);
@@ -877,8 +900,7 @@ static void cottage_control_registration() {
             control_armed_endpoint.store(site_settings_endpoint_generation());
             // Arming starts the dwell window: mode history while disarmed
             // is unknown (manual remote changes are not observed).
-            control_mode_change_ms.store(millis());
-            control_last_seen_heat.store(-1);
+            control_reset_mode_history();
             control_armed.store(requested);
         }
         web.send(stored?200:500,"application/json",
