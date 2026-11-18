@@ -697,6 +697,10 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     req.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     if(!req.begin(client,url)) {control_post_stage.store(-5);return false;}
     req.addHeader("Content-Type","application/x-www-form-urlencoded");
+    // Arduino-ESP32 HTTPClient::sendRequest only adds Content-Length when
+    // payload size > 0. ESPHome's local WebServer rejects POST without it
+    // with HTTP 411. Explicitly send zero length for command-only queries.
+    req.addHeader("Content-Length","0");
     control_post_stage.store(5);
     // Last cancellation point after all potentially blocking preparation.
     if(!control_armed.load() || c23_config_generation()!=config_generation) {
