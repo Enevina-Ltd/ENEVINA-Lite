@@ -1,139 +1,76 @@
 # Enevina Lite
 
-**Monimerkkinen, yhden lämpöpumpun paikallinen optimointiohjain.**
+**A local-first, source-available heat pump controller by Enevina Oy.**
 
-Enevina Lite on Enevina Coresta erillinen, valmistajariippumattoman ytimen ja mallikohtaisten adapterien varaan rakentuva kevyt ohjain, jonka tavoitteena on minimoida lämpöpumpun lämmityskustannukset ja soveltuvilla laitteilla myös käyttöveden kustannukset turvallisesti. **Lite ei sisällä tekoälyä**, ei edellytä Home Assistantia eikä tarvitse Linuxia tai pilvipalvelua normaalissa käytössä.
+Enevina Lite is an ESP32-S3-based controller for **one heat pump per device**, designed for local operation without a mandatory cloud service or Home Assistant. Its goal is to reduce heating costs using electricity prices, weather forecasts and deterministic, physics-based optimization (MPC). **Lite does not contain AI/ML.** Manufacturer/model support depends on separately developed and verified adapters.
 
-> **Ensimmäinen pilotti, ei tuotteen valmistajarajaus (16.11.2026):** pihamökin **Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA**. ESP32-S3 Wi-Fi + lokakuussa 2026 read-only-tilassa toiminut CN105; uusi Lite-kytkentä ja ohjauskomennot vielä testaamatta. Shelly Plus 1PM vain kulutusmittaukseen. Mökin tavoiteltu ylläpitolämpö noin +5 °C, ennakoiva turvamarginaali +8 °C; pumpun alin lämmityspyynti +16 °C, joten suunniteltu ohjaus on HEAT 16 °C / OFF. **Tämä ilma–ilmapumppu ei käytä menoveden tai käyttöveden optimointia.** Katso [pilottisuunnitelma](docs/cottage-mitsubishi-fd25va.md). Oikeaa laitetta ei vielä ohjata.
+**Development status:** This is an evolving prototype, not a general claim of compatibility, certified safety or production readiness. Check the model-specific documentation and tests before connecting to a real heat pump. Enevina Core and Adaptive Intelligence are separate products.
 
-> Tila: PC:llä testattu G0-prototyyppi, fyysisellä ESP32-S3:lla mitattu laskentaydin ja ESP32-S3:lle kääntyvä **vain luku** -laiteohjelmisto. G0–G3-hyväksyntäportit ovat edelleen auki; tuotantolaitetta ei saa ohjata tällä versiolla.
+## License and commercial use
 
-## Nykyinen toteutus
+**Enevina Lite is source-available, not OSI-approved open source.**
 
-- `physics/`: rakennuksen ja käyttövesivaraajan energiatase, parametrinen COP, ulkolämpötilasta riippuva pumpun enimmäisteho ja rakennuksen deterministinen kalibrointi.
-- `optimizer/`: 15 minuutin, enintään 192 jakson yhteisoptimointi. Rajattu eteenpäinhaku simuloi löydetyn aikataulun uudelleen ennen hyväksyntää.
-- `forecast/`: kokonaishinnan verokäsittely sekä UTC-jaksojen jatkuvuuden ja tuoreuden tarkistus. Laiteohjelmisto hakee Suomen 15 minuutin spot-hinnat Nord Poolin Data Portalista ja tuntikohtaisen ulkolämpötilaennusteen FMI:stä sekä tallentaa vahvistetut sarjat paikallisesti. [Hintalähde](docs/price-source.md) ja [sääennuste](docs/weather-source.md).
-- `safety/`: erillinen kirjoitusportin päätöslogiikka. Todellisia pumpun kirjoituksia ei ole toteutettu.
-- `firmware/`: Waveshare ESP32-S3-ETH:n W5500-kytkentään valmisteltu Ethernet, HeishaMonin HTTP JSON -lukeminen, Nord Pool -hintojen ja FMI:n tuntisään luku sekä suomenkielinen paikallinen tilasivu. Käynnistyy aina shadow-tilaan, eikä sisällä kirjoitusrajapintaa. Nykyisen fyysisen kortin Ethernet-pinout on vielä tuntematon.
-- `firmware/bench/`: sarjaporttiin tulostava, pumppuun ja verkkoon kytkeytymätön ESP32-S3-mittausohjelma. [Mittaustulokset ja G1:n puutteet](docs/G1-report.md).
-- `tools/reference_benchmark.py`: riippumaton PC-MILP, sääkompensoitu perusohjaus ja mitattu vertailu. [Tulokset ja rajaukset](docs/G0-report.md).
+- **Community license:** [Enevina Lite Noncommercial Community License 1.0](LICENSE).
+- **Free noncommercial use:** study, hobby use, experiments, modifications and free noncommercial sharing are permitted under the license terms.
+- **No third-party sales or commercial exploitation:** selling or commercially distributing Enevina Lite software or firmware, or manufacturing and selling controllers that include it, requires a **separate written commercial license from Enevina Oy**.
+- **Third-party libraries and assets** keep their own licenses, which may impose additional obligations. This community license applies only to rights Enevina Oy can legally grant.
+- **Contributions:** see [CONTRIBUTING.md](CONTRIBUTING.md) before submitting code intended for possible inclusion in Enevina Oy's commercial products.
+- The Enevina name and logo are not freely licensed as product brands.
 
-### PC-testit
+These are software-license conditions. They do not override mandatory legal rights or separately licensed third-party components. This license is under legal review before any public release.
 
-```text
+## Product scope
+
+Enevina Lite is a lightweight standalone controller designed for **one heat pump per device**.
+The goal is local operation without requiring Home Assistant, a subscription, or a continuous cloud connection.
+Public electricity prices and weather forecasts can be used for optimization when available, with
+a locally defined fallback during outages.
+
+- **Hardware:** ESP32-S3; Wi-Fi, with optional model-specific gateways or interfaces.
+- **Control:** manufacturer-specific local adapters; support must be verified for each model.
+- **Optimization:** deterministic building physics and price-aware MPC, using 15-minute periods; **no AI**.
+- **Measurements:** compatible heat-pump telemetry and optional temperature, humidity, and power sensors.
+- **User interface:** local browser dashboard for status, settings, measurements, and optimization plans.
+- **Updates:** signed OTA and recovery mechanisms are under active development and verification.
+
+## Architecture
+
+| Component | Responsibility |
+| --- | --- |
+| `pump/` | Model-specific interfaces, capabilities, telemetry, and adapter contracts |
+| `physics/` | Thermal response and heat-pump performance models |
+| `forecast/` | Electricity prices, weather forecasts, and data validation |
+| `optimizer/` | Deterministic heating-cost optimization |
+| `safety/` | Safety constraints, source freshness, command validation, and fallback |
+| `firmware/` | Embedded networking, local UI, sensors, and OTA integration |
+| `tests/` | Host-side tests, simulations, and regression checks |
+
+## Development and verification
+
+This repository contains prototypes, reference algorithms, test tools, and firmware
+under active development. Features and compatibility are not guaranteed for all heat-pump
+models. Some historical reports refer to earlier test configurations and are not a
+statement of current production readiness.
+
+Build the native C++ project and run its tests:
+
+```sh
 cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
-python -m unittest discover -s tests -p test_reference.py -v
-python tools/reference_benchmark.py build/enevina_cli --output docs/benchmarks/g0-local.json
 ```
 
-Windowsissa viimeisen komennon ohjelmapolku on `build/enevina_cli.exe`. MILP-vertailu tarvitsee SciPy 1.9+ ja NumPy. Raportin taulukko on ajettu Windowsissa Python 3.14 / SciPy 1.17.1 -ympäristössä.
+The ESP32-S3 firmware uses the toolchain specified in its relevant
+`platformio.ini` or ESP-IDF project files. Review hardware compatibility and
+the model-specific safety requirements before attempting installation.
 
-### Varjotilan firmware
+## Safety and contributions
 
-Asenna ESP-IDF 5.2.7, avaa sen ympäristö ja suorita `idf.py set-target esp32s3` sekä `idf.py build` hakemistossa `firmware/`. HeishaMonin osoite asetetaan ESP-IDF-valikossa `Enevina Lite shadow → HeishaMon base URL`; tyhjä arvo estää kyselyt. Osoite on paikallinen `http://`-osoite. FMI:n sijainti asetetaan samassa valikossa muodossa `leveysaste,pituusaste`; tyhjä arvo estää säähaun. Ohjelma hakee spot-hinnat ja sääennusteen ilman API-tunnuksia, mutta sopimuskohtaiset verot/kulut ja sääsarjan kytkentä optimointiin puuttuvat vielä laiteohjelmistosta. Paikallista sivua ei ole tarkoitettu Internetiin avattavaksi. **Älä flashaa tätä W5500-versiota tunnistamattomalle kortille tai kytke sitä todelliseen pumppuun tässä kehitysvaiheessa.**
+Never assume that a successful simulation, build, or mocked device response
+proves that physical heat-pump control is safe. Do not interrupt a heat pump's
+mains supply for price optimization. Respect manufacturer limits and verify
+the actual device interface before issuing commands.
 
-Valittu kortti, pinout ja lähteet on kuvattu [laitemuistiossa](docs/hardware.md). Käännös ei todista Ethernetin, HeishaMonin, watchdogin tai käyttöliittymän toimintaa fyysisellä laitteella.
-
-## V1:n rajaus
-
-- **Yksi lämpöpumppu per laite**.
-- Ensisijainen laitealusta: **ESP32-S3 N16R8**, pihamökin pilotissa **2,4 GHz Wi-Fi**, muissa sovittimissa tarvittaessa Ethernet.
-- C++ / ESP-IDF; mahdollisimman paljon optimointilogiikasta alustariippumatonta C++-koodia.
-- 15 minuutin sähkönhintajakso; ennakointihorisontin tavoite 24–48 tuntia.
-- Fysiikkapohjainen, deterministinen MPC-optimointi, **ei AI/ML**.
-- Tilalämmityksen ja käyttöveden yhteinen optimointi, laiterajapinnan ja pumpun toimintarajojen sallimissa puitteissa.
-- Paikallinen selainkäyttöliittymä, konfiguroitavat lämpötilarajat, lokit ja OTA-päivitykset.
-- Paikallinen toiminta väliaikaisissa verkkokatkoissa; ennusteiden ja hintojen välimuisti.
-- Ensimmäinen todellinen kohde on Mitsubishi Electric FD25VA -ilmalämpöpumppu. Yhteinen ydin tukee mallikohtaista laajentamista esimerkiksi Panasonic/HeishaMoniin, NIBE/Modbusiin ja muihin dokumentoituihin paikallisiin rajapintoihin. Niiden yhteensopivuutta ei vielä ole varmennettu; langaton toiminta edellyttää kyseisen pumpun tai yhdyskäytävän soveltuvaa yhteyttä.
-
-## Suunniteltu ohjelmistorakenne
-
-| Osa | Tehtävä |
-| --- | --- |
-| **PumpAdapter** | Valmistaja- ja mallikohtainen protokolla, mittaukset lähde- ja vastaanottoaikoineen, kyvykkyydet ja rajat; tulevat komennot kulkevat Supervisorin kautta vain erikseen hyväksyttynä |
-| **Forecast** | 15 min hintasarjat, sääennuste, puuttuvien tietojen käsittely |
-| **Physics** | Rakennuksen kevyt lämpömalli, lämpöpumpun COP- ja tehorajat, varaajan malli |
-| **Optimizer** | Rajausten mukainen ennakoiva ohjausaikataulu; ensin rajattu haku / dynaaminen optimointi |
-| **Supervisor** | Turvarajat, tietojen tuoreus, fail-safe, watchdog ja päivitysten valvonta |
-| **Web UI** | Valmistajariippumaton paikallinen UI: merkki/malli, todelliset kyvykkyydet, mittausten laatu, hinnat, ennuste ja optimoinnin selitys |
-
-## Optimoinnin periaatteet
-
-1. Minimoi ennustettu sähkön **kokonaiskustannus**, ei pelkästään sähkön spot-hintaa. Huomioi saatavilla olevat energian hinnan osat ja lämpöpumpun COP.
-2. Säilytä sisälämpötilan sekä käyttöveden käyttäjä- ja laitekohtaiset rajat. Hygienia- ja laitesuojatoimintoja ei ohiteta.
-3. Ohjaa pumpun sallittuja asetusarvoja; älä katkaise syöttösähköä sähkönhintapiikkien perusteella.
-4. Ota käyttöön vain ensimmäinen ohjausjakso ja optimoi uudelleen mittausten päivittyessä.
-5. Vanhentuneet tai virheelliset tiedot, yhteyskatkot ja optimoinnin aikakatkaisut johtavat hallittuun varatilaan. Varmista ennen tuotantokäyttöä, miten eri pumppujen asetusarvot palautetaan.
-
-## Ennen alustan lukitsemista
-
-- Toteuta siirrettävä C++-referenssiversio. Mitsubishi-pilotissa vertaa HEAT/OFF-ohjausta tavalliseen ylläpitolämmitykseen; vesikiertoisissa vertaa sääkäyrään ja MILP-referenssiin.
-- Mittaa ESP32-S3-laitteella **192 jakson / 48 tunnin** optimoinnin muistinkäyttö, suoritusaika ja vaikutus rinnakkaiseen ohjaukseen.
-- Alle 2 sekunnin tavoite täyttyi kolmessa 192 jakson synteettisessä ESP-sarjaporttitapauksessa; samanaikainen Ethernet ja käyttöliittymä ovat vielä testaamatta.
-- Testaa käynnistys, verkkokatkot, epäkelvot anturitiedot, laiteyhteyden viiveet, sähkökatkon jälkeinen palautuminen ja watchdog.
-- Älä salli tuotantolämpöpumpun ohjauksia ennen erillistä turvallisuus- ja laitekohtaista hyväksyntää.
-
-## Kehitystilan periaate
-
-Tämä repositorio on vain **Enevina Lite** -tuotetta varten. Enevina Core ja muut tuotantojärjestelmät pysyvät erillään. Ensimmäinen kehitysvaihe on simulaatio ja **shadow mode**, ilman kirjoituksia oikeaan lämpöpumppuun.
-
-## Mitsubishi FD25VA: C0 prototype
-
-The Mitsubishi cottage pilot uses a **separate** C++17 `cottage/` module.
-The only *simulated* actions are HEAT 16 °C and OFF. No hot water, supply-water control,
-thermistor emulation, device-writer or relay switching is implemented.
-The bounded optimizer, supervisor and typed read-only observers have repeatable PC tests;
-see [C0 cottage report](docs/C0-cottage-report.md) and `tools/cottage_reference.py`.
-**This is not a live CN105 integration, ESP32 performance result, or freeze-protection guarantee.**
-
-
-## Mitsubishi C2 Wi-Fi shadow (experimental)
-
-`firmware/cottage/` now includes an **independent Wi-Fi ESP32-S3 PlatformIO
-shadow firmware** based on PR #1's price/FMI readers and PR #4's Cottage MPC.
-It has CN105 /events SSE GET and Shelly read-only RPC GET, Ruuvi RAWv5 BLE,
-local Finnish dashboard, NVS forecast caches, 15-minute trajectory and supervisor.
-[Development, test status and blockers](docs/C2-cottage-report.md).
-
-**No actuator write path is present.** Do not flash the working CN105 bridge.
-The optional `cottage_local_config.hpp` is not committed; see
-`firmware/cottage/include/cottage_local_config.example.hpp`.
-The **default** synthetic-physics flag is 0, which *disables computed price plans*
-until the installation has a validated thermal model and independent temperature
-sensor. Enabling the test model on a separate bench must not be mistaken for
-calibrated safety or economic results.
-
-## Mitsubishi C2.3: RuuviTag ja pihamökin kuivanapidon varjotila
-
-[**C2.3 käyttö-, turvallisuus- ja testiraportti**](docs/C2_3_RUUVI_HUMIDITY_2026-11-16.md).
-
-C2.3 lisää erillisen RuuviTag RAWv2 (Data Format 5) BLE-anturisidonnan,
-lämpö-/RH-/paine-/paristo-/RSSI-mittaukset, kastepisteen ja absoluuttisen
-kosteuden, viikon tuntihistorian sekä Kylmillään-, Kuivanapito- ja
-Ylläpitolämpö-laskentatilat. Valinta on **vain simulointiasetus**. +12 °C:n
-suunnittelutavoitetta ei lähetetä Mitsubishiin, jonka normaali alin
-lämmitysasetus on +16 °C. Ei CN105-kirjoituksia eikä Shelly-releen
-kirjoituksia.
-
-Erillisen ESP32-S3:n firmware: \`firmware/cottage\`. Paikallisen
-\`cottage_local_config.hpp\`-tiedoston MAC- ja Wi-Fi-tiedot eivät kuulu
-GitHubiin. Sensori voidaan sitoa paikallisesta sivusta vasta, kun anturin
-tunniste on fyysisesti tarkistettu. BLE-keruu ja kuivanapidon
-laskenta toimivat myös ilman Wi-Fiä, mutta ilman UTC-aikaa
-historia on vain käynnistyshetkestä laskettua RAM-historiaa.
-
-**24 h C2.2-laitevakauskoe jätettiin koskematta**; C2.3 ristiinkäännettiin,
-mutta sitä ei flashattu kortille tämän kokeen aikana.
-
-## Käyttöönotto Wi-Fi ensin ja optimoinnin täystodennus (18.11.2026)
-
-- [Käyttöönotto](docs/ONBOARDING_WIFI_FIRST_20261118.md): vaihe 1 kysyy vain kodin
-  Wi-Fin avoimessa, vain tarvittaessa päällä olevassa asennusverkossa, vaihe 2 (sopimus, siirto, verot,
-  CN105/Shelly, sääpaikka, lämpöpumppusovitin) tehdään selaimessa kotiverkossa.
-  HOST-TESTATTU, ei fyysisesti todennettu.
-- [Optimoinnin audit](docs/OPTIMIZATION_AUDIT_20261118.md): termostaatti, nykyinen
-  hintaraja, MPC ja riippumaton MILP samoilla ehdoilla, 19 tapausta × 4 horisonttia.
-  SIMULOITU. Uudelleenajo:
-  `python3 tools/cottage_optimization_audit.py build-release/cottage_audit_cli`.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) before
+submitting changes. Commercial licensing requires separate written permission
+from Enevina Oy as defined in [LICENSE](LICENSE).

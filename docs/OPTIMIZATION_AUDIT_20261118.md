@@ -13,7 +13,7 @@ hydroninen G0 [`benchmarks/esp32-optimization-audit.json`](benchmarks/esp32-opti
 |---|---|---|
 | `cottage/price_bootstrap.hpp` (PR #22) | **Ainoa polku, joka voi lähettää CN105-komennon** (armed-pilotti) | Malliton hintaheuristiikka, ei MPC. |
 | `cottage/mpc.cpp` | Varjotila / dashboard | Ei käytössä ilman `COTTAGE_SYNTHETIC_TEST_MODEL=1`; rakennusmallia ei ole kalibroitu. |
-| `optimizer/optimizer.cpp` (G0) | Hydroninen tutkimusydin | Ei mökin firmwaressa. |
+| `optimizer/optimizer.cpp` (G0) | Hydroninen tutkimusydin | Ei tässä ESP32-ohjauspolussa. |
 
 Asuttu-tila (16–26 °C asetusarvo) toimii vain hintaheuristiikalla: HEAT16/OFF-
 fysiikka on validoitu ≤ 16 °C:lle. Pumpun oman termostaatin mallia ei keksitty.
@@ -44,7 +44,7 @@ todellisista kustannuksista; `equalized_cost_eur` on vain tieto. MILP:n aikaraja
 MPC:n ja MILP:n yhteinen tavoite on € + 0,03 €/kytkentä; siksi raportoidaan
 sekä €-ero että tavoite-ero.
 
-## 3. Tulokset (mökkimalli, 76 ajoa)
+## 3. Tulokset (testirakennusmalli, 76 ajoa)
 
 - **Rajarikkeet:** MPC 0 kaikissa täydellisen ennusteen tapauksissa. Perusohjaus
   ja hintaraja rikkovat 8 °C:n rajan nopeasti jäähtyvässä rakennuksessa ja

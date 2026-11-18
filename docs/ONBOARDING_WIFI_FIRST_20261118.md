@@ -3,7 +3,7 @@
 **Tila: toteutettu ja HOST-TESTATTU. Ei FYYSISESTI TODENNETTU.** Firmware kääntyy
 (`esp32s3_cottage_shadow`), mutta yhtään ESP32-S3-korttia ei flashattu eikä
 Android- tai iPhone-puhelimella ole tehty käyttöönottokoetta tämän muutoksen
-yhteydessä. Pihamökin korttia ei ole koskettu.
+yhteydessä. Kenttätestissä käytössä olevaan laitteeseen ei tehty muutoksia.
 
 ## Vaihe 1 – vain Wi-Fi
 

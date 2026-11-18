@@ -4,7 +4,7 @@
 
 ## Kohde, rajat ja turvallisuus
 
-Pihamökki on Lillevilla Kalajoki (~17,6 m²), 44 mm hirsiseinä, hirren sisäpuolella suoraan 100 mm Hunton-puukuitueriste, ilmansulkupaperi ja puukuitulevy, katossa 130 mm SPU, lattiassa 200 mm eristettä, ulkopinnassa Virtasen 4 Öljyn Maali. Ei vesiputkia, eikä suunniteltua ilmanvaihtoa. **Kosteuden kulkua rakenteissa, ilmavuotoja tai kylmien rajapintojen lämpötiloja ei ole mitattu.** Yksittäinen huoneilma-anturi ei todista rakenteen turvallisuutta eikä sitä, tarvitaanko tuuletusta. Säännöllinen tarkastus ja erillinen kosteustekninen arvio ovat eri asia kuin ohjelmiston RH-varoitukset.
+**Rakennuskohtaisia rakenne-, sijainti- tai eristystietoja ei julkaista tässä raportissa.** Kosteuden kulkua rakenteissa, ilmavuotoja ja kylmien rajapintojen lämpötiloja ei ole todennettu. Yksittäinen huoneilma-anturi ei todista rakenteiden turvallisuutta eikä ilmanvaihdon riittävyyttä. Säännöllinen tarkastus ja erillinen kosteustekninen arvio ovat eri asia kuin ohjelmiston RH-varoitukset.
 
 Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA:n normaali pienin lämmitysasetus on +16 °C. `+12 °C`-ylläpitotavoite ja `ulkoilma +3–5 °C` -kuivanapitokokeilu ovat **vain laskennallisia tavoitteita**. C2.3 ei kytke lämpöpumppua, lähetä CN105- tai IR-komentoja, aseta alle 16 °C:n lämmityspyyntiä eikä katko Shellyn relettä. Mitään alle 16 °C:n tavoitetta ei yritetä toteuttaa toistuvalla HEAT/OFF-kytkennällä.
 
@@ -20,7 +20,7 @@ Protokollalähde ja testivektori: [Ruuvin virallinen Data Format 5 (RAWv2)](http
 - Kun sisäanturin sidonta vaihdetaan, vanha tuntihistoria poistetaan sekä RAMista että NVS:stä; vanhan anturin kosteushistoriaa ei saa sekoittaa uuteen. Jos NVS-tyhjennys epäonnistuu, uutta sidontaa ei tallenneta pysyvästi.
 - C2.3 käyttää sekvenssilaskuria ja monotoniasta mittausikää; ilman synkronoitua UTC-kelloa BLE + RH- ja kastepistelaskenta toimivat silti, mutta EPC/MPC-ennustelaskelma pysyy turvallisesti pois käytöstä.
 
-**Näin otat anturin käyttöön, kun se on fyysisesti mökissä:** anna C2:lle paikallinen Wi-Fi-konfiguraatio erilliseen `firmware/cottage/include/cottage_local_config.hpp`-tiedostoon ja testaa laite **vain erillisellä ESP32-S3-testikortilla** (ei toimivalla CN105-sillalla). Avaa testikortin `/` lähiverkosta, tarkista `Läheltä löytynyt RuuviTag` ja vertaa tunniste fyysisesti oikeaan anturiin. Valitse `Mökin sisäilma` ja paina `Sido anturi varjotilaan`. Käynnistä kortti uudelleen ja vahvista sama MAC ja uusien sekvenssien tuoreus. Ilman Wi-Fiä voit esisitoa anturin käännösaikaisesti paikallisella konfiguraatiolla ja tarkistaa myöhemmin lokit. Toisen, ulkona säältä suojassa olevan RuuviTagin voi sitoa kohtaan `Vapaaehtoinen ulkoilma`. Älä sijoita sisäanturia lämpöpumpun puhallusilmavirtaan; asenna myös rakenteiden kylmiin kulmiin tarvittaessa erillisiä mittauksia.
+**Näin otat anturin käyttöön, kun se on fyysisesti testikohteessa:** anna C2:lle paikallinen Wi-Fi-konfiguraatio erilliseen `firmware/cottage/include/cottage_local_config.hpp`-tiedostoon ja testaa laite **vain erillisellä ESP32-S3-testikortilla** (ei toimivalla CN105-sillalla). Avaa testikortin `/` lähiverkosta, tarkista `Läheltä löytynyt RuuviTag` ja vertaa tunniste fyysisesti oikeaan anturiin. Valitse `Kohteen sisäilma` ja paina `Sido anturi varjotilaan`. Käynnistä kortti uudelleen ja vahvista sama MAC ja uusien sekvenssien tuoreus. Ilman Wi-Fiä voit esisitoa anturin käännösaikaisesti paikallisella konfiguraatiolla ja tarkistaa myöhemmin lokit. Toisen, ulkona säältä suojassa olevan RuuviTagin voi sitoa kohtaan `Vapaaehtoinen ulkoilma`. Älä sijoita sisäanturia lämpöpumpun puhallusilmavirtaan; asenna myös rakenteiden kylmiin kulmiin tarvittaessa erillisiä mittauksia.
 
 **MAC ei ole kryptografinen todennus:** RAWv2 on salaamaton BLE-mainos. Sitominen estää tavalliset muiden antureiden sekaantumiset muttei tarkoituksellista lähetyksen väärentämistä.
 
@@ -48,11 +48,11 @@ Käyttäjä voi vaihtaa tilaa, asetettua tavoitetta, varoitusrajoja ja RuuviTag-
 
 - PC C++17 `cottage_climate_tests`: viralliset valid/invalid-RAWv2-testivektorit, valmistajatunnus ja pituus, lämpötila/RH/paine/paristo, MAC-sidonta, duplicate/old sequence/epäuskottavat hypyt, jäätymisalue, kastepiste ja abs RH, historialoki/CRC, offline-historia, hälytyshystereesi, 6/24 h kynnys, anturikatko ja kaikki 3 toimintatilaa, myös kielletyt alle +16 °C -tavoitteet.
 - Native `ctest` Debug/Release ja Python-lähdetestit tarkistetaan ennen committia. `pio run -d firmware/cottage -e esp32s3_cottage_shadow` ristiinkääntää saman firmwaren BLE + Wi-Fi + aiempi C2.
-- Tämä työ **ei flashaa ESP32-korttia uudelleen nyt**, koska C2.2:n todellinen 24 tunnin vakauskeruu on yhä käynnissä erillisellä kortilla. Siksi **C2.3:n fyysistä BLE-mainosta, Wi-Fi-rinnakkaiskuormaa, NVS-palautumista tai pitkää kosteusseurantaa EI ole vielä mitattu**. RuuviTagille ei ole vahvistettua mökkikohtaista tunnistetta eikä lukemia. Fyysisen kortin C2.2-lukemat eivät ole C2.3-todiste.
+- Tämä työ **ei flashaa ESP32-korttia uudelleen nyt**, koska C2.2:n todellinen 24 tunnin vakauskeruu on yhä käynnissä erillisellä kortilla. Siksi **C2.3:n fyysistä BLE-mainosta, Wi-Fi-rinnakkaiskuormaa, NVS-palautumista tai pitkää kosteusseurantaa EI ole vielä mitattu**. RuuviTagille ei ole vahvistettua kohdekohtaista tunnistetta eikä lukemia. Fyysisen kortin C2.2-lukemat eivät ole C2.3-todiste.
 
 ## Avoimet hyväksyntäesteet
 
-1. Anturi hankittava/asennettava mökkiin ja tunniste sidottava fyysisesti varmasti, kalibroitava vertailumittauksella.
+1. Anturi hankittava/asennettava testikohteeseen ja tunniste sidottava fyysisesti varmasti, kalibroitava vertailumittauksella.
 2. Todellinen ESP32-S3:n BLE+Wi-Fi+CN105+Shelly+FMI/Nord Pool+UI-yhteistesti ja RAM/stack/WDT, BLE-katko ja uudelleenkäynnistyksen NVS-palautustesti.
 3. C2.2:n jatkuva 24 h seuranta on vielä valmistumatta; C2.3:lle tarvitaan myöhemmin oma yhtäjaksoinen testi.
 4. Rakenteiden kosteus-/kondensaatiokäyttäytyminen ja ilmanvaihdon tarve eivät selviä yhdestä huonelämpötila-/RH-mittauksesta.

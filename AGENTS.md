@@ -31,7 +31,7 @@
 ### Ensisijainen toimivuusjono F01–F09
 
 1. **F01:** ESP32:n käynnistyminen, Wi-Fi, paikallinen UI ja HTTP/API luotettavasti.
-2. **F02:** Mökin RuuviTagin BLE-lämpötila, kosteus ja tiedon todellinen tuoreus.
+2. **F02:** Kohteen RuuviTagin BLE-lämpötila, kosteus ja tiedon todellinen tuoreus.
 3. **F03:** Mitsubishin CN105:n todellinen mittaustieto ja lähdekohtainen tuoreus; SSE-heartbeat ei riitä näytöksi.
 4. **F04:** Shellyn sähkönkulutuksen luku ja oikea mittauskohde. Älä ohjaa pumpun sähkösyöttöä Shellyn releellä.
 5. **F05:** Nord Poolin 15 minuutin hinta, FMI-sää, aikaleimat, yksiköt ja katkojen käsittely.
@@ -42,7 +42,7 @@
 
 **Toimivuus ensin, tuotantoportit sitten.** [Kaupallistamisen työlista L01–L25](docs/product/COMMERCIAL_V1_BACKLOG.md) ja G0–G5 ovat kaupallisen julkaisemisen työjono, eivät kielto toteuttaa tai testata ominaisuuksia nyt. L01 tarkoittaa toiminnallisen baseline-version todennusta, ei ohjauskoodin poistamista. L09 tarkoittaa offline-/NVS-ongelmien korjaamista ilman uusia watchdogeja.
 
-**Fyysinen turvallisuus säilyy:** mock-, simulaatio- ja testipenkkikokeet ovat sallittuja, mutta pihamökissä olevaa ESP32-korttia ei flashata tai resetoida ilman erillistä lupaa eikä oikealle pumpulle lähetetä uusia käskyjä ilman laitekohtaista hyväksyttyä testaussuunnitelmaa. Core-koneen uusi ESP32-S3 N16R8 on regressiotestilaite, ei automaattisesti lupa pyyhkiä sen NVS:ää tai bootloaderia. Älä muuta Home Assistantia, Shelly-relettä tai muuta tuotantoa.
+**Fyysinen turvallisuus säilyy:** mock-, simulaatio- ja testipenkkikokeet ovat sallittuja, mutta kenttätestiin asennettua ESP32-korttia ei flashata tai resetoida ilman erillistä lupaa eikä oikealle pumpulle lähetetä uusia käskyjä ilman laitekohtaista hyväksyttyä testaussuunnitelmaa. Core-koneen uusi ESP32-S3 N16R8 on regressiotestilaite, ei automaattisesti lupa pyyhkiä sen NVS:ää tai bootloaderia. Älä muuta Home Assistantia, Shelly-relettä tai muuta tuotantoa.
 
 **Työskentely:** lue nykyinen main ja pinotut PR #5–#7, tarkista mitä on jo tehty, korjaa todellinen ongelma pienellä muutoksella, testaa, kirjaa commit/testinäyttö ja jatka. Älä kehitä tarpeettomia uusia sääntökerroksia tai merkitse simulaatiota fyysiseksi testiksi. Jo toimivat OTA-/turvarajat ja salaisuuksien suojaus säilyvät.
 
@@ -58,7 +58,7 @@
 - **Ei tekoälyä.** Älä lisää koneoppimista, neuroverkkoja, LLM:iä, AI-palveluita, mallien koulutusta tai AI-riippuvuuksia. Deterministinen rakennus- ja lämpöpumppufysiikan laskenta sekä matemaattinen optimointi ovat sallittuja.
 - **Ei Linuxia, Raspberry Pi -vaatimusta, Dockeria, tietokantaa tai Home Assistant -riippuvuutta laitteeseen.** Myös internetin katkettua laitteen on kyettävä toimimaan turvallisesti paikallisesti.
 - Alustava laitevalinta: **ESP32-S3 N16R8** (16 Mt Flash, 8 Mt PSRAM), **2,4 GHz Wi-Fi ensimmäisessä Mitsubishi-pilotissa**, Ethernet muissa laiteversioissa tarvittaessa. C++ ja ESP-IDF; laitekokoonpano on varmistettava.
-- **Ensimmäinen todellinen pilotti: Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA, ilma–ilmapumppu**, ks. [pihamökin Mitsubishi-pilotti](docs/cottage-mitsubishi-fd25va.md). Panasonic/HeishaMon, NIBE/Modbus ja muut dokumentoidut paikalliset protokollat ovat erillisiä mallikohtaisesti todennettavia adapteriperheitä; älä oleta niiden valmiutta. CN105 on tarkistettava todellisesta pumpusta ennen komentoja.
+- **Ensimmäinen mallikohtainen integraatiotesti: Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA, ilma–ilmapumppu**, ks. [testikohteen Mitsubishi-pilotti](docs/cottage-mitsubishi-fd25va.md). Panasonic/HeishaMon, NIBE/Modbus ja muut dokumentoidut paikalliset protokollat ovat erillisiä mallikohtaisesti todennettavia adapteriperheitä; älä oleta niiden valmiutta. CN105 on tarkistettava todellisesta pumpusta ennen komentoja.
 - Erottele Lite Enevina Coresta, Enevina Adaptive Intelligencestä, Finance-koneen tehtävistä sekä olemassa olevista tuotantojärjestelmistä. Älä muuta niiden repositoryja tai tuotantokonfiguraatioita.
 
 Jos ehdotus rikkoo näitä rajoja, älä toteuta sitä. Kerro ristiriita ja ehdota rajaukseen sopiva ratkaisu.
@@ -153,7 +153,7 @@ Tee ensin vain tarvittavat hakemistot ja rajapinnat. Koodi, mittayksiköt, versi
 
 ## 9. Historiallinen ensimmäinen toteutustehtävä (ei kaupallisen V1:n nykyinen työjärjestys)
 
-Uusi ensisijainen kehitystehtävä on [pihamökin Mitsubishi Electric FD25VA -pilotti](docs/cottage-mitsubishi-fd25va.md): rakenna PC:llä ajettava, puhdas C++-malli ilma–ilmapumpun 16 °C HEAT / OFF -jaksojen 15 minuutin ennakointiin, turvallisuusrajoihin ja riippumattomaan referenssivertailuun. Hydronisen lämpöpumpun G0:n tulokset säilytetään erillään. Ensimmäisessä vaiheessa **ei kirjoituksia todelliseen pumppuun**, ei AI:ta eikä tarpeetonta käyttöliittymä- tai pilvirakennetta.
+Uusi ensisijainen kehitystehtävä on [testikohteen Mitsubishi Electric FD25VA -pilotti](docs/cottage-mitsubishi-fd25va.md): rakenna PC:llä ajettava, puhdas C++-malli ilma–ilmapumpun 16 °C HEAT / OFF -jaksojen 15 minuutin ennakointiin, turvallisuusrajoihin ja riippumattomaan referenssivertailuun. Hydronisen lämpöpumpun G0:n tulokset säilytetään erillään. Ensimmäisessä vaiheessa **ei kirjoituksia todelliseen pumppuun**, ei AI:ta eikä tarpeetonta käyttöliittymä- tai pilvirakennetta.
 
 Päämittari: *todennettavasti alhaisemmat lämmityksen kokonaiskustannukset ilman mukavuus-, hygienia- tai turvallisuusrajojen rikkomista.*
 
@@ -172,12 +172,12 @@ Priorisoi ohjausreitit: (1) valmistajan dokumentoitu digitaalinen ohjaus, (2) va
 - **Varmista pumpun muun toiminnan riippuvuus anturista:** lämmityskausi-/kesätila, lisälämmitys, sulatus, jäätymisenesto, hälytykset ja käyttövesiprioriteetti. Jos jotakin turvallisuuden kannalta kriittistä riippuvuutta ei voi rajata pois, älä ota huijausta käyttöön.
 
 
-## 11. Pihamökin Mitsubishi Electric — ensisijainen kohde 16.11.2026
+## 11. Mitsubishi Electric — mallikohtainen integraatiotesti 16.11.2026
 
 Tämä on **ensimmäinen todellinen kenttäpilotti**, joka korvaa aikaisemman Panasonic-pilotin. Ensisijainen toteutusjärjestys on **F01–F09: kokonaisuus ensin toimivaksi**, sitten kaupallisen julkaisun L01–L14-portit. Täsmävaatimukset, lähtötilan vahvistukset ja C0–C3-portit: [docs/cottage-mitsubishi-fd25va.md](docs/cottage-mitsubishi-fd25va.md).
 
 - Vain **yksi** Mitsubishi Electric **MSZ-FD25VA + MUZ-FD25VA** (ilma–ilmapumppu). Ei käyttövesivaraajaa, menoveden säätöä tai shunttia.
-- Pumpun alin lämmityspyynti **16 °C**. Mökin ylläpitotavoite **5 °C** ja ennakoiva turvamarginaali **8 °C**: ohjaus sallittujen lämmitys-/OFF-komentojen kautta, ei 5 °C:n asetusarvona. 5 °C:n suojaa ei saa väittää taatuksi ilman riippumatonta jäätymissuojausta.
+- Pumpun alin lämmityspyynti **16 °C**. Kohteen ylläpitotavoite **5 °C** ja ennakoiva turvamarginaali **8 °C**: ohjaus sallittujen lämmitys-/OFF-komentojen kautta, ei 5 °C:n asetusarvona. 5 °C:n suojaa ei saa väittää taatuksi ilman riippumatonta jäätymissuojausta.
 - **Shelly Plus 1PM mittaa vain sähkönkulutusta.** Sen releellä ei koskaan katkaista lämpöpumpun syöttöä.
 - Ensisijainen yhteys ESP32-S3:n paikallinen **Wi-Fi + CN105**, joka on validoitava mallikohtaisesti; alkuperäinen huoltomanuaali ei yksiselitteisesti näytä CN105:tä ja valmistajan yhteensopivuusluettelo vain tukee sen mahdollisuutta.
 - Optimointi: **15 min aika-askel, 24–48 h**, mutta älä kytke kompressoria päälle/pois jokaisella aika-askeleella. Minimi käynti-/seisonta-ajat, hystereesi, mittauksen tuoreus, pumpun tilakuittaukset ja turvamarginaali ovat ensisijaisia.

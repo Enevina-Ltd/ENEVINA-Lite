@@ -1,4 +1,4 @@
-# Enevina Lite C2 — Wi-Fi/LAN/HTTPS-pihamökkipilotin savutesti, 16.11.2026
+# Enevina Lite C2 — Wi-Fi/LAN/HTTPS-laitepilotoinnin savutesti, 16.11.2026
 
 **Tila:** FYYSINEN C2 READ-ONLY -SAVUTESTI LÄPÄISTY; 24–48 h vakaus ja C2/C3-tuotantohyväksyntä edelleen AUKI. GitHub CI tai Codex-katselmointi ei ollut käytössä.
 
@@ -40,11 +40,11 @@ Alkukäynnistyksessä `cn105=true`, mutta noin kuuden minuutin yhtäjaksoisessa 
 
 ## Auki olevat esteet
 
-1. Riippumaton pihamökin lämpöanturi ja erillinen jäätymissuoja eivät ole vahvistettuja; BLE-lukija ei vielä mittaa mökin anturia.
-2. Käytetty FMI-koordinaatti on **väliaikainen paikallinen testi-/aluekoordinaatti**, ei todistettu pihamökin sijainti; tarkennettava ennen ennusteen käyttöä päätöksissä.
-3. Testissä käytetty siirto- ja verotariffikonfiguraatio on tarkistettava pihamökin todellista sähkösopimusta vasten.
+1. Riippumaton testikohteen lämpöanturi ja erillinen jäätymissuoja eivät ole vahvistettuja; BLE-lukija ei vielä mittaa rakennuksen anturia.
+2. Käytetty FMI-koordinaatti on **väliaikainen paikallinen testi-/aluekoordinaatti**, ei todistettu testikohteen sijainti; tarkennettava ennen ennusteen käyttöä päätöksissä.
+3. Testissä käytetty siirto- ja verotariffikonfiguraatio on tarkistettava testikohteen todellista sähkösopimusta vasten.
 4. CN105:n mittauskohtainen tuoreus on edelleen osoitettava; SSE-linkin uptime ei vastaa pumpun uusia mittauksia.
 5. 24–48 tunnin **Wi-Fi- ja laiteyhteisvakaus**, web/USB-valvonta, sähkökatkojen palautuminen, muistin pitkäaikaiskäyttäytyminen ja todellinen 192 jakson MPC-kokonaiskuorma ovat tekemättä.
 6. Malli ja COP/sulatus eivät ole rakennuskohtaisesti kalibroituja. Varjotilan dashboardin toiminta ei hyväksy C3-automaattiohjausta.
 
-**Päätös:** erillinen kortti voidaan siirtää pihamökkiin seuraamaan oikeita mittauksia read-only C2 -varjotilassa; ei automaattiohjausta eikä PR #5:n yhdistämistä mainiin.
+**Päätös:** erillistä korttia voidaan käyttää testikohteessa seuraamaan oikeita mittauksia read-only C2 -varjotilassa; ei automaattiohjausta eikä PR #5:n yhdistämistä mainiin.

@@ -1,6 +1,6 @@
 # F02 ESP32-S3 testikortti – ei-tuhoavat tarkistukset ja palautussuunnitelma (17.11.2026)
 
-**Tämä on testikortin valmistelu, ei lupa fläshätä.** Pihamökin ESP32/CN105/Shelly ja muut tuotantolaitteet pysyvät muuttumattomina.
+**Tämä on testikortin valmistelu, ei lupa fläshätä.** Kenttätestilaitteiden ESP32/CN105/Shelly ja muut tuotantolaitteet pysyvät muuttumattomina.
 
 ## Toteutunut laitetunnistus ja lukutilanne 17.11.2026
 

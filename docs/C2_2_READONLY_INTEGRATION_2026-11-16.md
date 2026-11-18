@@ -2,20 +2,20 @@
 
 **Päivämäärä:** 16.11.2026. **PR:** #5, luonnos, kohde `main`. **Lähtö-HEAD:** `67b5b85adf306cd6b09059823859cf058c52a3c2`.
 
-**Tila: C2.2 OSITTAIN TOTEUTETTU, EI HYVÄKSYTTY.** Koodia, laiteinstrumentointia, read-only-kenttäkeruuta ja fysikaalista USB-laitetestiä on parannettu ja todettu. Todellista samanaikaista Wi-Fi + CN105 + Shelly + Nord Pool + FMI + BLE + paikallinen Web UI + CottageMPC -ajoa **ei ole todennettu ESP32:lla**, koska paikalliset Wi-Fi-tunnukset ja pihamökin riippumattoman lämpöanturin identiteetti eivät ole käytettävissä. Yhtään oikean Mitsubishin tai Shellyn ohjauskomentoa ei ole lähetetty.
+**Tila: C2.2 OSITTAIN TOTEUTETTU, EI HYVÄKSYTTY.** Koodia, laiteinstrumentointia, read-only-kenttäkeruuta ja fysikaalista USB-laitetestiä on parannettu ja todettu. Todellista samanaikaista Wi-Fi + CN105 + Shelly + Nord Pool + FMI + BLE + paikallinen Web UI + CottageMPC -ajoa **ei ole todennettu ESP32:lla**, koska paikalliset Wi-Fi-tunnukset ja testikohteen riippumattoman lämpöanturin identiteetti eivät ole käytettävissä. Yhtään oikean Mitsubishin tai Shellyn ohjauskomentoa ei ole lähetetty.
 
 ## 1. Muutokset
 
 - `firmware/cottage/src/main.cpp`: erilliset mittaustapahtumien, aktiivisen SSE-yhteyden, yhteyskatkosten, Shelly GET -lukujen ja vasteaikojen laskurit; UTC-aikaleimat pumpun klimaatti-/kompressorimittauksille **erillään CN105-sillan yhteys-uptimesta**. Näkyvissä paikallisessa `/api/status`-rajapinnassa ja suomenkielisessä UI:ssa. Linkkiuptime **ei nollaa mittausten ikärajoja**.
 - Status paljastaa FMI-/hintadatan todelliset viimeisimmät päivitysajat, jakso-/pistemäärät, Supervisorin turvallisuustilan, mallin kalibrointi- ja riippumattoman pakkassuojan portit, ESP32-sisäisen heapin/PSRAMin sekä valittujen tehtävien vapaan pinon alarajat. Salasanoja, MAC-osoitteita tai LAN-osoitteita ei julkaista.
-- `tools/cottage_field_capture.py`: riippumaton, vain GET-yhteyksiä käyttävä paikallinen kenttäkeräin; CN105:n todelliset SSE-tapahtumat, Shellyn koko mökin kulutus ja releen havainnointi, Nord Poolin senhetkinen spot-hinta, UTC-tapahtumat ja vasteajat. Noudattaa LAN-osoite-/polkurajausta, estää redirectit, rajoittaa JSON-syötteet ja säilyttää tulokset **vain paikallisessa käyttäjäkohtaisessa lokissa** (0600). Ei ohjauskutsuja.
+- `tools/cottage_field_capture.py`: riippumaton, vain GET-yhteyksiä käyttävä paikallinen kenttäkeräin; CN105:n todelliset SSE-tapahtumat, Shellyn koko rakennuksen kulutus ja releen havainnointi, Nord Poolin senhetkinen spot-hinta, UTC-tapahtumat ja vasteajat. Noudattaa LAN-osoite-/polkurajausta, estää redirectit, rajoittaa JSON-syötteet ja säilyttää tulokset **vain paikallisessa käyttäjäkohtaisessa lokissa** (0600). Ei ohjauskutsuja.
 - `tools/cottage_usb_stability.py`: todelliseen monotoniseen aikaan perustuva, read-only USB-sarjaporttiloki reboot-, heartbeat-, watchdog-/fatal- ja yli 90 sekunnin tilapäivityskatkoille. Tämä ei simuloi tuntien kulumista.
 - `tests/test_cottage_field_capture.py` ja `tests/test_cottage_usb_stability.py`: 6 Python-regressiotestiä. Puhdistettu aiempien C++-testien todelliset LAN-osoitteet ja korvattu benchmarkin kiinteä AP-host arvolla `WiFi.softAPIP()`.
 - Ei muutosta yhdistettyihin PR #1/#4 -toimintoihin, ei tuotantojärjestelmien muokkauksia, ei CI:tä eikä Codex-uusintakatselmointia.
 
 ## 2. Fyysinen ESP32
 
-Erillinen, aiempaan testiin varattu **ESP32-S3 rev 0.2 N16R8**: 16 MiB flash ja 8 MiB PSRAM, USB-UART `/dev/ttyUSB1`. Pihamökin käytössä olevaan CN105-siltaan ei koskettu.
+Erillinen, aiempaan testiin varattu **ESP32-S3 rev 0.2 N16R8**: 16 MiB flash ja 8 MiB PSRAM, USB-UART `/dev/ttyUSB1`. Testikohteen käytössä olevaan CN105-siltaan ei koskettu.
 
 - Ennen C2.2-muutoksia: täysi varjotilafirmware käynnistyi ilman Wi-Fiä 68 sekunnin seurantajakson aikana, kaksi 30 sekunnin tilariviä, ei kaatumisia.
 - C2.2-versio: `esp32s3_cottage_shadow` rakennettiin erillisellä kehityskoneella ja flashattiin **vain tähän korttiin**. Flash-kirjoitus 1 010 320 tavua, tarkistushash hyväksytty. Uudet `C2_SHADOW`-tilarivit vahvistavat käynnissä olevan täyden varjotilan.
@@ -33,9 +33,9 @@ Kehityskoneen erillinen LAN-testi, **ei väitetty ESP32:n verkkoluvuksi**:
 | Kompressori | 0 Hz, vastaanotettu SSE-tapahtumana |
 | CN105-yhteyden uptime | Uusia tapahtumia 38 / 105 s; päivitysvälin mediaani 2,83 s |
 | Pumpun ilma-/kompressorilukema | Kumpikin tuli **vain kerran SSE-yhteyden alkuhetkellä** 105 s aikana. Pidempää aktiivista uudelleenmittaussykliä ei ole todistettu |
-| Shelly Plus 1PM | 11/11 GET onnistui, rele koko ajan ON; koko mökin teho 165,4–166,4 W, laskurin kasvu 4,606 Wh / 105 s; GET-viive 29,0–116,4 ms |
+| Shelly Plus 1PM | 11/11 GET onnistui, rele koko ajan ON; koko rakennuksen teho 165,4–166,4 W, laskurin kasvu 4,606 Wh / 105 s; GET-viive 29,0–116,4 ms |
 | Nord Pool | HTTPS GET 200, kyseiselle päivälle 96 suomalaista varttijaksoa; vertailuhetken spot 0,13987 €/kWh |
-| FMI HARMONIE | HTTPS WFS GET 200, 50 ennustepistettä. Tarkka mökkikohtainen koordinaatti ja ESP32:n oma lataus odottavat |
+| FMI HARMONIE | HTTPS WFS GET 200, 50 ennustepistettä. Tarkka kohdekohtainen koordinaatti ja ESP32:n oma lataus odottavat |
 
 Yhteyden uptime todistaa vain sillan ilmoittaman yhteystilan, **ei automaattisesti uutta lämpötilamittausta tai UART-vastausta**. `valid_cn105()` säilyttää nykyisen tiukan mittauskohtaisen 180 s:n tuoreusportin. Tasaisessa OFF-tilassa se saattaa siksi estää optimoinnin. Tämä on turvallinen mutta toiminnallinen este: C2 ei saa hiljaisesti kiertää sitä siirtämällä vanhan mittauksen aikaleimaa.
 
@@ -62,7 +62,7 @@ Uusinta-MILP (`tools/cottage_reference.py`, SciPy/HiGHS, 5 s MILP-aikaraja per t
 | Hintapiikki | 5,09018 / 5,08955 | 9,90210 / 9,99369 |
 | Sulatus | 3,16187 / 3,16105 | 6,21378 / 6,29002 |
 
-**MILP:n aikarajan löytämä kustannus ei todista optimaalista alarajaa.** Synteettiset COP-/lämmönjohtavuus-/sulatusparametrit eivät ole mökin mitattua fysiikkaa. Ei todellisia säästölupauksia.
+**MILP:n aikarajan löytämä kustannus ei todista optimaalista alarajaa.** Synteettiset COP-/lämmönjohtavuus-/sulatusparametrit eivät ole rakennuksen mitattua fysiikkaa. Ei todellisia säästölupauksia.
 
 ## 5. Käynnistetty todellinen vakauden ja kenttäaineiston keruu
 
@@ -76,7 +76,7 @@ Lähtöhetken tarkistuksessa molemmat prosessit olivat käynnissä, 0600-lokit k
 ## 6. Avoimet P0/P1-portit ja riippuvuudet
 
 1. **Wi-Fi-tunnukset puuttuvat** erillisen kortin paikallisesta `cottage_local_config.hpp`-konfiguraatiosta. Niitä ei arvata, haeta luvatta tai julkaista. Näin ollen täyttä ESP32:n Wi-Fi/CN105/Shelly/Nord Pool/FMI/UI-rinnakkaistestiä ei voitu aloittaa.
-2. **Riippumaton pihamökin lämpöanturi:** mitään mökin anturin MACia ja sijaintia ei ole vahvistettu. Talon muut RuuviTagit eivät korvaa sitä. BLE-live-portti auki.
+2. **Riippumaton testikohteen lämpöanturi:** mitään rakennuksen anturin MACia ja sijaintia ei ole vahvistettu. Talon muut RuuviTagit eivät korvaa sitä. BLE-live-portti auki.
 3. **CN105:n pumpun data ei tuoreennu varmasti** pysyvässä tilassa. Yhteysuptime ei ole sama kuin uusi ilmamittaus. Vanhentunutta dataa ei anneta MPC:lle.
 4. **Mallin kalibrointi:** luotettavia jäähtymisjaksoja, riippumatonta sisäilmaa, yksilöityä lämpöpumppusähköä eikä todellista lämpökapasiteettia ole kertynyt. Ei kalibroitua rakennus-/COP-/sulatusmallia; `COTTAGE_SYNTHETIC_TEST_MODEL=0` säilyy.
 5. **Todellinen 192 jakson aika samalla ESP32:lla kaikkien verkkolukijoiden käydessä** puuttuu. Edellisen synteettisen vertailun tulos ei korvaa tätä.
