@@ -9,6 +9,7 @@
 #include "cottage_config.hpp"
 #include "cottage_site_settings.hpp"
 #include "cottage_air_service.hpp"
+#include "cottage_wifi.hpp"
 #include "pump/adapter_catalog.hpp"
 
 using enevina::cottage::SiteSettings;
@@ -158,8 +159,11 @@ bool site_slot_total_price(int64_t utc,double spot,double& total) {
     return enevina::cottage::site_total_price(s.tariff,utc,spot,total);
 }
 void site_settings_register_routes(WebServer& web) {
-    web.on("/api/settings",HTTP_GET,[&web]() {send_settings(web);});
+    web.on("/api/settings",HTTP_GET,[&web]() {
+        if(cottage_wifi_require_home_lan(web))send_settings(web);
+    });
     web.on("/api/settings",HTTP_POST,[&web]() {
+        if(!cottage_wifi_require_home_lan(web))return;
         // Same existing per-boot local CSRF token as the other dashboard
         // settings; no new password, login or security gate.
         if(!web.hasArg("token") || !enevina::cottage::c23_authorize_local_setting(web.arg("token").c_str())) {
