@@ -2,7 +2,7 @@
 
 **Local-first heat pump control and electricity-price optimization — running on ESP32-S3.**
 
-Enevina Lite is a source-available project by **Enevina Oy**. The design is simple: **one heat pump per controller**, a local browser dashboard, and price-aware heating without requiring Home Assistant, a cloud account, or an always-on server. The optimization is deterministic and physics-based — **there is no AI/ML in Lite**.
+Enevina Lite is a source-available project by **Enevina Ltd** (registered in Finland as **Enevina Oy**). The design is simple: **one heat pump per controller**, a local browser dashboard, and price-aware heating without requiring Home Assistant, a cloud account, or an always-on server. The optimization is deterministic and physics-based — **there is no AI/ML in Lite**.
 
 [English](#english) · [Suomi](#suomi) · [Developer preview v0.1.0-alpha.1](https://github.com/linkki79-pixel/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1) · [Compatibility](docs/COMPATIBILITY.md) · [Getting started](docs/GETTING_STARTED.md)
 
@@ -97,4 +97,4 @@ Projekti on **kehittäjien esijulkaisu**, ei valmis asiakastuote. Mitsubishi Ele
 
 This developer preview is not approved for unattended physical heat-pump control. Do not use price optimization to switch the pump's mains power; respect compressor protection, defrosting and manufacturer limits. Firmware compatibility and OTA/rollback procedures must be verified for the exact board and pump model before installation.
 
-**Enevina Oy** · [enevina.com](https://enevina.com) · [Contributing](CONTRIBUTING.md) · [Release readiness](docs/release/RELEASE_READINESS.md)
+**Enevina Ltd** · [enevina.com](https://enevina.com) · [Contributing](CONTRIBUTING.md) · [Release readiness](docs/release/RELEASE_READINESS.md)
