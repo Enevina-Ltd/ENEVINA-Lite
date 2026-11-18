@@ -150,6 +150,13 @@ static std::atomic<int> control_get_http_code{0};
 static std::atomic<uint32_t> cn105_get_retry_count{0};
 static std::atomic<uint32_t> cn105_get_recovered_count{0};
 static std::atomic<uint32_t> cn105_get_timeout_count{0};
+// Distinguish a temporarily busy TLS/BLE network lease from a true shortage
+// of internal RAM, without weakening the existing per-GET memory limits.
+static std::atomic<uint32_t> cn105_get_lease_denials{0};
+static std::atomic<uint32_t> cn105_get_lease_low_memory{0};
+static std::atomic<uint32_t> cn105_get_lease_busy{0};
+static std::atomic<uint32_t> cn105_get_last_free_internal{0};
+static std::atomic<uint32_t> cn105_get_last_largest_internal{0};
 
 
 static char reason_text[80]="Käynnistys";
@@ -665,9 +672,31 @@ static bool cn105_bridge_get(bool& heating,double& target) {
         {
             // Reacquire the memory/network lease for each attempt. Never hold
             // its shared mutex while waiting between retries.
-            enevina_firmware::NetworkBudgetLease lease(1000,72*1024,16*1024);
+            // BLE scans may hold the shared network mutex for up to 4 s.
+            // A 1 s GET wait repeatedly collided with them and made an
+            // otherwise healthy CN105 bridge appear INPUTS_UNVERIFIED.
+            // Keep the same 72-KiB/16-KiB memory floors; only wait longer.
+            enevina_firmware::NetworkBudgetLease lease(5000,72*1024,16*1024);
             if(!lease.held()) {
                 control_get_http_code.store(0);
+                cn105_get_lease_denials.fetch_add(1);
+                const auto free=static_cast<uint32_t>(heap_caps_get_free_size(
+                     MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+                const auto largest=static_cast<uint32_t>(
+                     heap_caps_get_largest_free_block(
+                         MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+                cn105_get_last_free_internal.store(free);
+                cn105_get_last_largest_internal.store(largest);
+                if(free<72u*1024u || largest<16u*1024u)
+                    cn105_get_lease_low_memory.fetch_add(1);
+                else cn105_get_lease_busy.fetch_add(1);
+                // Retry only the *read* after a transient mutex/heap failure.
+                // The physical POST path never retries automatically.
+                if(attempt+1<cn105_read_max_attempts) {
+                    cn105_get_retry_count.fetch_add(1);
+                    vTaskDelay(pdMS_TO_TICKS(cn105_read_retry_delay_ms));
+                    continue;
+                }
                 return false;
             }
             WiFiClient client;
@@ -853,6 +882,17 @@ static void cottage_control_tick() {
         !valid_temperature(sample,now)) ||
        proposal.action==BootstrapAction::Unavailable) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
+        return;
+    }
+    // A HOLD proposal does not authorize any physical command. A failed
+    // *optional* bridge observation must not mislabel it as an unsafe
+    // heating command; still attempt a read to maintain the 30-min dwell
+    // history and avoid a stale observation gap at the next HEAT request.
+    if(proposal.action==BootstrapAction::Hold) {
+        bool observed_heat=false;double observed_setpoint=0;
+        if(cn105_bridge_get(observed_heat,observed_setpoint))
+            control_note_observed_mode(observed_heat);
+        control_gate.store(static_cast<int>(ControlBlock::NoProposal));
         return;
     }
     bool current_heat=false;
@@ -1208,6 +1248,16 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"cn105_get_retry_count",cn105_get_retry_count.load());
     cJSON_AddNumberToObject(root,"cn105_get_recovered_count",cn105_get_recovered_count.load());
     cJSON_AddNumberToObject(root,"cn105_get_timeout_count",cn105_get_timeout_count.load());
+    cJSON_AddNumberToObject(root,"cn105_get_lease_denials",
+                            cn105_get_lease_denials.load());
+    cJSON_AddNumberToObject(root,"cn105_get_lease_low_memory",
+                            cn105_get_lease_low_memory.load());
+    cJSON_AddNumberToObject(root,"cn105_get_lease_busy",
+                            cn105_get_lease_busy.load());
+    cJSON_AddNumberToObject(root,"cn105_get_last_free_internal",
+                            cn105_get_last_free_internal.load());
+    cJSON_AddNumberToObject(root,"cn105_get_last_largest_internal",
+                            cn105_get_last_largest_internal.load());
     cJSON_AddNumberToObject(root,"control_last_command_utc",
                             static_cast<double>(control_last_command_utc.load()));
     cJSON_AddNumberToObject(root,"control_last_ack_utc",
