@@ -43,8 +43,8 @@ Muutos ei lisää salasanaa, kirjautumista, watchdogia eikä uutta porttia.
   portal -tarkistuksiin. Ohjauksen käyttöönotto, tila- ja sopimusasetukset sekä
   `/api/status` (jossa on CSRF-tunniste) torjutaan (GET → `/setup`, muut → 403).
   Automaattiohjaus otetaan siis aina käyttöön vain kotiverkon dashboardista.
-  Korjausta ennen (commitit ennen `3634a2a`:n jälkeistä korjausta) avoimen
-  asennusverkon kautta olisi voinut ottaa ohjauksen käyttöön.
+  Ennen korjausta `7f9ab9d` avoimen asennusverkon kautta olisi voinut ottaa
+  ohjauksen käyttöön.
 
 ### Tunnetut rajat (ei testattu oikealla laitteella)
 

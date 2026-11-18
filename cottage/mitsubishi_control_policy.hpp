@@ -10,8 +10,12 @@ namespace enevina::cottage {
 enum class ControlStep : uint8_t { None, Setpoint, SetHeat, SetOff };
 enum class ControlBlock : uint8_t {
     Disabled, NotInHeatingMode, InputsUnverified, NoProposal,
-    UnsupportedCommand, AlreadyApplied, Ready
+    UnsupportedCommand, AlreadyApplied, Ready, ModeDwell
 };
+// Owner decision 18.11.2026: minimum 30 min between HEAT<->OFF mode changes
+// (compressor run/off time; AGENTS.md section 11). Setpoint changes are not
+// mode changes and are never delayed.
+constexpr uint32_t mitsubishi_min_mode_dwell_ms=30u*60u*1000u;
 struct ControlSnapshot {
     bool armed=false;
     bool heating_mode=false;
@@ -22,6 +26,10 @@ struct ControlSnapshot {
     bool current_heat=false;
     double current_setpoint_c=0;
     BootstrapDecision proposal{};
+    // Time since the last HEAT<->OFF change that Lite sent OR observed via the
+    // bridge GET. The caller starts it at boot (unknown history -> wait).
+    uint32_t ms_since_mode_change=0;
+    uint32_t min_mode_dwell_ms=mitsubishi_min_mode_dwell_ms;
 };
 struct ControlProposal {
     ControlBlock gate=ControlBlock::Disabled;
@@ -60,6 +68,12 @@ inline ControlProposal choose_mitsubishi_control(const ControlSnapshot& s) {
         }
         out.step=ControlStep::SetOff;
     }
+    if((out.step==ControlStep::SetHeat || out.step==ControlStep::SetOff) &&
+       s.ms_since_mode_change<s.min_mode_dwell_ms) {
+        out.step=ControlStep::None;
+        out.gate=ControlBlock::ModeDwell;
+        return out;
+    }
     if(out.step!=ControlStep::None)out.gate=ControlBlock::Ready;
     return out;
 }
@@ -72,6 +86,7 @@ inline const char* control_gate_name(ControlBlock x) {
     case ControlBlock::UnsupportedCommand:return "INVALID_SETPOINT";
     case ControlBlock::AlreadyApplied:return "ALREADY_APPLIED";
     case ControlBlock::Ready:return "READY";
+    case ControlBlock::ModeDwell:return "MODE_DWELL";
     }
     return "UNKNOWN";
 }

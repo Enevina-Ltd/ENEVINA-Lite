@@ -82,9 +82,11 @@ Kuolleella alueella hintasignaali päätti joka kierroksella riippumatta siitä,
 kummalla puolella tavoitetta huone oli: 11,49 → 11,51 → 11,49 °C tuotti
 HEAT → OFF → HEAT. Nyt halpa jakso esilämmittää vain tavoitteen alapuolella ja
 kallis sammuttaa vain tavoitteessa tai sen yläpuolella; muuten tila säilyy
-(`HOLD_IN_DEADBAND`). **Avoin (omistajan päätös):** vuorottelevilla halpa/kallis-
-jaksoilla aivan tavoitteessa tila voi edelleen vaihtua 15 min välein, koska
-komentopolusta on poistettu vähimmäiskäynti-/seisonta-aika.
+(`HOLD_IN_DEADBAND`). **Omistajan päätös 18.11.2026:** HEAT↔OFF-vaihtojen
+välillä on vähintään 30 min (`MODE_DWELL`, `cottage/mitsubishi_control_policy.hpp`);
+vuorottelevat halpa/kallis-jaksot eivät enää vaihda tilaa 15 min välein.
+Asetusarvon muutoksia ei viivästetä. Pumpun tilan tarkistukseksi riittää
+CN105-sillan GET (ei UART-lähdetodistetta) – omistajan päätös pilottiin.
 
 **Jäljellä:** hintaraja häviää termostaatille edelleen 20/70 vertailukelpoisessa ajossa (enimmäkseen
 24 jakson horisontit ja leuto sää), koska se nostaa asetusarvoa halvalla

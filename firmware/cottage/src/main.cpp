@@ -100,6 +100,16 @@ static bool shelly_relay_on=false;
 static std::atomic<bool> control_armed{false};
 // Pump identity (CN105 URL/adapter) the current arming was given for.
 static std::atomic<uint32_t> control_armed_endpoint{0};
+// Owner decision 18.11.2026: >= 30 min between HEAT<->OFF changes. Last change
+// = last mode command sent, last change observed via bridge GET, boot or
+// arming (unknown history -> wait). millis()-based, survives NTP jumps.
+static std::atomic<uint32_t> control_mode_change_ms{0};
+static std::atomic<int> control_last_seen_heat{-1}; // web + optimizer tasks
+static void control_note_observed_mode(bool heating) {
+    const int seen=heating?1:0;
+    const int prior=control_last_seen_heat.exchange(seen);
+    if(prior>=0 && prior!=seen) control_mode_change_ms.store(millis());
+}
 static std::atomic<int> control_gate{static_cast<int>(ControlBlock::Disabled)};
 static std::atomic<int> control_last_step{static_cast<int>(ControlStep::None)};
 static std::atomic<uint32_t> control_commands_sent{0};
@@ -788,6 +798,9 @@ static void cottage_control_tick() {
     candidate.current_heat=current_heat;
     candidate.current_setpoint_c=current_setpoint;
     candidate.proposal=proposal;
+    control_note_observed_mode(current_heat);
+    candidate.ms_since_mode_change=static_cast<uint32_t>(
+        millis()-control_mode_change_ms.load());
     const auto decision=choose_mitsubishi_control(candidate);
     control_gate.store(static_cast<int>(decision.gate));
     if(decision.step==ControlStep::None)return;
@@ -798,6 +811,10 @@ static void cottage_control_tick() {
         decision.step==ControlStep::SetHeat?MitsubishiMode::Heat:
                                             MitsubishiMode::Off);
     if(!request.valid || !control_armed.load())return;
+    // A mode POST may take effect even if its readback fails: start the
+    // dwell now, conservatively, before dispatch.
+    if(decision.step==ControlStep::SetHeat || decision.step==ControlStep::SetOff)
+        control_mode_change_ms.store(millis());
     control_last_step.store(static_cast<int>(decision.step));
     control_last_command_utc.store(now);
     control_commands_sent.fetch_add(1);
@@ -812,6 +829,7 @@ static void cottage_control_tick() {
             bool read_heating=false;
             double read_setpoint=0;
             if(!cn105_bridge_get(read_heating,read_setpoint))continue;
+            control_note_observed_mode(read_heating);
             confirmed=decision.step==ControlStep::Setpoint ?
                 std::fabs(read_setpoint-decision.target_c)<=0.001 :
                 decision.step==ControlStep::SetHeat ? read_heating :
@@ -857,6 +875,10 @@ static void cottage_control_registration() {
         }
         if(stored) {
             control_armed_endpoint.store(site_settings_endpoint_generation());
+            // Arming starts the dwell window: mode history while disarmed
+            // is unknown (manual remote changes are not observed).
+            control_mode_change_ms.store(millis());
+            control_last_seen_heat.store(-1);
             control_armed.store(requested);
         }
         web.send(stored?200:500,"application/json",
