@@ -1,12 +1,23 @@
 # Enevina Lite
 
-**Monimerkkinen, yhden lämpöpumpun paikallinen optimointiohjain.**
+**A local-first, source-available heat pump controller by Enevina Oy.**
 
-Enevina Lite on Enevina Coresta erillinen, valmistajariippumattoman ytimen ja mallikohtaisten adapterien varaan rakentuva kevyt ohjain, jonka tavoitteena on minimoida lämpöpumpun lämmityskustannukset ja soveltuvilla laitteilla myös käyttöveden kustannukset turvallisesti. **Lite ei sisällä tekoälyä**, ei edellytä Home Assistantia eikä tarvitse Linuxia tai pilvipalvelua normaalissa käytössä.
+Enevina Lite is an ESP32-S3-based controller for **one heat pump per device**, designed for local operation without a mandatory cloud service or Home Assistant. Its goal is to reduce heating costs using electricity prices, weather forecasts and deterministic, physics-based optimization (MPC). **Lite does not contain AI/ML.** Manufacturer/model support depends on separately developed and verified adapters.
 
-> **Ensimmäinen pilotti, ei tuotteen valmistajarajaus (16.11.2026):** pihamökin **Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA**. ESP32-S3 Wi-Fi + lokakuussa 2026 read-only-tilassa toiminut CN105; uusi Lite-kytkentä ja ohjauskomennot vielä testaamatta. Shelly Plus 1PM vain kulutusmittaukseen. Mökin tavoiteltu ylläpitolämpö noin +5 °C, ennakoiva turvamarginaali +8 °C; pumpun alin lämmityspyynti +16 °C, joten suunniteltu ohjaus on HEAT 16 °C / OFF. **Tämä ilma–ilmapumppu ei käytä menoveden tai käyttöveden optimointia.** Katso [pilottisuunnitelma](docs/cottage-mitsubishi-fd25va.md). Oikeaa laitetta ei vielä ohjata.
+**Development status:** This is an evolving prototype, not a general claim of compatibility, certified safety or production readiness. Check the model-specific documentation and tests before connecting to a real heat pump. Enevina Core and Adaptive Intelligence are separate products.
 
-> Tila: PC:llä testattu G0-prototyyppi, fyysisellä ESP32-S3:lla mitattu laskentaydin ja ESP32-S3:lle kääntyvä **vain luku** -laiteohjelmisto. G0–G3-hyväksyntäportit ovat edelleen auki; tuotantolaitetta ei saa ohjata tällä versiolla.
+## License and commercial use
+
+- **License:** [PolyForm Noncommercial 1.0.0](LICENSE) — publicly readable source code for permitted non-commercial uses. This is **source-available**, **not OSI-approved open source**.
+- **Commercial use, resale or commercial distribution** of the software or products built around it requires a separate written license from **Enevina Oy**.
+- Enevina names, product branding and logos are not granted for third-party commercial branding under the software license.
+- Third-party components remain subject to their own licenses. Publication of this repository is not a license grant for any separately owned third-party code.
+
+For commercial licensing requests, contact Enevina Oy.
+
+## Tekninen kehitysdokumentaatio
+
+Alla oleva tekninen sisältö kuvaa kehityksen eri vaiheita ja aikaisempia prototyyppejä. Erityisesti vanhat *shadow/read-only*-tilaa tai fyysisten kokeiden puuttumista kuvaavat merkinnät ovat aikansa tilannekuvia, eivät koko projektin tämänhetkisen valmistumisasteen vahvistus. Tarkista aina uusin koodi, testit ja mallikohtaiset raportit.
 
 ## Nykyinen toteutus
 
