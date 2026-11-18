@@ -453,7 +453,8 @@ static void sse_worker(void*) {
         // Browser-configured URL (Phase 2); compile-time value is only the default.
         const auto settings=site_settings_snapshot();
         const uint32_t settings_generation=site_settings_generation();
-        if(!wifi_ok.load() || !clock_ok() || !valid_cn105_events_url(settings.cn105_url)) {
+        if(cottage_ota_network_maintenance() || !wifi_ok.load() ||
+           !clock_ok() || !valid_cn105_events_url(settings.cn105_url)) {
             vTaskDelay(pdMS_TO_TICKS(1000));continue;
         }
         WiFiClient client;
@@ -499,6 +500,7 @@ static void sse_worker(void*) {
                 },nullptr);
                 uint32_t last_activity_ms=millis();
                 while(wifi_ok.load() && client.connected() &&
+                      !cottage_ota_network_maintenance() &&
                       settings_generation==site_settings_generation() &&
                       static_cast<uint32_t>(millis()-last_activity_ms)<180000u) {
                     if(!stream->available()) {
@@ -541,6 +543,9 @@ static void sse_worker(void*) {
 static void shelly_worker(void*) {
     char url[192];
     for(;;) {
+        if(cottage_ota_network_maintenance()) {
+            vTaskDelay(pdMS_TO_TICKS(500));continue;
+        }
         const auto settings=site_settings_snapshot();
         snprintf(url,sizeof(url),"%s/rpc/Switch.GetStatus?id=0",settings.shelly_url);
         if(wifi_ok.load() && clock_ok() &&
@@ -1373,6 +1378,14 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"ota_signed_good_version",cottage_ota_good_version());
     cJSON_AddNumberToObject(root,"ota_signed_candidate",cottage_ota_last_candidate());
     cJSON_AddNumberToObject(root,"ota_signed_status",cottage_ota_status());
+    cJSON_AddBoolToObject(root,"ota_network_maintenance",
+                           cottage_ota_network_maintenance());
+    cJSON_AddNumberToObject(root,"ota_downloaded_bytes",
+                            cottage_ota_downloaded_bytes());
+    cJSON_AddNumberToObject(root,"ota_chunk_count",
+                            cottage_ota_chunk_count());
+    cJSON_AddNumberToObject(root,"ota_idle_yields",
+                            cottage_ota_idle_yields());
     cJSON_AddNumberToObject(root,"free_internal_heap",
                             heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(root,"min_free_internal_heap",
