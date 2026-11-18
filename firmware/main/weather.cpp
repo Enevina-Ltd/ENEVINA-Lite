@@ -116,7 +116,7 @@ bool fetch_weather(WeatherCache& next,double fetch_lat,double fetch_lon,
                    const WeatherLocation& expected_location,
                    const WeatherCache* previous,int& http_status) {
 #ifdef COTTAGE_SHARED_MEMORY_GUARD
-    // Do not overlap TLS with BLE or Nord Pool. No internal-RAM fallback.
+    // Do not overlap MET Norway TLS with BLE or Nord Pool. No internal-RAM fallback.
     NetworkBudgetLease network_lease(8000,78*1024,16*1024);
     if(!network_lease.held())return false;
 #endif
