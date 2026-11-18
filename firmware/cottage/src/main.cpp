@@ -47,6 +47,10 @@ static SemaphoreHandle_t lock_data=nullptr;
 static std::atomic<bool> wifi_ok{false};
 static std::atomic<uint32_t> web_loop_heartbeat_ms{0};
 static CN105Telemetry pump{};
+// Legacy ESPHome /events exposes real device state as SSE, but the receipt
+// does not prove a new UART poll. Keep the last observed values separately
+// from the source-verified sample used by the optimizer/safety gate.
+static CN105Telemetry sse_observed_pump{};
 static ObservedModeDuration observed_mode_duration{};
 // Protected by lock_data. Reject MPC results computed before an SSE mode change.
 static uint32_t observed_mode_generation=0;
@@ -311,7 +315,7 @@ static void parse_sse_state(const char* raw) {
         return;
     }
     CN105Telemetry copy;
-    xSemaphoreTake(lock_data,portMAX_DELAY);copy=pump;xSemaphoreGive(lock_data);
+    xSemaphoreTake(lock_data,portMAX_DELAY);copy=sse_observed_pump;xSemaphoreGive(lock_data);
     bool changed=false,climate_event=false;
     int64_t climate_stamp=climate_utc,compressor_stamp=compressor_utc;
     if(strcmp(key->valuestring,"climate/Mitsubishi Electric MSZ-FD25VA")==0) {
@@ -374,6 +378,9 @@ static void parse_sse_state(const char* raw) {
         // The legacy CN105 bridge exposes only SSE receipt time. Explicit
         // unverified provenance must never turn cached SSE into pump freshness.
         copy.evidence={now,0,false};
+        sse_observed_pump=copy;
+        // The existing strict source-verification gate remains closed for
+        // a legacy SSE snapshot. No synthetic UART timestamp is created.
         pump=copy;
         xSemaphoreGive(lock_data);
     }
@@ -671,6 +678,13 @@ Synteettinen lämpömalli ei ole kalibrointi eikä säästötodiste.</small></se
 <script>async function refresh(){try{
 const s=await (await fetch('/api/status',{cache:'no-store'})).json();
 const shown=[['CN105',s.cn105],['Pumppu',s.pump_mode],['Pumpun sisälämpö °C',s.pump_indoor_c],
+['CN105-SSE tila (ei UART-todiste)',s.cn105_sse_mode],
+['CN105-SSE sisälämpö °C (viimeisin)',s.cn105_sse_indoor_c],
+['CN105-SSE pyynti °C (viimeisin)',s.cn105_sse_setpoint_c],
+['CN105-SSE kompressori Hz (viimeisin)',s.cn105_sse_compressor_hz],
+['CN105-SSE lämpöviestin ikä s (vain vastaanotto)',s.cn105_sse_climate_age_s],
+['CN105-SSE kompressoriviestin ikä s (vain vastaanotto)',s.cn105_sse_compressor_age_s],
+['CN105 UART-lähde todennettu',s.cn105_source_verified],
 ['Riippumaton anturi °C',s.independent_c],['Kompressori Hz',s.compressor_hz],
 ['Shelly mökin kokonaisteho W',s.shelly_w],['Shellyn rele päällä',s.shelly_relay_on],['Spot €/kWh',s.spot],
 ['Sääennuste °C',s.weather_c],['Kokonaishinnan arvio €/kWh',s.total_price],
@@ -905,6 +919,7 @@ airRefresh();setInterval(airRefresh,15000);
 </script></main></html>)HTML";
 static void status_endpoint() {
     CN105Telemetry cp;ShellyTelemetry st;TemperatureSample te;
+    CN105Telemetry observed; // SSE-only values, never source-verified
     BridgeStatus bs;MpcResult plan;Decision current_safety;
     int64_t optimized=0,climate_time=0,compressor_time=0,link_time=0;
     double link_uptime_s=0;
@@ -912,7 +927,8 @@ static void status_endpoint() {
     char reason[80];
     uint32_t ms,worst,heap,psram,stack;
     xSemaphoreTake(lock_data,portMAX_DELAY);
-    cp=pump;st=consumption;/* C2.3 temperature read outside lock */bs=bridge_status;
+    cp=pump;observed=sse_observed_pump;
+    st=consumption;/* C2.3 temperature read outside lock */bs=bridge_status;
     relay_on=shelly_relay_on;
     current_safety=safety;
     climate_time=climate_utc;
@@ -940,11 +956,47 @@ static void status_endpoint() {
     cJSON_AddStringToObject(root,"mode","VARJOTILA_EI_KOMENTOJA");
     cJSON_AddBoolToObject(root,"physical_writes",false);
     const auto pump_quality=enevina::assess_measurement(cp.evidence,now,180);
-    cJSON_AddBoolToObject(root,"cn105",valid_cn105(cp,now));
-    // Distinguish network message receipt from a proven pump-side read.
-    // The present bridge has NO verified UART-read source contract.
-    cJSON_AddBoolToObject(root,"cn105_source_verified",false);
-    cJSON_AddStringToObject(root,"cn105_measurement_quality","UNVERIFIED_SOURCE");
+    const bool verified_uart=valid_cn105(cp,now) &&
+        cp.evidence.source_time_verified;
+    const bool observed_climate=climate_time>0 && now>=climate_time;
+    const bool observed_compressor=compressor_time>0 && now>=compressor_time;
+    const bool sse_online=sse_stream_active.load();
+    cJSON_AddBoolToObject(root,"cn105",verified_uart);
+    // An ESPHome /events snapshot is useful *observed* telemetry. Its
+    // receive timestamp is NOT a proof of a new UART pump poll.
+    cJSON_AddBoolToObject(root,"cn105_source_verified",verified_uart);
+    cJSON_AddStringToObject(root,"cn105_measurement_quality",verified_uart?
+        enevina::quality_name(pump_quality):observed_climate?
+        "SSE_SNAPSHOT_UART_UNVERIFIED":"UNVERIFIED_SOURCE");
+    cJSON_AddBoolToObject(root,"cn105_sse_climate_received",observed_climate);
+    cJSON_AddBoolToObject(root,"cn105_sse_compressor_received",observed_compressor);
+    cJSON_AddBoolToObject(root,"cn105_sse_climate_recent",
+        observed_climate && sse_online && now-climate_time<=180);
+    cJSON_AddBoolToObject(root,"cn105_sse_compressor_recent",
+        observed_compressor && sse_online && now-compressor_time<=180);
+    if(observed_climate) {
+        cJSON_AddNumberToObject(root,"cn105_sse_climate_age_s",
+                                static_cast<double>(now-climate_time));
+        cJSON_AddNumberToObject(root,"cn105_sse_indoor_c",observed.indoor_c);
+        cJSON_AddNumberToObject(root,"cn105_sse_setpoint_c",observed.setpoint_c);
+        cJSON_AddStringToObject(root,"cn105_sse_mode",
+            observed.mode==ObservedPumpMode::Heat?"HEAT":
+            observed.mode==ObservedPumpMode::Off?"OFF":"OTHER");
+    } else {
+        cJSON_AddNullToObject(root,"cn105_sse_climate_age_s");
+        cJSON_AddNullToObject(root,"cn105_sse_indoor_c");
+        cJSON_AddNullToObject(root,"cn105_sse_setpoint_c");
+        cJSON_AddNullToObject(root,"cn105_sse_mode");
+    }
+    if(observed_compressor) {
+        cJSON_AddNumberToObject(root,"cn105_sse_compressor_age_s",
+                                static_cast<double>(now-compressor_time));
+        cJSON_AddNumberToObject(root,"cn105_sse_compressor_hz",
+                                observed.compressor_hz);
+    } else {
+        cJSON_AddNullToObject(root,"cn105_sse_compressor_age_s");
+        cJSON_AddNullToObject(root,"cn105_sse_compressor_hz");
+    }
     cJSON_AddStringToObject(root,"pump_source_quality",
                             enevina::quality_name(pump_quality));
     cJSON_AddBoolToObject(root,"pump_source_time_verified",

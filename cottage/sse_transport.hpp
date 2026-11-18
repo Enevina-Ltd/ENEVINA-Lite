@@ -76,6 +76,13 @@ public:
     using Callback=void (*)(const char* json,void* context);
     explicit SseStateParser(Callback cb,void* context):cb_(cb),ctx_(context){}
     void feed(uint8_t byte) {
+        // Never allow a wire NUL to truncate the C-string passed to the
+        // strict JSON parser, hiding malformed trailing content.
+        if(byte==0) {
+            if(!invalid_)++rejected_;
+            invalid_=true;
+            return;
+        }
         if(byte=='\r')return;
         if(byte=='\n') {
             const bool blank=line_size_==0;
@@ -105,6 +112,27 @@ private:
     unsigned rejected_=0;
     Callback cb_;
     void* ctx_;
+    static bool has_ambiguous_unicode_escape(const char* value) {
+        // The CN105 proof includes a serialized JSON string inside JSON.
+        // Decoding \u005c (backslash), \u0075 ('u') or encoded hex digits
+        // can create \u0000 only after the next JSON parse. Field telemetry
+        // requires ASCII keys/numbers, not JSON Unicode escape syntax.
+        auto hex=[](char c) {
+            return (c>='0'&&c<='9') || (c>='a'&&c<='f') ||
+                   (c>='A'&&c<='F');
+        };
+        for(const char* p=value;*p;) {
+            if(*p!='\\') {++p;continue;}
+            while(*p=='\\') ++p;
+            if(*p!='u')continue;
+            bool encoded=true;
+            for(unsigned i=1;i<=4;i++) {
+                if(p[i]=='\0' || !hex(p[i])) {encoded=false;break;}
+            }
+            if(encoded)return true; // reject all Unicode escapes, fail closed
+        }
+        return false;
+    }
     void reset() {
         payload_size_=0;state_event_=false;invalid_=false;
     }
@@ -112,7 +140,10 @@ private:
         if(line_size_==0) {
             if(state_event_ && payload_size_ && cb_) {
                 payload_[payload_size_]=0;
-                cb_(payload_,ctx_);
+                // Reject Unicode escape syntax before either layer of JSON
+                // decoding can construct a truncated C string.
+                if(has_ambiguous_unicode_escape(payload_)) ++rejected_;
+                else cb_(payload_,ctx_);
             }
             reset();
             return;
