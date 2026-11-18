@@ -1,6 +1,6 @@
 # Enevina Lite C2.4 – allekirjoitetun OTA:n ja automaattisen rollbackin fyysinen todentaminen (16.11.2026)
 
-**Päätös:** OTA:n onnistunut A/B-päivitys, sovelluksen viivästetty terveysvahvistus ja automaattinen palautuminen viallisen päivityksen jälkeen on todistettu **fyysisellä ESP32-S3 N16R8 -testikortilla**. Tämä ei vielä tarkoita C2.4:n kokonaisvaltaista käyttökohteeseen hyväksymistä.
+**Päätös:** OTA:n onnistunut A/B-päivitys, sovelluksen viivästetty terveysvahvistus ja automaattinen palautuminen viallisen päivityksen jälkeen on todistettu **fyysisellä ESP32-S3 N16R8 -testikortilla**. Tämä ei vielä tarkoita C2.4:n kokonaisvaltaista kenttäkäyttöön hyväksymistä.
 
 ## Juurisyy ja korjaus
 
