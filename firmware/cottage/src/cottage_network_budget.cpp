@@ -16,17 +16,25 @@ bool network_budget_init() {
     return gate!=nullptr;
 }
 bool network_budget_acquire(uint32_t wait_ms,size_t min_internal,
-                            size_t min_largest) {
+                            size_t min_largest,NetworkBudgetDiagnostic* detail) {
+    if(detail)*detail=NetworkBudgetDiagnostic{};
     if(!gate || xSemaphoreTake(gate,pdMS_TO_TICKS(wait_ms))!=pdTRUE) {
+        if(detail)detail->failure=NetworkBudgetFailure::MutexBusy;
         refusals.fetch_add(1);return false;
     }
     // MUST use internal 8-bit-capable RAM, not ESP.getFreeHeap() which may
     // include PSRAM. The TLS/BT stack requires internal allocations.
     const size_t free=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
     const size_t largest=heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    // The only trustworthy low-memory snapshot is captured while gate held.
+    if(detail) {
+        detail->free_internal=static_cast<uint32_t>(free);
+        detail->largest_internal=static_cast<uint32_t>(largest);
+    }
     network_budget_sample();
     if(!enevina::cottage::internal_memory_admissible(free,largest,
                                                       min_internal,min_largest)) {
+        if(detail)detail->failure=NetworkBudgetFailure::LowMemory;
         refusals.fetch_add(1);
         xSemaphoreGive(gate);
         return false;

@@ -680,16 +680,13 @@ static bool cn105_bridge_get(bool& heating,double& target) {
             if(!lease.held()) {
                 control_get_http_code.store(0);
                 cn105_get_lease_denials.fetch_add(1);
-                const auto free=static_cast<uint32_t>(heap_caps_get_free_size(
-                     MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
-                const auto largest=static_cast<uint32_t>(
-                     heap_caps_get_largest_free_block(
-                         MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
-                cn105_get_last_free_internal.store(free);
-                cn105_get_last_largest_internal.store(largest);
-                if(free<72u*1024u || largest<16u*1024u)
+                const auto& detail=lease.diagnostic();
+                cn105_get_last_free_internal.store(detail.free_internal);
+                cn105_get_last_largest_internal.store(detail.largest_internal);
+                if(detail.failure==enevina_firmware::NetworkBudgetFailure::LowMemory)
                     cn105_get_lease_low_memory.fetch_add(1);
-                else cn105_get_lease_busy.fetch_add(1);
+                else if(detail.failure==enevina_firmware::NetworkBudgetFailure::MutexBusy)
+                    cn105_get_lease_busy.fetch_add(1);
                 // Retry only the *read* after a transient mutex/heap failure.
                 // The physical POST path never retries automatically.
                 if(attempt+1<cn105_read_max_attempts) {
