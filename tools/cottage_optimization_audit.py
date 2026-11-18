@@ -115,8 +115,10 @@ def make(case, n):
             start = AUTUMN_DST
         elif case == "dst_spring":
             start = SPRING_DST
-        elif case == "stale_weather_forecast":
+        elif case in ("stale_weather_forecast", "stale_weather_forecast_margin1"):
             forecast_bias = +4.0   # forecast 4 C too warm: under-heating risk
+            if case.endswith("margin1"):
+                p.update(uncertainty_c=1.0)  # mitigation: 1 C planning margin
         elif case != "base":
             raise ValueError(case)
         slots.append([start + 900 * i, spot, out + forecast_bias, out, 0.0, defrost])
@@ -127,7 +129,8 @@ CASES = ["base", "flat_price", "price_spikes", "negative_prices",
          "expensive_night_cheap_day", "cheap_night_expensive_day", "hard_frost",
          "mild", "fast_outdoor_drop", "slow_building", "fast_cooling_building",
          "oversized_pump", "undersized_pump", "poor_cold_cop", "defrost_derating",
-         "dst_autumn", "dst_spring", "stale_weather_forecast"]
+         "dst_autumn", "dst_spring", "stale_weather_forecast",
+         "stale_weather_forecast_margin1"]
 # Listed for traceability; covered by tests/cottage_optimization_audit_tests.cpp
 # (fault paths) or not applicable to an air-to-air HEAT16/OFF pump.
 NOT_IN_TABLE = {
@@ -199,7 +202,7 @@ def evaluate(exe, case, n, time_limit, workdir):
     entry = dict(case=case, slots=n)
     totals = None
     policies = ["thermostat", "price",
-                "mpc_closed_loop" if case == "stale_weather_forecast" else "mpc"]
+                "mpc_closed_loop" if case.startswith("stale_weather_forecast") else "mpc"]
     for policy in policies:
         r = run_cpp(exe, path, policy)
         totals = r["total_price"]
@@ -214,9 +217,10 @@ def evaluate(exe, case, n, time_limit, workdir):
         rep["objective_eur"] = rep["equalized_cost_eur"] + d["switch_penalty"] * rep["switches"]
         rep.update(status=r["status"], solve_ms_max=r["solve_ms_max"],
                    solve_ms_mean=r["solve_ms_mean"], solves=r["solves"],
-                   peak_rss_kb=r["peak_rss_kb"], feasible=not rep["violations"])
+                   peak_rss_kb=r["peak_rss_kb"])
         # Terminal deficits are equalized, other violations are real failures.
         rep["limit_violations"] = [v for v in rep["violations"] if v != "terminal"]
+        rep["feasible"] = not rep["limit_violations"]
         entry[key] = rep
     d = replay_dict(p, initial, slots, totals)
     m = solve(d, time_limit)
@@ -240,7 +244,7 @@ def evaluate(exe, case, n, time_limit, workdir):
     pr = entry["price"].get("equalized_cost_eur") if entry["price_comparable"] else None
     if pr and mpc is not None:
         entry["mpc_saving_vs_price_pct"] = 100 * (pr - mpc) / pr
-    if case == "stale_weather_forecast" and mpc is not None and m.get("feasible"):
+    if case.startswith("stale_weather_forecast") and mpc is not None and m.get("feasible"):
         # Closed-loop MPC on a wrong forecast vs PERFECT-FORESIGHT MILP:
         # value of information, not an optimality gap.
         entry["mpc_loss_vs_perfect_foresight_pct"] = 100 * (mpc / m["equalized_cost_eur"] - 1)
