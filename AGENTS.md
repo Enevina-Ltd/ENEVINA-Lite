@@ -1,5 +1,22 @@
 # AGENTS.md — Enevina Lite
 
+## PYSYVÄ TUOTEPÄÄTÖS: JULKINEN JA LÄHDEKOODILTAAN AVOIMESTI NÄHTÄVÄ ENEVINA LITE (18.11.2026)
+
+**Enevina Lite on Enevina Oy:n julkinen, avoimesti luettavalla lähdekoodilla kehitettävä tuote.** Repository `https://github.com/linkki79-pixel/ENEVINA-Lite` on julkinen. Kehitys, dokumentaatio, katselmointi ja yhteisöosallistuminen suunnitellaan tästä lähtien julkisen projektin vaatimusten mukaan; kyse ei ole salaisesta vain sisäiseen käyttöön tarkoitetusta kokeilusta. **Tämä päätös koskee kaikkia tämän repositoryn kehitysagentteja.**
+
+**Lisenssin täsmällinen merkitys:** tällä hetkellä lähdekoodi on **source-available / noncommercial**, ei Open Source Initiativen määritelmän mukaisesti avoimen lähdekoodin lisenssillä julkaistu. Voimassa oleva `LICENSE` sallii ei-kaupallisen käytön ja jakamisen ehtojensa mukaisesti, mutta ohjelmiston, firmwaren tai niitä sisältävien ohjainten kaupallinen myynti edellyttää Enevina Oy:n erillistä kirjallista lupaa. Agentti ei saa väittää lisenssiä MIT-, Apache-, GPL- tai OSI-avoimeksi eikä poistaa kaupallisen käytön rajoituksia ilman käyttäjän nimenomaista lisenssipäätöstä. Kolmannen osapuolen kirjastot säilyttävät omat ehtonsa; katso `THIRD_PARTY_NOTICES.md`.
+
+**Julkisen tuotekehityksen pakolliset toimintatavat:**
+
+1. **Julkinen sisältö on oletus.** Jokainen commit, PR, issue, keskustelu, loki, kuva, testi, julkaisu ja Git-historia voidaan lukea myös ulkopuolelta. Älä julkaise salasanoja, avaimia, tokeneita, kotiverkon tunnisteita, tarkkoja yksityisen testikohteen tietoja, yksilöiviä MAC-osoitteita tai raakoja laitelokeja. Testaa julkaisukelpoisuus ennen pushia ja huomioi, että tiedoston poistaminen uudesta commitista ei puhdista historiaa.
+2. **Esittele yleinen tuote, älä yksittäistä asennuskohdetta.** Julkinen README, GitHub About, dashboard, kuvamateriaali ja dokumentaation yleiset osiot kuvaavat monimerkkistä yhden lämpöpumpun paikallista ohjainta. Kenttätestien tunnistetiedot eivät kuulu esittelyyn; vanhoja yksityisiä mitta- tai rakennustietoja ei palauteta julkisiin tiedostoihin.
+3. **Kansainvälinen löydettävyys.** Pidä README:n suomen- ja englanninkielinen perusesittely, `docs/GETTING_STARTED.md`, `docs/COMPATIBILITY.md` ja GitHubin julkiset linkit käyttökelpoisina. Kuvaile ominaisuuksien todellinen tila (valmis / host-testattu / kokeellinen / suunniteltu). GitHub Discussions on yleisiin kysymyksiin ja Issues toistettaviin virheisiin.
+4. **Todisteet ennen markkinointiväitteitä.** Älä väitä valmiita valmistajaintegraatioita, fyysistä turvallisuutta, tuotanto- tai CE-valmiutta, kentällä todistettuja säästöjä tai toimivaa OTA-päivitystä ilman vastaavaa mitattua näyttöä. Älä esitä generoituja dashboard-malleja oikeina kuvakaappauksina. Merkitse simulaatiot simulaatioiksi ja yksilöi todellinen laiteversio, kun se on turvallista julkaista.
+5. **Yhteisö ja omistusoikeudet.** Ota vastaan virheraportteja ja ehdotuksia, mutta älä yhdistä kolmannen osapuolen koodia, grafiikkaa, dataa tai firmwarea ilman oikeuksien ja lisenssien tarkistamista. Noudata `CONTRIBUTING.md`-ohjetta sekä Enevina Oy:n kaupallista lisensointia varten tarvittavaa erillistä oikeussopimusta.
+6. **Julkaisut ja turvallisuus.** Käytä kehitysvaiheessa alpha-/pre-release-merkintöjä, kun valmista asennettavaa firmwarea ei ole todennettu. GitHubin lähdekoodin julkisuus **ei** ole lupa flashata tai ohjata oikeaa lämpöpumppua eikä syrjäytä tämän tiedoston PR-, laiteturva- ja testausportteja. Älä muuta yksityisten tietojen puhdistamiseksi julkaistujen tagien tai haarojen historiaa force-pushilla ilman erillistä hyväksyntää ja palautussuunnitelmaa.
+
+---
+
 ## PAKOLLINEN GITHUB-PR-KATSELMOINTI (17.11.2026 alkaen)
 
 **Järjestys on aina oma katselmointi → omat korjaukset ja testit → Codex-katselmointi → Codex-havaintojen korjaukset ja tarvittaessa uusi Codex-katselmointi → lopullinen hyväksyntä → merge.** Älä muuta tätä järjestystä oikoteillä.
