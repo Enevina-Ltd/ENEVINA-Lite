@@ -2,7 +2,7 @@
 "use strict";
 const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict');
 const html=fs.readFileSync(require('path').join(__dirname,'../firmware/cottage/include/cottage_premium_dashboard.hpp'),'utf8');
-let source=html.split('<script>')[1].split('</script>')[0];
+let source=html.split('<script>').at(-1).split('</script>')[0];
 assert(source.includes('function showStatus'));
 source=source.split('\ninitialRefresh();')[0]; // avoid starting network activity on test bootstrap
 
@@ -19,7 +19,7 @@ function el(id){
 }
 const elements=new Map();
 const $=id=>{if(!elements.has(id))elements.set(id,el(id));return elements.get(id)};
-const modes=[0,1,2].map(i=>Object.assign(el('mode'+i),{dataset:{mode:String(i)}}));
+const modes=[0,1,2,3].map(i=>Object.assign(el('mode'+i),{dataset:{mode:String(i)}}));
 const views=['home','prices','plan','settings'].map(x=>Object.assign(el('view-'+x),{id:'view-'+x}));
 const nav=['home','prices','plan','settings'].map(x=>Object.assign(el('nav-'+x),{dataset:{view:x}}));
 const document={activeElement:null,getElementById:$,querySelectorAll(s){
@@ -29,13 +29,16 @@ const document={activeElement:null,getElementById:$,querySelectorAll(s){
   return [];
 },createElement:el};
 let offline=false,configured=null,pauseSave=false,resolveSave=null,pauseStatus=false,settleStatus=null;
+let alertsSubmitted=null,pauseAlerts=false,resolveAlerts=null;
 const status={air:{sensor_fresh:true,mode:0,temperature_c:21,age_s:2,rh_pct:53,
-    dewpoint_c:11.0,outside_temperature_c:2.5,hold_target_c:12,drying_delta_c:4,
-    config_token:'test'},
-    spot:0.10,total_price:0.18,cn105:true,shelly_w:300,
+    dewpoint_c:11.0,outside_temperature_c:2.5,hold_target_c:12,occupied_target_c:21,drying_delta_c:4,
+    config_token:'test',warning_rh70:70,warning_rh80:85,warning_battery_v:2.5,alerts:[]},
+    spot:0.10,total_price:0.18,cn105:true,cn105_sse_climate_received:true,cn105_sse_climate_age_s:7,shelly_w:300,
     wifi_rssi_dbm:-62,free_internal_heap:100000,free_psram:7000000,
     firmware_version:'test',ota_upload_enabled:false,market_last_fetch_utc:1794900000};
-const context={document,location:{hash:''},history:{replaceState(){}},
+const browserStorage=new Map();
+const context={document,window:{addEventListener(){}},location:{hash:''},history:{replaceState(){}},
+  localStorage:{getItem:k=>browserStorage.get(k)||null,setItem:(k,v)=>browserStorage.set(k,v)},
   Date,URLSearchParams,console,setInterval(){},
   fetch:async(path,opt)=>{
     if(offline)throw Error('offline');
@@ -50,6 +53,13 @@ const context={document,location:{hash:''},history:{replaceState(){}},
       }
       return {ok:true,json:async()=>status};
     }
+    if(path==='/api/air/thresholds'){
+      alertsSubmitted=String(opt.body);
+      if(pauseAlerts)return new Promise(resolve=>{
+        resolveAlerts=()=>resolve({ok:true,json:async()=>({saved:true})});
+      });
+      return {ok:true,json:async()=>({saved:true})};
+    }
     if(path==='/api/air/config'){
       configured=String(opt.body);
       if(pauseSave)return new Promise(resolve=>{resolveSave=()=>resolve({ok:true})});
@@ -62,9 +72,38 @@ vm.createContext(context);
 vm.runInContext(source,context,{filename:'dashboard.js'});
 const run=x=>vm.runInContext(x,context);
 (async()=>{
+  assert.equal(run('ownEnergyClass(1200,17).grade'),'B');
+  assert.equal(run('ownEnergyClass(850,17).grade'),'A');
+  assert.equal(run('ownEnergyClass(1700,17).grade'),'C');
+  assert.equal(run('ownEnergyClass(1700,0)'),null);
+  $('energy-area').value='17';
+  $('energy-annual').value='1200';
+  $('energy-calculate').handlers.click();
+  assert.equal($('energy-grade').textContent,'B');
+  assert.match($('energy-intensity').textContent,/70,6 kWh/);
+  assert.equal(JSON.parse(browserStorage.get('enevina_lite_own_energy_v1')).annual,1200);
   run('state.status=('+JSON.stringify(status)+');showStatus()');
+  // Codex P2: saving warning limits must not discard a newer, unsaved edit.
+  assert.equal(String($('alert-rh70').value),'70');
+  pauseAlerts=true;
+  $('alert-rh70').value='71';
+  $('alert-rh70').handlers.input();
+  const alertInFlight=$('alerts-save').handlers.click();
+  assert.equal(run('state.alertSettingsSaving'),true);
+  assert.match(alertsSubmitted,/rh70=71/);
+  $('alert-rh70').value='72';
+  $('alert-rh70').handlers.input();
+  resolveAlerts();
+  await alertInFlight;
+  assert.equal(String($('alert-rh70').value),'72','newer threshold draft not overwritten');
+  assert.equal(run('state.alertSettingsDirty'),true);
+  pauseAlerts=false;
+  status.air.warning_rh70=72;
+  await $('alerts-save').handlers.click();
+  assert.match(alertsSubmitted,/rh70=72/);
+  assert.equal(run('state.alertSettingsDirty'),false);
   assert.equal($('home-dew').textContent,'11,0 °C');
-  assert.equal($('device-cn105').textContent,'Tuore');
+  assert.equal($('device-cn105').textContent,'SSE-lukemia, UART-todiste puuttuu');
   assert.equal($('setting-hold').value,12);
   modes[2].handlers.click();
   $('setting-hold').value='18';
@@ -134,7 +173,7 @@ const run=x=>vm.runInContext(x,context);
   await run('reloadStatus()');
   rejectOld();
   await staleFailure;
-  assert.equal($('device-cn105').textContent,'Tuore','stale failure must not hide fresh CN105');
+  assert.equal($('device-cn105').textContent,'SSE-lukemia, UART-todiste puuttuu','stale failure must not hide fresh CN105');
   assert.equal(String($('setting-hold').value),'18');
   assert.equal(run('state.mode'),2);
   offline=true;
@@ -147,7 +186,7 @@ const run=x=>vm.runInContext(x,context);
   assert.equal($('save-mode').disabled,true);
   offline=false;
   await run('reloadStatus()');
-  assert.equal($('device-cn105').textContent,'Tuore');
+  assert.equal($('device-cn105').textContent,'SSE-lukemia, UART-todiste puuttuu');
   assert.equal($('home-dew').textContent,'11,0 °C');
   console.log('PASS dashboard mid-POST edits, out-of-order status success/failure, stale clearance and recovery');
 })().catch(e=>{console.error(e);process.exitCode=1});
