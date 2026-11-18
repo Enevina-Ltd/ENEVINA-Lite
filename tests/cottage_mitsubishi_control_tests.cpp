@@ -126,4 +126,38 @@ int main() {
     }
     s=base();s.current_setpoint_c=std::numeric_limits<double>::quiet_NaN();
     assert(choose_mitsubishi_control(s).step==ControlStep::Setpoint);
+    // Real cottage field case, 2026-11-19: Ruuvi 11.585 C, user hold 12 C,
+    // heat pump currently OFF and its setpoint 21 C. The hysteresis boundary
+    // is 11.5 C. A HOLD creates NO physical writes; after crossing 11.5 C
+    // the executable sequence is valid SETPOINT -> HEAT, with fresh CN105
+    // HTTP GET verified at runtime and the owner's 30-min mode dwell.
+    {
+        BootstrapInput in{};
+        in.indoor_fresh=true;
+        in.desired_room_c=12.0;
+        in.indoor_c=11.585;
+        const double neutral_prices[]={0.15,0.15,0.15,0.15,0.15,0.15,0.15,0.15};
+        in.next_total_prices=neutral_prices;
+        in.price_count=8;
+        in.prices_contiguous_and_fresh=true;
+        auto proposal=bootstrap_price_decision(in);
+        assert(proposal.action==BootstrapAction::Hold);
+        ControlSnapshot cs=base();
+        cs.current_heat=false;
+        cs.current_setpoint_c=21;
+        cs.proposal=proposal;
+        assert(choose_mitsubishi_control(cs).gate==ControlBlock::NoProposal);
+        in.indoor_c=11.49;
+        proposal=bootstrap_price_decision(in);
+        assert(proposal.action==BootstrapAction::HeatSetpoint);
+        assert(proposal.heat_setpoint_c==16.0);
+        cs.proposal=proposal;
+        assert(choose_mitsubishi_control(cs).step==ControlStep::Setpoint);
+        cs.current_setpoint_c=16.0;
+        assert(choose_mitsubishi_control(cs).step==ControlStep::SetHeat);
+        cs.ms_since_mode_change=0;
+        assert(choose_mitsubishi_control(cs).gate==ControlBlock::ModeDwell);
+        cs.temperature_fresh=false;
+        assert(choose_mitsubishi_control(cs).gate==ControlBlock::InputsUnverified);
+    }
 }
