@@ -1,4 +1,6 @@
 /build/
+/build-debug/
+/build-release/
 /build_forward/
 /firmware/build/
 /firmware/sdkconfig

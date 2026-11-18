@@ -1,3 +1,4 @@
+from pathlib import Path
 """Source-level C2 fail-closed review. This is NOT a hardware command proof."""
 import pathlib
 import re
@@ -28,8 +29,12 @@ class ShadowSurfaceTests(unittest.TestCase):
 
     def test_only_read_only_http_requests(self):
         self.assertIn('request.GET()', self.main)
-        self.assertIn("valid_cn105_events_url(COTTAGE_CN105_URL)", self.main)
-        self.assertIn("valid_shelly_base_url(COTTAGE_SHELLY_URL)", self.main)
+        # Phase-2 settings: same allow-list guard at use time AND at input time.
+        self.assertIn("valid_cn105_events_url(settings.cn105_url)", self.main)
+        self.assertIn("valid_shelly_base_url(settings.shelly_url)", self.main)
+        settings=(Path(__file__).resolve().parents[1]/"cottage"/"site_settings.hpp").read_text()
+        self.assertIn("valid_cn105_events_url(value)", settings)
+        self.assertIn("valid_shelly_base_url(value)", settings)
         self.assertIn('Switch.GetStatus?id=0', self.main)
         self.assertIn("HTTPC_DISABLE_FOLLOW_REDIRECTS", self.main)
 

@@ -61,7 +61,8 @@ class Cn105SseVisibilityTests(unittest.TestCase):
         post = MAIN.split("static bool cn105_bridge_post(",1)[1].split(
             "static void cottage_control_tick()",1)[0]
         self.assertIn('!control_armed.load()',post)
-        self.assertIn('valid_cn105_events_url(COTTAGE_CN105_URL)',MAIN)
+        # URL guard is applied at use time to the browser-configured value.
+        self.assertIn('valid_cn105_events_url(settings.cn105_url)',MAIN)
         self.assertIn('HTTPC_DISABLE_FOLLOW_REDIRECTS',post)
         self.assertIn('req.POST("")',post)
         self.assertIn('req.addHeader("Content-Length","0")',post)

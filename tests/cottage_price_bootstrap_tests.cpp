@@ -119,6 +119,42 @@ int main() {
     const double corrupted[]={0.8,0.1,0.2,0.3,0.4,0.5,std::numeric_limits<double>::quiet_NaN(),0.7};
     in.next_total_prices=corrupted;
     assert(bootstrap_price_decision(in).reason==BootstrapReason::ThermostatWithoutPrices);
+    // Regression (audit 18.11.2026): flat prices are NOT a pre-heat signal.
+    // Old rule "current <= median" heated in every flat slot and lost to a
+    // plain thermostat in the flat_price audit case.
+    const double flat[]={0.12,0.12,0.12,0.12,0.12,0.12,0.12,0.12};
+    in.next_total_prices=flat;in.desired_room_c=18.0;in.indoor_c=18.0;
+    d=bootstrap_price_decision(in);
+    assert(d.action==BootstrapAction::Hold);
+    assert(d.reason==BootstrapReason::NeutralPriceWindow);
+    assert(std::strcmp(bootstrap_reason_name(d.reason),"NEUTRAL_COST_WINDOW")==0);
+    // Below the advantage margin (median 0.12, margin 0.012): still neutral.
+    const double slight[]={0.111,0.12,0.12,0.12,0.12,0.12,0.12,0.12};
+    in.next_total_prices=slight;
+    assert(bootstrap_price_decision(in).action==BootstrapAction::Hold);
+    const double clear[]={0.100,0.12,0.12,0.12,0.12,0.12,0.12,0.12};
+    // Split deadband: a clear price advantage pre-heats only below target,
+    // a clear premium coasts only at/above target (otherwise HOLD).
+    in.next_total_prices=clear;
+    assert(bootstrap_price_decision(in).reason==BootstrapReason::DeadbandHold);
+    in.indoor_c=17.9;
+    assert(bootstrap_price_decision(in).reason==BootstrapReason::CheapWindow);
+    in.indoor_c=18.0;
+    const double peak[]={0.140,0.12,0.12,0.12,0.12,0.12,0.12,0.12};
+    in.next_total_prices=peak;
+    assert(bootstrap_price_decision(in).reason==BootstrapReason::ExpensiveWindow);
+    in.indoor_c=17.9;
+    assert(bootstrap_price_decision(in).reason==BootstrapReason::DeadbandHold);
+    in.indoor_c=18.0;
+    // Flat prices still heat below / stop above the room deadband.
+    in.next_total_prices=flat;in.indoor_c=17.4;
+    assert(bootstrap_price_decision(in).action==BootstrapAction::HeatSetpoint);
+    in.indoor_c=18.6;
+    assert(bootstrap_price_decision(in).action==BootstrapAction::Off);
+    // Invalid advantage configuration degrades to the no-price thermostat.
+    in.indoor_c=18.0;in.min_price_advantage_fraction=-1;
+    assert(bootstrap_price_decision(in).reason==BootstrapReason::ThermostatWithoutPrices);
+    in.min_price_advantage_fraction=0.10;
     in.next_total_prices=cheap;
     in.price_count=97;
     assert(bootstrap_price_decision(in).reason==BootstrapReason::ThermostatWithoutPrices);

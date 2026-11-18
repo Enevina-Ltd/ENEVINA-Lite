@@ -42,8 +42,13 @@ class PremiumDashboardSourceTests(unittest.TestCase):
         self.assertIn("market.clock_trusted || !market.current_price_valid", MAIN)
         self.assertIn("enevina_firmware::future_prices(points,kMaxPriceSlots)", MAIN)
         self.assertIn("MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT", MAIN)
-        self.assertIn("calculate_total_price(t,total)", MAIN)
-        self.assertIn("localtime_r(&utc,&local)", MAIN)
+        # One DST-safe price rule (audit 18.11.2026): /api/prices, /api/status,
+        # bootstrap and MPC bridge all use site_slot_total_price; no TZ-based
+        # localtime_r() tariff decisions remain in main.cpp.
+        self.assertIn("site_slot_total_price(price.start_utc,", MAIN)
+        self.assertIn("join_forecast_priced(", MAIN)
+        self.assertNotIn("localtime_r(&utc,&local)", MAIN)
+        self.assertNotIn("tariff(local.tm_hour", MAIN)
         self.assertNotRegex(
             MAIN[MAIN.index("static void prices_endpoint()"):MAIN.index("static void setup_model()")],
             r"(Switch\.Set|CN105.*write|send.*command|relay_?off|relay_?on\s*\()",

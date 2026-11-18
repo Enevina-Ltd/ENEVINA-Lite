@@ -382,6 +382,7 @@ TemperatureSample c23_temperature_sample() {
     unlock();
     return out;
 }
+const char* c23_config_token() { return csrf_token; }
 bool c23_authorize_local_setting(const char* submitted_token) {
     return guard && submitted_token && strlen(submitted_token)==strlen(csrf_token) &&
            strcmp(submitted_token,csrf_token)==0;

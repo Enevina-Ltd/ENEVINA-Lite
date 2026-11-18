@@ -24,6 +24,8 @@
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
 #include "cottage_secure_ota.hpp"
+#include "cottage_site_settings.hpp"
+#include "cottage_wifi.hpp"
 #include "cottage/physics.hpp"
 #include "cottage/mpc.hpp"
 #include "cottage/telemetry.hpp"
@@ -96,15 +98,39 @@ static TaskHandle_t task_ota=nullptr;
 static bool shelly_relay_on=false;
 // Production control is explicitly ARMED via local setting, never by OTA.
 static std::atomic<bool> control_armed{false};
+// Pump identity (CN105 URL/adapter) the current arming was given for.
+static std::atomic<uint32_t> control_armed_endpoint{0};
 // Owner decision 18.11.2026: >= 30 min between HEAT<->OFF changes. Last change
 // = last mode command sent, last change observed via bridge GET, boot or
 // arming (unknown history -> wait). millis()-based, survives NTP jumps.
-static std::atomic<uint32_t> control_mode_change_ms{0};
-static std::atomic<int> control_last_seen_heat{-1}; // web + optimizer tasks
+// Boot = unknown history (dwell starts at millis()==0). Shared by the web
+// task (arming) and the optimizer task, serialized by mode_history_lock.
+static MitsubishiModeHistory control_mode_history{};
+static portMUX_TYPE mode_history_lock=portMUX_INITIALIZER_UNLOCKED;
 static void control_note_observed_mode(bool heating) {
-    const int seen=heating?1:0;
-    const int prior=control_last_seen_heat.exchange(seen);
-    if(prior>=0 && prior!=seen) control_mode_change_ms.store(millis());
+    const uint32_t now=millis();
+    portENTER_CRITICAL(&mode_history_lock);
+    control_mode_history.observe(heating,now);
+    portEXIT_CRITICAL(&mode_history_lock);
+}
+static void control_note_mode_dispatch() {
+    const uint32_t now=millis();
+    portENTER_CRITICAL(&mode_history_lock);
+    control_mode_history.command_dispatched(now);
+    portEXIT_CRITICAL(&mode_history_lock);
+}
+static void control_reset_mode_history() {
+    const uint32_t now=millis();
+    portENTER_CRITICAL(&mode_history_lock);
+    control_mode_history.reset(now);
+    portEXIT_CRITICAL(&mode_history_lock);
+}
+static uint32_t control_ms_since_mode_change() {
+    const uint32_t now=millis();
+    portENTER_CRITICAL(&mode_history_lock);
+    const uint32_t since=control_mode_history.since_change(now);
+    portEXIT_CRITICAL(&mode_history_lock);
+    return since;
 }
 static std::atomic<int> control_gate{static_cast<int>(ControlBlock::Disabled)};
 static std::atomic<int> control_last_step{static_cast<int>(ControlStep::None)};
@@ -417,7 +443,10 @@ static void parse_sse_state(const char* raw) {
 }
 static void sse_worker(void*) {
     for(;;) {
-        if(!wifi_ok.load() || !clock_ok() || !valid_cn105_events_url(COTTAGE_CN105_URL)) {
+        // Browser-configured URL (Phase 2); compile-time value is only the default.
+        const auto settings=site_settings_snapshot();
+        const uint32_t settings_generation=site_settings_generation();
+        if(!wifi_ok.load() || !clock_ok() || !valid_cn105_events_url(settings.cn105_url)) {
             vTaskDelay(pdMS_TO_TICKS(1000));continue;
         }
         WiFiClient client;
@@ -429,7 +458,7 @@ static void sse_worker(void*) {
         request.addHeader("Accept-Encoding","identity");
         static const char* headers[]={"Content-Type","Transfer-Encoding"};
         request.collectHeaders(headers,2);
-        const bool began=request.begin(client,COTTAGE_CN105_URL);
+        const bool began=request.begin(client,settings.cn105_url);
         const int http_status=began?request.GET():0;
         sse_last_http_status.store(http_status);
         if(http_status==200) {
@@ -463,6 +492,7 @@ static void sse_worker(void*) {
                 },nullptr);
                 uint32_t last_activity_ms=millis();
                 while(wifi_ok.load() && client.connected() &&
+                      settings_generation==site_settings_generation() &&
                       static_cast<uint32_t>(millis()-last_activity_ms)<180000u) {
                     if(!stream->available()) {
                         vTaskDelay(pdMS_TO_TICKS(20));continue;
@@ -503,10 +533,11 @@ static void sse_worker(void*) {
 }
 static void shelly_worker(void*) {
     char url[192];
-    snprintf(url,sizeof(url),"%s/rpc/Switch.GetStatus?id=0",COTTAGE_SHELLY_URL);
     for(;;) {
+        const auto settings=site_settings_snapshot();
+        snprintf(url,sizeof(url),"%s/rpc/Switch.GetStatus?id=0",settings.shelly_url);
         if(wifi_ok.load() && clock_ok() &&
-           valid_shelly_base_url(COTTAGE_SHELLY_URL)) {
+           valid_shelly_base_url(settings.shelly_url)) {
             String body;
             const uint32_t req_begin_ms=millis();
             if(get_http(url,body)) {
@@ -530,13 +561,11 @@ static void shelly_worker(void*) {
         vTaskDelay(pdMS_TO_TICKS(15000));
     }
 }
-static enevina::Tariff tariff(bool night=false) {
-    enevina::Tariff t;
-    t.margin_eur_per_kwh=COTTAGE_SPOT_MARGIN;
-    t.transfer_eur_per_kwh=night?COTTAGE_TRANSFER_NIGHT:COTTAGE_TRANSFER_DAY;
-    t.electricity_tax_eur_per_kwh=COTTAGE_ELECTRICITY_TAX;
-    t.vat_rate=COTTAGE_VAT_RATE;
-    return t;
+// ONE price rule for the MPC bridge, bootstrap, /api/status and /api/prices:
+// browser-configured site tariff evaluated at the slot START in Finnish
+// civil time (DST-safe, independent of the TZ variable).
+static bool bridge_slot_price(void*,int64_t utc,double spot,double& total) {
+    return site_slot_total_price(utc,spot,total);
 }
 // Model-free price-aware heating proposal, used only until calibrated MPC
 // exists. A 2-hour window must contain 8 contiguous verified 15-minute
@@ -588,27 +617,24 @@ static BootstrapDecision bootstrap_preview(int64_t now,
         if(points[i].start_utc!=start+static_cast<int64_t>(i)*900) {
             valid_prices=false;break;
         }
-        bool day=false;
-        if(!finnish_day_transfer(points[i].start_utc,day)) {
-            valid_prices=false;break;
-        }
-        auto priced=tariff(!day);
-        priced.spot_eur_per_kwh=points[i].spot_eur_per_kwh;
-        if(!enevina::calculate_total_price(priced,prices[i])) {
+        if(!site_slot_total_price(points[i].start_utc,points[i].spot_eur_per_kwh,
+                                  prices[i])) {
             valid_prices=false;break;
         }
     }
     input.next_total_prices=prices.data();
     input.price_count=N;
     input.prices_contiguous_and_fresh=valid_prices;
+    input.min_price_advantage_fraction=site_settings_snapshot().min_price_advantage_fraction;
     return bootstrap_price_decision(input);
 }
 // CN105 is a separate local ESPHome gateway. These HTTP calls are the only
 // physical write path and are permitted solely by an explicitly armed
 // pilot plus fresh independent sensor, prices and gateway telemetry.
 static String cn105_local_url(const char* suffix) {
-    if(!suffix || !valid_cn105_events_url(COTTAGE_CN105_URL))return {};
-    String root(COTTAGE_CN105_URL);
+    const auto settings=site_settings_snapshot();
+    if(!suffix || !valid_cn105_events_url(settings.cn105_url))return {};
+    String root(settings.cn105_url);
     root.remove(root.length()-strlen("/events"));
     root+=suffix;
     return root;
@@ -662,7 +688,11 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
                               double required_target) {
     control_post_stage.store(1);
     control_post_http_code.store(0);
-    if(!command.valid || !control_armed.load() || !wifi_ok.load()) {
+    // A browser settings change (URL, tariff) supersedes an in-flight command
+    // exactly like a mode change does; no new gate, same cancellation points.
+    const uint32_t site_generation=site_settings_generation();
+    if(!command.valid || !control_armed.load() || !wifi_ok.load() ||
+       control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
         control_post_stage.store(-1);return false;
     }
     const String url=cn105_local_url(command.path.data());
@@ -693,6 +723,7 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     // Network-budget wait is another cancellation point. A user's updated
     // settings always supersede an in-flight automatic command.
     if(!control_armed.load() || c23_config_generation()!=config_generation ||
+       site_settings_generation()!=site_generation ||
        !wifi_ok.load() || !clock_ok())return false;
     const auto refreshed=bootstrap_preview(time(nullptr),c23_temperature_sample());
     if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
@@ -713,10 +744,17 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     req.addHeader("Content-Length","0");
     control_post_stage.store(5);
     // Last cancellation point after all potentially blocking preparation.
-    if(!control_armed.load() || c23_config_generation()!=config_generation) {
+    if(!control_armed.load() || c23_config_generation()!=config_generation ||
+       site_settings_generation()!=site_generation) {
         req.end();
         return false;
     }
+    // Codex P2 (post-merge #28): start the dwell only when a mode POST is
+    // really dispatched (after every precondition); a failed preparation
+    // must not block the next attempt for 30 min. An uncertain response or
+    // failed readback still counts: the command may have taken effect.
+    if(step==ControlStep::SetHeat || step==ControlStep::SetOff)
+        control_note_mode_dispatch();
     const int code=req.POST("");
     control_post_http_code.store(code);
     control_post_stage.store(code>=200 && code<300?6:-6);
@@ -725,9 +763,23 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
 }
 // Called only in the existing optimizer task, no additional RTOS stack,
 // watchdog or scheduled foreground WebServer blocking.
+static void cottage_control_disarm() {
+    control_armed.store(false);
+    Preferences prefs;
+    if(prefs.begin("cottage_ctl",false)) {
+        if(prefs.getBool("armed",false))prefs.putBool("armed",false);
+        prefs.end();
+    }
+}
 static void cottage_control_tick() {
     control_gate.store(static_cast<int>(ControlBlock::Disabled));
     if(!control_armed.load())return;
+    // Arming is bound to the configured pump. A changed CN105 endpoint or
+    // adapter revokes it (same as reboot/OTA); the user re-enables locally.
+    if(control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
+        cottage_control_disarm();
+        return;
+    }
     if(!wifi_ok.load() || !clock_ok()) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
@@ -775,8 +827,7 @@ static void cottage_control_tick() {
     candidate.current_setpoint_c=current_setpoint;
     candidate.proposal=proposal;
     control_note_observed_mode(current_heat);
-    candidate.ms_since_mode_change=static_cast<uint32_t>(
-        millis()-control_mode_change_ms.load());
+    candidate.ms_since_mode_change=control_ms_since_mode_change();
     const auto decision=choose_mitsubishi_control(candidate);
     control_gate.store(static_cast<int>(decision.gate));
     if(decision.step==ControlStep::None)return;
@@ -787,10 +838,6 @@ static void cottage_control_tick() {
         decision.step==ControlStep::SetHeat?MitsubishiMode::Heat:
                                             MitsubishiMode::Off);
     if(!request.valid || !control_armed.load())return;
-    // A mode POST may take effect even if its readback fails: start the
-    // dwell now, conservatively, before dispatch.
-    if(decision.step==ControlStep::SetHeat || decision.step==ControlStep::SetOff)
-        control_mode_change_ms.store(millis());
     control_last_step.store(static_cast<int>(decision.step));
     control_last_command_utc.store(now);
     control_commands_sent.fetch_add(1);
@@ -850,10 +897,10 @@ static void cottage_control_registration() {
             p.end();
         }
         if(stored) {
+            control_armed_endpoint.store(site_settings_endpoint_generation());
             // Arming starts the dwell window: mode history while disarmed
             // is unknown (manual remote changes are not observed).
-            control_mode_change_ms.store(millis());
-            control_last_seen_heat.store(-1);
+            control_reset_mode_history();
             control_armed.store(requested);
         }
         web.send(stored?200:500,"application/json",
@@ -899,11 +946,11 @@ static void optimizer_worker(void*) {
             // unfinished quarter-hour. Only optimize near the UTC boundary.
             const bool near_slot_start=(now%900<=60);
             if(near_slot_start && pc&&wc) {
-                *bridge=join_forecast_two_tariffs(now,ms.last_fetch_utc,ws.fetched_utc,
-                    aligned,pc,weather,wc,tariff(false),tariff(true),192);
+                *bridge=join_forecast_priced(now,ms.last_fetch_utc,ws.fetched_utc,
+                    aligned,pc,weather,wc,bridge_slot_price,nullptr,192);
                 if(bridge->status!=BridgeStatus::Ready)
-                    *bridge=join_forecast_two_tariffs(now,ms.last_fetch_utc,ws.fetched_utc,
-                        aligned,pc,weather,wc,tariff(false),tariff(true),96);
+                    *bridge=join_forecast_priced(now,ms.last_fetch_utc,ws.fetched_utc,
+                        aligned,pc,weather,wc,bridge_slot_price,nullptr,96);
             }
             xSemaphoreTake(lock_data,portMAX_DELAY);
             if(near_slot_start) bridge_status=bridge->status;
@@ -1038,13 +1085,8 @@ static void status_endpoint() {
     const auto price=enevina_firmware::market_status();
     const auto weather=enevina_firmware::weather_status();
     double total=0;
-    struct tm local{};
-    time_t ts=static_cast<time_t>(now);
-    localtime_r(&ts,&local);
-    enevina::Tariff t=tariff(local.tm_hour<7||local.tm_hour>=22);
-    t.spot_eur_per_kwh=price.current_spot_eur_per_kwh;
     const bool valid_total=price.current_price_valid &&
-        enevina::calculate_total_price(t,total);
+        site_slot_total_price((now/900)*900,price.current_spot_eur_per_kwh,total);
     const BootstrapDecision bootstrap=bootstrap_preview(now,te);
     cJSON* root=cJSON_CreateObject();
     cJSON_AddStringToObject(root,"mode",control_armed.load()?
@@ -1324,14 +1366,9 @@ static void prices_endpoint() {
     for(size_t i=0;i<count;++i) {
         const auto& price=points[i];
         if(!std::isfinite(price.spot_eur_per_kwh)) continue;
-        const time_t utc=static_cast<time_t>(price.start_utc);
-        struct tm local{};
-        localtime_r(&utc,&local); // Finland local day/night tariff, including DST
-        enevina::Tariff t=tariff(local.tm_hour<7||local.tm_hour>=22);
-        t.spot_eur_per_kwh=price.spot_eur_per_kwh;
         double total=0;
-        const bool has_total=enevina::calculate_total_price(t,total) &&
-                             std::isfinite(total);
+        const bool has_total=site_slot_total_price(price.start_utc,
+            price.spot_eur_per_kwh,total) && std::isfinite(total);
         char total_buf[36];
         if(has_total) snprintf(total_buf,sizeof(total_buf),"%.8f",total);
         else strlcpy(total_buf,"null",sizeof(total_buf));
@@ -1388,17 +1425,22 @@ void setup() {
     hooks.free_fn=json_free_psram;
     cJSON_InitHooks(&hooks); // Once, before any reader/task starts.
     setup_model();
+    site_settings_initialize(); // NVS site settings before any reader starts
     c23_initialize(); // NVS mode + persistent explicit Ruuvi bonding
     cottage_ota_initialize(); // Persist successful signed release + reject failed candidate
-    // Avoid device contact without explicit local configuration.
-    WiFi.mode(WIFI_STA);
-    WiFi.setAutoReconnect(true);
-    if(strlen(COTTAGE_WIFI_SSID)) WiFi.begin(COTTAGE_WIFI_SSID,COTTAGE_WIFI_PASSWORD);
+    // Phase 1 commissioning: stored home Wi-Fi (NVS, else the compile-time
+    // default) or the per-device setup AP. No pump/device contact here.
+    cottage_wifi_begin(web);
     setenv("TZ","EET-2EEST,M3.5.0/3,M10.5.0/4",1);
     tzset();
     configTime(0,0,"pool.ntp.org","time.google.com");
     web.on("/",HTTP_GET,[](){
         web.sendHeader("Cache-Control","no-store");
+        if(cottage_wifi_request_via_ap(web)) {
+            // Setup network: phase 1 shows ONLY the Wi-Fi page.
+            web.send_P(200,"text/html; charset=utf-8",cottage_wifi_setup_html);
+            return;
+        }
         web.sendHeader("X-Content-Type-Options","nosniff");
         web.sendHeader("Content-Security-Policy",
             "default-src 'self'; connect-src 'self'; img-src 'self' data:; "
@@ -1410,8 +1452,18 @@ void setup() {
     web.on("/api/plan",HTTP_GET,plan_endpoint);
     web.on("/api/prices",HTTP_GET,prices_endpoint);
     c23_register_routes(web);
+    site_settings_register_routes(web);
     cottage_control_registration(); // explicit local arming; defaults OFF
-    web.onNotFound([](){web.send(404,"text/plain","Ei löydy");});
+    web.onNotFound([](){
+        if(cottage_wifi_request_via_ap(web)) {
+            // Captive portal: any unknown host/path on the setup AP -> /setup.
+            web.sendHeader("Location",String("http://")+
+                WiFi.softAPIP().toString()+"/setup");
+            web.send(302,"text/plain","");
+            return;
+        }
+        web.send(404,"text/plain","Ei löydy");
+    });
     web.begin();
     boot_ui_started=true;
     boot_validation_started_ms=millis();
@@ -1440,6 +1492,7 @@ void loop() {
     wifi_ok.store(WiFi.status()==WL_CONNECTED);
     web_loop_heartbeat_ms.store(millis());
     web.handleClient();
+    cottage_wifi_loop();
     verify_new_ota_boot();
     c23_tick(); // local BLE/mode/alarm history works with wifi=0
     // Serial evidence is useful during fully isolated cold-boot tests.

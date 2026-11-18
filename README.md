@@ -126,3 +126,14 @@ historia on vain käynnistyshetkestä laskettua RAM-historiaa.
 
 **24 h C2.2-laitevakauskoe jätettiin koskematta**; C2.3 ristiinkäännettiin,
 mutta sitä ei flashattu kortille tämän kokeen aikana.
+
+## Käyttöönotto Wi-Fi ensin ja optimoinnin täystodennus (18.11.2026)
+
+- [Käyttöönotto](docs/ONBOARDING_WIFI_FIRST_20261118.md): vaihe 1 kysyy vain kodin
+  Wi-Fin avoimessa, vain tarvittaessa päällä olevassa asennusverkossa, vaihe 2 (sopimus, siirto, verot,
+  CN105/Shelly, sääpaikka, lämpöpumppusovitin) tehdään selaimessa kotiverkossa.
+  HOST-TESTATTU, ei fyysisesti todennettu.
+- [Optimoinnin audit](docs/OPTIMIZATION_AUDIT_20261118.md): termostaatti, nykyinen
+  hintaraja, MPC ja riippumaton MILP samoilla ehdoilla, 19 tapausta × 4 horisonttia.
+  SIMULOITU. Uudelleenajo:
+  `python3 tools/cottage_optimization_audit.py build-release/cottage_audit_cli`.

@@ -59,6 +59,41 @@ int main() {
     // A setpoint change is not a mode change and is never delayed.
     s=base();s.ms_since_mode_change=0;
     assert(choose_mitsubishi_control(s).step==ControlStep::Setpoint);
+    // MitsubishiModeHistory (Codex post-merge review of #28).
+    {
+        constexpr uint32_t m=60u*1000u;
+        MitsubishiModeHistory h;                   // boot: unknown history
+        assert(h.since_change(0)==0 && h.since_change(29*m)<mitsubishi_min_mode_dwell_ms);
+        h.observe(true,1*m);                       // first sight: no restart
+        assert(h.since_change(31*m)>=mitsubishi_min_mode_dwell_ms);
+        h.observe(true,32*m);
+        h.observe(false,33*m);                     // observed change restarts
+        assert(h.since_change(34*m)==1*m);
+        // P1 repro: last seen HEAT at 34 min, link lost, pump toggled OFF at
+        // 45 and HEAT at 75 min unseen, GET back at 76 min with HEAT again.
+        MitsubishiModeHistory g;
+        g.reset(0);g.observe(true,1*m);g.observe(true,34*m);
+        g.observe(true,76*m);                      // gap 42 min > 5 min
+        ControlSnapshot c=base();
+        c.current_heat=true;c.proposal.action=BootstrapAction::Off;
+        c.ms_since_mode_change=g.since_change(77*m);
+        assert(choose_mitsubishi_control(c).gate==ControlBlock::ModeDwell);
+        c.ms_since_mode_change=g.since_change(106*m);
+        assert(choose_mitsubishi_control(c).step==ControlStep::SetOff);
+        // Short gaps between regular ticks do not restart the dwell.
+        MitsubishiModeHistory r;
+        r.observe(false,0);r.observe(false,4*m);r.observe(false,8*m);
+        assert(r.since_change(40*m)==40*m);
+        // A dispatched command restarts it; reset() (arming) does too.
+        r.command_dispatched(41*m);
+        assert(r.since_change(42*m)==1*m);
+        r.reset(50*m);
+        assert(r.since_change(50*m)==0);
+        // uint32 millis() wrap-around stays correct.
+        MitsubishiModeHistory w;
+        w.reset(0xFFFFFF00u);
+        assert(w.since_change(0x00000100u)==0x200u);
+    }
     // Codex P1 repro (PR #28): target 12 C, room at 11.99/12.00 C, cheap and
     // expensive 15-min slots alternating. Without a dwell HEAT/OFF changed
     // every 15 min; now mode changes are >= 30 min apart.

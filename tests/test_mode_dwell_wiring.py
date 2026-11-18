@@ -10,6 +10,8 @@ MAIN = (Path(__file__).resolve().parents[1] / "firmware" / "cottage" / "src" /
         "main.cpp").read_text(encoding="utf-8")
 TICK = MAIN.split("static void cottage_control_tick() {", 1)[1].split(
     "static void cottage_control_registration()", 1)[0]
+POST = MAIN.split("static bool cn105_bridge_post(", 1)[1].split(
+    "static void cottage_control_tick()", 1)[0]
 
 
 class ModeDwellWiring(unittest.TestCase):
@@ -18,18 +20,25 @@ class ModeDwellWiring(unittest.TestCase):
         self.assertLess(TICK.index("control_note_observed_mode(current_heat);"),
                         TICK.index("choose_mitsubishi_control(candidate)"))
 
-    def test_mode_command_starts_dwell_before_dispatch(self):
-        start = TICK.index("control_mode_change_ms.store(millis());")
-        self.assertLess(start, TICK.index("cn105_bridge_post(request"))
+    def test_dwell_starts_at_actual_dispatch(self):
+        # Codex P2 (post-merge #28): only after all preconditions, right
+        # before the POST; never in the tick before preparation can fail.
+        self.assertNotIn("control_note_mode_dispatch()", TICK)
+        start = POST.index("control_note_mode_dispatch();")
+        self.assertLess(start, POST.index('req.POST("")'))
+        self.assertGreater(start, POST.rindex("c23_config_generation()!=config_generation", 0,
+                                              POST.index('req.POST("")')))
 
     def test_readback_and_arming_update_history(self):
         self.assertIn("control_note_observed_mode(read_heating);", TICK)
         arm = MAIN.split('web.on("/api/control/arm"', 1)[1]
-        self.assertLess(arm.index("control_mode_change_ms.store(millis());"),
+        self.assertLess(arm.index("control_reset_mode_history();"),
                         arm.index("control_armed.store(requested)"))
 
-    def test_boot_starts_with_unknown_history(self):
-        self.assertIn("static std::atomic<uint32_t> control_mode_change_ms{0};", MAIN)
+    def test_history_is_shared_class_with_lock(self):
+        self.assertIn("static MitsubishiModeHistory control_mode_history{};", MAIN)
+        self.assertIn("candidate.ms_since_mode_change=control_ms_since_mode_change();", TICK)
+        self.assertIn("portENTER_CRITICAL(&mode_history_lock);", MAIN)
 
 
 if __name__ == "__main__":
