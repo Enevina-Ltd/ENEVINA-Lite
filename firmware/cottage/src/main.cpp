@@ -32,6 +32,7 @@
 #include "cottage/url_guard.hpp"
 #include "cottage/mode_timing.hpp"
 #include "cottage/price_bootstrap.hpp"
+#include "cottage/mitsubishi_climate_command.hpp"
 #include "cottage/finnish_tariff.hpp"
 #include "cottage/sse_transport.hpp"
 #include "cottage/cn105_source_proof.hpp"
@@ -519,6 +520,11 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     BootstrapInput input{};
     input.indoor_fresh=valid_temperature(t,now);
     input.indoor_c=t.indoor_c;
+    const CottageModeConfig mode=c23_mode_config();
+    // Saved Hold target is user-configurable via local UI. Cold/Drying
+    // remain at the current baseline 16C until their own limits are modeled.
+    input.desired_room_c=mode.mode==CottageMode::Hold?
+        mode.hold_target_c:16.0;
     input.currently_heating=confirmed.mode==ObservedPumpMode::Heat &&
                             valid_cn105(confirmed,now);
     // A replayed SSE snapshot must never certify HEAT/OFF dwell.
@@ -1006,6 +1012,25 @@ static void status_endpoint() {
     cJSON_AddStringToObject(root,"bootstrap_reason",
                              bootstrap_reason_name(bootstrap.reason));
     cJSON_AddBoolToObject(root,"bootstrap_executable",false);
+    if(bootstrap.requested_room_c>0)
+        cJSON_AddNumberToObject(root,"bootstrap_room_target_c",
+                                bootstrap.requested_room_c);
+    else cJSON_AddNullToObject(root,"bootstrap_room_target_c");
+    // Transport path can be inspected before F08 activation. This is a
+    // string preview only; no network POST exists in the Lite runtime.
+    if(bootstrap.action==BootstrapAction::HeatSetpoint) {
+        cJSON_AddNumberToObject(root,"bootstrap_heat_setpoint_c",
+                                bootstrap.heat_setpoint_c);
+        const auto request=mitsubishi_setpoint_request(
+            bootstrap.heat_setpoint_c);
+        if(request.valid)
+            cJSON_AddStringToObject(root,"bootstrap_mitsubishi_command_preview",
+                                    request.path.data());
+        else cJSON_AddNullToObject(root,"bootstrap_mitsubishi_command_preview");
+    } else {
+        cJSON_AddNullToObject(root,"bootstrap_heat_setpoint_c");
+        cJSON_AddNullToObject(root,"bootstrap_mitsubishi_command_preview");
+    }
     if(bootstrap.action!=BootstrapAction::Unavailable) {
         cJSON_AddNumberToObject(root,"bootstrap_total_now",
                                 bootstrap.current_total_eur_per_kwh);

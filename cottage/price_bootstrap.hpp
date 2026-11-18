@@ -1,5 +1,5 @@
 #pragma once
-// Deterministic, manufacturer-independent price-aware 16C fallback before
+// Deterministic, manufacturer-independent price-aware setpoint fallback before
 // building physics has enough observations for calibrated MPC.
 // This is a proposal only; PumpAdapter/Supervisor must separately authorize writes.
 #include <algorithm>
@@ -9,7 +9,7 @@
 #include <cstdint>
 
 namespace enevina::cottage {
-enum class BootstrapAction : uint8_t { Unavailable, Heat16, Off, Hold };
+enum class BootstrapAction : uint8_t { Unavailable, HeatSetpoint, Off, Hold };
 enum class BootstrapReason : uint8_t {
     MissingTemperature, MissingPrices, TemperatureLow, TemperatureHigh,
     CheapWindow, ExpensiveWindow, Hysteresis
@@ -17,6 +17,10 @@ enum class BootstrapReason : uint8_t {
 struct BootstrapInput {
     double indoor_c=0;
     bool indoor_fresh=false;
+    // User-selected room temperature, not necessarily the pump sensor temperature.
+    // Can be lower than the device's 16C minimum: heating then cycles by room
+    // temperature instead of trying an unsupported device setpoint.
+    double desired_room_c=16.0;
     // Prices include ALL marginal EUR/kWh components for each 15m slot.
     const double* next_total_prices=nullptr;
     size_t price_count=0;
@@ -34,13 +38,18 @@ struct BootstrapDecision {
     BootstrapReason reason=BootstrapReason::MissingTemperature;
     double compared_median_eur_per_kwh=0;
     double current_total_eur_per_kwh=0;
+    double requested_room_c=0;
+    double heat_setpoint_c=0; // only valid for HeatSetpoint, 16..26 in 0.5C steps
     // Physical commands NEVER originate in this model-free module.
     bool executable=false;
 };
 inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     BootstrapDecision d{};
     if(!in.indoor_fresh || !std::isfinite(in.indoor_c) ||
-        in.indoor_c< -10 || in.indoor_c>40) return d;
+        in.indoor_c< -10 || in.indoor_c>40 ||
+        !std::isfinite(in.desired_room_c) ||
+        in.desired_room_c<5.0 || in.desired_room_c>24.0) return d;
+    d.requested_room_c=in.desired_room_c;
     if(!in.prices_contiguous_and_fresh || !in.next_total_prices ||
        in.price_count<8 || in.price_count>96) {
         d.reason=BootstrapReason::MissingPrices;
@@ -60,36 +69,36 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     d.compared_median_eur_per_kwh=in.price_count%2?
         sorted[mid]:(sorted[mid-1]+sorted[mid])*0.5;
     d.current_total_eur_per_kwh=in.next_total_prices[0];
-    // Ruuvi-based hard temperature band; never rely on an uncalibrated
-    // heat-loss / COP curve. 16C is a HEAT setpoint, not inferred room target.
-    if(in.indoor_c<=15.5) {
-        d.action=BootstrapAction::Heat16;
-        d.reason=BootstrapReason::TemperatureLow;
-        return d;
-    }
-    if(in.indoor_c>=17.0) {
+    // Room-target hysteresis is independent of the CN105 pump setpoint.
+    // The latter is only a suggested actuator request, not a guaranteed
+    // resulting cabin temperature (that requires a calibrated model).
+    const bool cheap=in.next_total_prices[0]<=d.compared_median_eur_per_kwh;
+    const bool below=in.indoor_c<=in.desired_room_c-0.5;
+    const bool above=in.indoor_c>=in.desired_room_c+0.5;
+    if(above) {
         d.action=BootstrapAction::Off;
         d.reason=BootstrapReason::TemperatureHigh;
-        return d;
-    }
-    // In the comfort band the cheapest half of the verified 2h horizon
-    // is used for additional heating, without fabricating a COP saving.
-    // Hysteresis: do not flip a running compressor inside the 16C band
-    // if the temperature has not reached 16.5C.
-    if(in.actuator_dwell_verified &&
-       in.currently_heating && in.indoor_c<16.5) {
-        d.action=BootstrapAction::Hold;
-        d.reason=BootstrapReason::Hysteresis;
+    } else if(below) {
+        d.action=BootstrapAction::HeatSetpoint;
+        d.reason=BootstrapReason::TemperatureLow;
     } else if(in.actuator_dwell_verified &&
-              in.confirmed_minutes_in_mode<60) {
+       ((in.currently_heating && in.indoor_c<in.desired_room_c+0.25) ||
+        in.confirmed_minutes_in_mode<60)) {
         d.action=BootstrapAction::Hold;
         d.reason=BootstrapReason::Hysteresis;
-    } else if(in.next_total_prices[0] <= d.compared_median_eur_per_kwh) {
-        d.action=BootstrapAction::Heat16;
+    } else if(cheap) {
+        d.action=BootstrapAction::HeatSetpoint;
         d.reason=BootstrapReason::CheapWindow;
     } else {
         d.action=BootstrapAction::Off;
         d.reason=BootstrapReason::ExpensiveWindow;
+    }
+    if(d.action==BootstrapAction::HeatSetpoint) {
+        // Nominal target+0.5C, cheap-hours boost +2C when below target or
+        // +1C in the deadband. Conservative heuristic, NOT COP optimization.
+        const double lift=cheap?(below?2.0:1.0):0.5;
+        const double raw=std::max(16.0,std::min(26.0,in.desired_room_c+lift));
+        d.heat_setpoint_c=std::round(raw*2.0)/2.0;
     }
     return d;
 }
@@ -97,8 +106,8 @@ inline const char* bootstrap_reason_name(BootstrapReason reason) {
     switch(reason) {
     case BootstrapReason::MissingTemperature:return "RUUVI_STALE";
     case BootstrapReason::MissingPrices:return "PRICES_UNAVAILABLE";
-    case BootstrapReason::TemperatureLow:return "TEMPERATURE_BELOW_15_5";
-    case BootstrapReason::TemperatureHigh:return "TEMPERATURE_ABOVE_17";
+    case BootstrapReason::TemperatureLow:return "BELOW_ROOM_TARGET";
+    case BootstrapReason::TemperatureHigh:return "ABOVE_ROOM_TARGET";
     case BootstrapReason::CheapWindow:return "LOW_COST_WINDOW";
     case BootstrapReason::ExpensiveWindow:return "HIGH_COST_WINDOW";
     case BootstrapReason::Hysteresis:return "MIN_RUN_AND_HYSTERESIS";
@@ -108,7 +117,7 @@ inline const char* bootstrap_reason_name(BootstrapReason reason) {
 inline const char* bootstrap_action_name(BootstrapAction action) {
     switch(action) {
     case BootstrapAction::Unavailable:return "UNAVAILABLE";
-    case BootstrapAction::Heat16:return "HEAT_16";
+    case BootstrapAction::HeatSetpoint:return "HEAT_SETPOINT";
     case BootstrapAction::Off:return "OFF";
     case BootstrapAction::Hold:return "HOLD";
     }

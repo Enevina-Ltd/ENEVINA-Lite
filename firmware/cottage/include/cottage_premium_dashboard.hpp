@@ -84,7 +84,7 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
   <section class="view" id="view-settings">
     <div class="heading"><div><div class="eyebrow">Olosuhteet ja laite</div><h1>Asetukset ja diagnostiikka</h1><p>Vain paikalliset laskennalliset tavoitteet. Ei lämpöpumpun käskyjä.</p></div></div>
     <div class="grid">
-      <article class="card span7"><h2>Pihamökin toimintatila</h2><p class="tiny muted">Asetukset vaikuttavat laskentaan ja varoituksiin. Todellinen Mitsubishi säilyttää oman ohjauksensa.</p><div class="mode" role="group" aria-label="Laskennallinen tila"><button type="button" data-mode="0">Kylmillään</button><button type="button" data-mode="1">Kuivanapito</button><button type="button" data-mode="2">Ylläpitolämpö</button></div><div class="fieldrow" style="margin-top:17px"><label class="field">Ylläpitotavoite °C<input id="setting-hold" type="number" min="5" max="24" step=".5" inputmode="decimal"></label><label class="field">Kuivanapito Δ°C<input id="setting-delta" type="number" min="3" max="5" step=".5" inputmode="decimal"></label><button class="primary" id="save-mode" type="button" disabled>Tallenna asetukset</button></div><div id="feedback" role="status"></div></article>
+      <article class="card span7"><h2>Pihamökin toimintatila</h2><p class="tiny muted">Asetukset vaikuttavat laskentaan ja varoituksiin. Todellinen Mitsubishi säilyttää oman ohjauksensa.</p><div class="mode" role="group" aria-label="Laskennallinen tila"><button type="button" data-mode="0">Kylmillään</button><button type="button" data-mode="1">Kuivanapito</button><button type="button" data-mode="2">Ylläpitolämpö</button></div><div class="fieldrow" style="margin-top:17px"><label class="field">Ylläpitotavoite °C<input id="setting-hold" type="number" min="5" max="24" step=".5" inputmode="decimal"></label><label class="field">Kuivanapito Δ°C<input id="setting-delta" type="number" min="3" max="5" step=".5" inputmode="decimal"></label><button class="primary" id="save-mode" type="button" disabled>Tallenna asetukset</button></div><div id="feedback" role="status"></div><p class="tiny muted">Valitse Ylläpitolämpö ja oma huonetavoite. Hintaehdotus laskee Mitsubishille 16–26 °C pyyntilämpötilan 0,5 °C askelin; komentoja ei vielä lähetetä.</p></article>
       <article class="card span5"><h2>Laitteen tila</h2><div class="statusgrid"><span>Ohjelmistoversio</span><span id="device-version">—</span><span>Wi-Fi RSSI</span><span id="device-wifi">—</span><span>CN105-telemetria</span><span id="device-cn105">—</span><span>Shelly-mittaus</span><span id="device-shelly">—</span><span>Sisäinen vapaa RAM</span><span id="device-ram">—</span><span>PSRAM vapaana</span><span id="device-psram">—</span><span>OTA-lataus käytössä</span><span id="device-ota">—</span></div><p class="foot"><a href="/diagnostics" style="text-decoration:underline">Avaa alkuperäinen tekninen diagnostiikka</a></p></article>
       <article class="card span12"><h2>Mitsubishi CN105 · vastaanotettu data</h2><div class="statusgrid"><span>Viimeisin SSE-tilaviesti</span><span id="mitsubishi-read-status">—</span><span>Pumpun tila (SSE)</span><span id="mitsubishi-read-mode">—</span><span>Pumpun sisälämpötila (SSE)</span><span id="mitsubishi-read-temp">—</span><span>Asetuslämpötila (SSE)</span><span id="mitsubishi-read-setpoint">—</span><span>Kompressori (SSE)</span><span id="mitsubishi-read-hz">—</span><span>Kompressoriviestin ikä</span><span id="mitsubishi-compressor-age">—</span></div><p class="foot">ESPHome /events -rajapinnasta vastaanotettu viimeisin tilatieto. Viestin vastaanottoaika ei todista uutta CN105-UART-lukua, eikä näitä arvoja käytetä optimoinnin turvallisuushyväksyntään.</p></article>
       <article class="card span12"><h2>Sisäilman historia · RuuviTag</h2><div id="history-chart" class="chart"><div class="empty">Historiatietoja odotetaan</div></div><p class="foot">Viimeisimmät mittaukset, ei rakenteen kosteusmittaus. Offline-ajalta tallennettuja aikaleimoja ei esitetä UTC-aikana.</p></article>
@@ -182,8 +182,9 @@ function showPrices(){
 function showPlan(){
   const p=state.plan||{},s=state.status||{},ok=p.valid===true&&Array.isArray(p.slots)&&p.slots.length>0;
   const bootstrap=s.bootstrap_action;
-  const proposed=bootstrap==='HEAT_16'?'HEAT 16 °C':bootstrap==='OFF'?'OFF':
-                 bootstrap==='HOLD'?'Pidä nykyinen tila':null;
+  const proposed=bootstrap==='HEAT_SETPOINT'&&number(s.bootstrap_heat_setpoint_c)!==null?
+    'HEAT '+fmt(s.bootstrap_heat_setpoint_c,1)+' °C':
+    bootstrap==='OFF'?'OFF':bootstrap==='HOLD'?'Pidä nykyinen tila':null;
   const hasFallback=!ok&&proposed!==null;
   text('home-plan-state',ok?'MPC-laskelma':hasFallback?'Hintaohjauksen ehdotus':'Ei hyväksyttyä suunnitelmaa');
   text('plan-status',ok?String(p.count)+' jaksoa':hasFallback?'Lähtötason hintaohjaus':'Ei käytössä');
@@ -193,8 +194,9 @@ function showPlan(){
   text('home-plan-next',ok?'Seuraava jakso '+time(p.slots[0].utc)+': '+(p.slots[0].heat?'HEAT 16 °C':'OFF'):
     hasFallback?'Lähtötason ehdotus: '+proposed:'Hyväksytty optimointisuunnitelma puuttuu.');
   text('home-plan-reason',ok?'Simuloitu MPC-ehdotus. Ei fyysistä ohjausta.':
-    hasFallback?'Ruuvi + 15 min kokonaishinnat; syy: '+(s.bootstrap_reason||'—')+
-      '. Ei kalibroitua MPC:tä eikä ohjauskäskyjä.':
+    hasFallback?'Ruuvi + 15 min kokonaishinnat; huonetavoite '+
+      fmt(s.bootstrap_room_target_c,1)+' °C; syy: '+(s.bootstrap_reason||'—')+
+      '. Ehdotus ei ole kalibroitu MPC eikä lähetä ohjauskäskyjä.':
     'Ehdotus estetty: '+(s.bootstrap_reason||'puutteelliset lähtötiedot')+'. Ei fyysisiä käskyjä.');
   text('plan-warning',ok?'Ehdotukset ovat laskennallisia. Fyysiset ohjauskäskyt ovat estettyjä.':
     hasFallback?'Lähtötason hintaohjaus: '+proposed+' (ehdotus, ei käsky). Kalibroitua MPC-suunnitelmaa ei ole vielä saatavilla.':
