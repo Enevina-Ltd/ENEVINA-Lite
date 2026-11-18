@@ -363,20 +363,23 @@ function showPlan(){
     'HEAT '+fmt(s.bootstrap_heat_setpoint_c,1)+' °C':
     bootstrap==='OFF'?'OFF':bootstrap==='HOLD'?'Pidä nykyinen tila':null;
   const hasFallback=!ok&&proposed!==null;
-  text('home-plan-state',ok?'MPC-laskelma':hasFallback?'Hintaohjauksen ehdotus':'Ei hyväksyttyä suunnitelmaa');
-  text('plan-status',ok?String(p.count)+' jaksoa':hasFallback?'Lähtötason hintaohjaus':'Ei käytössä');
+  const priced=s.bootstrap_price_data_valid===true;
+  const policyLabel=priced?'Hintaohjauksen ehdotus':'Huonetermostaatin ehdotus';
+  text('home-plan-state',ok?'MPC-laskelma':hasFallback?policyLabel:'Ei hyväksyttyä suunnitelmaa');
+  text('plan-status',ok?String(p.count)+' jaksoa':hasFallback?(priced?'Hintaohjaus':'Termostaattiohjaus'):'Ei käytössä');
   text('plan-time',ok?'Laskettu '+time(s.optimized_utc):'Ei kelvollista laskelmaa');
   text('plan-cost',ok&&number(p.cost_eur)!==null?fmt(p.cost_eur,2)+' €':'—');
   text('plan-min',ok&&number(p.minimum_c)!==null?fmt(p.minimum_c,1)+' °C':'—');
   text('home-plan-next',ok?'Seuraava jakso '+time(p.slots[0].utc)+': '+(p.slots[0].heat?'HEAT 16 °C':'OFF'):
     hasFallback?'Lähtötason ehdotus: '+proposed:'Hyväksytty optimointisuunnitelma puuttuu.');
   text('home-plan-reason',ok?'Simuloitu MPC-ehdotus. Automaattiohjaus toimii erillisellä hintaohjauspolulla.':
-    hasFallback?'Ruuvi + 15 min kokonaishinnat; huonetavoite '+
-      fmt(s.bootstrap_room_target_c,1)+' °C; syy: '+(s.bootstrap_reason||'—')+
-      '. Ehdotus ei ole kalibroitu MPC; CN105-ohjaus erillisen käyttäjän valinnan takana.':
+    hasFallback?(priced?'Ruuvi + 15 min kokonaishinnat; ':'Hintadata puuttuu: Ruuvi-huonetermostaatti; ')+
+      'huonetavoite '+fmt(s.bootstrap_room_target_c,1)+' °C; syy: '+(s.bootstrap_reason||'—')+
+      '. CN105-ohjaus edellyttää käyttäjän valintaa.':
     'Ehdotus estetty: '+(s.bootstrap_reason||'puutteelliset lähtötiedot')+'.');
   text('plan-warning',ok?'Ehdotukset ovat laskennallisia. Fyysiset ohjauskäskyt ovat estettyjä.':
-    hasFallback?'Lähtötason hintaohjaus: '+proposed+' (ehdotus, ei käsky). Kalibroitua MPC-suunnitelmaa ei ole vielä saatavilla.':
+    hasFallback?(priced?'Lähtötason hintaohjaus: ':'Hintojen puuttuessa termostaatti: ')+
+       proposed+' (ehdotus; automaattiohjauksen käynnistys valitaan Asetuksissa).':
     'Optimointiehdotus ei ole saatavilla. Puuttuva lämpötila tai puutteellinen hintajakso estää laskennan.');
   const body=$('plan-rows');body.replaceChildren();
   if(!ok){

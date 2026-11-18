@@ -96,6 +96,16 @@ static TaskHandle_t task_ota=nullptr;
 static bool shelly_relay_on=false;
 // Production control is explicitly ARMED via local setting, never by OTA.
 static std::atomic<bool> control_armed{false};
+// Owner decision 18.11.2026: >= 30 min between HEAT<->OFF changes. Last change
+// = last mode command sent, last change observed via bridge GET, boot or
+// arming (unknown history -> wait). millis()-based, survives NTP jumps.
+static std::atomic<uint32_t> control_mode_change_ms{0};
+static std::atomic<int> control_last_seen_heat{-1}; // web + optimizer tasks
+static void control_note_observed_mode(bool heating) {
+    const int seen=heating?1:0;
+    const int prior=control_last_seen_heat.exchange(seen);
+    if(prior>=0 && prior!=seen) control_mode_change_ms.store(millis());
+}
 static std::atomic<int> control_gate{static_cast<int>(ControlBlock::Disabled)};
 static std::atomic<int> control_last_step{static_cast<int>(ControlStep::None)};
 static std::atomic<uint32_t> control_commands_sent{0};
@@ -104,6 +114,11 @@ static std::atomic<uint32_t> control_commands_failed{0};
 static std::atomic<int64_t> control_last_command_utc{0};
 static std::atomic<int64_t> control_last_ack_utc{0};
 static std::atomic<int64_t> control_last_bridge_read_utc{0};
+// Observe the physical CN105 command path without serial access.
+static std::atomic<int> control_post_stage{0};
+static std::atomic<int> control_post_http_code{0};
+static std::atomic<int> control_get_http_code{0};
+
 static char reason_text[80]="Käynnistys";
 struct Row {
     int64_t utc=0;
@@ -527,22 +542,37 @@ static enevina::Tariff tariff(bool night=false) {
 // exists. A 2-hour window must contain 8 contiguous verified 15-minute
 // TOTAL marginal-cost slots. This function never emits an actuator command.
 static BootstrapDecision bootstrap_preview(int64_t now,
-                                            const TemperatureSample& t,
-                                            const CN105Telemetry& confirmed) {
+                                            const TemperatureSample& t) {
     BootstrapInput input{};
     input.indoor_fresh=valid_temperature(t,now);
     input.indoor_c=t.indoor_c;
     const CottageModeConfig mode=c23_mode_config();
-    // Distinct user-configured room targets: occupied living and
-    // maintenance are never overwritten by switching to the other mode.
-    // Cold/Drying retain their existing non-actuating preview baseline.
-    input.desired_room_c=mode.mode==CottageMode::Occupied?
-        mode.occupied_target_c:
-        mode.mode==CottageMode::Hold?mode.hold_target_c:16.0;
-    input.currently_heating=confirmed.mode==ObservedPumpMode::Heat &&
-                            valid_cn105(confirmed,now);
-    // A replayed SSE snapshot must never certify HEAT/OFF dwell.
-    input.confirmed_minutes_in_mode=0;
+    // Use the actual target from the same mode physics shown in /api/status.
+    // Drying is outside-temperature+delta (can be BELOW pump's 16C setting),
+    // so the controller uses HEAT 16C only when room temperature needs it.
+    const CottageModePlan target_plan=c23_current_mode_plan();
+    if(mode.mode==CottageMode::Cold) {
+        BootstrapDecision off{};
+        off.action=BootstrapAction::Off;
+        off.reason=BootstrapReason::NoHeatingRequested;
+        return off; // Explicit user-selected "Kylmillään".
+    }
+    if(!target_plan.has_target ||
+       !std::isfinite(target_plan.target_c)) {
+        return {}; // Cannot make up a drying temperature without outside data.
+    }
+    if(mode.mode==CottageMode::Drying && drying_blocks_heat(target_plan)) {
+        // The existing humidity duration and hysteresis decide whether
+        // drying heat is permitted at all. A target alone is NOT permission
+        // to heat dry air, especially with prices unavailable. Once it is
+        // permitted, the bootstrap's room deadband (HOLD) prevents toggling.
+        BootstrapDecision no_heat{};
+        no_heat.action=BootstrapAction::Off;
+        no_heat.reason=BootstrapReason::NoHeatingRequested;
+        no_heat.requested_room_c=target_plan.target_c;
+        return no_heat;
+    }
+    input.desired_room_c=target_plan.target_c;
     const auto market=enevina_firmware::market_status();
     constexpr size_t N=8;
     std::array<enevina_firmware::PricePoint,N> points{};
@@ -596,6 +626,7 @@ static bool cn105_bridge_get(bool& heating,double& target) {
     if(!req.begin(client,url))return false;
     req.addHeader("Cache-Control","no-cache");
     const int code=req.GET();
+    control_get_http_code.store(code);
     const int body_size=req.getSize();
     bool good=false;
     if(code==200&&body_size>0&&body_size<1800) {
@@ -629,49 +660,66 @@ static bool cn105_bridge_get(bool& heating,double& target) {
 static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
                               uint32_t config_generation,ControlStep step,
                               double required_target) {
-    if(!command.valid || !control_armed.load() || !wifi_ok.load())return false;
+    control_post_stage.store(1);
+    control_post_http_code.store(0);
+    if(!command.valid || !control_armed.load() || !wifi_ok.load()) {
+        control_post_stage.store(-1);return false;
+    }
     const String url=cn105_local_url(command.path.data());
-    if(url.isEmpty())return false;
-    enevina_firmware::NetworkBudgetLease lease(1000,72*1024,16*1024);
-    if(!lease.held())return false;
-    // Network-budget wait is a cancellation point. Never dispatch a command
-    // prepared before a completed DISARM, mode or target configuration change.
-    if(!control_armed.load() || c23_config_generation()!=config_generation ||
-       (c23_mode_config().mode!=CottageMode::Hold &&
-        c23_mode_config().mode!=CottageMode::Occupied) || !wifi_ok.load() ||
-       !clock_ok())return false;
+    if(url.isEmpty()) {control_post_stage.store(-2);return false;}
+    // Never hold NetworkBudgetLease across cn105_bridge_get(): it owns its
+    // own non-recursive network mutex. Revalidate after this blocking GET.
     const int64_t now=time(nullptr);
     const auto current_temp=c23_temperature_sample();
-    CN105Telemetry observed{};
-    int64_t current_link_utc=0;
-    xSemaphoreTake(lock_data,portMAX_DELAY);
-    observed=sse_observed_pump;current_link_utc=cn105_link_event_utc;
-    xSemaphoreGive(lock_data);
-    // ESPHome GET returns the bridge's reported state. The optional
-    // Verified Snapshot UART proof is never a prerequisite for this pilot.
-    if(!valid_temperature(current_temp,now) ||
-       !sse_stream_active.load() || current_link_utc<=0 ||
-       now<current_link_utc || now-current_link_utc>180)return false;
-    const auto latest=bootstrap_preview(now,current_temp,observed);
+    // A direct CN105 HTTP GET is the live device check. An unrelated SSE
+    // heartbeat or a proprietary "Verified Snapshot" is not required.
+    const CottageMode current_mode=c23_mode_config().mode;
+    if(current_mode!=CottageMode::Cold &&
+       !valid_temperature(current_temp,now))return false;
+    bool bridge_heat=false;double bridge_setpoint=0;
+    if(!cn105_bridge_get(bridge_heat,bridge_setpoint)) {
+        control_post_stage.store(-3);return false;
+    }
+    control_post_stage.store(3);
+    const auto latest=bootstrap_preview(now,current_temp);
     if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
        (latest.action!=BootstrapAction::HeatSetpoint ||
         std::fabs(latest.heat_setpoint_c-required_target)>0.001))return false;
     if(step==ControlStep::SetOff && latest.action!=BootstrapAction::Off)
         return false;
+    enevina_firmware::NetworkBudgetLease lease(1000,72*1024,16*1024);
+    if(!lease.held()) {control_post_stage.store(-4);return false;}
+    control_post_stage.store(4);
+    // Network-budget wait is another cancellation point. A user's updated
+    // settings always supersede an in-flight automatic command.
+    if(!control_armed.load() || c23_config_generation()!=config_generation ||
+       !wifi_ok.load() || !clock_ok())return false;
+    const auto refreshed=bootstrap_preview(time(nullptr),c23_temperature_sample());
+    if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
+       (refreshed.action!=BootstrapAction::HeatSetpoint ||
+        std::fabs(refreshed.heat_setpoint_c-required_target)>0.001))
+        return false;
+    if(step==ControlStep::SetOff &&
+       refreshed.action!=BootstrapAction::Off)return false;
     WiFiClient client;
     HTTPClient req;
     req.setConnectTimeout(1500);req.setTimeout(1800);
     req.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    if(!req.begin(client,url))return false;
+    if(!req.begin(client,url)) {control_post_stage.store(-5);return false;}
     req.addHeader("Content-Type","application/x-www-form-urlencoded");
+    // Arduino-ESP32 HTTPClient::sendRequest only adds Content-Length when
+    // payload size > 0. ESPHome's local WebServer rejects POST without it
+    // with HTTP 411. Explicitly send zero length for command-only queries.
+    req.addHeader("Content-Length","0");
+    control_post_stage.store(5);
     // Last cancellation point after all potentially blocking preparation.
-    if(!control_armed.load() || c23_config_generation()!=config_generation ||
-       (c23_mode_config().mode!=CottageMode::Hold &&
-        c23_mode_config().mode!=CottageMode::Occupied)) {
+    if(!control_armed.load() || c23_config_generation()!=config_generation) {
         req.end();
         return false;
     }
     const int code=req.POST("");
+    control_post_http_code.store(code);
+    control_post_stage.store(code>=200 && code<300?6:-6);
     req.end();
     return code>=200 && code<300;
 }
@@ -688,33 +736,13 @@ static void cottage_control_tick() {
     const uint32_t config_generation=c23_config_generation();
     const auto sample=c23_temperature_sample();
     const int64_t now=time(nullptr);
-    CN105Telemetry pump_snapshot{};
-    int64_t link_utc=0;
-    xSemaphoreTake(lock_data,portMAX_DELAY);
-    pump_snapshot=pump;
-    link_utc=cn105_link_event_utc;
-    xSemaphoreGive(lock_data);
-    const auto proposal=bootstrap_preview(now,sample,pump_snapshot);
-    // The source-link heartbeat is necessary but not sufficient:
-    // direct bridge GET and subsequent state readback are required as well.
-    const bool link_fresh=sse_stream_active.load() &&
-        link_utc>0 && now>=link_utc && now-link_utc<=180;
-    if((mode.mode!=CottageMode::Hold && mode.mode!=CottageMode::Occupied)) {
-        control_gate.store(static_cast<int>(ControlBlock::NotInHeatingMode));
-        return;
-    }
-    if(!valid_temperature(sample,now) ||
-       proposal.action==BootstrapAction::Unavailable || !link_fresh) {
+    const auto proposal=bootstrap_preview(now,sample);
+    // CN105 direct GET is authoritative enough for this local pilot;
+    // optional SSE callbacks do not block physical control.
+    if((mode.mode!=CottageMode::Cold &&
+        !valid_temperature(sample,now)) ||
+       proposal.action==BootstrapAction::Unavailable) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
-        return;
-    }
-    // After a failed write/readback do not retry for 15 minutes.
-    static uint64_t last_failed_ms=0;
-    static bool failure_present=false;
-    const uint64_t now_ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
-    if(failure_present && (now_ms<last_failed_ms ||
-        now_ms-last_failed_ms<900000ULL)) {
-        control_gate.store(static_cast<int>(ControlBlock::RateLimited));
         return;
     }
     bool current_heat=false;
@@ -723,53 +751,32 @@ static void cottage_control_tick() {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
     }
-    static bool last_command_present=false;
-    static uint64_t last_command_ms=0;
-    static bool mode_change_present=false;
-    static uint64_t last_mode_change_ms=0;
-    static bool last_bridge_heat_known=false;
-    static bool last_bridge_heat=false;
-    static uint64_t last_bridge_get_ms=0;
-    // A new externally commanded mode or a prolonged loss of bridge
-    // observations resets the minimum mode-dwell window. It is not inferred
-    // from the optional Verified Snapshot event.
-    const bool bridge_gap=last_bridge_heat_known &&
-        (now_ms<last_bridge_get_ms ||
-         now_ms-last_bridge_get_ms>180000ULL);
-    if(!mode_change_present || bridge_gap ||
-       (last_bridge_heat_known && last_bridge_heat!=current_heat)) {
-        mode_change_present=true;
-        last_mode_change_ms=now_ms;
-    }
-    last_bridge_heat=current_heat;
-    last_bridge_heat_known=true;
-    last_bridge_get_ms=now_ms;
     // Preflight GET can block: old sensor, mode and user authorization
     // snapshots must never be carried into the physical POST.
     if(!control_armed.load() ||
        config_generation!=c23_config_generation() ||
-       (c23_mode_config().mode!=CottageMode::Hold &&
-        c23_mode_config().mode!=CottageMode::Occupied) ||
-       !valid_temperature(c23_temperature_sample(),time(nullptr))) {
+       (mode.mode!=CottageMode::Cold &&
+        !valid_temperature(c23_temperature_sample(),time(nullptr)))) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
     }
     ControlSnapshot candidate{};
     candidate.armed=control_armed.load();
-    candidate.heating_mode=mode.mode==CottageMode::Hold ||
-                        mode.mode==CottageMode::Occupied;
-    candidate.temperature_fresh=valid_temperature(sample,now);
+    candidate.heating_mode=(mode.mode==CottageMode::Cold ||
+          mode.mode==CottageMode::Drying ||
+          mode.mode==CottageMode::Hold ||
+          mode.mode==CottageMode::Occupied);
+    candidate.temperature_fresh=mode.mode==CottageMode::Cold ||
+                                valid_temperature(sample,now);
     candidate.market_fresh=proposal.action!=BootstrapAction::Unavailable;
-    candidate.cn105_link_fresh=link_fresh;
+    candidate.cn105_link_fresh=true; // direct bridge GET above succeeded
     candidate.bridge_get_ok=true; // separate live ESPHome GET succeeded
     candidate.current_heat=current_heat;
     candidate.current_setpoint_c=current_setpoint;
-    candidate.now_ms=now_ms;
-    candidate.has_last_command=last_command_present;
-    candidate.last_command_ms=last_command_ms;
-    candidate.has_confirmed_mode_change=mode_change_present;
-    candidate.last_mode_change_ms=last_mode_change_ms;
     candidate.proposal=proposal;
+    control_note_observed_mode(current_heat);
+    candidate.ms_since_mode_change=static_cast<uint32_t>(
+        millis()-control_mode_change_ms.load());
     const auto decision=choose_mitsubishi_control(candidate);
     control_gate.store(static_cast<int>(decision.gate));
     if(decision.step==ControlStep::None)return;
@@ -780,19 +787,13 @@ static void cottage_control_tick() {
         decision.step==ControlStep::SetHeat?MitsubishiMode::Heat:
                                             MitsubishiMode::Off);
     if(!request.valid || !control_armed.load())return;
-    // Timestamp from the attempted command, regardless of HTTP status;
-    // prevents retry floods on abrupt gateway or LAN failures.
-    last_command_present=true;
-    last_command_ms=now_ms;
+    // A mode POST may take effect even if its readback fails: start the
+    // dwell now, conservatively, before dispatch.
+    if(decision.step==ControlStep::SetHeat || decision.step==ControlStep::SetOff)
+        control_mode_change_ms.store(millis());
     control_last_step.store(static_cast<int>(decision.step));
     control_last_command_utc.store(now);
     control_commands_sent.fetch_add(1);
-    // Record any mode POST attempt as a potentially applied transition,
-    // including cases where the network reply or subsequent readback fails.
-    if(decision.step!=ControlStep::Setpoint) {
-        mode_change_present=true;
-        last_mode_change_ms=now_ms;
-    }
     const bool sent=cn105_bridge_post(request,config_generation,
                                       decision.step,decision.target_c);
     // ESPHome may acknowledge the POST before updating its REST state.
@@ -804,6 +805,7 @@ static void cottage_control_tick() {
             bool read_heating=false;
             double read_setpoint=0;
             if(!cn105_bridge_get(read_heating,read_setpoint))continue;
+            control_note_observed_mode(read_heating);
             confirmed=decision.step==ControlStep::Setpoint ?
                 std::fabs(read_setpoint-decision.target_c)<=0.001 :
                 decision.step==ControlStep::SetHeat ? read_heating :
@@ -812,22 +814,17 @@ static void cottage_control_tick() {
         }
     }
     if(confirmed) {
+        control_post_stage.store(8);
         control_commands_confirmed.fetch_add(1);
         control_last_ack_utc.store(time(nullptr));
-        failure_present=false;
-        if(decision.step!=ControlStep::Setpoint) {
-            last_mode_change_ms=now_ms;
-            mode_change_present=true;
-        }
     } else {
+        if(control_post_stage.load()==6)control_post_stage.store(-8);
         control_commands_failed.fetch_add(1);
-        last_failed_ms=now_ms;
-        failure_present=true;
     }
 }
 static void cottage_control_registration() {
-    // Every boot and every OTA update starts DISARMED. A previously saved
-    // arm must not silently resume physical writes after reboot.
+    // An OTA or reboot must never silently re-enable physical writes.
+    // A fresh local explicit enable is required once each boot.
     control_armed.store(false);
     Preferences prefs;
     if(prefs.begin("cottage_ctl",false)) {
@@ -852,7 +849,13 @@ static void cottage_control_registration() {
             stored=p.putBool("armed",requested)>0;
             p.end();
         }
-        if(stored)control_armed.store(requested);
+        if(stored) {
+            // Arming starts the dwell window: mode history while disarmed
+            // is unknown (manual remote changes are not observed).
+            control_mode_change_ms.store(millis());
+            control_last_seen_heat.store(-1);
+            control_armed.store(requested);
+        }
         web.send(stored?200:500,"application/json",
             stored?"{\"saved\":true}":"{\"saved\":false}");
     });
@@ -1042,7 +1045,7 @@ static void status_endpoint() {
     t.spot_eur_per_kwh=price.current_spot_eur_per_kwh;
     const bool valid_total=price.current_price_valid &&
         enevina::calculate_total_price(t,total);
-    const BootstrapDecision bootstrap=bootstrap_preview(now,te,cp);
+    const BootstrapDecision bootstrap=bootstrap_preview(now,te);
     cJSON* root=cJSON_CreateObject();
     cJSON_AddStringToObject(root,"mode",control_armed.load()?
         "CN105_AUTOMAATIO_KAYTOSSA":"VARJOTILA_EI_KOMENTOJA");
@@ -1055,6 +1058,9 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"control_commands_sent",control_commands_sent.load());
     cJSON_AddNumberToObject(root,"control_commands_confirmed",control_commands_confirmed.load());
     cJSON_AddNumberToObject(root,"control_commands_failed",control_commands_failed.load());
+    cJSON_AddNumberToObject(root,"control_post_stage",control_post_stage.load());
+    cJSON_AddNumberToObject(root,"control_post_http_code",control_post_http_code.load());
+    cJSON_AddNumberToObject(root,"control_get_http_code",control_get_http_code.load());
     cJSON_AddNumberToObject(root,"control_last_command_utc",
                             static_cast<double>(control_last_command_utc.load()));
     cJSON_AddNumberToObject(root,"control_last_ack_utc",
@@ -1085,7 +1091,9 @@ static void status_endpoint() {
         cJSON_AddNullToObject(root,"bootstrap_heat_setpoint_c");
         cJSON_AddNullToObject(root,"bootstrap_mitsubishi_command_preview");
     }
-    if(bootstrap.action!=BootstrapAction::Unavailable) {
+    cJSON_AddBoolToObject(root,"bootstrap_price_data_valid",
+                             bootstrap.price_data_valid);
+    if(bootstrap.price_data_valid) {
         cJSON_AddNumberToObject(root,"bootstrap_total_now",
                                 bootstrap.current_total_eur_per_kwh);
         cJSON_AddNumberToObject(root,"bootstrap_median_2h",

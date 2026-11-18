@@ -1,5 +1,6 @@
 #include "cottage/ruuvi_v5.hpp"
 #include "cottage/air_humidity.hpp"
+#include "cottage/price_bootstrap.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -221,6 +222,30 @@ int main() {
     auto held=evaluate_cottage_mode(cfg,hysteresis_air,true,true,8,7ULL*3600000);
     assert(held.advisory_heat_needed);
     assert(held.advisory==ModeAdvisory::UnsupportedBelow16);
+    // Codex P2 (PR #28): once the RH-duration condition holds, drying no
+    // longer blocks heat; the bootstrap's +-0.5 C deadband then holds the
+    // current mode instead of toggling on a 0.02 C wobble.
+    assert(drying_blocks_heat(dry)==false && drying_blocks_heat(held)==false);
+    {
+        auto near_target=calculate_air_moisture(11.51,75);
+        auto plan=evaluate_cottage_mode(cfg,near_target,true,true,8,7ULL*3600000);
+        assert(!plan.advisory_heat_needed && !drying_blocks_heat(plan));
+        BootstrapInput in{};
+        in.indoor_fresh=true;in.desired_room_c=plan.target_c;
+        const double seq[]={11.49,11.51,11.49,11.51};
+        BootstrapAction last=BootstrapAction::Unavailable;
+        unsigned toggles=0;bool heating=false;
+        for(double t:seq) {
+            in.indoor_c=t;
+            const auto d=bootstrap_price_decision(in);
+            bool next=heating;
+            if(d.action==BootstrapAction::HeatSetpoint) next=true;
+            else if(d.action==BootstrapAction::Off) next=false;
+            if(last!=BootstrapAction::Unavailable && next!=heating) ++toggles;
+            heating=next;last=d.action;
+        }
+        assert(toggles==0 && heating);
+    }
     auto clear_air=calculate_air_moisture(10,64);
     auto cleared=evaluate_cottage_mode(cfg,clear_air,true,true,8,0);
     assert(!cleared.advisory_heat_needed);

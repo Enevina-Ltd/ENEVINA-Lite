@@ -21,7 +21,7 @@ class ShadowSurfaceTests(unittest.TestCase):
         self.assertIn('c23_authorize_local_setting(web.arg("token").c_str())',self.main)
         self.assertIn('control_armed.store(false)',self.main)
         self.assertIn('if(prefs.getBool("armed",false))prefs.putBool("armed",false)',self.main)
-        self.assertIn('mode.mode!=CottageMode::Hold',self.main)
+        self.assertIn('mode.mode==CottageMode::Drying',self.main)
         self.assertIn('valid_temperature(sample,now)',self.main)
         self.assertIn('control_last_bridge_read_utc',self.main)
 
