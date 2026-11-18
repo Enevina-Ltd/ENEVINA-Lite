@@ -1,5 +1,5 @@
 #pragma once
-// Pure, platform-independent persisted FMI forecast contract; no ESP-IDF I/O.
+// Pure, platform-independent persisted MET Norway forecast contract; no ESP-IDF I/O.
 #include "forecast/fmi.hpp"
 #include <array>
 #include <cmath>
@@ -9,7 +9,7 @@
 
 namespace enevina_firmware {
 constexpr size_t weather_max_points=64;
-constexpr uint32_t weather_cache_version=2;
+constexpr uint32_t weather_cache_version=3;
 
 struct WeatherLocation {
     int32_t latitude_e5=0;
@@ -27,6 +27,9 @@ struct WeatherCache {
     WeatherLocation location{};
     uint32_t count=0;
     int64_t fetched_utc=0;
+    // RFC 7234 validators, tied to both provider and configured location.
+    int64_t expires_utc=0;
+    char last_modified[64]{};
     std::array<enevina::OutdoorPoint,weather_max_points> points{};
     uint32_t checksum=0;
 };
@@ -46,6 +49,9 @@ inline uint32_t weather_checksum(const WeatherCache& data) {
     mix(static_cast<uint32_t>(data.location.longitude_e5));
     mix(data.count);
     mix(static_cast<uint64_t>(data.fetched_utc));
+    mix(static_cast<uint64_t>(data.expires_utc));
+    for(const char c:data.last_modified)
+        mix(static_cast<uint8_t>(c));
     for(const auto& p:data.points) {
         mix(static_cast<uint64_t>(p.timestamp_utc));
         uint64_t temperature_bits=0;
@@ -61,7 +67,8 @@ inline bool should_load_weather_cache(bool attempted,int64_t now_utc) {
 inline bool valid_weather_cache(const WeatherCache& data,
     WeatherLocation configured_location,int64_t now_utc) {
     if(data.version!=weather_cache_version ||
-       configured_location.latitude_e5==0 || configured_location.longitude_e5==0 ||
+       std::abs(configured_location.latitude_e5)>9000000 ||
+       std::abs(configured_location.longitude_e5)>18000000 ||
        !(data.location==configured_location) ||
        data.count<2 || data.count>weather_max_points ||
        now_utc<=1700000000 || data.fetched_utc<=1700000000 ||

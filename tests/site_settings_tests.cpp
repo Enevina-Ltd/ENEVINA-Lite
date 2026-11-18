@@ -80,13 +80,18 @@ static void parsing() {
     assert(apply_site_setting(s,"nope","1")==SettingError::UnknownKey);
     assert(apply_site_setting(s,"fmi_latlon","61.4,24.1")==SettingError::Ok);
     assert(apply_site_setting(s,"fmi_latlon","61,4,24,1")==SettingError::OutOfRange);
-    assert(apply_site_setting(s,"fmi_latlon","10,10")==SettingError::OutOfRange);
-    // Codex P2: must match the weather reader (lat 59-71, lon 19-32).
-    assert(apply_site_setting(s,"fmi_latlon","60,18")==SettingError::OutOfRange);
-    assert(apply_site_setting(s,"fmi_latlon","58.9,24")==SettingError::OutOfRange);
+    // MET Norway Locationforecast covers the whole world, not just Finland.
+    assert(apply_site_setting(s,"fmi_latlon","10,10")==SettingError::Ok);
+    assert(apply_site_setting(s,"fmi_latlon","60,18")==SettingError::Ok);
+    assert(apply_site_setting(s,"fmi_latlon","58.9,24")==SettingError::Ok);
     assert(apply_site_setting(s,"fmi_latlon","59,19")==SettingError::Ok);
     assert(apply_site_setting(s,"fmi_latlon","71,32")==SettingError::Ok);
-    assert(apply_site_setting(s,"fmi_latlon","71,32.1")==SettingError::OutOfRange);
+    assert(apply_site_setting(s,"fmi_latlon","-33.8688,151.2093")==SettingError::Ok);
+    assert(apply_site_setting(s,"fmi_latlon","0,0")==SettingError::Ok);
+    assert(apply_site_setting(s,"fmi_latlon","91,0")==SettingError::OutOfRange);
+    assert(apply_site_setting(s,"fmi_latlon","0,181")==SettingError::OutOfRange);
+    assert(apply_site_setting(s,"fmi_latlon","-91,0")==SettingError::OutOfRange);
+    assert(apply_site_setting(s,"fmi_latlon","0,-181")==SettingError::OutOfRange);
     assert(apply_site_setting(s,"fmi_latlon","")==SettingError::Ok && !s.fmi_latlon[0]);
     assert(apply_site_setting(s,"cn105_url","http://192.168.1.20/events")==SettingError::Ok);
     assert(apply_site_setting(s,"cn105_url","http://user:pw@192.168.1.20/events")==

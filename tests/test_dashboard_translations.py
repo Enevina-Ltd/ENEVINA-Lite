@@ -41,7 +41,7 @@ class DashboardTranslations(unittest.TestCase):
           "Sääennuste":"Weather forecast",
           "Ylläpitolämpö":"Maintenance",
           "Käyttöliittymän kieli":"Interface language",
-          "FMI-ennuste haettu: ":"FMI forecast fetched: ",
+          "MET Norwayn ennuste haettu: ":"MET Norway forecast fetched: ",
           "Automaattiohjaus pois":"Automatic control off",
         }
         for fi,en in expected.items():

@@ -1481,7 +1481,7 @@ static void weather_forecast_endpoint() {
     web.send(200,"application/json; charset=utf-8","");
     char line[180];
     snprintf(line,sizeof(line),
-        "{\"valid\":%s,\"source\":\"FMI Harmonie\",\"fetched_utc\":%lld,\"slots\":[",
+        "{\"valid\":%s,\"source\":\"MET Norway Locationforecast 2.0\",\"fetched_utc\":%lld,\"slots\":[",
         available?"true":"false",static_cast<long long>(available?weather.fetched_utc:0));
     web.sendContent(line);
     size_t emitted=0;
@@ -1641,7 +1641,7 @@ void setup() {
     if(!c23_ble_initialized())
         Serial.println("C24_WARN: BLE initialization not confirmed");
     enevina_firmware::start_market_reader();
-    enevina_firmware::start_weather_reader();
+    enevina_firmware::start_weather_reader(site_settings_snapshot().fmi_latlon);
     xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",8192,nullptr,2,&task_sse,0);
     xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,&task_shelly,0);
     // BLE already running. CN105 writes are gated by explicit local arming.
