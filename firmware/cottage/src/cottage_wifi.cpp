@@ -6,7 +6,6 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <cJSON.h>
-#include <esp_random.h>
 #include <atomic>
 #include <cstring>
 #include "cottage_config.hpp"
@@ -22,7 +21,6 @@ WifiProvisioning machine;
 bool ap_active=false;
 bool mdns_started=false;
 char ap_ssid[24]="Enevina-Lite";
-char ap_password[11]="";
 char unique_host[24]="enevina-lite";
 std::atomic<uint16_t> last_reason{0};
 std::atomic<bool> got_ip{false};
@@ -35,31 +33,6 @@ void on_wifi_event(WiFiEvent_t event,WiFiEventInfo_t info) {
         got_ip.store(true);
     } else if(event==ARDUINO_EVENT_WIFI_STA_LOST_IP) {
         got_ip.store(false);
-    }
-}
-// Per-device setup-AP passphrase, created once from the hardware RNG and kept
-// in NVS. It belongs on the device label (factory step) and is printed on
-// the serial console only while the device is unconfigured. It is NOT a
-// login: it only stops neighbours from joining the setup network.
-void load_or_create_ap_password() {
-    static const char alphabet[]="23456789abcdefghjkmnpqrstuvwxyz";
-    Preferences p;
-    if(p.begin("prov",false)) {
-        const String stored=p.getString("ap_pw","");
-        if(stored.length()==10) {
-            strlcpy(ap_password,stored.c_str(),sizeof(ap_password));
-        } else {
-            for(size_t i=0;i<10;++i)
-                ap_password[i]=alphabet[esp_random()%(sizeof(alphabet)-1)];
-            ap_password[10]=0;
-            p.putString("ap_pw",ap_password);
-        }
-        p.end();
-    }
-    if(strlen(ap_password)!=10) {
-        // NVS unavailable: still never fall back to an open or shared AP.
-        for(size_t i=0;i<10;++i) ap_password[i]=alphabet[esp_random()%(sizeof(alphabet)-1)];
-        ap_password[10]=0;
     }
 }
 bool load_stored(WifiCredentials& c) {
@@ -93,14 +66,16 @@ bool persist(const WifiCredentials& c) {
 }
 void start_ap() {
     WiFi.mode(WIFI_AP_STA);
-    // Max 2 clients: a phone plus one retry. WPA2-PSK, never open.
-    if(WiFi.softAP(ap_ssid,ap_password,1,0,2)) {
+    // Owner decision 18.11.2026: open setup network, no password. It runs only
+    // while needed (no stored network / >5 min outage) and closes ~2 min after
+    // a verified join. Max 2 clients: a phone plus one retry.
+    if(WiFi.softAP(ap_ssid,nullptr,1,0,2)) {
         dns.setErrorReplyCode(DNSReplyCode::NoError);
         dns.start(53,"*",WiFi.softAPIP());
         ap_active=true;
         if(!machine.has_stored())
-            Serial.printf("ENEVINA_LITE_SETUP ssid=%s password=%s url=http://%s/\n",
-                ap_ssid,ap_password,WiFi.softAPIP().toString().c_str());
+            Serial.printf("ENEVINA_LITE_SETUP ssid=%s open url=http://%s/\n",
+                ap_ssid,WiFi.softAPIP().toString().c_str());
     }
 }
 void stop_ap() {
@@ -222,7 +197,6 @@ void cottage_wifi_begin(WebServer& web) {
     WiFi.macAddress(mac);
     snprintf(ap_ssid,sizeof(ap_ssid),"Enevina-Lite-%02X%02X",mac[4],mac[5]);
     snprintf(unique_host,sizeof(unique_host),"enevina-lite-%02x%02x",mac[4],mac[5]);
-    load_or_create_ap_password();
     WiFi.persistent(false);          // credentials live in our own NVS namespace
     WiFi.onEvent(on_wifi_event);
     WiFi.mode(WIFI_STA);

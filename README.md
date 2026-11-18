@@ -130,7 +130,7 @@ mutta sitä ei flashattu kortille tämän kokeen aikana.
 ## Käyttöönotto Wi-Fi ensin ja optimoinnin täystodennus (18.11.2026)
 
 - [Käyttöönotto](docs/ONBOARDING_WIFI_FIRST_20261118.md): vaihe 1 kysyy vain kodin
-  Wi-Fin laitekohtaisessa WPA2-asennusverkossa, vaihe 2 (sopimus, siirto, verot,
+  Wi-Fin avoimessa, vain tarvittaessa päällä olevassa asennusverkossa, vaihe 2 (sopimus, siirto, verot,
   CN105/Shelly, sääpaikka, lämpöpumppusovitin) tehdään selaimessa kotiverkossa.
   HOST-TESTATTU, ei fyysisesti todennettu.
 - [Optimoinnin audit](docs/OPTIMIZATION_AUDIT_20261118.md): termostaatti, nykyinen

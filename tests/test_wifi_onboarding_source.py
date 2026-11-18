@@ -19,12 +19,14 @@ UI = (FW / "include" / "cottage_premium_dashboard.hpp").read_text(encoding="utf-
 
 
 class WifiOnboardingSource(unittest.TestCase):
-    def test_setup_ap_is_per_device_wpa2_never_open(self):
-        self.assertIn("esp_random()", WIFI)
-        self.assertIn('p.putString("ap_pw",ap_password)', WIFI)
-        self.assertIn("WiFi.softAP(ap_ssid,ap_password,1,0,2)", WIFI)
-        self.assertNotRegex(WIFI, r"softAP\(ap_ssid\s*\)")
+    def test_setup_ap_is_open_without_password(self):
+        # Owner decision 18.11.2026: no setup-network password.
+        self.assertIn("WiFi.softAP(ap_ssid,nullptr,1,0,2)", WIFI)
+        self.assertNotIn("ap_password", WIFI)
+        self.assertNotIn('"ap_pw"', WIFI)
         self.assertIn('"Enevina-Lite-%02X%02X"', WIFI)
+        # Open AP only while needed: closes after the grace period.
+        self.assertIn("else if(!machine.ap_should_run() && ap_active) stop_ap();", WIFI)
 
     def test_credentials_stored_only_after_verified_join(self):
         self.assertIn("WiFi.persistent(false)", WIFI)

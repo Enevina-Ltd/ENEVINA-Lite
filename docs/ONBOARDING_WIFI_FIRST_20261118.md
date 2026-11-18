@@ -9,7 +9,7 @@ yhteydessä. Pihamökin korttia ei ole koskettu.
 
 | Tilanne | Laitteen toiminta |
 |---|---|
-| Ensimmäinen käynnistys, ei tallennettua verkkoa | Avaa WPA2-suojatun asennusverkon `Enevina-Lite-XXXX` (MAC:n kaksi viimeistä tavua). |
+| Ensimmäinen käynnistys, ei tallennettua verkkoa | Avaa **avoimen, salasanattoman** asennusverkon `Enevina-Lite-XXXX` (MAC:n kaksi viimeistä tavua). |
 | Puhelin liittyy verkkoon | Captive portal -tunnistus (`/generate_204`, `/hotspot-detect.html`, `/connecttest.txt`, …) ja DNS-ohjaus avaavat `/setup`-sivun. Sivulla kysytään **vain** kotiverkko ja salasana. |
 | Verkkoluettelo | Asynkroninen haku, vahvin merkintä per SSID, enintään 20, piilotetut pois. Nimen voi kirjoittaa myös käsin. |
 | Yhdistä | Ehdokasverkkoa testataan asennusverkon pysyessä päällä. **NVS:ään tallennetaan vasta, kun laite saa IP-osoitteen.** |
@@ -25,24 +25,20 @@ epäonnistunut vaihto, katkon jälkeinen palautus, mDNS:n puuttuminen).
 Firmware-kytkentä: `firmware/cottage/src/cottage_wifi.cpp`, sivu
 `cottage_wifi_page.cpp`, lähdetestit `tests/test_wifi_onboarding_source.py`.
 
-### Turvallisuusmuutos, joka vaatii omistajan tietoisen hyväksynnän
+### Omistajan päätös 18.11.2026: asennusverkossa ei salasanaa
 
-Tämä muutos **lisää yhden laitekohtaisen salasanan**: asennusverkon WPA2-avaimen.
-Se on toteutettu tehtävänannon nimenomaisen vaatimuksen *"Suojattu,
-laitekohtainen käyttöönotto"* ja *"Älä jätä käyttöönottoverkkoa turhaan
-avoimeksi"* perusteella. Se ei ole kirjautuminen eikä hallintasalasana:
+Asennusverkko on avoin (ei WPA2-avainta, ei tarraa, ei sarjaporttitulostetta).
+Muutos ei lisää salasanaa, kirjautumista, watchdogia eikä uutta porttia.
 
-- 10 merkkiä laitteistosatunnaislukugeneraattorista (`esp_random`), ~49 bittiä,
-  luodaan kerran ja säilytetään NVS:ssä (`prov/ap_pw`).
-- Tarkoitettu laitteen tarraan (tehdasvaihe, **ei vielä toteutettu**). Sarjaporttiin
-  se tulostetaan vain, kun laitteessa ei ole tallennettua verkkoa.
-- Kotiverkon salasanaa ei koskaan lokiteta eikä palauteta API:ssa.
-- Asetusten tallennus käyttää **olemassa olevaa** käynnistyskohtaista
-  CSRF-tunnistetta (`c23_authorize_local_setting`); uutta porttia ei lisätty.
-
-Vaihtoehto, jos omistaja ei hyväksy avainta: avoin asennusverkko lyhyeksi ajaksi
-virran kytkennän jälkeen. Sitä **ei** toteutettu, koska tehtävä kielsi
-tarpeettoman avoimen verkon.
+- Verkko on päällä vain silloin, kun sitä tarvitaan: ei tallennettua kotiverkkoa,
+  Wi-Fin vaihto tai yli 5 min kotiverkon katko. Se sulkeutuu ~2 min onnistuneen
+  liittymisen jälkeen. Enintään 2 laitetta kerrallaan.
+- Kotiverkon salasanaa ei lokiteta eikä palauteta API:ssa. Asetusten tallennus
+  käyttää olemassa olevaa käynnistyskohtaista CSRF-tunnistetta.
+- **Tunnettu riski:** asennusverkon ollessa auki lähellä oleva henkilö voi liittyä
+  siihen ja syöttää laitteelle toisen Wi-Fi-verkon. Uutta verkkoa käytetään vasta,
+  kun siihen saadaan IP-osoite. Pumpun ohjaus ei käynnisty tästä: automaattiohjaus
+  pitää aina ottaa erikseen käyttöön kotiverkon dashboardista.
 
 ### Tunnetut rajat (ei testattu oikealla laitteella)
 
