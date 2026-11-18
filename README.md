@@ -2,7 +2,7 @@
 
 **Monimerkkinen, yhden lämpöpumpun paikallinen optimointiohjain.**
 
-> **Paikalliset valmistaja-Wi-Fi-integraatiot (tutkimus, eivät valmista tuotetukea):** [yhteensopivuusmatriisi](docs/integrations/LOCAL_WIFI_COMPATIBILITY.md) · [valmistajakohtaiset yhdistämisohjeet](docs/integrations/LOCAL_WIFI_CONNECTION_GUIDE.md) · [kellarin Midean read-only-pilotti](docs/integrations/MIDEA_CELLAR_PILOT.md). Midea V3:n kertaluonteinen pilviavain ei täytä täyden pilvettömyyden vaatimusta.
+> **Paikalliset valmistaja-Wi-Fi-integraatiot (tutkimus, eivät valmista tuotetukea):** [yhteensopivuusmatriisi](docs/integrations/LOCAL_WIFI_COMPATIBILITY.md) · [valmistajakohtaiset yhdistämisohjeet](docs/integrations/LOCAL_WIFI_CONNECTION_GUIDE.md) · [MLP / VILP / ILP -paikallisprotokollat](docs/integrations/GSHP_ASHP_ILP_LOCAL_PROTOCOLS.md) · [kellarin Midean read-only-pilotti](docs/integrations/MIDEA_CELLAR_PILOT.md). Midea V3:n kertaluonteinen pilviavain ei täytä täyden pilvettömyyden vaatimusta.
 
 Enevina Lite on Enevina Coresta erillinen, valmistajariippumattoman ytimen ja mallikohtaisten adapterien varaan rakentuva kevyt ohjain, jonka tavoitteena on minimoida lämpöpumpun lämmityskustannukset ja soveltuvilla laitteilla myös käyttöveden kustannukset turvallisesti. **Lite ei sisällä tekoälyä**, ei edellytä Home Assistantia eikä tarvitse Linuxia tai pilvipalvelua normaalissa käytössä.
 
