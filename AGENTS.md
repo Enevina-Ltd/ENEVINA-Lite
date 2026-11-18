@@ -2,7 +2,7 @@
 
 ## PYSYVÄ TUOTEPÄÄTÖS: JULKINEN JA LÄHDEKOODILTAAN AVOIMESTI NÄHTÄVÄ ENEVINA LITE (18.11.2026)
 
-**Enevina Lite on Enevina Oy:n julkinen, avoimesti luettavalla lähdekoodilla kehitettävä tuote.** Repository `https://github.com/linkki79-pixel/ENEVINA-Lite` on julkinen. Kehitys, dokumentaatio, katselmointi ja yhteisöosallistuminen suunnitellaan tästä lähtien julkisen projektin vaatimusten mukaan; kyse ei ole salaisesta vain sisäiseen käyttöön tarkoitetusta kokeilusta. **Tämä päätös koskee kaikkia tämän repositoryn kehitysagentteja.**
+**Enevina Lite on Enevina Oy:n julkinen, avoimesti luettavalla lähdekoodilla kehitettävä tuote.** Repository `https://github.com/Enevina-Ltd/ENEVINA-Lite` on julkinen. Kehitys, dokumentaatio, katselmointi ja yhteisöosallistuminen suunnitellaan tästä lähtien julkisen projektin vaatimusten mukaan; kyse ei ole salaisesta vain sisäiseen käyttöön tarkoitetusta kokeilusta. **Tämä päätös koskee kaikkia tämän repositoryn kehitysagentteja.**
 
 **Kielikohtainen yritysnimi (käyttäjän päätös 18.11.2026):** Käytä kaikessa englanninkielisessä tuotteen esittelyssä, README-tekstissä, sponsoriprofiilissa, asiakasviestinnässä ja markkinoinnissa nimeä **Enevina Ltd**. Käytä suomeksi nimeä **Enevina Oy**. Virallisissa oikeudellisissa yhteyksissä, tekijänoikeusilmoituksissa, yhtiön rekisteröinti-, pankki-, vero- ja sopimusasiakirjoissa käytetään **rekisteröityä oikeushenkilön nimeä Enevina Oy** (tarvittaessa englanniksi ”Enevina Ltd (registered in Finland as Enevina Oy)”). Älä muuta `LICENSE`-tiedoston lisenssinantajaa tai väitä Enevina Ltd:tä erilliseksi rekisteröidyksi yhtiöksi ilman varmennusta.
 

@@ -32,7 +32,7 @@ See the [optimization audit](OPTIMIZATION_AUDIT_20261118.md), [Wi-Fi onboarding 
 
 ## Request a new heat-pump model
 
-Use [Discussions](https://github.com/linkki79-pixel/ENEVINA-Lite/discussions) to share **manufacturer, exact model, documented local protocol, links to public technical documentation and the available read-only measurements**. Do not publish MAC addresses, private network details, installation addresses or device secrets.
+Use [Discussions](https://github.com/Enevina-Ltd/ENEVINA-Lite/discussions) to share **manufacturer, exact model, documented local protocol, links to public technical documentation and the available read-only measurements**. Do not publish MAC addresses, private network details, installation addresses or device secrets.
 
 ## Suomeksi
 
