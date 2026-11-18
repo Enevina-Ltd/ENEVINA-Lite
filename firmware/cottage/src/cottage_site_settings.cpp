@@ -1,6 +1,9 @@
 #ifndef COTTAGE_BENCH_MODE
 #include <Arduino.h>
 #include <Preferences.h>
+#include <nvs.h>
+#include <esp_log.h>
+#include "cottage/nvs_cache_reclaim_policy.hpp"
 #include <WebServer.h>
 #include <cJSON.h>
 #include <atomic>
@@ -57,14 +60,34 @@ bool acceptable(const SiteSettings& s) {
         memchr(s.fmi_latlon,0,sizeof(s.fmi_latlon)) &&
         memchr(s.pump_adapter,0,sizeof(s.pump_adapter));
 }
+// Only these two NVS values are reconstructible from remote data.
+// Never touch the owner's Wi-Fi, OTA journal, Ruuvi history or authorization.
+bool erase_disposable_cache(const char* nspace,const char* key) {
+    nvs_handle_t handle=0;
+    if(nvs_open(nspace,NVS_READWRITE,&handle)!=ESP_OK)return false;
+    const esp_err_t erased=nvs_erase_key(handle,key);
+    const bool ok=erased==ESP_OK && nvs_commit(handle)==ESP_OK;
+    nvs_close(handle);
+    if(ok) ESP_LOGW("enevina_site","NVS cache reclaimed: %s/%s",nspace,key);
+    return ok;
+}
 bool persist(const SiteSettings& s) {
     Stored blob{};
     blob.settings=s;
-    Preferences p;
-    if(!p.begin("site",false)) return false;
-    const size_t written=p.putBytes("v1",&blob,sizeof(blob));
-    p.end();
-    return written==sizeof(blob);
+    const auto write_site=[&]() {
+        Preferences p;
+        if(!p.begin("site",false)) return false;
+        const size_t written=p.putBytes("v1",&blob,sizeof(blob));
+        p.end();
+        return written==sizeof(blob);
+    };
+    // NVS in existing installed devices is just 16KiB. With persistent
+    // weather, price, Ruuvi history and Wi-Fi, setting a site identity may
+    // fail even when the NVS namespace exists. Reclaim only the two online
+    // caches when the *user-initiated durable write* has failed. Don't touch
+    // non-cache NVS keys or clear a whole partition.
+    return enevina::cottage::persist_with_optional_cache_reclaim(
+        write_site,erase_disposable_cache);
 }
 const char* kind_name(enevina::cottage::TransferKind k) {
     switch(k) {
