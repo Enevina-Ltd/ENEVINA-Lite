@@ -4,6 +4,13 @@
 
 Enevina Lite is a source-available project by **Enevina Ltd** (registered in Finland as **Enevina Oy**). The design is simple: **one heat pump per controller**, a local browser dashboard, and price-aware heating without requiring Home Assistant, a cloud account, or an always-on server. The optimization is deterministic and physics-based — **there is no AI/ML in Lite**.
 
+**Local protocol research (not certified model support):**
+[manufacturer Wi-Fi compatibility](docs/integrations/LOCAL_WIFI_COMPATIBILITY.md) ·
+[connection methods](docs/integrations/LOCAL_WIFI_CONNECTION_GUIDE.md) ·
+[ground-source / air-to-water / air-to-air protocols](docs/integrations/GSHP_ASHP_ILP_LOCAL_PROTOCOLS.md) ·
+[basement Frezzer Nordic / Midea pilot](docs/integrations/MIDEA_CELLAR_PILOT.md).
+Midea V2/V3 read-only adapters exist in source but have not yet passed Lite hardware field testing.
+
 [English](#english) · [Suomi](#suomi) · [Developer preview v0.1.0-alpha.1](https://github.com/Enevina-Ltd/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1) · [Compatibility](docs/COMPATIBILITY.md) · [Getting started](docs/GETTING_STARTED.md)
 
 > **Developer preview — not ready for general installation or sale.** The repository contains working prototypes, tested algorithms, experimental device adapters and firmware. It does **not** certify model compatibility, a safe automatic-control installation, or real-world energy savings. There is no approved prebuilt firmware installer in the first release.
@@ -26,7 +33,7 @@ Enevina Lite is a source-available project by **Enevina Ltd** (registered in Fin
 | 15-min electricity prices | Acquisition, caching and pricing logic in source | Accuracy for every electricity contract |
 | FMI weather forecast | Local forecast integration and 48-hour display development | Calibrated use in production MPC control |
 | RuuviTag and Shelly | Adapter/parser and integration work, selected device tests | Universal sensor compatibility or pump-only power measurement |
-| Midea V3 LAN | Native C++ local V3 Wi-Fi reader, manual LAN pairing and read-only dashboard view, [details](docs/MIDEA_V3_LOCAL_WIFI.md) | ESP32 firmware build passed; no Lite-to-Midea field test or heating commands |
+| Midea V2/V3 LAN | Native C++ local V2/V3 Wi-Fi readers, explicit protocol selection and read-only dashboard view, [details](docs/MIDEA_V3_LOCAL_WIFI.md) | ESP32 firmware build passed; no Lite-to-Midea field test or heating commands |
 | Mitsubishi CN105 | First model-specific experimental integration | Certified or universally safe control of Mitsubishi models |
 | Thermal model + MPC | Host simulation, independent MILP comparisons and benchmark reports | Verified real-world cost savings; MPC as the active calibrated control loop |
 | Signed OTA / recovery | Implementation and targeted regression/device tests | A universally approved end-user firmware update |
