@@ -40,6 +40,7 @@
 #include "cottage/url_guard.hpp"
 #include "cottage/mode_timing.hpp"
 #include "cottage/price_bootstrap.hpp"
+#include "cottage/plan_timeline.hpp"
 #include "cottage/mitsubishi_climate_command.hpp"
 #include "cottage/cn105_read_retry.hpp"
 #include "cottage/mitsubishi_control_policy.hpp"
@@ -1652,6 +1653,71 @@ static void weather_forecast_endpoint() {
 }
 // C2.5: Small, read-only 15-minute price feed for the local premium dashboard.
 // Do not manufacture price points when the clock or market data is stale.
+// Plan timeline: price classes over the published horizon with the SAME
+// classification and profile call as the live controller. No predicted indoor
+// temperature or cost is produced (no calibrated building model exists).
+static void timeline_endpoint() {
+    const auto market=enevina_firmware::market_status();
+    web.sendHeader("Cache-Control","no-store");
+    if(!market.clock_trusted || !market.current_price_valid) {
+        web.send(200,"application/json; charset=utf-8","{\"valid\":false,\"slots\":[],\"segments\":[]}");
+        return;
+    }
+    constexpr size_t kMax=kMaxTimelineSlots;
+    auto* points=static_cast<enevina_firmware::PricePoint*>(heap_caps_malloc(
+        sizeof(enevina_firmware::PricePoint)*kMax,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    auto* utc=static_cast<int64_t*>(heap_caps_malloc(sizeof(int64_t)*kMax,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    auto* total=static_cast<double*>(heap_caps_malloc(sizeof(double)*kMax,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    auto* timeline=static_cast<Timeline*>(heap_caps_malloc(sizeof(Timeline),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    auto release=[&]() {
+        heap_caps_free(points);heap_caps_free(utc);heap_caps_free(total);heap_caps_free(timeline);
+    };
+    if(!points||!utc||!total||!timeline) {
+        release();
+        web.send(503,"application/json; charset=utf-8","{\"valid\":false,\"slots\":[],\"segments\":[]}");
+        return;
+    }
+    const size_t have=enevina_firmware::future_prices(points,kMax);
+    size_t n=0;
+    for(size_t i=0;i<have;++i) {
+        double t=0;
+        if(!std::isfinite(points[i].spot_eur_per_kwh) ||
+           !site_slot_total_price(points[i].start_utc,points[i].spot_eur_per_kwh,t)) break;
+        utc[n]=points[i].start_utc;total[n]=t;++n;
+    }
+    const SiteSettings site=site_settings_snapshot();
+    const int64_t now=time(nullptr);
+    const CottageModePlan plan=c23_current_mode_plan();
+    const CottageModeConfig mode=c23_mode_config();
+    const bool has_target=mode.mode!=CottageMode::Cold && plan.has_target && std::isfinite(plan.target_c);
+    TimelineParams params;TimelineMeta meta;
+    const bool setup=timeline_setup(site.profile,has_target?plan.target_c:-1,site.comfort_min_c,
+        site.comfort_max_c,site.min_price_advantage_fraction,params,meta);
+    if(!setup || !build_timeline(utc,total,n,params,*timeline)) {
+        release();
+        web.send(200,"application/json; charset=utf-8","{\"valid\":false,\"slots\":[],\"segments\":[]}");
+        return;
+    }
+    const BootstrapDecision decision=bootstrap_preview(now,c23_temperature_sample());
+    meta.currency=market.currency;meta.area=market.area;
+    meta.decision_action=bootstrap_action_name(decision.action);
+    meta.decision_reason=bootstrap_reason_name(decision.reason);
+    meta.decision_price_valid=decision.price_data_valid;
+    meta.decision_setpoint_c=decision.action==BootstrapAction::HeatSetpoint?decision.heat_setpoint_c:-1;
+    web.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    web.send(200,"application/json; charset=utf-8","");
+    char chunk[768];
+    size_t used=0;
+    timeline_json(meta,*timeline,[&](const char* part) {
+        const size_t len=strlen(part);
+        if(used+len>=sizeof(chunk)) {chunk[used]=0;web.sendContent(chunk);used=0;delay(1);}
+        if(len>=sizeof(chunk)) {web.sendContent(part);return;}
+        memcpy(chunk+used,part,len);used+=len;
+    });
+    if(used) {chunk[used]=0;web.sendContent(chunk);}
+    web.sendContent("");
+    release();
+}
 static void prices_endpoint() {
     const auto market=enevina_firmware::market_status();
     if(!market.clock_trusted || !market.current_price_valid) {
@@ -1787,6 +1853,9 @@ void setup() {
     });
     web.on("/api/plan",HTTP_GET,[](){
         if(cottage_wifi_require_home_lan(web))plan_endpoint();
+    });
+    web.on("/api/timeline",HTTP_GET,[](){
+        if(cottage_wifi_require_home_lan(web))timeline_endpoint();
     });
     web.on("/api/prices",HTTP_GET,[](){
         if(cottage_wifi_require_home_lan(web))prices_endpoint();

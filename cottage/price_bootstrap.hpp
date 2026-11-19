@@ -9,6 +9,32 @@
 #include <cstdint>
 
 namespace enevina::cottage {
+// How the slot at p[0] compares with the median of the window p[0..n). The
+// controller and the plan timeline share this ONE rule, so what the dashboard
+// shows is what the controller does. cheap: price <= median - margin,
+// expensive: price >= median + margin, margin = max(eur_floor, fraction*|median|).
+enum class PriceClass : uint8_t { Unknown=0, Neutral=1, Cheap=2, Expensive=3 };
+struct PriceClassResult {
+    PriceClass cls=PriceClass::Unknown;
+    double median=0;
+};
+inline PriceClassResult classify_price(const double* p,size_t n,double fraction,double eur_floor) {
+    PriceClassResult r{};
+    if(!p || n<8 || n>96 || !std::isfinite(fraction) || fraction<0 || fraction>1 ||
+       !std::isfinite(eur_floor) || eur_floor<0 || eur_floor>1) return r;
+    std::array<double,96> sorted{};
+    for(size_t i=0;i<n;++i) {
+        if(!std::isfinite(p[i]) || p[i]< -1 || p[i]>10) return r;
+        sorted[i]=p[i];
+    }
+    std::sort(sorted.begin(),sorted.begin()+n);
+    const size_t mid=n/2;
+    r.median=n%2?sorted[mid]:(sorted[mid-1]+sorted[mid])*0.5;
+    const double margin=std::max(eur_floor,fraction*std::fabs(r.median));
+    r.cls=p[0]<=r.median-margin?PriceClass::Cheap:
+          p[0]>=r.median+margin?PriceClass::Expensive:PriceClass::Neutral;
+    return r;
+}
 enum class BootstrapAction : uint8_t { Unavailable, HeatSetpoint, Off, Hold };
 enum class BootstrapReason : uint8_t {
     MissingTemperature, MissingPrices, NoHeatingRequested, TemperatureLow, TemperatureHigh,
@@ -67,13 +93,11 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     // A Nord Pool/network outage must not disable the local thermostat.
     bool price_valid=in.prices_contiguous_and_fresh && in.next_total_prices &&
         in.price_count>=8 && in.price_count<=96;
-    std::array<double,96> sorted{};
     for(size_t i=0;price_valid && i<in.price_count;++i) {
         const double v=in.next_total_prices[i];
         if(!std::isfinite(v) || v< -1 || v>10) {
             price_valid=false;break;
         }
-        sorted[i]=v;
     }
     bool cheap=false,expensive=false;
     if(price_valid && (!std::isfinite(in.min_price_advantage_fraction) ||
@@ -82,16 +106,16 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
        in.min_price_advantage_eur_per_kwh<0 ||
        in.min_price_advantage_eur_per_kwh>1)) price_valid=false;
     if(price_valid) {
-        std::sort(sorted.begin(),sorted.begin()+in.price_count);
-        const size_t mid=in.price_count/2;
-        d.compared_median_eur_per_kwh=in.price_count%2?
-            sorted[mid]:(sorted[mid-1]+sorted[mid])*0.5;
-        d.current_total_eur_per_kwh=in.next_total_prices[0];
-        d.price_data_valid=true;
-        const double margin=std::max(in.min_price_advantage_eur_per_kwh,
-            in.min_price_advantage_fraction*std::fabs(d.compared_median_eur_per_kwh));
-        cheap=in.next_total_prices[0]<=d.compared_median_eur_per_kwh-margin;
-        expensive=in.next_total_prices[0]>=d.compared_median_eur_per_kwh+margin;
+        const PriceClassResult c=classify_price(in.next_total_prices,in.price_count,
+            in.min_price_advantage_fraction,in.min_price_advantage_eur_per_kwh);
+        if(c.cls==PriceClass::Unknown) price_valid=false;
+        else {
+            d.compared_median_eur_per_kwh=c.median;
+            d.current_total_eur_per_kwh=in.next_total_prices[0];
+            d.price_data_valid=true;
+            cheap=c.cls==PriceClass::Cheap;
+            expensive=c.cls==PriceClass::Expensive;
+        }
     }
     const bool band_ok=std::isfinite(in.comfort_lower_c) && std::isfinite(in.comfort_upper_c) &&
         std::isfinite(in.preheat_c) && std::isfinite(in.coast_c) &&

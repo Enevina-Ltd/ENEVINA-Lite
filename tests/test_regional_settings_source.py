@@ -91,5 +91,28 @@ class DiscoveryWiring(unittest.TestCase):
         self.assertIn("shelly_scan(*snap)", self.SITE)
 
 
+class TimelineWiring(unittest.TestCase):
+    MAIN = (ROOT / "firmware/cottage/src/main.cpp").read_text(encoding="utf-8")
+    BOOT = (ROOT / "cottage/price_bootstrap.hpp").read_text(encoding="utf-8")
+    TL = (ROOT / "cottage/plan_timeline.hpp").read_text(encoding="utf-8")
+
+    def test_endpoint_uses_the_controllers_profile_and_classifier(self):
+        self.assertIn("timeline_setup(site.profile", self.MAIN)
+        self.assertIn("build_timeline(utc,total,n,params,*timeline)", self.MAIN)
+        self.assertIn("bootstrap_preview(now,c23_temperature_sample())", self.MAIN)
+        # one classifier: the controller and the timeline share it
+        self.assertIn("classify_price(in.next_total_prices", self.BOOT)
+        self.assertIn("classify_price(total+i", self.TL)
+
+    def test_timeline_never_invents_indoor_or_cost(self):
+        for forbidden in ("indoor_c", "predicted", "cost_eur", "savings"):
+            self.assertNotIn(forbidden, self.TL.split("timeline_json")[1])
+
+    def test_endpoint_buffers_live_in_psram_not_internal_ram(self):
+        body = self.MAIN.split("static void timeline_endpoint()")[1].split("static void prices_endpoint()")[0]
+        self.assertGreaterEqual(body.count("MALLOC_CAP_SPIRAM"), 4)
+        self.assertNotIn("cJSON_Create", body)
+
+
 if __name__ == "__main__":
     unittest.main()
