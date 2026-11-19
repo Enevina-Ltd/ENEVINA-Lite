@@ -29,6 +29,12 @@ selectable for telemetry only and never enabled for physical writes; the
 existing Mitsubishi CN105 control path is unchanged except for explicit
 prevention of CN105 writes when another manufacturer is selected.
 
+## Frezzer Nordic K12 / OSK102: documented V2 candidate (not supported yet)
+
+The published [Frezzer Nordic K12 manual](https://www.netrauta.fi/attachments/products/frezzer/ilmalampopumppu_frezzer_nordic_k12_ohje.pdf) identifies the bundled Wi-Fi control module as **OSK102** and instructs using **NetHome Plus**. This is evidence of a Midea-family controller/interface, **not** proof that the device uses V3 or that Enevina Lite works with it. An [independent OSK102 discovery report](https://community.hubitat.com/t/midea-mini-split-wifi-support/78838/200) identifies at least one OSK102 device as **protocol version 2**, with no V3 token/key. Other module revisions or replacements must not be assumed to behave identically.
+
+**Current result:** Frezzer Nordic K12 remains *unverified / not supported* in Enevina Lite. The native client in this PR is **V3-only**. Future device discovery should identify actual 6444 LAN protocol version and AC device type with read-only checks, then route to a separately implemented and tested V2 or V3 reader. Never send a V3 handshake or a write to an assumed V2 module, and never publish credentials/serials. Verify exact retail model, installed Wi-Fi module and firmware version in the field before a model-level support claim.
+
 ## Authentication and local behavior
 
 A V3 module typically needs a correct device ID, 128-hex-character token and
