@@ -3,7 +3,7 @@
 //
 // Each entry states what is ACTUALLY implemented and verified in THIS
 // repository, not what a manufacturer or a third-party project advertises.
-// Research-only rows stay unselectable. The Midea V3 host-tested row is
+// Research-only rows stay unselectable. The Midea V2/V3 host-tested row is
 // selectable for **read-only status** only: CN105 physical writes stay gated.
 // Selecting an adapter never authorizes writes: the Supervisor / armed
 // control gate and a model-specific approved test plan stay mandatory.
@@ -71,10 +71,10 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      HeatPumpType::GroundSource,AdapterLink::VendorLanProtocol,AdapterMaturity::DocumentedOnly,
      "not implemented","not implemented",0,0,0,"not implemented",false,
      "PR #25 GSHP_ASHP_ILP_LOCAL_PROTOCOLS.md"},
-    {"midea_lan","Midea / OEM","V3 module, exact model unverified",
+    {"midea_lan","Midea / OEM","V2/V3 Wi-Fi module, exact model unverified",
      HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareReadOnly,
-     "authenticated V3 state, power, mode, setpoint and optional temperatures",
-     "none implemented",0,0,0,"authenticated response only; no pump-origin timestamp",false,
+     "V2/V3 state, power, mode, setpoint and optional temperatures",
+     "none implemented",0,0,0,"V3 authenticated, V2 fixed shared key; no pump-origin timestamp",false,
      "pump/midea_v3_protocol.cpp, tests/midea_v3_protocol_tests.cpp, docs/MIDEA_V3_LOCAL_WIFI.md"},
     {"gree_ewpe_lan","Gree / EWPE Smart OEM","Toyotomi Umi UTN/UTG-12CH reference (research)",
      HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::DocumentedOnly,
@@ -100,7 +100,7 @@ inline bool adapter_allowed_cn105_physical_writes(const char* id) {
 // Only adapters implemented in THIS ESP32-S3 cottage firmware may be selected.
 inline bool adapter_selectable_in_lite_firmware(const char* id) {
     const auto* e=find_adapter(id);
-    // Midea V3 is selectable for read-only LAN status, never CN105 writes.
+    // Midea V2/V3 is selectable for read-only LAN status, never CN105 writes.
     return e && (e->maturity==AdapterMaturity::FieldPilot ||
         (std::strcmp(e->id,"midea_lan")==0 &&
          e->maturity==AdapterMaturity::FirmwareReadOnly));
