@@ -11,23 +11,30 @@ Bytes hex(const char* t) {
 }
 int main() {
     State s{};
-    s.power=true;s.mode=4;s.setpoint_c=22;s.fan=102;s.swing=1;
+    s.power=true;s.mode=4;s.setpoint_c=22;s.fan=102;s.swing=12;s.freeze_protection_known=true;
     ControlPatch patch{};
     patch.changed=ControlTemperature;patch.setpoint_c=22.0;
     Bytes frame;
     assert(set_state_command(s,patch,1,frame));
-    assert(frame==hex("aa24ac00000000000002400386667f7f003100000000000000000000002800000000011e89"));
+    assert(frame==hex("aa24ac00000000000002400386667f7f003c0000000000000000000000280000000001d6c6"));
     assert(frame[9]==2 && frame[10]==0x40 && frame.size()==37);
-    s.power=true;s.mode=4;s.setpoint_c=22;s.fan=40;s.swing=1;
+    s.power=true;s.mode=4;s.setpoint_c=22;s.fan=40;s.swing=12;
     s.eco=true;s.sleep=true;s.purifier=true;
     patch.setpoint_c=23.5;
     assert(set_state_command(s,patch,2,frame));
-    assert(frame==hex("aa24ac00000000000002400397287f7f003100a00100000000000000002800000000027cb6"));
+    assert(frame==hex("aa24ac00000000000002400397287f7f003c00a0010000000000000000280000000002b473"));
     State after=s;after.setpoint_c=23.5;
     assert(control_patch_observed(after,patch));
+    assert(preserved_state_observed(s,after,patch));
+    after.independent_aux_heat=true;
+    assert(!preserved_state_observed(s,after,patch)); // fail if safety flag changes
+    after.independent_aux_heat=false;
+    after.freeze_protection=true;
+    assert(!preserved_state_observed(s,after,patch));
+    after.freeze_protection=false;
     after.setpoint_c=22;
     assert(!control_patch_observed(after,patch));
-    s={};s.power=false;s.mode=2;s.setpoint_c=16;s.fan=102;
+    s={};s.power=false;s.mode=2;s.setpoint_c=16;s.fan=102;s.freeze_protection_known=true;
     patch.changed=ControlPower;patch.power=false;
     assert(set_state_command(s,patch,3,frame));
     assert(frame==hex("aa24ac00000000000002400240667f7f00300000000000000000000004280000000003f6f3"));
@@ -60,5 +67,23 @@ int main() {
     assert(!set_state_command(s,patch,6,frame));
     patch.changed=0x80;
     assert(!set_state_command(s,patch,6,frame));
+    patch.changed=ControlTemperature;patch.setpoint_c=40.5;
+    assert(!set_state_command(s,patch,7,frame));
+    patch.setpoint_c=22;
+    s.freeze_protection_known=false;
+    assert(!set_state_command(s,patch,8,frame)); // 17..21 byte C0
+    s.freeze_protection_known=true;
+    s.freeze_protection=true;
+    s.independent_aux_heat=true;
+    s.swing=15;
+    assert(set_state_command(s,patch,9,frame));
+    assert(frame[17]==0x3f);
+    assert(frame[31]==0x80); // freeze
+    assert(frame[32]==0x08); // independent aux heat
+    s.swing=12;
+    assert(set_state_command(s,patch,10,frame));
+    assert(frame[17]==0x3c);
+    s.swing=2;
+    assert(!set_state_command(s,patch,11,frame));
     std::cout<<"Midea V2/V3 shared AC 0x40 full-state command vectors PASS\n";
 }

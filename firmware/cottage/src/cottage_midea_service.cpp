@@ -57,6 +57,19 @@ std::atomic<bool> polling{false};
 std::atomic<TaskHandle_t> poll_task{nullptr};
 std::atomic<bool> control_pending{false};
 bool control_busy=false; // guarded by mutex
+std::atomic<bool> config_updating{false}; // held through NVS persistence
+// Per-device, explicit, volatile physical-pilot approval. Never persisted
+// and never automatically inherited from read-only credentials or OTA.
+struct PilotApproval {
+    bool enabled=false;
+    char model[48]{};
+    char device_id[22]{};
+    uint8_t protocol=0;
+    uint32_t config_revision=0;
+    double min_c=0,max_c=0;
+};
+PilotApproval pilot{}; // guarded by mutex
+std::atomic<uint32_t> pending_wifi_generation{0};
 enevina::midea::ControlPatch pending_patch{}; // guarded by mutex
 std::atomic<int> control_result{-1};
 std::atomic<int64_t> control_attempt{0};
@@ -238,10 +251,20 @@ void send_status(WebServer& web) {
         !stored?"not_configured":attempted<=0?"not_tested":read_code(status);
     const int write_status=control_result.load();
     const bool queued=control_pending.load();
-    char data[1000];
+    bool pilot_ok=false;
+    double pilot_min=0,pilot_max=0;
+    xSemaphoreTake(mutex,portMAX_DELAY);
+    pilot_ok=pilot.enabled && pilot.config_revision==revision.load() &&
+            pilot.protocol==saved.protocol &&
+            !std::strcmp(pilot.device_id,saved.device_id) &&
+            !config_updating;
+    if(pilot_ok) {pilot_min=pilot.min_c;pilot_max=pilot.max_c;}
+    xSemaphoreGive(mutex);
+    char data[1150];
     const int written=snprintf(data,sizeof(data),
         "{\"selected\":%s,\"configured\":%s,\"fresh\":%s,"
         "\"protocol\":%u,\"read_only\":false,\"manual_control\":true,"
+        "\"pilot_approved\":%s,\"pilot_min_c\":%.1f,\"pilot_max_c\":%.1f,"
         "\"control_pending\":%s,\"control_busy\":%s,"
         "\"control_last_attempt_utc\":%lld,"
         "\"control_last_confirmed_utc\":%lld,"
@@ -253,6 +276,7 @@ void send_status(WebServer& web) {
         "\"outdoor_available\":%s,\"outdoor_c\":%.2f}",
         selected?"true":"false",stored?"true":"false",fresh?"true":"false",
         static_cast<unsigned>(selected_protocol),
+        pilot_ok?"true":"false",pilot_min,pilot_max,
         queued?"true":"false",writing?"true":"false",
         static_cast<long long>(control_attempt.load()),
         static_cast<long long>(control_success.load()),
@@ -273,6 +297,15 @@ void send_status(WebServer& web) {
 }
 } // namespace
 
+void cottage_midea_link_disconnected() {
+    // Invoked from Arduino Wi-Fi event task. No mutex/NVS or network calls.
+    // Queued physical writes must never survive a Wi-Fi disconnect/reconnect.
+    control_pending.store(false);
+    pending_wifi_generation.store(0);
+    control_result.store(static_cast<int>(
+       enevina::midea::ReadStatus::ResourceBusy));
+    last_success.store(0);
+}
 void cottage_midea_service_initialize() {
     mutex=xSemaphoreCreateMutex();
     if(!mutex)abort();
@@ -327,21 +360,31 @@ void cottage_midea_service_register_routes(WebServer& web) {
             web.send(400,"application/json","{\"saved\":false,\"error\":\"INVALID\"}");
             return;
         }
-        // Do not change the target credentials mid-command. The older
-        // configuration is left untouched if a manual control is in flight.
+        // Claim exclusive config transition BEFORE NVS I/O. No worker
+        // can consume pending control, nor can HTTP queue a new command,
+        // while these credentials are being committed.
         xSemaphoreTake(mutex,portMAX_DELAY);
-        const bool writing=control_busy;
+        const bool writing=control_busy || config_updating;
+        if(!writing) {
+            config_updating=true;
+            control_pending.store(false);
+            pending_wifi_generation.store(0);
+            pilot={};
+        }
         xSemaphoreGive(mutex);
         if(writing) {
             web.send(409,"application/json","{\"saved\":false,\"error\":\"CONTROL_BUSY\"}");
             return;
         }
         // Never print credentials or addresses to ESP logs or API responses.
-        if(!persist_config(next)) {
+        const bool committed=persist_config(next);
+        xSemaphoreTake(mutex,portMAX_DELAY);
+        config_updating=false;
+        if(!committed) {
+            xSemaphoreGive(mutex);
             web.send(507,"application/json","{\"saved\":false,\"error\":\"NVS\"}");
             return;
         }
-        xSemaphoreTake(mutex,portMAX_DELAY);
         saved=next;
         configured=true;
         observed={};
@@ -355,6 +398,60 @@ void cottage_midea_service_register_routes(WebServer& web) {
         xSemaphoreGive(mutex);
         if(auto task=poll_task.load())xTaskNotifyGive(task);
         web.send(200,"application/json","{\"saved\":true,\"control_armed\":false}");
+    });
+    web.on("/api/midea/pilot",HTTP_POST,[&web](){
+        // Volatile, explicit approval of this exact configured Midea device
+        // and tester-verified temperature limits. Same existing settings
+        // token, no new login/PIN; never available on the open setup AP.
+        if(WiFi.status()!=WL_CONNECTED || cottage_wifi_request_via_ap(web) ||
+           !web.hasArg("token") ||
+           !enevina::cottage::c23_authorize_local_setting(
+              web.arg("token").c_str())) {
+            web.send(403,"application/json","{\"approved\":false,\"error\":\"TOKEN\"}");
+            return;
+        }
+        const bool approve=web.arg("approve")=="true";
+        const bool revoke=web.arg("approve")=="false";
+        if(!approve && !revoke) {
+            web.send(400,"application/json","{\"approved\":false,\"error\":\"APPROVAL\"}");
+            return;
+        }
+        const String model=web.arg("model");
+        double min_c=0,max_c=0;
+        if(approve && (model.length()<3 || model.length()>=48 ||
+           !web.hasArg("device_id") ||
+           !strict_temperature(web.arg("min_c"),min_c) ||
+           !strict_temperature(web.arg("max_c"),max_c) ||
+           min_c<12 || max_c>40 || min_c>=max_c ||
+           std::fabs(min_c*2-std::round(min_c*2))>0.00001 ||
+           std::fabs(max_c*2-std::round(max_c*2))>0.00001)) {
+            web.send(400,"application/json","{\"approved\":false,\"error\":\"MODEL_LIMITS\"}");
+            return;
+        }
+        xSemaphoreTake(mutex,portMAX_DELAY);
+        const bool busy=control_busy || config_updating ||
+                        control_pending.load();
+        const bool same= configured && is_midea_selected() &&
+            (!approve || web.arg("device_id")==String(saved.device_id));
+        if(!busy && same) {
+            pilot={};
+            if(approve) {
+                std::memcpy(pilot.model,model.c_str(),model.length()+1);
+                std::memcpy(pilot.device_id,saved.device_id,
+                            sizeof(pilot.device_id));
+                pilot.protocol=saved.protocol;
+                pilot.config_revision=revision.load();
+                pilot.min_c=min_c;pilot.max_c=max_c;
+                pilot.enabled=true;
+            }
+        }
+        xSemaphoreGive(mutex);
+        if(busy || !same) {
+            web.send(409,"application/json","{\"approved\":false,\"error\":\"BUSY_OR_DEVICE\"}");
+            return;
+        }
+        web.send(200,"application/json",
+                 approve?"{\"approved\":true}":"{\"approved\":false}");
     });
     web.on("/api/midea/control",HTTP_POST,[&web](){
         // Manual control uses the existing local settings authorization.
@@ -418,11 +515,21 @@ void cottage_midea_service_register_routes(WebServer& web) {
         // command. No HTTP callback writes directly to the heat pump.
         xSemaphoreTake(mutex,portMAX_DELAY);
         const auto previous=last_success.load();
-        ready=configured && !control_busy && !control_pending.load() &&
+        const bool pilot_matches=pilot.enabled &&
+              pilot.config_revision==revision.load() &&
+              pilot.protocol==saved.protocol &&
+              !std::strcmp(pilot.device_id,saved.device_id);
+        const double requested=(patch.changed&enevina::midea::ControlTemperature)?
+              patch.setpoint_c:observed.setpoint_c;
+        ready=configured && pilot_matches && !config_updating &&
+              !control_busy && !control_pending.load() &&
+              std::isfinite(requested) &&
+              requested>=pilot.min_c && requested<=pilot.max_c &&
               previous>0 && now>=previous && now-previous<=90 &&
               poll_task.load()!=nullptr;
         if(ready && is_midea_selected()) {
             pending_patch=patch;
+            pending_wifi_generation.store(cottage_wifi_link_generation());
             control_pending.store(true);
             control_queued_utc.store(now);
             control_result.store(-1);
@@ -466,6 +573,9 @@ void cottage_midea_service_worker(void*) {
         Config cfg{};
         bool ready=false,action=false;
         uint32_t before=0;
+        uint32_t expected_link=0;
+        double min_c=0,max_c=0;
+        bool approved=false;
         enevina::midea::ControlPatch patch{};
         xSemaphoreTake(mutex,portMAX_DELAY);
         cfg=saved;
@@ -473,9 +583,19 @@ void cottage_midea_service_worker(void*) {
         before=revision.load();
         if(control_pending.load()) {
             patch=pending_patch;
+            expected_link=pending_wifi_generation.load();
+            min_c=pilot.min_c;max_c=pilot.max_c;
+            approved=pilot.enabled &&
+                     pilot.config_revision==before &&
+                     pilot.protocol==cfg.protocol &&
+                     !std::strcmp(pilot.device_id,cfg.device_id);
             control_pending.store(false);
-            control_busy=true;
-            action=true;
+            if(approved && !config_updating &&
+               expected_link==cottage_wifi_link_generation()) {
+                control_busy=true;
+                action=true;
+            } else control_result.store(
+                static_cast<int>(enevina::midea::ReadStatus::ResourceBusy));
         }
         xSemaphoreGive(mutex);
         enevina::midea::ReadStatus result=
@@ -488,8 +608,10 @@ void cottage_midea_service_worker(void*) {
         const auto queued=control_queued_utc.load();
         const bool within_window=!action ||
             (queued>0 && now>=queued && now-queued<=15);
-        if(connected && selected && ready && valid_config(cfg) &&
-           within_window) {
+        if(connected && selected && ready && !config_updating &&
+           valid_config(cfg) && within_window &&
+           (!action || (approved &&
+             expected_link==cottage_wifi_link_generation()))) {
             // Independent worker, shared RAM budget, no HTTP callback writes.
             enevina_firmware::NetworkBudgetLease lease(300,60*1024,16*1024);
             if(lease.held()) {
@@ -501,7 +623,9 @@ void cottage_midea_service_worker(void*) {
                     uint64_t id=0;
                     if(enevina::midea::decode_device_id(cfg.device_id,id)) {
                         result=action?
-                            enevina::midea::write_device_v2(cfg.host,id,patch,sample):
+                            enevina::midea::write_device_v2(
+                                cfg.host,id,patch,sample,
+                                expected_link,min_c,max_c):
                             enevina::midea::read_device_v2(cfg.host,id,sample);
                     } else result=enevina::midea::ReadStatus::InvalidCredentials;
                 } else {
@@ -509,7 +633,9 @@ void cottage_midea_service_worker(void*) {
                     if(enevina::midea::decode_credentials(
                        cfg.device_id,cfg.token_hex,cfg.key_hex,auth)) {
                         result=action?
-                            enevina::midea::write_device(cfg.host,auth,patch,sample):
+                            enevina::midea::write_device(
+                                cfg.host,auth,patch,sample,
+                                expected_link,min_c,max_c):
                             enevina::midea::read_device(cfg.host,auth,sample);
                     } else result=enevina::midea::ReadStatus::InvalidCredentials;
                 }

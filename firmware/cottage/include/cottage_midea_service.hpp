@@ -8,3 +8,5 @@ void cottage_midea_service_initialize();
 void cottage_midea_service_register_routes(WebServer& web);
 void cottage_midea_service_worker(void*);
 #endif
+// Wi-Fi event callback: invalidate queued physical commands immediately.
+void cottage_midea_link_disconnected();

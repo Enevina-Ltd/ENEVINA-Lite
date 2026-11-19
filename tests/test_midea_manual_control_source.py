@@ -54,11 +54,31 @@ class MideaManualControl(unittest.TestCase):
         self.assertIn('control_busy=true',worker)
         self.assertIn('action?',worker)
         self.assertIn('read_device_v2(cfg.host,id,sample)',worker)
-        self.assertIn('write_device_v2(cfg.host,id,patch,sample)',worker)
+        self.assertIn('write_device_v2(',worker)
+        self.assertIn('expected_link,min_c,max_c',worker)
         self.assertIn('read_device(cfg.host,auth,sample)',worker)
-        self.assertIn('write_device(cfg.host,auth,patch,sample)',worker)
+        self.assertIn('write_device(',worker)
         self.assertIn('NetworkBudgetLease lease',worker)
         self.assertNotIn('cottage_air_service_get_plan(',worker)
+
+    def test_review_p1_p2_control_gates(self):
+        wifi=(ROOT/"firmware/cottage/src/cottage_wifi.cpp").read_text()
+        self.assertIn('cottage_midea_link_disconnected()',wifi)
+        self.assertIn('link_generation.fetch_add(1)',wifi)
+        self.assertIn('cottage_wifi_link_generation()!=expected_wifi_generation',TCP)
+        self.assertIn('config_updating=true',SERVICE)
+        self.assertIn('control_pending.store(false)',SERVICE)
+        self.assertIn('web.on("/api/midea/pilot",HTTP_POST',SERVICE)
+        self.assertIn('pilot.config_revision==revision.load()',SERVICE)
+        self.assertIn('requested>=pilot.min_c && requested<=pilot.max_c',SERVICE)
+        self.assertIn('pilot_approved',SERVICE)
+        self.assertIn('existing.freeze_protection_known',CODEC)
+        self.assertIn('existing.independent_aux_heat?0x08:0',CODEC)
+        self.assertIn('before.independent_aux_heat!=after.independent_aux_heat',CODEC)
+        self.assertIn('patch.setpoint_c>40',CODEC)
+        for token in ('patch.swing!=12','patch.swing!=15','<option value="12">Pysty</option>',
+                      '<option value="3">Vaaka</option>','<option value="15">Molemmat</option>'):
+            self.assertIn(token,CODEC if token.startswith('patch.swing') else UI)
 
     def test_full_dashboard_ui_and_localization(self):
         for x in ('id="midea-command-power"','id="midea-command-temperature"',

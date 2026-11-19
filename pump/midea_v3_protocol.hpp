@@ -19,6 +19,8 @@ struct State {
     uint8_t fan=0,swing=0;
     bool turbo=false,eco=false,sleep=false,fahrenheit=false;
     bool follow_me=false,purifier=false,aux_heat=false,freeze_protection=false;
+    bool freeze_protection_known=false; // absent on short C0, never assume off
+    bool independent_aux_heat=false; // C0 byte 8 bit 0x40
     uint8_t humidity=40;
 };
 // The AC 0x40 command sets the full unit state. Only explicitly named
@@ -39,6 +41,10 @@ bool valid_control_patch(const ControlPatch& patch);
 bool set_state_command(const State& observed,const ControlPatch& patch,
                        uint8_t message_id,Bytes& frame);
 bool control_patch_observed(const State& actual,const ControlPatch& patch);
+// Separate readback must also show that unmodified and safety-critical
+// state survived a whole-state 0x40 command.
+bool preserved_state_observed(const State& before,const State& after,
+                              const ControlPatch& patch);
 
 struct Credential {
     uint64_t device_id=0;

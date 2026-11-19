@@ -1,8 +1,10 @@
 #ifndef COTTAGE_BENCH_MODE
 #include "cottage_midea.hpp"
+#include "cottage_wifi.hpp"
 #include <WiFi.h>
 #include <esp_system.h>
 #include <algorithm>
+#include <cmath>
 #include <ctime>
 
 namespace enevina::midea {
@@ -156,11 +158,24 @@ ReadStatus read_device(const char* host,const Credential& creds,State& reading) 
 // Source of truth is a fresh authenticated status query, not the last
 // dashboard sample. Do not trust a mere TCP write as an applied command.
 ReadStatus write_device_v2(const char* host,uint64_t id,
-                           const ControlPatch& patch,State& confirmed) {
+                           const ControlPatch& patch,State& confirmed,
+                           uint32_t expected_wifi_generation,
+                           double approved_min_c,double approved_max_c) {
     if(!valid_control_patch(patch))return ReadStatus::ProtocolFailed;
+    if(WiFi.status()!=WL_CONNECTED ||
+       cottage_wifi_link_generation()!=expected_wifi_generation)
+       return ReadStatus::ResourceBusy;
     State original{};
     const ReadStatus initial=read_device_v2(host,id,original);
     if(initial!=ReadStatus::Ok)return initial;
+    const double setpoint=(patch.changed&ControlTemperature)?
+                          patch.setpoint_c:original.setpoint_c;
+    if(!std::isfinite(setpoint) ||
+       setpoint<approved_min_c || setpoint>approved_max_c)
+        return ReadStatus::UnsupportedState;
+    if(WiFi.status()!=WL_CONNECTED ||
+       cottage_wifi_link_generation()!=expected_wifi_generation)
+       return ReadStatus::ResourceBusy;
     Bytes control;
     if(!set_state_command(original,patch,2,control))
         return ReadStatus::UnsupportedState;
@@ -175,6 +190,11 @@ ReadStatus write_device_v2(const char* host,uint64_t id,
     WiFiClient tcp;
     tcp.setTimeout(read_timeout_ms);
     if(!tcp.connect(ip,port,1100))return ReadStatus::ConnectionFailed;
+    if(WiFi.status()!=WL_CONNECTED ||
+       cottage_wifi_link_generation()!=expected_wifi_generation) {
+        tcp.stop();
+        return ReadStatus::ResourceBusy;
+    }
     if(!send_bytes(tcp,request)) {
         tcp.stop();
         return ReadStatus::ConnectionFailed;
@@ -190,18 +210,33 @@ ReadStatus write_device_v2(const char* host,uint64_t id,
     tcp.stop();
     State fresh{};
     const ReadStatus checked=read_device_v2(host,id,fresh);
-    if(checked!=ReadStatus::Ok ||
-       !control_patch_observed(fresh,patch))
+    if(cottage_wifi_link_generation()!=expected_wifi_generation ||
+       checked!=ReadStatus::Ok ||
+       !control_patch_observed(fresh,patch) ||
+       !preserved_state_observed(original,fresh,patch))
         return ReadStatus::ControlNotConfirmed;
     confirmed=fresh;
     return ReadStatus::Ok;
 }
 ReadStatus write_device(const char* host,const Credential& creds,
-                        const ControlPatch& patch,State& confirmed) {
+                        const ControlPatch& patch,State& confirmed,
+                           uint32_t expected_wifi_generation,
+                           double approved_min_c,double approved_max_c) {
     if(!valid_control_patch(patch))return ReadStatus::ProtocolFailed;
+    if(WiFi.status()!=WL_CONNECTED ||
+       cottage_wifi_link_generation()!=expected_wifi_generation)
+       return ReadStatus::ResourceBusy;
     State original{};
     const ReadStatus initial=read_device(host,creds,original);
     if(initial!=ReadStatus::Ok)return initial;
+    const double setpoint=(patch.changed&ControlTemperature)?
+                          patch.setpoint_c:original.setpoint_c;
+    if(!std::isfinite(setpoint) ||
+       setpoint<approved_min_c || setpoint>approved_max_c)
+        return ReadStatus::UnsupportedState;
+    if(WiFi.status()!=WL_CONNECTED ||
+       cottage_wifi_link_generation()!=expected_wifi_generation)
+       return ReadStatus::ResourceBusy;
     Bytes control;
     if(!set_state_command(original,patch,2,control))
         return ReadStatus::UnsupportedState;
@@ -234,6 +269,10 @@ ReadStatus write_device(const char* host,const Credential& creds,
                           padding,sizeof(padding),request)) {
         tcp.stop();return ReadStatus::ProtocolFailed;
     }
+    if(WiFi.status()!=WL_CONNECTED ||
+       cottage_wifi_link_generation()!=expected_wifi_generation) {
+        tcp.stop();return ReadStatus::ResourceBusy;
+    }
     if(!send_bytes(tcp,request)) {
         tcp.stop();return ReadStatus::ConnectionFailed;
     }
@@ -248,8 +287,10 @@ ReadStatus write_device(const char* host,const Credential& creds,
     tcp.stop();
     State fresh{};
     const ReadStatus checked=read_device(host,creds,fresh);
-    if(checked!=ReadStatus::Ok ||
-       !control_patch_observed(fresh,patch))
+    if(cottage_wifi_link_generation()!=expected_wifi_generation ||
+       checked!=ReadStatus::Ok ||
+       !control_patch_observed(fresh,patch) ||
+       !preserved_state_observed(original,fresh,patch))
         return ReadStatus::ControlNotConfirmed;
     confirmed=fresh;
     return ReadStatus::Ok;

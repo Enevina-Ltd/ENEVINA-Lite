@@ -89,6 +89,8 @@ int main() {
     assert(state.power && state.mode==4 && state.setpoint_c==22);
     assert(state.has_indoor && std::fabs(state.indoor_c-20)<0.001);
     assert(!state.has_outdoor);
+    assert(state.freeze_protection_known);
+    assert(!state.independent_aux_heat);
     f[f.size()-2]^=1;
     assert(!parse_state(f.data(),f.size(),state));
     // C0 packets may omit optional humidity and freeze-protection fields.
@@ -121,6 +123,14 @@ int main() {
             short_frame.push_back(static_cast<uint8_t>(-total_sum));
             assert(parse_state(short_frame.data(),short_frame.size(),state)==
                    (body_length>=17));
+            if(body_length>=17) {
+                assert(!state.freeze_protection_known);
+                ControlPatch change{};
+                change.changed=ControlTemperature;
+                change.setpoint_c=22.0;
+                Bytes unsafe{};
+                assert(!set_state_command(state,change,1,unsafe));
+            }
             short_frame.back()^=1;
             assert(!parse_state(short_frame.data(),short_frame.size(),state));
         }

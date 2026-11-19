@@ -24,8 +24,12 @@ ReadStatus read_device_v2(const char* private_ipv4,uint64_t device_id,
 // Call from a dedicated worker, never the HTTP request handler.
 // The caller is responsible for selected-device and user-authorization gates.
 ReadStatus write_device_v2(const char* private_ipv4,uint64_t device_id,
-                           const ControlPatch& patch,State& confirmed);
+                           const ControlPatch& patch,State& confirmed,
+                           uint32_t expected_wifi_generation,
+                           double approved_min_c,double approved_max_c);
 ReadStatus write_device(const char* private_ipv4,const Credential& credentials,
-                        const ControlPatch& patch,State& confirmed);
+                        const ControlPatch& patch,State& confirmed,
+                           uint32_t expected_wifi_generation,
+                           double approved_min_c,double approved_max_c);
 } // namespace enevina::midea
 #endif

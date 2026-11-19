@@ -81,8 +81,8 @@ class NativeMideaV2(unittest.TestCase):
         self.assertIn('"protocol":%u',SRV.replace('\\',''))
         self.assertIn('manual_control',SRV)
         self.assertIn('web.on("/api/midea/control",HTTP_POST',SRV)
-        self.assertIn('write_device_v2(cfg.host,id,patch,sample)',SRV)
-        self.assertIn('write_device(cfg.host,auth,patch,sample)',SRV)
+        self.assertIn('write_device_v2(',SRV)
+        self.assertIn('write_device(',SRV)
 
 if __name__=="__main__":
     unittest.main()

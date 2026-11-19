@@ -174,3 +174,29 @@ or V3 LAN modules, as long as their exact 0xAC model and command capability
 have been verified. Brand-only compatibility is never sufficient; Midea
 0xCC, 0xB0/0xB1 optional properties and all additional module types require
 their own implementation and testing. No blanket OEM compatibility claim.
+
+## PR #54: Midea V2/V3 manual control review fixes (19.11.2026)
+
+All seven initial Codex findings (five P1, two P2) have code-level
+corrections pending CI and re-review. No unrelated Lite features, login,
+PIN or password have been introduced.
+
+1. Explicit, per-device pilot approval: user enters exact device ID, model
+   name, and model-verified min/max setpoints. Disabled by default; not
+   persisted across reboot or new device configuration. Pending proper B5
+   capability discovery, model limits come from the tester, not guesses.
+2. Swing constants: OFF=0, VERTICAL=12, HORIZONTAL=3, BOTH=15 (msmart-ng).
+3. A full-state write is refused if the C0 frame did not contain the
+   freeze-protection field. Short frames remain readable without writes.
+4. Preserve independently controlled auxiliary heater flag in the C0
+   state decoder and control command, then verify it in independent readback.
+5. Prevent new target settings and queued old-target commands from racing:
+   atomically reserve the config update before writing NVS.
+6. Cancel queued commands on Wi-Fi disconnect/lost IP. Recheck the link
+   generation immediately before any V2/V3 control send. No blind retry.
+7. Reconcile the codec, UI, readback and pilot bounds with 12-40 C
+   and enforce the smaller verified model-specific range before SET.
+
+Tests on synthetic command vectors are not physical pump testing.
+Automatic spot price control remains disconnected from this manual Midea
+pilot. OEM-specific extra flags and native timers require field validation.
