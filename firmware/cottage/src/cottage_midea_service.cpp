@@ -76,19 +76,21 @@ bool persist_config(const Config& c) {
 }
 void send_status(WebServer& web) {
     const bool selected=is_midea_selected();
-    const uint32_t current_rev=revision.load();
-    (void)current_rev;
     enevina::midea::State reading{};
     bool stored=false;
+    int64_t last=0;
+    int status=0;
+    // Read the sample and its metadata in one consistent critical section.
+    // Otherwise a fresh timestamp can be paired with the previous sample.
     xSemaphoreTake(mutex,portMAX_DELAY);
     reading=observed;
     stored=configured;
+    last=last_success.load();
+    status=last_result.load();
     xSemaphoreGive(mutex);
     const auto now=static_cast<int64_t>(time(nullptr));
-    const auto last=last_success.load();
     const bool fresh=selected && stored && last>0 &&
        now>=last && now-last<=90;
-    const int status=last_result.load();
     char data[576];
     const int written=snprintf(data,sizeof(data),
         "{\"selected\":%s,\"configured\":%s,\"fresh\":%s,"
