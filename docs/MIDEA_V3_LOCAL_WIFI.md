@@ -44,7 +44,10 @@ Nordic uses V2. The owner's already-tested Frezzer uses **V3 in Core**.
 - V3 remains separately selectable and retains full token/key authentication.
   Existing `midea_v3/config_v1` NVS settings are read by the new service
   and interpreted as V3; on the next edit, a versioned `config_v2` record
-  is written. No silent V3-to-V2 fallback on authentication failure.
+  is written. An up-to-date `config_v1` V3 mirror remains available for
+  rollback to the previous V3 firmware; switching to V2 leaves any existing
+  V3 mirror untouched because older V3 images cannot interpret V2. No
+  silent V3-to-V2 fallback on authentication failure.
 - The ESP32 permits only private RFC1918 IPv4 destinations and bounded TCP
   reads. Response outer device ID, fixed-key packet signature, AES padding,
   AC frame checksum and response fields are checked before accepting status.
