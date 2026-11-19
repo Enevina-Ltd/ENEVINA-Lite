@@ -270,3 +270,13 @@ if(OpenSSL_FOUND)
   endif()
   add_test(NAME midea_v3_protocol_tests COMMAND midea_v3_protocol_tests)
 endif()
+
+# A read-only Midea selection can NEVER enter the CN105 physical writer.
+add_executable(midea_lan_catalog_tests tests/midea_lan_catalog_tests.cpp)
+target_include_directories(midea_lan_catalog_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(MSVC)
+  target_compile_options(midea_lan_catalog_tests PRIVATE /UNDEBUG)
+else()
+  target_compile_options(midea_lan_catalog_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME midea_lan_catalog_tests COMMAND midea_lan_catalog_tests)
