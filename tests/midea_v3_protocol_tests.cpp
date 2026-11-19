@@ -91,5 +91,39 @@ int main() {
     assert(!state.has_outdoor);
     f[f.size()-2]^=1;
     assert(!parse_state(f.data(),f.size(),state));
+    // C0 packets may omit optional humidity and freeze-protection fields.
+    // Test 17- and 18-byte bodies, both supported checksum styles, and 16
+    // bytes (below minimum). These regress the previous 19-byte guard.
+    for(size_t body_length: {size_t(16),size_t(17),size_t(18),size_t(19)}) {
+        for(bool use_crc: {false,true}) {
+            Bytes short_body(p.begin(),p.begin()+body_length);
+            uint8_t payload_crc=0;
+            for(uint8_t v:short_body) {
+                payload_crc^=v;
+                for(int k=0;k<8;++k)
+                    payload_crc=(payload_crc&1)
+                        ?uint8_t((payload_crc>>1)^0x8c)
+                        :uint8_t(payload_crc>>1);
+            }
+            uint8_t payload_sum=0;
+            for(uint8_t v:short_body)
+                payload_sum=static_cast<uint8_t>(payload_sum+v);
+            short_body.push_back(use_crc?payload_crc:static_cast<uint8_t>(-payload_sum));
+            Bytes short_frame(10,0);
+            short_frame[0]=0xaa;
+            short_frame[1]=static_cast<uint8_t>(10+short_body.size());
+            short_frame[2]=0xac;
+            short_frame[9]=3;
+            short_frame.insert(short_frame.end(),short_body.begin(),short_body.end());
+            uint8_t total_sum=0;
+            for(size_t k=1;k<short_frame.size();++k)
+                total_sum=static_cast<uint8_t>(total_sum+short_frame[k]);
+            short_frame.push_back(static_cast<uint8_t>(-total_sum));
+            assert(parse_state(short_frame.data(),short_frame.size(),state)==
+                   (body_length>=17));
+            short_frame.back()^=1;
+            assert(!parse_state(short_frame.data(),short_frame.size(),state));
+        }
+    }
     std::cout<<"Midea V3 test vectors and negative checks PASS\n";
 }
