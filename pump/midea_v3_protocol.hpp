@@ -28,6 +28,13 @@ struct Credential {
 };
 // Accepted only when all lengths/hex characters are valid. Do not log input.
 bool decode_credentials(const char* id,const char* token_hex,const char* key_hex,Credential& out);
+// V2 device ID is not a pairing secret; V2 has no V3 token/key exchange.
+bool decode_device_id(const char* id,uint64_t& out);
+// V2 transport packet length, little endian, strict bounds (40 + encrypted + 16).
+bool v2_packet_size(const uint8_t* header,size_t n,size_t& total);
+// Validate V2 outer packet's device ID before decoding its signed payload.
+// This is an integrity check, NOT authentication (V2 uses a shared fixed key).
+bool v2_packet_matches_device(const uint8_t* packet,size_t n,uint64_t device_id);
 Bytes handshake_request(const Credential&,uint16_t sequence=0);
 // 8370 response MUST pass SHA-256 check before deriving AES256 local key.
 bool handshake_response(const uint8_t* packet,size_t n,const Credential&,

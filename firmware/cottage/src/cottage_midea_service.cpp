@@ -15,10 +15,23 @@
 #include "cottage_secure_ota.hpp"
 #include "cottage_wifi.hpp"
 #include "cottage_network_budget.hpp"
+#include "pump/midea_config_migration.hpp"
 
 namespace {
-constexpr uint32_t config_magic=0x4d563331; // MV31
-constexpr uint16_t config_version=1;
+// Keep the exact V3 legacy NVS layout readable after upgrading older Lite
+// firmware. The new key uses a versioned format and explicit V2/V3 selection.
+constexpr uint32_t legacy_magic=0x4d563331; // MV31
+constexpr uint32_t config_magic=0x4d563332; // MV32
+constexpr uint16_t config_version=2;
+struct LegacyConfig {
+    uint32_t magic=legacy_magic;
+    uint16_t version=1;
+    uint16_t size=sizeof(LegacyConfig);
+    char host[16]{};
+    char device_id[22]{};
+    char token_hex[129]{};
+    char key_hex[65]{};
+};
 struct Config {
     uint32_t magic=config_magic;
     uint16_t version=config_version;
@@ -27,7 +40,10 @@ struct Config {
     char device_id[22]{};
     char token_hex[129]{};
     char key_hex[65]{};
+    uint8_t protocol=3; // Explicit protocol, no silent V3->V2 fallback.
+    uint8_t reserved[3]{};
 };
+static_assert(sizeof(LegacyConfig)==240,"Legacy Midea V3 config NVS layout");
 Config saved{};
 SemaphoreHandle_t mutex=nullptr;
 std::atomic<uint32_t> revision{0};
@@ -56,24 +72,94 @@ bool valid_config(const Config& c) {
        !memchr(c.device_id,0,sizeof(c.device_id)) ||
        !memchr(c.token_hex,0,sizeof(c.token_hex)) ||
        !memchr(c.key_hex,0,sizeof(c.key_hex)) ||
-       !private_ipv4(c.host))return false;
+       !private_ipv4(c.host) ||
+       (c.protocol!=2 && c.protocol!=3) ||
+       c.reserved[0] || c.reserved[1] || c.reserved[2])return false;
+    uint64_t id=0;
+    if(!enevina::midea::decode_device_id(c.device_id,id))return false;
+    if(c.protocol==2) {
+        // A V2 client never reads V3 credentials; reject mixed-mode records.
+        return c.token_hex[0]==0 && c.key_hex[0]==0;
+    }
     enevina::midea::Credential credentials{};
     return enevina::midea::decode_credentials(
         c.device_id,c.token_hex,c.key_hex,credentials);
 }
+bool read_legacy_v3(Preferences& preferences,Config& out) {
+    LegacyConfig older{};
+    const bool legacy=preferences.getBytesLength("config_v1")==sizeof(older) &&
+        preferences.getBytes("config_v1",&older,sizeof(older))==sizeof(older) &&
+        older.magic==legacy_magic && older.version==1 &&
+        older.size==sizeof(older) &&
+        memchr(older.host,0,sizeof(older.host)) &&
+        memchr(older.device_id,0,sizeof(older.device_id)) &&
+        memchr(older.token_hex,0,sizeof(older.token_hex)) &&
+        memchr(older.key_hex,0,sizeof(older.key_hex));
+    if(!legacy)return false;
+    Config migrated{};
+    std::memcpy(migrated.host,older.host,sizeof(older.host));
+    std::memcpy(migrated.device_id,older.device_id,sizeof(older.device_id));
+    std::memcpy(migrated.token_hex,older.token_hex,sizeof(older.token_hex));
+    std::memcpy(migrated.key_hex,older.key_hex,sizeof(older.key_hex));
+    migrated.protocol=3;
+    if(!valid_config(migrated))return false;
+    out=migrated;
+    return true;
+}
 bool load_config(Config& dest) {
     Preferences preferences;
     if(!preferences.begin("midea_v3",true))return false;
-    const bool ok=preferences.getBytesLength("config_v1")==sizeof(dest) &&
-        preferences.getBytes("config_v1",&dest,sizeof(dest))==sizeof(dest) &&
-        valid_config(dest);
+    // A corrupt new key must never resurrect an intentionally retired V3
+    // configuration. Only consider legacy data when v2 is either absent,
+    // or valid AND explicitly set to protocol 3.
+    bool ok=false;
+    if(preferences.isKey("config_v2")) {
+        ok=preferences.getBytesLength("config_v2")==sizeof(dest) &&
+           preferences.getBytes("config_v2",&dest,sizeof(dest))==sizeof(dest) &&
+           valid_config(dest);
+        if(ok && dest.protocol==3) {
+            Config rollback_settings{};
+            const bool valid_legacy=read_legacy_v3(preferences,rollback_settings);
+            // The old V3 image writes config_v1 only. After an OTA rollback,
+            // later edits on that image must take precedence on re-upgrade.
+            // If V2 was explicitly selected, this path is never entered.
+            const enevina::midea::V3SettingsView current{
+                dest.host,dest.device_id,dest.token_hex,dest.key_hex};
+            const enevina::midea::V3SettingsView older{
+                rollback_settings.host,rollback_settings.device_id,
+                rollback_settings.token_hex,rollback_settings.key_hex};
+            if(enevina::midea::rollback_v3_settings_changed(
+                    dest.protocol,valid_legacy,current,older))
+                dest=rollback_settings;
+        }
+    } else {
+        ok=read_legacy_v3(preferences,dest);
+    }
     preferences.end();
     return ok;
 }
 bool persist_config(const Config& c) {
     Preferences preferences;
     if(!preferences.begin("midea_v3",false))return false;
-    const bool ok=preferences.putBytes("config_v1",&c,sizeof(c))==sizeof(c);
+    if(c.protocol==3) {
+        // Keep an up-to-date, rollback-readable copy for older V3 firmware
+        // which knows ONLY config_v1. The OTA A/B previous image must still
+        // see valid V3 credentials after an upgrade and settings save.
+        LegacyConfig fallback{};
+        std::memcpy(fallback.host,c.host,sizeof(fallback.host));
+        std::memcpy(fallback.device_id,c.device_id,sizeof(fallback.device_id));
+        std::memcpy(fallback.token_hex,c.token_hex,sizeof(fallback.token_hex));
+        std::memcpy(fallback.key_hex,c.key_hex,sizeof(fallback.key_hex));
+        if(preferences.putBytes("config_v1",&fallback,sizeof(fallback))
+           !=sizeof(fallback)) {
+            preferences.end();
+            return false;
+        }
+    }
+    // If switching to V2, retain any earlier config_v1 V3 record as the
+    // previous firmware's read-only fallback. Old V3 firmware cannot read
+    // a V2 config, so intentionally do not erase the rollback record.
+    const bool ok=preferences.putBytes("config_v2",&c,sizeof(c))==sizeof(c);
     preferences.end();
     return ok;
 }
@@ -95,6 +181,7 @@ void send_status(WebServer& web) {
     const bool selected=is_midea_selected();
     enevina::midea::State reading{};
     bool stored=false;
+    uint8_t selected_protocol=3;
     int64_t last=0;
     int status=-1;
     int64_t attempted=0;
@@ -104,6 +191,7 @@ void send_status(WebServer& web) {
     xSemaphoreTake(mutex,portMAX_DELAY);
     reading=observed;
     stored=configured;
+    selected_protocol=saved.protocol;
     last=last_success.load();
     status=last_result.load();
     attempted=last_attempt.load();
@@ -117,12 +205,14 @@ void send_status(WebServer& web) {
     char data[650];
     const int written=snprintf(data,sizeof(data),
         "{\"selected\":%s,\"configured\":%s,\"fresh\":%s,"
+        "\"protocol\":%u,\"read_only\":true,"
         "\"last_poll_utc\":%lld,\"last_attempt_utc\":%lld,"
         "\"polling\":%s,\"read_code\":\"%s\",\"read_status\":%d,\"power\":%s,"
         "\"mode\":%u,\"target_c\":%.1f,"
         "\"indoor_available\":%s,\"indoor_c\":%.2f,"
         "\"outdoor_available\":%s,\"outdoor_c\":%.2f}",
         selected?"true":"false",stored?"true":"false",fresh?"true":"false",
+        static_cast<unsigned>(selected_protocol),
         static_cast<long long>(fresh?last:0),
         static_cast<long long>(attempted>0?attempted:0),
         busy?"true":"false",code,status,
@@ -160,6 +250,12 @@ void cottage_midea_service_register_routes(WebServer& web) {
             web.send(403,"application/json","{\"saved\":false,\"error\":\"TOKEN\"}");
             return;
         }
+        const String proto=web.arg("protocol");
+        const uint8_t version=proto=="2"?2:proto=="3"?3:0;
+        if(version==0) {
+            web.send(400,"application/json","{\"saved\":false,\"error\":\"PROTOCOL\"}");
+            return;
+        }
         const String host=web.arg("host");
         const String id=web.arg("device_id");
         const String tok=web.arg("v3_token");
@@ -168,15 +264,21 @@ void cottage_midea_service_register_routes(WebServer& web) {
            id.length()>=sizeof(Config::device_id) ||
            tok.length()>=sizeof(Config::token_hex) ||
            key.length()>=sizeof(Config::key_hex) ||
-           host.isEmpty() || id.isEmpty() || tok.isEmpty() || key.isEmpty()) {
+           host.isEmpty() || id.isEmpty() ||
+           (version==3 && (tok.isEmpty() || key.isEmpty()))) {
             web.send(400,"application/json","{\"saved\":false,\"error\":\"FIELDS\"}");
             return;
         }
         Config next{};
+        next.protocol=version;
         std::memcpy(next.host,host.c_str(),host.length()+1);
         std::memcpy(next.device_id,id.c_str(),id.length()+1);
-        std::memcpy(next.token_hex,tok.c_str(),tok.length()+1);
-        std::memcpy(next.key_hex,key.c_str(),key.length()+1);
+        // V2 has no per-device V3 tokens; do not retain them in the new
+        // record when changing from V3 to V2.
+        if(version==3) {
+            std::memcpy(next.token_hex,tok.c_str(),tok.length()+1);
+            std::memcpy(next.key_hex,key.c_str(),key.length()+1);
+        }
         if(!valid_config(next)) {
             web.send(400,"application/json","{\"saved\":false,\"error\":\"INVALID\"}");
             return;
@@ -234,32 +336,36 @@ void cottage_midea_service_worker(void*) {
             before=revision.load();
             xSemaphoreGive(mutex);
             if(ready && valid_config(cfg)) {
-                enevina::midea::Credential auth{};
-                if(enevina::midea::decode_credentials(
-                        cfg.device_id,cfg.token_hex,cfg.key_hex,auth)) {
-                    // Serialised against TLS-heavy readers; Midea uses TCP,
-                    // with bounded reads, no additional watchdog/restart loop.
-                    enevina_firmware::NetworkBudgetLease lease(300,60*1024,16*1024);
-                    if(lease.held()) {
-                        polling.store(true);
-                        last_attempt.store(time(nullptr));
-                        enevina::midea::State sample{};
-                        const auto result=enevina::midea::read_device(cfg.host,auth,sample);
-                        polling.store(false);
-                        if(before==revision.load() && is_midea_selected()) {
-                            xSemaphoreTake(mutex,portMAX_DELAY);
-                            if(before==revision.load()) {
-                                last_result.store(static_cast<int>(result));
-                                if(result==enevina::midea::ReadStatus::Ok) {
-                                    observed=sample;
-                                    last_success.store(time(nullptr));
-                                } else {
-                                    // No live telemetry on failed authenticated read.
-                                    last_success.store(0);
-                                }
-                            }
-                            xSemaphoreGive(mutex);
+                // Serialized against TLS-heavy readers; both V2 and V3
+                // send only the AC 0x41 QUERY, never any control command.
+                enevina_firmware::NetworkBudgetLease lease(300,60*1024,16*1024);
+                if(lease.held()) {
+                    polling.store(true);
+                    last_attempt.store(time(nullptr));
+                    enevina::midea::State sample{};
+                    enevina::midea::ReadStatus result=
+                        enevina::midea::ReadStatus::InvalidCredentials;
+                    if(cfg.protocol==2) {
+                        uint64_t id=0;
+                        if(enevina::midea::decode_device_id(cfg.device_id,id))
+                            result=enevina::midea::read_device_v2(cfg.host,id,sample);
+                    } else {
+                        enevina::midea::Credential auth{};
+                        if(enevina::midea::decode_credentials(
+                           cfg.device_id,cfg.token_hex,cfg.key_hex,auth))
+                            result=enevina::midea::read_device(cfg.host,auth,sample);
+                    }
+                    polling.store(false);
+                    if(before==revision.load() && is_midea_selected()) {
+                        xSemaphoreTake(mutex,portMAX_DELAY);
+                        if(before==revision.load()) {
+                            last_result.store(static_cast<int>(result));
+                            if(result==enevina::midea::ReadStatus::Ok) {
+                                observed=sample;
+                                last_success.store(time(nullptr));
+                            } else last_success.store(0);
                         }
+                        xSemaphoreGive(mutex);
                     }
                 }
             }

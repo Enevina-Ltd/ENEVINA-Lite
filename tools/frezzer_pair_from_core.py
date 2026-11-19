@@ -47,7 +47,10 @@ def core_midea_config(path: Path) -> dict[str, str]:
         raise ValueError("Core config does not contain a 128-hex Midea V3 token")
     if not re.fullmatch(r"[0-9a-fA-F]{64}", key):
         raise ValueError("Core config does not contain a 64-hex Midea V3 key")
-    return {"host": host, "device_id": device_id, "v3_token": token, "v3_key": key}
+    # V2/V3 Lite firmware now requires explicit selection; this previously
+    # verified Frezzer is V3 and MUST NEVER silently downgrade to V2.
+    return {"host": host, "device_id": device_id,
+            "v3_token": token, "v3_key": key, "protocol": "3"}
 
 
 def local_request(host: str, method: str, path: str, fields=None) -> dict:
@@ -78,7 +81,10 @@ def pair(lite_host: str, config: dict[str, str]) -> None:
     token = ((status.get("air") or {}).get("config_token") or "")
     if not isinstance(token, str) or not token:
         raise RuntimeError("Lite has no current local settings token")
-    response = local_request(lite_host, "POST", "/api/midea/config", {**config, "token": token})
+    # This helper is specifically for the already Core-verified V3 Frezzer.
+    # Explicitly force V3 even if a caller passes an obsolete/mistyped mode.
+    response = local_request(lite_host, "POST", "/api/midea/config",
+                             {**config, "protocol": "3", "token": token})
     if response.get("saved") is not True:
         raise RuntimeError("Lite did not confirm pairing")
     print("Midea V3 credentials stored in Lite; no secrets printed.")

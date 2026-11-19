@@ -41,6 +41,15 @@ bool read_8370(WiFiClient& tcp,Bytes& packet) {
     std::copy(header,header+6,packet.begin());
     return read_exact(tcp,packet.data()+6,total-6);
 }
+bool read_5a5a(WiFiClient& tcp,Bytes& packet) {
+    uint8_t header[6]{};
+    if(!read_exact(tcp,header,sizeof(header)))return false;
+    size_t total=0;
+    if(!v2_packet_size(header,6,total))return false;
+    packet.assign(total,0);
+    std::copy(header,header+6,packet.begin());
+    return read_exact(tcp,packet.data()+6,total-6);
+}
 bool send_bytes(WiFiClient& tcp,const Bytes& data) {
     return !data.empty() && tcp.write(data.data(),data.size())==data.size();
 }
@@ -59,6 +68,42 @@ bool now_stamp(uint8_t out[8]) {
     return true;
 }
 } // namespace
+ReadStatus read_device_v2(const char* host,uint64_t device_id,State& reading) {
+    if(!host)return ReadStatus::InvalidAddress;
+    IPAddress ip;
+    if(!ip.fromString(host) || !allowed_lan_address(ip))
+        return ReadStatus::InvalidAddress;
+    if(!device_id)return ReadStatus::InvalidCredentials;
+    uint8_t stamp[8]{};
+    if(!now_stamp(stamp))return ReadStatus::TimeNotReady;
+    const Bytes query=state_query(1);
+    Bytes request;
+    // V2 is a directly signed/encrypted 5A5A packet. It does not use the
+    // 8370 hello, session key or any cloud token/key.
+    if(!inner_encode(device_id,query.data(),query.size(),stamp,request))
+        return ReadStatus::ProtocolFailed;
+    WiFiClient tcp;
+    tcp.setTimeout(read_timeout_ms);
+    if(!tcp.connect(ip,port,1100))return ReadStatus::ConnectionFailed;
+    if(!send_bytes(tcp,request)) {tcp.stop();return ReadStatus::ConnectionFailed;}
+    ReadStatus result=ReadStatus::UnsupportedState;
+    Bytes packet,frame;
+    for(unsigned attempt=0;attempt<3;++attempt) {
+        if(!read_5a5a(tcp,packet)) {result=ReadStatus::ProtocolFailed;break;}
+        if(!v2_packet_matches_device(packet.data(),packet.size(),device_id) ||
+           !inner_decode(packet.data(),packet.size(),frame)) {
+            result=ReadStatus::ProtocolFailed;break;
+        }
+        State value{};
+        if(parse_state(frame.data(),frame.size(),value)) {
+            reading=value;
+            result=ReadStatus::Ok;
+            break;
+        }
+    }
+    tcp.stop();
+    return result;
+}
 ReadStatus read_device(const char* host,const Credential& creds,State& reading) {
     if(!host)return ReadStatus::InvalidAddress;
     IPAddress ip;
