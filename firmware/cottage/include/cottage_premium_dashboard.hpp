@@ -651,7 +651,7 @@ $('ota-refresh').addEventListener('click',()=>reloadStatus());
 $('ota-install').addEventListener('click',async()=>{
   const s=state.status||{},token=s.air&&s.air.config_token;
   if(!token||s.ota_signed_pull_enabled!==true)return;
-  if(!window.confirm('Tarkistetaanko allekirjoitettu firmware ja asennetaanko uusi versio, jos sellainen löytyy? Laite voi käynnistyä uudelleen.'))return;
+  if(!window.confirm(translateFi('Tarkistetaanko allekirjoitettu firmware ja asennetaanko uusi versio, jos sellainen löytyy? Laite voi käynnistyä uudelleen.')))return;
   $('ota-install').disabled=true;
   text('ota-feedback','Päivitystarkistus lähetetään laitteelle…');
   try{
