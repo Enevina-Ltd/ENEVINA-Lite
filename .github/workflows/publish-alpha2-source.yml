@@ -39,6 +39,8 @@ jobs:
           python3 tools/check_release_hygiene.py
       - name: Install Python test dependency
         run: python3 -m pip install 'PyYAML>=6,<7'
+      - name: Release tag and publication security regression
+        run: python3 -m unittest discover -s tests -p 'test_alpha2_release_workflow.py' -v
       - name: Device interfaces and OTA source regression
         run: |
           python3 -m unittest discover -s tests -p 'test_wifi_onboarding_source.py' -v
