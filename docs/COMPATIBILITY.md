@@ -8,6 +8,7 @@
 | --- | --- | --- | --- |
 | Mitsubishi Electric **MSZ-FD25VA / MUZ-FD25VA** (CN105 via a local bridge) | First experimental integration, telemetry and command-path development | Source/host tests and selected pilot observations; actual CN105 UART-origin freshness and model-specific safety are not fully independently proved | **No** |
 | Other Mitsubishi Electric models with a **compatible CN105 interface** | Potential adapter family, not a universal model catalogue | Model, board revision, wiring, telemetry and control semantics must each be verified | **No** |
+| Midea / compatible OEM **V3 local Wi-Fi module** | Native C++ authentication, AES-protected status query and ESP32 TCP/6444 read-only client; [technical notes](MIDEA_V3_LOCAL_WIFI.md) | Host protocol vectors pass; **not yet connected to Lite settings/UI/runtime, no ESP32 device or Midea field validation, no writes**. A separate Core basement unit previously worked locally with msmart-ng | **No** |
 | Panasonic / **HeishaMon** | Read-only / hydronic reference adapter and research | Not an approved complete Lite controller configuration | **No** |
 | NIBE / **Modbus** | Architecture and possible future model-specific adapter | No generally validated Lite device configuration | **No** |
 | Other heat pumps with local Wi-Fi, IR or wired interfaces | Research and adapter candidates | No blanket claim of compatibility, local access or cloud-free control | **No** |
