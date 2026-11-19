@@ -11,9 +11,9 @@ Enevina Lite is a source-available project by **Enevina Ltd** (registered in Fin
 [basement Frezzer Nordic / Midea pilot](docs/integrations/MIDEA_CELLAR_PILOT.md).
 Midea V2/V3 read-only adapters exist in source but have not yet passed Lite hardware field testing.
 
-[English](#english) · [Suomi](#suomi) · [Developer preview v0.1.0-alpha.1](https://github.com/Enevina-Ltd/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1) · [Compatibility](docs/COMPATIBILITY.md) · [Getting started](docs/GETTING_STARTED.md)
+[English](#english) · [Suomi](#suomi) · [Developer preview v0.1.0-alpha.2](https://github.com/Enevina-Ltd/ENEVINA-Lite/releases/tag/v0.1.0-alpha.2) · [Compatibility](docs/COMPATIBILITY.md) · [Getting started](docs/GETTING_STARTED.md)
 
-> **Developer preview — not ready for general installation or sale.** The repository contains working prototypes, tested algorithms, experimental device adapters and firmware. It does **not** certify model compatibility, a safe automatic-control installation, or real-world energy savings. There is no approved prebuilt firmware installer in the first release.
+> **Developer preview — not ready for general installation or sale.** The repository contains working prototypes, tested algorithms, experimental device adapters and firmware. It does **not** certify model compatibility, a safe automatic-control installation, or real-world energy savings. There is no approved prebuilt firmware installer in this source-only prerelease.
 
 ## English
 
@@ -71,7 +71,7 @@ Requirements: CMake 3.20+, a C++17 compiler and Git. See [Getting started](docs/
 
 ### Follow or contribute
 
-Interested in local heat-pump protocols, deterministic optimization or testing an adapter? Browse the [latest developer preview](https://github.com/Enevina-Ltd/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1), open a [Discussion](https://github.com/Enevina-Ltd/ENEVINA-Lite/discussions) to ask a question, or use [Issues](https://github.com/Enevina-Ltd/ENEVINA-Lite/issues) for reproducible bugs and well-scoped requests. We especially welcome **model-specific compatibility evidence**; please don't post private IPs, credentials, MAC addresses or unredacted device logs.
+Interested in local heat-pump protocols, deterministic optimization or testing an adapter? Browse the [latest developer preview](https://github.com/Enevina-Ltd/ENEVINA-Lite/releases/tag/v0.1.0-alpha.2), open a [Discussion](https://github.com/Enevina-Ltd/ENEVINA-Lite/discussions) to ask a question, or use [Issues](https://github.com/Enevina-Ltd/ENEVINA-Lite/issues) for reproducible bugs and well-scoped requests. We especially welcome **model-specific compatibility evidence**; please don't post private IPs, credentials, MAC addresses or unredacted device logs.
 
 No verified demonstration video or field-savings figure has been published yet. Contributions must follow [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -83,7 +83,7 @@ Projekti on **kehittäjien esijulkaisu**, ei valmis asiakastuote. Mitsubishi Ele
 
 - [Aloita turvallisesti PC:llä](docs/GETTING_STARTED.md)
 - [Yhteensopivuus ja ominaisuuksien tila](docs/COMPATIBILITY.md)
-- [Ensimmäinen alpha-julkaisu](https://github.com/Enevina-Ltd/ENEVINA-Lite/releases/tag/v0.1.0-alpha.1)
+- [Uusin alpha-julkaisu](https://github.com/Enevina-Ltd/ENEVINA-Lite/releases/tag/v0.1.0-alpha.2)
 - [Kysy tai esittele oma lämpöpumppumallisi](https://github.com/Enevina-Ltd/ENEVINA-Lite/discussions)
 - [Ilmoita toistettava ongelma](https://github.com/Enevina-Ltd/ENEVINA-Lite/issues)
 
