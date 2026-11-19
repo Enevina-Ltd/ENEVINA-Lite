@@ -27,13 +27,22 @@ int main(){
            ++erases;deleted.emplace_back(std::string(ns)+"/"+key);
            return true;
        }));
-    assert(attempts==3 && erases==2);
+    assert(attempts==4 && erases==3);
     assert(deleted[1]=="enevina_market/price_v2");
+    attempts=0;erases=0;deleted.clear();
+    assert(persist_with_optional_cache_reclaim(
+       [&]{return ++attempts==4;},
+       [&](const char* ns,const char* key){
+           ++erases;deleted.emplace_back(std::string(ns)+"/"+key);
+           return true;
+       }));
+    assert(attempts==4 && erases==3);
+    assert(deleted[2]=="enevina_market/price_reg_v2");
     attempts=0;erases=0;
     assert(!persist_with_optional_cache_reclaim(
        [&]{++attempts;return false;},
        [&](const char*,const char*){++erases;return true;}));
-    assert(attempts==3 && erases==2);
+    assert(attempts==4 && erases==3);
     attempts=0;erases=0;
     assert(!persist_with_optional_cache_reclaim(
        [&]{++attempts;return false;},
