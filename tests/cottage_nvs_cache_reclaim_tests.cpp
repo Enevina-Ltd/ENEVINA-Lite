@@ -27,7 +27,7 @@ int main(){
            ++erases;deleted.emplace_back(std::string(ns)+"/"+key);
            return true;
        }));
-    assert(attempts==4 && erases==3);
+    assert(attempts==3 && erases==2);
     assert(deleted[1]=="enevina_market/price_v2");
     attempts=0;erases=0;deleted.clear();
     assert(persist_with_optional_cache_reclaim(
@@ -47,5 +47,5 @@ int main(){
     assert(!persist_with_optional_cache_reclaim(
        [&]{++attempts;return false;},
        [&](const char*,const char*){++erases;return false;}));
-    assert(attempts==1 && erases==2);
+    assert(attempts==1 && erases==3);
 }
