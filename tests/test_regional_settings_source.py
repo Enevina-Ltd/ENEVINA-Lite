@@ -35,8 +35,14 @@ class RegionalWiring(unittest.TestCase):
         self.assertIn("generation==region_generation", MARKET)
         self.assertIn('nvs_erase_key(handle,"price_v2")', MARKET)
         # Stamp is written after the blob so a torn write is rejected on load.
-        self.assertLess(MARKET.index('nvs_set_blob(handle,"price_v2"'),
+        self.assertLess(MARKET.index('nvs_set_blob(handle,cache_blob_key'),
                         MARKET.index("nvs_set_str(handle,region_key,stamp)"))
+        # Rollback firmware reads price_v2 without a region stamp, so other
+        # regions must use a distinct key rather than poison its price cache.
+        self.assertIn('regional_cache_key[]="price_reg_v2"',MARKET)
+        self.assertIn('legacy_fi?"price_v2":regional_cache_key',MARKET)
+        self.assertIn('const char* obsolete_key=legacy_fi?regional_cache_key:"price_v2"',MARKET)
+        self.assertIn('migrate_early_region',MARKET)
         # No zone chosen = no fetch, never another country's prices.
         self.assertIn("market_set_region(nullptr,nullptr)", SITE)
         self.assertIn("if(!area[0])", MARKET)
