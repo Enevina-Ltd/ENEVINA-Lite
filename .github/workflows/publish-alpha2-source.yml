@@ -81,13 +81,41 @@ jobs:
         run: |
           set -euo pipefail
           tag='v0.1.0-alpha.2'
+          # `--target` does NOT replace an existing Git tag. Resolve its
+          # commit SHA, including annotated tags, before any release write.
+          resolve_tag_commit() {
+            local obj sha typ depth=0
+            obj="$(gh api "repos/${GH_REPO}/git/ref/tags/${tag}" 2>/dev/null)" || return 1
+            sha="$(printf '%s' "$obj" | jq -r '.object.sha')"
+            typ="$(printf '%s' "$obj" | jq -r '.object.type')"
+            while [[ "$typ" == tag ]]; do
+              depth=$((depth+1))
+              if (( depth > 5 )); then echo 'Tag nesting too deep' >&2; return 2; fi
+              obj="$(gh api "repos/${GH_REPO}/git/tags/${sha}")" || return 2
+              sha="$(printf '%s' "$obj" | jq -r '.object.sha')"
+              typ="$(printf '%s' "$obj" | jq -r '.object.type')"
+            done
+            if [[ "$typ" != commit ]]; then echo 'Not a commit tag' >&2; return 2; fi
+            printf '%s' "$sha"
+          }
+          if ! resolve_tag_commit >/dev/null 2>&1; then
+            # Create only if absent; a concurrent creation must also
+            # point to the verified SHA or the subsequent check fails.
+            gh api --method POST "repos/${GH_REPO}/git/refs" \
+              -f "ref=refs/tags/${tag}" -f "sha=${RELEASE_SHA}" >/dev/null || true
+          fi
+          actual_sha="$(resolve_tag_commit)" || { echo 'Tag unavailable' >&2; exit 1; }
+          if [[ "$actual_sha" != "$RELEASE_SHA" ]]; then
+            echo "Refusing release: tag points to $actual_sha, verified commit is $RELEASE_SHA" >&2
+            exit 1
+          fi
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo 'Release already exists; not modifying it.'
+            echo 'Release already exists at the verified commit; not modifying it.'
             gh release view "$tag" --json url,tagName,isPrerelease
             exit 0
           fi
           gh release create "$tag" \
-            --target "$RELEASE_SHA" \
+            --verify-tag \
             --title 'Enevina Lite v0.1.0-alpha.2 — Developer Preview' \
             --notes-file docs/release/v0.1.0-alpha.2.md \
             --prerelease
