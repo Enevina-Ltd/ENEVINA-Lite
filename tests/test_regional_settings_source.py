@@ -58,11 +58,14 @@ class RegionalWiring(unittest.TestCase):
         self.assertNotIn("++region_generation", first)
         self.assertNotIn("cache=PriceCache{}", first)
 
-    def test_settings_v2_migrates_v1_and_drops_it_after_durable_write(self):
-        self.assertIn('p.putBytes("v2",&blob,sizeof(blob))', SITE)
+    def test_settings_v3_preserves_rollback_v2_during_ota_probation(self):
+        self.assertIn('p.putBytes("v3",&blob,sizeof(blob))', SITE)
         self.assertIn('p.remove("v1")', SITE)
         self.assertIn('!cottage_ota_confirmation_pending()', SITE)
-        self.assertLess(SITE.index('p.putBytes("v2"'), SITE.index('p.remove("v1")'))
+        self.assertLess(SITE.index('p.putBytes("v3"'), SITE.index('p.remove("v1")'))
+        self.assertIn('if(p.isKey("v2")) p.remove("v2")',SITE)
+        self.assertIn('p.getBytesLength("v3")==sizeof(blob)',SITE)
+        self.assertIn('version==2',SITE)
         self.assertIn("site_settings_from_v1(old.settings)", SITE)
         self.assertIn("apply_site_settings_batch", SITE)
 
@@ -99,6 +102,7 @@ class ProfileWiring(unittest.TestCase):
         self.assertIn("n>=kMinSlots", self.MAIN)
         self.assertIn("points[n].start_utc==start+static_cast<int64_t>(n)*900", self.MAIN)
         self.assertNotIn("constexpr size_t N=8;", self.MAIN)
+        self.assertNotIn("input.min_price_advantage_fraction=site_settings_snapshot()",self.MAIN)
 
     def test_profile_is_visible_in_status_and_never_arms_control(self):
         self.assertIn('"optimization_profile"', self.MAIN)

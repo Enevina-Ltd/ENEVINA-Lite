@@ -656,7 +656,7 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     input.next_total_prices=prices.data();
     input.price_count=valid_prices?n:0;
     input.prices_contiguous_and_fresh=valid_prices;
-    input.min_price_advantage_fraction=site_settings_snapshot().min_price_advantage_fraction;
+    // Keep the profile-specific threshold already set by apply_profile().
     input.price_limit_scale=currency_limit_scale(market.currency);
     // The minimum *absolute* advantage is in the selected market currency;
     // keep approximately the same tariff-relative significance as EUR.

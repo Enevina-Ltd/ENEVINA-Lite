@@ -26,7 +26,7 @@ using enevina::cottage::SiteSettings;
 using enevina::cottage::SettingError;
 namespace {
 constexpr uint32_t kMagic=0x45535431; // "EST1"
-constexpr uint16_t kVersion=2;
+constexpr uint16_t kVersion=3;  // larger settings schema: new NVS key
 struct Stored {
     uint32_t magic=kMagic;
     uint16_t version=kVersion;
@@ -96,12 +96,15 @@ bool persist(const SiteSettings& s) {
     const auto write_site=[&]() {
         Preferences p;
         if(!p.begin("site",false)) return false;
-        const size_t written=p.putBytes("v2",&blob,sizeof(blob));
-        // Keep the previous firmware's v1 settings during OTA probation.
-        // A rollback still reads site/v1, while new firmware reads site/v2.
-        // Remove v1 only when OTA confirms that rollback is no longer pending.
-        if(written==sizeof(blob) && p.isKey("v1") &&
-           !cottage_ota_confirmation_pending()) p.remove("v1");
+        // The previous firmware only understands site/v2 (or site/v1).
+        // Never overwrite its rollback-readable blob while OTA is pending.
+        const size_t written=p.putBytes("v3",&blob,sizeof(blob));
+        if(written==sizeof(blob) && !cottage_ota_confirmation_pending()) {
+            // Confirmed firmware no longer needs rollback copies. Both are
+            // retained when probation is active, even on a settings save.
+            if(p.isKey("v2")) p.remove("v2");
+            if(p.isKey("v1")) p.remove("v1");
+        }
         p.end();
         return written==sizeof(blob);
     };
@@ -216,17 +219,27 @@ void site_settings_initialize() {
     if(p.begin("site",true)) {
         Stored blob{};
         StoredV1 old{};
+        // v3 is our own expanded schema. v2 stays untouched during OTA
+        // probation so the previous firmware can still load it on rollback.
+        if(p.getBytesLength("v3")==sizeof(blob) &&
+           p.getBytes("v3",&blob,sizeof(blob))==sizeof(blob) &&
+           blob.magic==kMagic && blob.version==kVersion &&
+           blob.size==sizeof(SiteSettings) && acceptable(blob.settings)) {
+            s=blob.settings;
+            loaded_from_nvs=true;
+        }
         // v2 blobs written by an earlier layout of SiteSettings are restored
         // prefix-wise (see restore_site_settings); exact-size matching used to
         // discard them and reset the owner's configuration on every upgrade.
         const size_t stored_len=p.getBytesLength("v2");
         uint8_t raw[sizeof(Stored)]{};
         SiteSettings restored{};
-        if(stored_len>offsetof(Stored,settings) && stored_len<=sizeof(raw) &&
+        if(!loaded_from_nvs &&
+           stored_len>offsetof(Stored,settings) && stored_len<=sizeof(raw) &&
            p.getBytes("v2",raw,stored_len)==stored_len) {
             uint32_t magic=0;uint16_t version=0,size=0;
             memcpy(&magic,raw,4);memcpy(&version,raw+4,2);memcpy(&size,raw+6,2);
-            if(magic==kMagic && version==kVersion &&
+            if(magic==kMagic && version==2 &&
                size==stored_len-offsetof(Stored,settings) &&
                enevina::cottage::restore_site_settings(raw+offsetof(Stored,settings),size,restored) &&
                acceptable(restored)) {
