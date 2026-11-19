@@ -217,6 +217,8 @@ static void transfer_schedule_uses_country_time() {
     // Day tariff starts 06:00 local: Sweden is day, a 07:00..22:00 Finnish
     // schedule would also say day, but at 05:00Z (06:00 SE / 07:00 FI) the
     // boundary matters: 04:45Z = 05:45 SE (night) = 06:45 FI.
+    assert(!site_region_total_price(se,1768193100,0.0,total));
+    se.tariff_confirmed=true;
     assert(site_region_total_price(se,1768193100,0.0,total));   // 04:45Z -> 05:45 SE
     assert(near(total,0.10));
     assert(site_region_total_price(se,1768194000,0.0,total));   // 05:00Z -> 06:00 SE
@@ -230,6 +232,8 @@ static void transfer_schedule_uses_country_time() {
     SiteSettings fi=se;
     assert(apply_site_setting(fi,"country","FI")==SettingError::Ok);
     fi.tariff=se.tariff;
+    assert(!site_region_total_price(fi,1768193100,0.0,total));
+    fi.tariff_confirmed=true;
     assert(site_region_total_price(fi,1768193100,0.0,total));   // 06:45 FI -> day
     assert(near(total,0.40));
 }

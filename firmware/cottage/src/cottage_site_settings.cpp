@@ -12,6 +12,7 @@
 #include <memory>
 #include "cottage_config.hpp"
 #include "cottage_site_settings.hpp"
+#include "cottage_secure_ota.hpp"
 #include "cottage_air_service.hpp"
 #include "../../main/weather.hpp"
 #include "cottage_wifi.hpp"
@@ -95,9 +96,11 @@ bool persist(const SiteSettings& s) {
         Preferences p;
         if(!p.begin("site",false)) return false;
         const size_t written=p.putBytes("v2",&blob,sizeof(blob));
-        // The v1 blob is migrated state; drop it once v2 is durable so the
-        // small NVS partition does not hold the same configuration twice.
-        if(written==sizeof(blob) && p.isKey("v1")) p.remove("v1");
+        // Keep the previous firmware's v1 settings during OTA probation.
+        // A rollback still reads site/v1, while new firmware reads site/v2.
+        // Remove v1 only when OTA confirms that rollback is no longer pending.
+        if(written==sizeof(blob) && p.isKey("v1") &&
+           !cottage_ota_confirmation_pending()) p.remove("v1");
         p.end();
         return written==sizeof(blob);
     };
