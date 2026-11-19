@@ -153,9 +153,23 @@ console.log('comfort step helpers ok');
   events.length=0;
   ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
   await assert.rejects(A.wzSaveComfort(false),/AIR_NVS/);
-  assert.equal(events.length,3,'site write + mode error + restore site');
-  assert.equal(events[2].optimization_profile,'balanced');
-  assert.equal(events[2].comfort_min_c,'10');
-  assert.equal(events[2].comfort_max_c,'14');
-  console.log('wizard rollback-order tests OK');
+  assert.equal(events.length,4,'site write + mode error + readback + restore site');
+  assert.equal(events[2],'reload');
+  assert.equal(events[3].optimization_profile,'balanced');
+  assert.equal(events[3].comfort_min_c,'10');
+  assert.equal(events[3].comfort_max_c,'14');
+  // Ambiguous HTTP response: committed target is visible on status readback.
+  // Undo would pair a new target with the OLD limits (fresh Codex P2 #57).
+  events.length=0;
+  ctx.reloadStatus=async()=>{events.push('reload');ctx.state.status.air.hold_target_c=13;};
+  await A.wzSaveComfort(false);
+  assert.deepEqual(events.slice(1),['air','reload']);
+  assert.equal(events.length,3,'do not compensate a confirmed successful target save');
+  // If Wi-Fi is lost and readback is impossible, don't blindly undo either.
+  events.length=0;
+  ctx.state.status.air.hold_target_c=12;
+  ctx.reloadStatus=async()=>{events.push('reload');ctx.state.status=null;};
+  await assert.rejects(A.wzSaveComfort(false),/unverified/);
+  assert.equal(events.length,3,'unknown air outcome cannot trigger rollback');
+  console.log('wizard rollback-order and ambiguous-response tests OK');
 })().catch(e=>{console.error(e);process.exitCode=1;});

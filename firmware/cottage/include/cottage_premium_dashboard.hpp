@@ -692,8 +692,22 @@ async function wzSaveComfort(skip){
         occupied:String(mode===3?r.target:air.occupied_target_c)});
       await reloadStatus();
     } catch(error) {
-      // Never report success after half of a two-namespace update. If the air
-      // write failed, restore the old owner band/profile before returning.
+      // A lost HTTP response is NOT proof that /api/air/config failed: it may
+      // have committed the new target before the Wi-Fi link went away. Read
+      // source-confirmed device state before compensating the site write.
+      await reloadStatus();
+      const observed=state.status&&state.status.air;
+      const currentTarget=observed&&
+        (mode===3?observed.occupied_target_c:observed.hold_target_c);
+      if(observed&&observed.mode===mode&&currentTarget===r.target) return;
+      if(!observed||observed.mode!==mode||currentTarget!==
+         (mode===3?air.occupied_target_c:air.hold_target_c)){
+        // Ambiguous outcome: NEVER undo a possibly successful air write.
+        // The UI must report uncertainty and refresh when connection returns.
+        throw Error(WT('Tallennus epäonnistui')+' (target status unverified)');
+      }
+      // The device still reports its OLD target. Only now is restoring the
+      // previous band/profile safe; if that fails, report the conflict.
       try {await wzPost(oldFields);}
       catch(undoError) {
         throw Error(WT('Tallennus epäonnistui')+
