@@ -281,6 +281,17 @@ if(OpenSSL_FOUND)
   add_test(NAME midea_v2_protocol_tests COMMAND midea_v2_protocol_tests)
 endif()
 
+# Host-run regression for an OTA rollback to the old V3 firmware,
+# editing config_v1, then upgrading again without losing the new setting.
+add_executable(midea_config_migration_tests tests/midea_config_migration_tests.cpp)
+target_include_directories(midea_config_migration_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(MSVC)
+  target_compile_options(midea_config_migration_tests PRIVATE /UNDEBUG)
+else()
+  target_compile_options(midea_config_migration_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME midea_config_migration_tests COMMAND midea_config_migration_tests)
+
 # A read-only Midea selection can NEVER enter the CN105 physical writer.
 add_executable(midea_lan_catalog_tests tests/midea_lan_catalog_tests.cpp)
 target_include_directories(midea_lan_catalog_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
