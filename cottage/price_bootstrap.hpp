@@ -44,6 +44,8 @@ struct BootstrapInput {
     // may coast down to desired-coast_c. Both are clamped inside the limits.
     double preheat_c=0;
     double coast_c=0;
+    // Scale accepted monetary values to the configured currency (EUR=1).
+    double price_limit_scale=1.0;
 };
 struct BootstrapDecision {
     BootstrapAction action=BootstrapAction::Unavailable;
@@ -66,11 +68,13 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     // Price data is OPTIONAL for maintaining a user-selected temperature.
     // A Nord Pool/network outage must not disable the local thermostat.
     bool price_valid=in.prices_contiguous_and_fresh && in.next_total_prices &&
-        in.price_count>=8 && in.price_count<=96;
+        in.price_count>=8 && in.price_count<=96 &&
+        std::isfinite(in.price_limit_scale) && in.price_limit_scale>=1.0 &&
+        in.price_limit_scale<=12.0;
     std::array<double,96> sorted{};
     for(size_t i=0;price_valid && i<in.price_count;++i) {
         const double v=in.next_total_prices[i];
-        if(!std::isfinite(v) || v< -1 || v>10) {
+        if(!std::isfinite(v) || v< -1*in.price_limit_scale || v>10*in.price_limit_scale) {
             price_valid=false;break;
         }
         sorted[i]=v;
@@ -80,7 +84,7 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
        in.min_price_advantage_fraction<0 || in.min_price_advantage_fraction>1 ||
        !std::isfinite(in.min_price_advantage_eur_per_kwh) ||
        in.min_price_advantage_eur_per_kwh<0 ||
-       in.min_price_advantage_eur_per_kwh>1)) price_valid=false;
+       in.min_price_advantage_eur_per_kwh>in.price_limit_scale)) price_valid=false;
     if(price_valid) {
         std::sort(sorted.begin(),sorted.begin()+in.price_count);
         const size_t mid=in.price_count/2;

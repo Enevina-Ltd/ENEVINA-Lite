@@ -210,6 +210,10 @@ inline bool site_market_region(const SiteSettings& s,const char*& nordpool_area,
 // TOTAL price rule bound to the selected region (offset and currency scale).
 inline bool site_region_total_price(const SiteSettings& s,int64_t slot_start_utc,
                                     double spot_per_kwh,double& total) {
+    // The selected country may have invalidated the previous contract. Spot
+    // remains displayable, but spot-only is NOT a confirmed total cost for
+    // price-aware optimization. The live controller falls back to thermostat.
+    if(!s.tariff_confirmed) return false;
     const enevina::MarketCountry* c=enevina::find_market_country(s.country);
     const int offset=c ? c->std_offset_hours : 2;
     const double scale=currency_limit_scale(c ? c->currency : "EUR");
