@@ -120,10 +120,25 @@ bool load_config(Config& dest) {
 bool persist_config(const Config& c) {
     Preferences preferences;
     if(!preferences.begin("midea_v3",false))return false;
+    if(c.protocol==3) {
+        // Keep an up-to-date, rollback-readable copy for older V3 firmware
+        // which knows ONLY config_v1. The OTA A/B previous image must still
+        // see valid V3 credentials after an upgrade and settings save.
+        LegacyConfig fallback{};
+        std::memcpy(fallback.host,c.host,sizeof(fallback.host));
+        std::memcpy(fallback.device_id,c.device_id,sizeof(fallback.device_id));
+        std::memcpy(fallback.token_hex,c.token_hex,sizeof(fallback.token_hex));
+        std::memcpy(fallback.key_hex,c.key_hex,sizeof(fallback.key_hex));
+        if(preferences.putBytes("config_v1",&fallback,sizeof(fallback))
+           !=sizeof(fallback)) {
+            preferences.end();
+            return false;
+        }
+    }
+    // If switching to V2, retain any earlier config_v1 V3 record as the
+    // previous firmware's read-only fallback. Old V3 firmware cannot read
+    // a V2 config, so intentionally do not erase the rollback record.
     const bool ok=preferences.putBytes("config_v2",&c,sizeof(c))==sizeof(c);
-    // Remove legacy duplicate credentials only after the new record was
-    // committed. Never wipe on an NVS write failure.
-    if(ok && preferences.isKey("config_v1"))preferences.remove("config_v1");
     preferences.end();
     return ok;
 }
