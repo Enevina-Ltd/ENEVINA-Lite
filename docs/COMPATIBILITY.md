@@ -1,6 +1,6 @@
 # Heat-pump compatibility and development status
 
-**Status as reviewed on 18 November 2026.** This is a developer preview, **not** a certified compatibility list. A supported protocol alone does not establish electrical compatibility, safe physical commands, accurate telemetry or a manufacturer's endorsement.
+**Status as reviewed on 19 November 2026.** This is a developer preview, **not** a certified compatibility list. A supported protocol alone does not establish electrical compatibility, safe physical commands, accurate telemetry or a manufacturer's endorsement.
 
 ## Compatibility matrix
 
@@ -8,6 +8,8 @@
 | --- | --- | --- | --- |
 | Mitsubishi Electric **MSZ-FD25VA / MUZ-FD25VA** (CN105 via a local bridge) | First experimental integration, telemetry and command-path development | Source/host tests and selected pilot observations; actual CN105 UART-origin freshness and model-specific safety are not fully independently proved | **No** |
 | Other Mitsubishi Electric models with a **compatible CN105 interface** | Potential adapter family, not a universal model catalogue | Model, board revision, wiring, telemetry and control semantics must each be verified | **No** |
+| Midea / compatible OEM **V3 local Wi-Fi module** | Native C++ authentication, AES-protected status query and ESP32 TCP/6444 read-only client; [technical notes](MIDEA_V3_LOCAL_WIFI.md) | Host protocol vectors and ESP32-S3 firmware build pass; **manual enrollment and read-only dashboard status are implemented in source**, but not yet tested with physical Lite hardware; no Midea heating commands in Lite. The basement Frezzer Nordic unit has separately demonstrated Midea V3 LAN state polling in Enevina Core | **No** |
+| **Frezzer Nordic (owner's basement unit; exact retail submodel unrecorded)** | **Already verified through Enevina Core as a Midea-family V3 LAN device**, using `msmart-ng` and authenticated local state polling. Core code also implements HEAT, ON/OFF and temperature setpoint control paths; the earlier pilot was left `control_enabled=false`, `dry_run=true` | This is the previously documented basement **Midea** pilot, not a second untested pump. **Core V3 confirmed; ESP32 Lite not physically tested, and Lite Midea writes not implemented.** The exact retail model and installed module must not be inferred from generic K12/OSK102 manuals | **No** |
 | Panasonic / **HeishaMon** | Read-only / hydronic reference adapter and research | Not an approved complete Lite controller configuration | **No** |
 | NIBE / **Modbus** | Architecture and possible future model-specific adapter | No generally validated Lite device configuration | **No** |
 | Other heat pumps with local Wi-Fi, IR or wired interfaces | Research and adapter candidates | No blanket claim of compatibility, local access or cloud-free control | **No** |
