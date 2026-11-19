@@ -864,18 +864,26 @@ static bool control_erase_disposable_cache(const char* nspace,const char* key) {
     return false;
 }
 static bool control_save_user_arm(const StoredControlIntent& record) {
+    // Unlike Preferences::putBytes, the native API exposes the precise NVS
+    // open/set/commit error. Never replace a failure with cache-erase status.
+    esp_err_t last_write_error=ESP_FAIL;
     const auto store=[&]() {
-        Preferences p;
-        if(!p.begin("cottage_ctl",false))return false;
-        const bool saved=p.putBytes("intent1",&record,sizeof(record))==sizeof(record);
-        p.end();
-        return saved;
+        nvs_handle_t handle=0;
+        esp_err_t err=nvs_open("cottage_ctl",NVS_READWRITE,&handle);
+        if(err==ESP_OK) {
+            err=nvs_set_blob(handle,"intent1",&record,sizeof(record));
+            if(err==ESP_OK)err=nvs_commit(handle);
+            nvs_close(handle);
+        }
+        last_write_error=err;
+        return err==ESP_OK;
     };
     if(enevina::cottage::persist_with_optional_cache_reclaim(
             store,control_erase_disposable_cache)) {
         control_arm_nvs_last_error.store(ESP_OK);
         return true;
     }
+    control_arm_nvs_last_error.store(last_write_error);
     control_arm_nvs_save_failures.fetch_add(1);
     return false;
 }

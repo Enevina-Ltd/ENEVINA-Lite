@@ -18,6 +18,12 @@ class NvsRearm(unittest.TestCase):
     early=SRC.split("bool cottage_control_revoke_saved_intent()",1)[1].split("static void cottage_control_disarm()",1)[0]
     self.assertNotIn("control_save_user_arm",early)
     self.assertIn('prefs.putBytes("intent1",&record,sizeof(record))',early)
+ def test_native_nvs_error_never_overwritten_by_cache_errors(self):
+    self.assertIn('nvs_open("cottage_ctl",NVS_READWRITE,&handle)',SRC)
+    self.assertIn('nvs_set_blob(handle,"intent1",&record,sizeof(record))',SRC)
+    self.assertIn("if(err==ESP_OK)err=nvs_commit(handle);",SRC)
+    self.assertIn("last_write_error=err;",SRC)
+    self.assertIn("control_arm_nvs_last_error.store(last_write_error);",SRC)
  def test_fail_closed_and_operational_counters(self):
     self.assertIn("const bool stored=allowed && control_save_user_arm(record);",SRC)
     self.assertIn("if(stored) {",SRC)
