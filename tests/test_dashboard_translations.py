@@ -48,14 +48,14 @@ class DashboardTranslations(unittest.TestCase):
             self.assertEqual(STRINGS[fi],en)
     def test_midea_provisioning_security_and_dynamic_messages_are_translated(self):
         expected={
-          "Midea · paikallinen V3 Wi-Fi -yhteys":
-              "Midea · local V3 Wi-Fi connection",
+          "Midea · paikallinen V2 / V3 Wi-Fi -yhteys":
+              "Midea · local V2 / V3 Wi-Fi connection",
           "V3 token (128 heksamerkkiä)":
               "V3 token (128 hex characters)",
           "V3 key (64 heksamerkkiä)":
               "V3 key (64 hex characters)",
-          "Midea V3 on tässä versiossa vain tilanluku. Ohjaus ei ole käytössä.":
-              "Midea V3 is read-only in this version. Control is not available.",
+          "Midea V2/V3 on tässä versiossa vain tilanluku. Ohjaus ei ole käytössä.":
+              "Midea V2/V3 is read-only in this version. Control is not available.",
           "Midea-yhteys tallennettu. Ensimmäinen luku tapahtuu verkossa.":
               "Midea connection saved. The first status poll will take place over the network.",
           "Tarkista device ID, V3 token (128) ja key (64 heksamerkkiä).":
@@ -63,11 +63,11 @@ class DashboardTranslations(unittest.TestCase):
         }
         for fi,en in expected.items():
             self.assertEqual(STRINGS.get(fi),en)
-        security=STRINGS["V3-luku tapahtuu suoraan lämpöpumpun alkuperäisestä Wi-Fi-moduulista ilman Home Assistantia tai jatkuvaa pilviyhteyttä. Tämä on vain tilan lukukokeilu: automaattisia lämpötilakomentoja ei lähetetä. Yhdistä vain omassa luotetussa lähiverkossa; kehitysvaiheen HTTP-asetussivu ei salaa tunnisteiden siirtoa."]
+        security=STRINGS["V2- tai V3-tilanluku tapahtuu suoraan lämpöpumpun Wi-Fi-moduulista ilman Home Assistantia tai jatkuvaa pilviyhteyttä. Tämä on vain tilan lukukokeilu: automaattisia lämpötilakomentoja ei lähetetä. Yhdistä vain omassa luotetussa lähiverkossa; kehitysvaiheen HTTP-asetussivu ei salaa tunnisteiden siirtoa."]
         self.assertIn("trusted local network",security)
         self.assertIn("does not encrypt the credentials",security)
         self.assertIn("read-only",security)
-        self.assertIn("V3 tunnisteet tallennetaan laitteen paikalliseen NVS-muistiin. Niitä ei palauteta selaimeen. DHCP-IP:n automaattinen tunnistus ja pumpun ohjaus eivät sisälly tähän lukuversioon.",STRINGS)
+        self.assertIn("V3-tunnisteet tallennetaan paikalliseen NVS-muistiin, eikä niitä palauteta selaimeen. V2 ei tarvitse tokenia tai keytä, mutta sen yhteys käyttää yhteistä kiinteää salausavainta eikä todenna pumppua samalla tavalla kuin V3. Valitse protokolla laitteen todetun version mukaan. Käytä vain luotetussa lähiverkossa. DHCP-IP:n automaattinen tunnistus ja pumpun ohjaus eivät sisälly tähän lukuversioon.",STRINGS)
 
     def test_midea_test_diagnostics_are_translated(self):
         for key in ("Testaa yhteys nyt", "Ei vielä testattu.",
