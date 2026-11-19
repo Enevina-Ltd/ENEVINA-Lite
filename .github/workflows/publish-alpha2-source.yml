@@ -1,0 +1,92 @@
+name: Publish Enevina Lite v0.1.0-alpha.2
+
+# Fixed-version, source-only prerelease automation. A future release needs
+# another reviewed workflow/notes change; no OTA service is triggered here.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/publish-alpha2-source.yml'
+      - 'docs/release/v0.1.0-alpha.2.md'
+      - 'README.md'
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/release/v0.1.0-alpha.2.md'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Source disclosure, license and hygiene
+        run: |
+          test -f LICENSE
+          test -f THIRD_PARTY_NOTICES.md
+          test -s docs/release/v0.1.0-alpha.2.md
+          python3 -m unittest discover -s tests -p 'test_release_hygiene.py' -v
+          python3 tools/check_release_hygiene.py
+      - name: Device interfaces and OTA source regression
+        run: |
+          python3 -m unittest discover -s tests -p 'test_wifi_onboarding_source.py' -v
+          python3 -m unittest discover -s tests -p 'test_midea_v2_integration.py' -v
+          python3 -m unittest discover -s tests -p 'test_frezzer_pair_from_core.py' -v
+          python3 -m unittest discover -s tests -p 'test_dashboard_translations.py' -v
+          python3 -m unittest discover -s tests -p 'test_dashboard_signed_ota.py' -v
+          python3 -m unittest discover -s tests -p 'test_control_rearm_nvs_source.py' -v
+          node tests/test_c25_dashboard_ui.js
+      - name: Native CMake build and tests
+        run: |
+          cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-release --parallel 2
+          ctest --test-dir build-release --output-on-failure
+      - name: Pin ESP32-S3 build dependencies
+        run: python3 -m pip install 'platformio==6.1.19' 'PyYAML>=6,<7'
+      - name: Compile experimental firmware only; do not upload binaries
+        run: python3 -m platformio run -d firmware/cottage -e esp32s3_cottage_shadow
+
+  publish-source-prerelease:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: enevina-lite-v0.1.0-alpha.2-release
+      cancel-in-progress: false
+    steps:
+      - name: Checkout verified release commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Publish GitHub prerelease (source only, no OTA)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag='v0.1.0-alpha.2'
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo 'Release already exists; not modifying it.'
+            gh release view "$tag" --json url,tagName,isPrerelease
+            exit 0
+          fi
+          gh release create "$tag" \
+            --target "$RELEASE_SHA" \
+            --title 'Enevina Lite v0.1.0-alpha.2 — Developer Preview' \
+            --notes-file docs/release/v0.1.0-alpha.2.md \
+            --prerelease
+          gh release view "$tag" --json url,tagName,isPrerelease
