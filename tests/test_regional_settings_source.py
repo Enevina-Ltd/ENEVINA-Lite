@@ -55,9 +55,14 @@ class RegionalWiring(unittest.TestCase):
     def test_settings_v2_migrates_v1_and_drops_it_after_durable_write(self):
         self.assertIn('p.putBytes("v2",&blob,sizeof(blob))', SITE)
         self.assertIn('p.remove("v1")', SITE)
+        self.assertIn('!cottage_ota_confirmation_pending()', SITE)
         self.assertLess(SITE.index('p.putBytes("v2"'), SITE.index('p.remove("v1")'))
         self.assertIn("site_settings_from_v1(old.settings)", SITE)
         self.assertIn("apply_site_settings_batch", SITE)
+
+    def test_unconfirmed_contract_cannot_drive_price_optimization(self):
+        tariff=(ROOT / "cottage/site_settings.hpp").read_text()
+        self.assertIn("if(!s.tariff_confirmed) return false;",tariff)
 
     def test_geocode_request_runs_in_worker_not_in_web_handler(self):
         self.assertIn("xTaskCreate(worker_main", GEO)
