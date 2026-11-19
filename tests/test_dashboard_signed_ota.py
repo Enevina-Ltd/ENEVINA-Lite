@@ -33,6 +33,19 @@ class DashboardSignedOTA(unittest.TestCase):
         self.assertIn("ota_worker_task.store(xTaskGetCurrentTaskHandle())", OTA)
         self.assertIn("xTaskNotifyGive(task)", OTA)
         self.assertIn("ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(60000))", OTA)
+        # A request queued during the first 90 seconds is serviced by the
+        # initial check. Drain that ONE old notification before checking so
+        # it cannot trigger an immediate retry after the first download fails.
+        worker_start = OTA.split("void cottage_ota_worker(void*) {", 1)[1]
+        self.assertLess(
+            worker_start.index("vTaskDelay(pdMS_TO_TICKS(90000))"),
+            worker_start.index("ulTaskNotifyTake(pdTRUE,0)"),
+        )
+        self.assertLess(
+            worker_start.index("ulTaskNotifyTake(pdTRUE,0)"),
+            worker_start.index("while(true)"),
+        )
+        self.assertEqual(worker_start.count("ulTaskNotifyTake(pdTRUE,0)"),1)
         # Manual button must also wake the ten-minute post-failure wait.
         self.assertIn("ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(10*60*1000))", OTA)
         self.assertNotIn("vTaskDelay(pdMS_TO_TICKS(10*60*1000))", OTA)
