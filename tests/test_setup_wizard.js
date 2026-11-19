@@ -23,7 +23,7 @@ assert.deepEqual(missing,[],'missing English translations');
 
 const ctx={document:{},state:{},uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS};',ctx);
+vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS};',ctx);
 const A=ctx.api;
 
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
@@ -168,6 +168,18 @@ console.log('comfort step helpers ok');
   assert.equal(f.shelly_scope,'whole_house');assert(!('shelly_url' in f));
   assert.equal(A.wzDevicesFields({shelly:'http://192.168.1.31',scope:'bogus'},have).shelly_scope,'unknown');   // bad scope -> unknown
   assert.deepEqual({...A.wzDevicesFields({shelly:'',scope:'heat_pump'},have)},{setup_step:'7',shelly_url:''}); // clearing the meter
+  // A newly chosen meter must not inherit a prior pump-only confirmation.
+  const draft=vm.runInContext('WZ',ctx);
+  draft.shelly=have.shelly_url;draft.shellyScope='heat_pump';
+  draft.shellyScopeFor=have.shelly_url;draft.shellyScopeInitialized=true;
+  A.wzSetShellyAddress('http://192.168.1.31');
+  assert.equal(draft.shellyScope,'unknown');
+  assert.equal(A.wzDevicesFields({shelly:draft.shelly,scope:draft.shellyScope},have).shelly_scope,'unknown');
+  draft.shellyScope='heat_pump'; // user explicitly confirms the replacement
+  A.wzSetShellyAddress('http://192.168.1.31');
+  assert.equal(draft.shellyScope,'heat_pump'); // same URL is not a new meter
+  A.wzSetShellyAddress('http://192.168.1.32');
+  assert.equal(draft.shellyScope,'unknown'); // manually typed replacement also resets
   // summary: a meter that is not confirmed as pump-only is a warning, not ok
   const meter=(scope,w)=>A.wzSummary({site:{region:{},shelly_scope:scope},status:{air:{},shelly_w:w},weather:null,plan:null}).find(x=>x.key==='meter');
   assert.equal(meter('heat_pump',300).state,'ok');
