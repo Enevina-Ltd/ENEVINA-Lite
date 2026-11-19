@@ -1,6 +1,6 @@
 # Enevina Lite — kellarin Midea, paikallisen LAN-yhteyden ensimmäinen pilotti
 
-**17.11.2026 · Enevina Lite -adapteria ei vielä toteutettu eikä testattu.** Käyttäjän kellarin **Midea-ilmalämpöpumppuun on jo toteutettu ja fyysisesti todennettu paikallinen LAN-lukuyhteys Kaelion-Core-repossa 8.–9.9.2026**. Liten oma ESP32-S3-adapteri ja uusi nykyhetken LAN-/WAN-estotesti ovat edelleen tekemättä. Sisäyksikön tarkka mallikoodi, Wi-Fi-moduuli ja firmware ovat yhä tuntemattomat. Aiemmin todettu Core-yhteys **ei yksin todista pilvetöntä ensimmäistä paritusta tai Liten toimivuutta**. Älä muuta pumpun asetuksia ilman erillistä hyväksyntää.
+**19.11.2026 · Enevina Liten Midea V2/V3 -lukuadapterien lähdekoodi on yhdistetty `main`-haaraan (PR #48 ja #51), mutta Lite-laitteen fyysinen Frezzer Nordic -yhteystesti on edelleen tekemättä.** Käyttäjän kellarin **Midea-ilmalämpöpumppuun on jo toteutettu ja fyysisesti todennettu paikallinen LAN-lukuyhteys Kaelion-Core-repossa 8.–9.9.2026**. Liten oma ESP32-S3-adapteri ja uusi nykyhetken LAN-/WAN-estotesti ovat edelleen tekemättä. Sisäyksikön tarkka mallikoodi, Wi-Fi-moduuli ja firmware ovat yhä tuntemattomat. Aiemmin todettu Core-yhteys **ei yksin todista pilvetöntä ensimmäistä paritusta tai Liten toimivuutta**. Älä muuta pumpun asetuksia ilman erillistä hyväksyntää.
 
 ## Tavoite
 
@@ -16,7 +16,7 @@ Selvittää, voiko Enevina Lite ESP32-S3 N16R8 ottaa suoran paikallisen yhteyden
 | Valmistajan sovellus | EI TUNNETA |
 | Wi-Fi-yhteys | Paikallinen LAN-yhteys on todistettu Core-ympäristössä syyskuussa 2026; taajuutta ei vahvistettu |
 | Paikallinen IP (ei kirjata GitHubiin) | Vaihtui DHCP:ssä syyskuussa 2026; uusi osoite löydettiin automaattisesti PR #613:ssa; ajantasainen IP tarkistettava paikallisesti |
-| Midea-protokolla V1/V2/V3 | VARMENTAMATTA |
+| Midea-protokolla V1/V2/V3 | Kellarin Frezzer Nordic on jo varmennettu Corella Midea V3 -LAN-yhteytenä; Lite V2/V3 -lukuadapterit eivät ole vielä kenttävarmennettuja |
 | LAN-tyyppi `0xAC`, `supported` | VARMENTAMATTA |
 | Autentikointi ja V3 `token/key` | Core-koodi tukee tallennettuja laitekohtaisia tunnuksia; syyskuun LAN-luku onnistui autentikoidusti aiemmin tallennetuilla tunnuksilla. Varsinainen protokollaversio ja avainten alkuperä **ei varmistettu** |
 | Mallin asetuslämpötila-/tila-/tehotiedot | Syyskuun lukutilanne: tavoite 22 °C, huonelämpötila 24,5 °C, ulkolämpötila 14 °C; teho/energiakenttien luotettavuutta ei osoitettu. Erillinen Shelly Plus 1PM -mittari |
@@ -53,10 +53,24 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install msmart-ng
-msmart-ng discover
+# Pilvetön lähiverkon discovery: EI automaattista V3 token/key-hakua.
+python - <<'PY'
+import asyncio
+from msmart.discover import Discover
+
+async def main():
+    devices = await Discover.discover(auto_connect=False)
+    for device in devices:
+        # Tulosta vain ei-salaiset kentät (ei IP/MAC/ID/token/key).
+        print("Protokolla:", getattr(device, "version", "tuntematon"),
+              "Laitetyyppi:", getattr(device, "type", "tuntematon"))
+    print("Laitteita löytyi:", len(devices))
+
+asyncio.run(main())
+PY
 ```
 
-Komennot on tarkoitettu tiedonhakuun. `msmart-ng discover` voi lähettää LAN-discovery-viestejä ja tehdä tunnistukseen liittyviä yhteyspyyntöjä; se **ei ole täysin passiivinen verkkokaappaus**, mutta ei pyydä lämmitysasetusten muuttamista. Älä suorita `set`/`toggle`/`setattr` komentoja. Asennus vaatii työkoneelle internetin paketin lataamiseen, **ei tarkoita pumpun pilviohjausta**.
+**Älä käytä tässä vaiheessa `msmart-ng discover` -CLI-komentoa.** Sen oletuskäytös voi hakea V3 token/key-parin NetHome Plus -pilvestä automaattisesti myös ilman käyttäjän antamia pilvitunnuksia. Yllä `Discover.discover(auto_connect=False)` estää `Discover.connect()`-polun automaattisen V3-autentikoinnin. Se lähettää edelleen lähiverkon tunnistuspaketteja, joten ei ole passiivinen verkkokaappaus. Älä suorita `set`/`toggle`/`setattr`-komentoja tai tulosta yksilöiviä laitetietoja. Testi-PC:n pakettiasennus voi vaatia internetiä; pilviavainhaku vaatii erillisen käyttäjän hyväksynnän.
 
 **Odotettu / kirjattava (sensuroitu) tulos:**
 - Onko laite löydettävissä UDP 6445 / 20086? Mikä on `version` (V1/V2/V3) ja tyyppi `0xAC`?
@@ -68,7 +82,7 @@ Referenssit: [Tofee/midea-ac-HA-py](https://github.com/Tofee/midea-ac-HA-py) (`m
 
 ## Vaihe C — pilvestä riippumattomuuden koe
 
-**Vasta kun B onnistuu ja verkkokytkennät tunnetaan.** Reitittimen testisäännöllä estetään **vain pumpun pääsy valmistajan internet-palvelimiin**, ei sen IP-yhteyttä Liten/testi-PC:n kanssa. Älä irrota pumpun sähköä tai WLANia. Tee uusi paikallinen read-only-autentikointi ja tilakysely WAN-eston jälkeen; tarkista myöhemminkin että tilatietojen *sisältö/todellinen lähde* päivittyy, ei vain yhteyden heartbeat.
+**Vasta kun B onnistuu ja verkkokytkennät tunnetaan.** Reitittimen testisäännöllä estetään **vain pumpun pääsy valmistajan internet-palvelimiin**, ei sen IP-yhteyttä Liten/testi-PC:n kanssa. Älä irrota pumpun sähköä tai WLANia. Tee uusi paikallinen read-only-autentikointi ja tilakysely WAN-eston jälkeen **vain Coren jo paikallisesti tallennetuilla V3-tunnisteilla** tai muilla hyväksytyillä ennakkoon tallennetuilla avaimilla, ei `msmart-ng discover` -autoyhteydellä. Pelkkä pumpun WAN-esto ei estä testi-PC:n pilviyhteyttä; pilvettömyyden todentamiseksi estä myös testi-PC:n valmistajapilvikutsut;  tarkista myöhemminkin että tilatietojen *sisältö/todellinen lähde* päivittyy, ei vain yhteyden heartbeat.
 
 - **PASS ajonaikainen LAN:** uusi mitattu tilaluku ja uudelleenyhteys ilman internetiä.
 - **PASS L0:** tämän lisäksi todennettu ensiliitos sekä kaikki tarvitut avaimet **ilman valmistajan pilveä**.
@@ -84,6 +98,6 @@ Keskeytä testi, jos lämpöpumpun normaali toiminta muuttuu, yhteydet häviäv�
 3. Aja mock-/negatiiviset testit: ei laitetta, väärä IP, väärä laite, väärä avain, katkennut LAN, vanha tilatieto, epävalidi paketti, restart ja katkennut internet.
 4. Vasta erillisessä hyväksytyssä fyysisessä koesuunnitelmassa: rajattu lämmön asetusarvo **Supervisorin kautta**, kuittaus, todellinen palautus. Ei sähkökatkaisua releellä.
 
-**Tähän commit-sarjaan kuuluu vain dokumentaatio**; mitään automaattista aktivointia, paritusta, firmwareflashia, pumpun ohjauskomentoa tai Home Assistant -muutosta ei tehdä.
+**Tähän PR:ään kuuluu vain dokumentaatio**; mitään automaattista aktivointia, paritusta, firmwareflashia, pumpun ohjauskomentoa tai Home Assistant -muutosta ei tehdä.
 
 Yhteensopivuus: [LOCAL_WIFI_COMPATIBILITY.md](LOCAL_WIFI_COMPATIBILITY.md) · muut merkit: [LOCAL_WIFI_CONNECTION_GUIDE.md](LOCAL_WIFI_CONNECTION_GUIDE.md).
