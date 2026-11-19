@@ -14,14 +14,20 @@ The experimental native C++ code in this change lives in:
   authenticated encrypted frames, nested signed 5A5A AC query and state parser.
 - `firmware/cottage/include/cottage_midea.hpp` and
   `firmware/cottage/src/cottage_midea.cpp`: ESP32-S3 TCP/6444 **read-only**
-  transport, designed for future integration with the one-pump dashboard.
+  transport.
+- `firmware/cottage/src/cottage_midea_service.cpp`: NVS-backed local device
+  provisioning, read-only polling task and redacted `/api/midea/status`.
+- `firmware/cottage/include/cottage_premium_dashboard.hpp`: Midea setup and
+  read-only state view; pump selection never grants CN105 write permission.
 - `tests/midea_v3_protocol_tests.cpp`: host vectors generated against the
   independently installed msmart-ng 2026.8.1 and tamper/invalid-input cases.
 
-**State now:** native codec and read-only transport implemented; the
-ESP32 firmware does not yet call this transport, enroll a pump or expose it
-as a selectable/armed device. Existing Mitsubishi CN105 automation, physical
-setpoints and control authorization remain entirely unchanged.
+**State now:** native codec, read-only ESP32 V3 polling, manual browser setup
+and status display implemented in source and firmware build. The model has
+**not** been verified with a real Lite device / Midea physical pump. Midea is
+selectable for telemetry only and never enabled for physical writes; the
+existing Mitsubishi CN105 control path is unchanged except for explicit
+prevention of CN105 writes when another manufacturer is selected.
 
 ## Authentication and local behavior
 
@@ -43,13 +49,18 @@ independently proven timestamp from the heat pump.
 
 ## Steps before actual Lite compatibility
 
-1. Connect read-only V3 status polling to a separately persisted per-device
-   configuration and the common manufacturer-neutral telemetry API. Keep
-   V3 token/key and device ID secret; do not return secrets in GET endpoints,
-   browser logs or GitHub. Preserve all existing Wi-Fi, OTA and CN105 settings.
-2. Identify the V3 module using a device-ID match and authenticated state
-   read after IP changes. Restrict discovery to the selected local LAN and
-   verify input and replay/error behavior. Never select a device solely by IP.
+1. The V3 client now has separate NVS credentials and redacted status.
+   **Remaining:** verify device-specific telemetry and integrate authenticated
+   readings with the manufacturer-neutral optimizer data path. The network
+   setup endpoint uses **unencrypted local HTTP**, so credentials can be
+   intercepted on an untrusted network; treat this as a developer preview,
+   not a production-ready security design. NVS secrets are not yet
+   encrypted at rest. Do not use on untrusted LANs or offer for public
+   production deployment until enrollment and storage are secured.
+2. Implement IP self-healing using the V3 device-ID match and a successful
+   authenticated state query after DHCP changes. Restrict discovery to the
+   selected local LAN and verify replay/error behavior. Never select a
+   device solely by IP.
 3. Confirm indoor temperature, operating mode, target temperature and
    supported temperature range on the specific test model. The local V3
    protocol may report values or capabilities that differ by firmware/OEM.
