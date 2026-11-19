@@ -380,6 +380,13 @@ static void rollback_edit_overrides_stale_v3() {
     assert(site_rollback_v2_modified(candidate_baseline,v2,sizeof(v2)));
     assert(!site_rollback_v2_modified(candidate_baseline,nullptr,0));
     assert(site_rollback_v2_modified(0,v2,sizeof(v2)));
+    // New v4 holds separate baselines for rollback v2 and rollback v3.
+    uint8_t v3[96]{};
+    v3[2]=3;
+    const uint64_t baseline_v3=site_v2_signature(v3,sizeof(v3));
+    assert(!site_rollback_v2_modified(baseline_v3,v3,sizeof(v3)));
+    v3[40]=0x7a;
+    assert(site_rollback_v2_modified(baseline_v3,v3,sizeof(v3)));
 }
 int main() {
     rollback_edit_overrides_stale_v3();
