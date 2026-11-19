@@ -673,14 +673,35 @@ async function wzSaveComfort(skip){
   const mode=Number.isInteger(air.mode)?air.mode:null;
   const r=wzComfortFields(WZ.comfort,mode);
   if(!r.ok)throw Error(r.error);
-  if(r.target!==null&&r.target!==(mode===3?air.occupied_target_c:air.hold_target_c)){
-    // Existing mode endpoint: mode, delta and the other target stay untouched.
-    await airPostLocal('/api/air/config',{mode:String(mode),
-      hold:String(mode===2?r.target:air.hold_target_c),delta:String(air.drying_delta_c),
-      occupied:String(mode===3?r.target:air.occupied_target_c)});
-    await reloadStatus();
-  }
+  const targetChanged=r.target!==null&&
+    r.target!==(mode===3?air.occupied_target_c:air.hold_target_c);
+  // Keep the previous durable site state for compensation if a second write
+  // fails. The site write MUST come first: an NVS-full site error must never
+  // change the active/persistent mode target (Codex P2 #57).
+  const prior=(state.site&&state.site.optimization)||{};
+  const oldFields={optimization_profile:prior.profile||'balanced',
+    comfort_min_c:prior.comfort_min_c==null?'':String(prior.comfort_min_c),
+    comfort_max_c:prior.comfort_max_c==null?'':String(prior.comfort_max_c),
+    setup_step:String((state.site&&state.site.region&&state.site.region.setup_step)||0)};
   await wzPost({...r.fields,setup_step:'6'});
+  if(targetChanged){
+    try {
+      // Existing mode endpoint: mode, delta and the other target untouched.
+      await airPostLocal('/api/air/config',{mode:String(mode),
+        hold:String(mode===2?r.target:air.hold_target_c),delta:String(air.drying_delta_c),
+        occupied:String(mode===3?r.target:air.occupied_target_c)});
+      await reloadStatus();
+    } catch(error) {
+      // Never report success after half of a two-namespace update. If the air
+      // write failed, restore the old owner band/profile before returning.
+      try {await wzPost(oldFields);}
+      catch(undoError) {
+        throw Error(WT('Tallennus epäonnistui')+
+          ' ('+String(undoError)+')');
+      }
+      throw error;
+    }
+  }
 }
 function wzStepDevices(body){
   const air=(state.status&&state.status.air)||{};

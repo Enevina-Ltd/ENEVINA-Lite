@@ -95,23 +95,30 @@ bool erase_disposable_cache(const char* nspace,const char* key) {
 }
 // Snapshot rollback-readable settings records before writing v4. Their
 // signatures travel INSIDE the same v4 blob: no split-metadata NVS commit.
-uint64_t rollback_key_signature(Preferences& p,const char* key) {
-    const size_t n=p.getBytesLength(key);
-    if(n==0 || n>sizeof(Stored))return 0;
+// A missing rollback record is not the same as an unreadable one. Never
+// commit v4 with an unknown baseline: on reboot a recovered old record would
+// otherwise be mistaken for an edit made AFTER the v4 save.
+bool rollback_key_signature(Preferences& p,const char* key,uint64_t& signature) {
     uint8_t raw[sizeof(Stored)]{};
-    if(p.getBytes(key,raw,n)!=n)return 0;
-    return enevina::cottage::site_v2_signature(raw,n);
+    return enevina::cottage::site_rollback_snapshot_signature(
+        p,key,signature,raw,sizeof(raw));
 }
 bool persist(const SiteSettings& s) {
     Stored blob{};
     blob.settings=s;
+    bool snapshot_read_failed=false;
     const auto write_site=[&]() {
         Preferences p;
         if(!p.begin("site",false)) return false;
-        // Preserve both old versions during OTA probation. Rollback to v2
-        // or v3 can edit its own key; the next v4 boot detects the change.
-        blob.rollback_v2_signature=rollback_key_signature(p,"v2");
-        blob.rollback_v3_signature=rollback_key_signature(p,"v3");
+        // Preserve both rollback-readable records until OTA confirmation.
+        // A transient NVS read error is NOT a missing record. Do not write an
+        // untrustworthy baseline, even when there is enough space for v4.
+        if(!rollback_key_signature(p,"v2",blob.rollback_v2_signature) ||
+           !rollback_key_signature(p,"v3",blob.rollback_v3_signature)) {
+            snapshot_read_failed=true;
+            p.end();
+            return false;
+        }
         const size_t written=p.putBytes("v4",&blob,sizeof(blob));
         if(written==sizeof(blob) && !cottage_ota_confirmation_pending()) {
             // Reclamation is allowed only AFTER OTA confirmation, when the
@@ -129,7 +136,9 @@ bool persist(const SiteSettings& s) {
     // caches when the *user-initiated durable write* has failed. Don't touch
     // non-cache NVS keys or clear a whole partition.
     return enevina::cottage::persist_with_optional_cache_reclaim(
-        write_site,erase_disposable_cache);
+        write_site,[&](const char* nspace,const char* key) {
+            return !snapshot_read_failed && erase_disposable_cache(nspace,key);
+        });
 }
 const char* kind_name(enevina::cottage::TransferKind k) {
     switch(k) {
@@ -251,6 +260,7 @@ void site_settings_initialize() {
         const size_t len3=p.getBytesLength("v3");
         SiteSettings from3{};
         bool v3_valid=false;
+        size_t v3_settings_bytes=0;
         if(len3>h && len3<=sizeof(raw3) &&
            p.getBytes("v3",raw3,len3)==len3) {
             uint32_t magic=0;uint16_t version=0,size=0;
@@ -260,6 +270,11 @@ void site_settings_initialize() {
                 size<=len3-h &&
                 enevina::cottage::restore_site_settings(raw3+h,size,from3) &&
                 acceptable(from3);
+            // Signature-bearing v3 followed its settings payload with the
+            // *old v2 fingerprint*. Keep that migration provenance: v3 may
+            // have saved during OTA probation, then v2 rollback firmware
+            // edited its own settings before this first v4 boot.
+            if(v3_valid) v3_settings_bytes=size;
         }
         // v2 used several supported prefix layouts as fields were appended.
         uint8_t raw2[sizeof(Stored)]{};
@@ -288,7 +303,12 @@ void site_settings_initialize() {
                 s=from2;
             }
         } else if(v3_valid) {
-            s=from3;loaded_from_nvs=true;
+            // First v4 boot: v3's own rollback signature is the only way to
+            // detect edits made by v2 after v3 was written. Do not throw it
+            // away while restoring the v3 settings prefix.
+            s=(v2_valid && enevina::cottage::site_v3_prefer_rollback_v2(
+                   raw3,len3,v3_settings_bytes,raw2,len2)) ? from2 : from3;
+            loaded_from_nvs=true;
         } else if(v2_valid) {
             s=from2;loaded_from_nvs=true;
         }

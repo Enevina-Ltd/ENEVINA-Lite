@@ -388,7 +388,59 @@ static void rollback_edit_overrides_stale_v3() {
     v3[40]=0x7a;
     assert(site_rollback_v2_modified(baseline_v3,v3,sizeof(v3)));
 }
+
+static void v3_provenance_after_rollback_then_v4_upgrade() {
+    // First v4 boot: a signature-bearing v3 snapshot is valid, but the
+    // intervening v2 rollback owner edit must take priority.
+    uint8_t v2[96]{};
+    uint8_t v3[8+96+sizeof(uint64_t)]{};
+    const uint16_t version=3,settings_len=96;
+    std::memcpy(v3+4,&version,sizeof(version));
+    std::memcpy(v3+6,&settings_len,sizeof(settings_len));
+    const uint64_t v2_at_v3_save=site_v2_signature(v2,sizeof(v2));
+    std::memcpy(v3+8+96,&v2_at_v3_save,sizeof(v2_at_v3_save));
+    assert(!site_v3_prefer_rollback_v2(v3,sizeof(v3),96,v2,sizeof(v2)));
+    v2[55]^=0x3d;  // previous firmware changes a real saved setting
+    assert(site_v3_prefer_rollback_v2(v3,sizeof(v3),96,v2,sizeof(v2)));
+    // A pre-signature v3 never claims to know which record is newer.
+    assert(!site_v3_prefer_rollback_v2(v3,sizeof(v3)-8,96,v2,sizeof(v2)));
+    assert(!site_v3_prefer_rollback_v2(v3,7,0,v2,sizeof(v2)));
+    assert(!site_v3_prefer_rollback_v2(nullptr,sizeof(v3),96,v2,sizeof(v2)));
+}
+struct FaultingSnapshot {
+    uint8_t data[32]{};
+    bool exists=true,read_error=false,zero_length_error=false;
+    size_t getBytesLength(const char*) const {return zero_length_error?0:exists?sizeof(data):0;}
+    bool isKey(const char*) const {return exists;}
+    size_t getBytes(const char*,void* out,size_t n) const {
+        if(read_error)return 0;
+        std::memcpy(out,data,n);
+        return n;
+    }
+};
+static void nvs_snapshot_failure_does_not_commit_an_unknown_baseline() {
+    FaultingSnapshot nvs;
+    uint8_t scratch[64]{};
+    uint64_t signature=123;
+    assert(site_rollback_snapshot_signature(nvs,"v2",signature,scratch,sizeof(scratch)));
+    const uint64_t normal=signature;
+    assert(normal!=0);
+    nvs.read_error=true;
+    assert(!site_rollback_snapshot_signature(nvs,"v2",signature,scratch,sizeof(scratch)));
+    assert(signature==0);   // must not be treated as an absent clean key
+    nvs.read_error=false;
+    nvs.zero_length_error=true;
+    assert(!site_rollback_snapshot_signature(nvs,"v2",signature,scratch,sizeof(scratch)));
+    nvs.zero_length_error=false;
+    assert(!site_rollback_snapshot_signature(nvs,"v2",signature,scratch,4));
+    nvs.exists=false;
+    assert(site_rollback_snapshot_signature(nvs,"v2",signature,scratch,sizeof(scratch)));
+    assert(signature==0); // true absence is allowed
+}
+
 int main() {
+    v3_provenance_after_rollback_then_v4_upgrade();
+    nvs_snapshot_failure_does_not_commit_an_unknown_baseline();
     rollback_edit_overrides_stale_v3();
     older_layout_is_restored_not_reset();
     total_price_rules();

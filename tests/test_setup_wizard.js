@@ -23,7 +23,7 @@ assert.deepEqual(missing,[],'missing English translations');
 
 const ctx={document:{},state:{},uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS};',ctx);
+vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,WZ};',ctx);
 const A=ctx.api;
 
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
@@ -132,3 +132,30 @@ console.log('manual-location summary ok');
 // The three profile descriptions never promise a saving figure.
 for(const p of A.WZ_PROFILES)assert(!/%|€|EUR/.test(p.text),p.id);
 console.log('comfort step helpers ok');
+
+(async()=>{
+  // P2 #57: failure of site NVS must never durably/actively change the target.
+  // On air-write failure after site save, compensate old profile and band.
+  const events=[];
+  ctx.state.site={optimization:{profile:'balanced',comfort_min_c:10,comfort_max_c:14},
+    region:{setup_step:5}};
+  ctx.state.status={air:{mode:2,hold_target_c:12,occupied_target_c:21,drying_delta_c:3}};
+  Object.assign(A.WZ.comfort,{target:'13',min:'9',max:'16',profile:'saving'});
+  ctx.airPostLocal=async()=>{events.push('air');};
+  ctx.reloadStatus=async()=>{events.push('reload');};
+  ctx.wzPost=async()=>{throw Error('NVS');};
+  await assert.rejects(A.wzSaveComfort(false),/NVS/);
+  assert.deepEqual(events,[],'site-write failure must not change target');
+  ctx.wzPost=async f=>{events.push({...f});};
+  await A.wzSaveComfort(false);
+  assert.equal(events[0].optimization_profile,'saving');
+  assert.deepEqual(events.slice(1),['air','reload']);
+  events.length=0;
+  ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
+  await assert.rejects(A.wzSaveComfort(false),/AIR_NVS/);
+  assert.equal(events.length,3,'site write + mode error + restore site');
+  assert.equal(events[2].optimization_profile,'balanced');
+  assert.equal(events[2].comfort_min_c,'10');
+  assert.equal(events[2].comfort_max_c,'14');
+  console.log('wizard rollback-order tests OK');
+})().catch(e=>{console.error(e);process.exitCode=1;});
