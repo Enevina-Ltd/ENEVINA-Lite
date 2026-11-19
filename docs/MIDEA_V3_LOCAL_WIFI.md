@@ -47,7 +47,11 @@ Nordic uses V2. The owner's already-tested Frezzer uses **V3 in Core**.
   is written. An up-to-date `config_v1` V3 mirror remains available for
   rollback to the previous V3 firmware; switching to V2 leaves any existing
   V3 mirror untouched because older V3 images cannot interpret V2. No
-  silent V3-to-V2 fallback on authentication failure.
+  The loader also detects changed valid V3 legacy settings when upgrading
+  again after an OTA rollback: modifications to `config_v1` made by the
+  older V3 firmware take precedence over stale V3 settings in `config_v2`.
+  An intentionally selected V2 is never overwritten by this reconciliation.
+  No silent V3-to-V2 fallback on authentication failure.
 - The ESP32 permits only private RFC1918 IPv4 destinations and bounded TCP
   reads. Response outer device ID, fixed-key packet signature, AES padding,
   AC frame checksum and response fields are checked before accepting status.
