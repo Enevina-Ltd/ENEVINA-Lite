@@ -177,7 +177,9 @@ esp_http_client_handle_t open_https(const char* url,int expected_length) {
     esp_http_client_config_t cfg{};
     cfg.url=url;
     cfg.cert_pem=COTTAGE_OTA_LOCAL_ROOT_CA;
-    cfg.timeout_ms=8500;
+    // Firmware flashes can stall TCP reads; keep per-read timeout bounded.
+    // Short manifests still use the original short timeout.
+    cfg.timeout_ms=expected_length>512 ? 20000 : 8500;
     cfg.disable_auto_redirect=true;
     cfg.buffer_size=1024;
     cfg.buffer_size_tx=512;
