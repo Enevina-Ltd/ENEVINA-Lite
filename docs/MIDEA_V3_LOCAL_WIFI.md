@@ -29,11 +29,33 @@ selectable for telemetry only and never enabled for physical writes; the
 existing Mitsubishi CN105 control path is unchanged except for explicit
 prevention of CN105 writes when another manufacturer is selected.
 
-## Frezzer Nordic K12 / OSK102: documented V2 candidate (not supported yet)
+## Frezzer Nordic basement pilot: verified in Core as Midea V3
 
-The published [Frezzer Nordic K12 manual](https://www.netrauta.fi/attachments/products/frezzer/ilmalampopumppu_frezzer_nordic_k12_ohje.pdf) identifies the bundled Wi-Fi control module as **OSK102** and instructs using **NetHome Plus**. This is evidence of a Midea-family controller/interface, **not** proof that the device uses V3 or that Enevina Lite works with it. An [independent OSK102 discovery report](https://community.hubitat.com/t/midea-mini-split-wifi-support/78838/200) identifies at least one OSK102 device as **protocol version 2**, with no V3 token/key. Other module revisions or replacements must not be assumed to behave identically.
+The user's **Frezzer Nordic** heat pump is the **same basement Midea unit**
+previously integrated and tested in Enevina Core (not an additional untested
+brand). The Enevina Core Midea LAN integration previously demonstrated:
+- Local **Midea V3** authentication with `msmart-ng`, device ID and token/key.
+- Working local state polling, normalized telemetry, and recovery when DHCP
+  changes the pump's local IP address.
+- Implemented HEAT, ON/OFF and target-temperature control paths; the earlier
+  production pilot explicitly had **physical control disabled**
+  (`control_enabled=false`, `dry_run=true`).
 
-**Current result:** Frezzer Nordic K12 remains *unverified / not supported* in Enevina Lite. The native client in this PR is **V3-only**. Future device discovery should identify actual 6444 LAN protocol version and AC device type with read-only checks, then route to a separately implemented and tested V2 or V3 reader. Never send a V3 handshake or a write to an assumed V2 module, and never publish credentials/serials. Verify exact retail model, installed Wi-Fi module and firmware version in the field before a model-level support claim.
+**Do not reclassify this specific tested Frezzer unit as a hypothetical V2
+device.** A public Nordic K12 manual mentions the OSK102/NetHome Plus module,
+and other OSK102 devices have been reported to use V2, but there is no
+independently verified evidence that the user's Frezzer has that exact retail
+submodel or Wi-Fi module. Its **observed Core protocol is V3**. No retail
+submodel, Wi-Fi-module revision or proprietary pairing secret should be
+published without separate verification.
+
+**Important distinction:** Core LAN connection and state polling have been
+physically tested. The new native **ESP32-S3 Enevina Lite V3 client** has only
+passed host vectors and firmware build/tests; it has **not yet been
+physically tested** against this Frezzer. Lite currently reads status only;
+Midea heat/setpoint writes, full optimization and IP rediscovery are not yet
+implemented. This is a high-priority first device for the Lite pilot, but it
+is not yet an approved Lite-compatible retail model.
 
 ## Authentication and local behavior
 
