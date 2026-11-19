@@ -29,6 +29,7 @@ Firmware-kytkentä: `firmware/cottage/src/cottage_wifi.cpp`, sivu
 
 Asennusverkko on avoin (ei WPA2-avainta, ei tarraa, ei sarjaporttitulostetta).
 Muutos ei lisää salasanaa, kirjautumista, watchdogia eikä uutta porttia.
+**Kehitysvaiheen ehdoton kielto:** ei uusia salasanoja, PIN-koodeja tai kirjautumispakkoa ennen kuin tuote on valmis ja omistaja hyväksyy muutoksen. Wi-Fi-asennusverkon kautta sallitaan vain Wi-Fi:n käyttöönotto; lämpöpumpun ohjaus ja vaiheen 2 asetukset on rajattu kotiverkon rajapinnalle ilman uutta autentikointia.
 
 - Verkko on päällä vain silloin, kun sitä tarvitaan: ei tallennettua kotiverkkoa,
   Wi-Fin vaihto tai yli 5 min kotiverkon katko. Se sulkeutuu ~2 min onnistuneen
@@ -57,8 +58,8 @@ Muutos ei lisää salasanaa, kirjautumista, watchdogia eikä uutta porttia.
 - Tehdasasetusten palautus (esim. BOOT-painike) puuttuu tarkoituksella; palautus
   tapahtuu katkon jälkeen avautuvalla asennusverkolla.
 - Pilottikortti, jonka verkko on käännetty `cottage_local_config.hpp`:hen, toimii
-  kuten ennen, mutta yli 5 min verkkokatkon jälkeen se avaa nyt suojatun
-  asennusverkon. Tämä on uusi käyttäytyminen.
+  kuten ennen, mutta yli 5 min verkkokatkon jälkeen se avaa nyt avoimen,
+  salasanattoman asennusverkon. Tämä on uusi käyttäytyminen.
 
 ## Vaihe 2 – asetukset kotiverkossa
 

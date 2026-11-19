@@ -11,5 +11,8 @@ void cottage_wifi_begin(WebServer& web);
 void cottage_wifi_loop();
 // True when the current HTTP request arrived through the setup AP.
 bool cottage_wifi_request_via_ap(WebServer& web);
+// Phase 2 is available only through the home-network interface. No new
+// password or timing limit: the setup AP remains Wi-Fi-only, as specified.
+bool cottage_wifi_require_home_lan(WebServer& web);
 // Minimal phase-1 page (Wi-Fi only).
 extern const char cottage_wifi_setup_html[];

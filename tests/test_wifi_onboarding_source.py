@@ -15,6 +15,8 @@ PAGE = (FW / "src" / "cottage_wifi_page.cpp").read_text(encoding="utf-8") \
     .split('R"HTML(', 1)[1].split(')HTML"', 1)[0]
 MAIN = (FW / "src" / "main.cpp").read_text(encoding="utf-8")
 SITE = (FW / "src" / "cottage_site_settings.cpp").read_text(encoding="utf-8")
+AIR = (FW / "src" / "cottage_air_service.cpp").read_text(encoding="utf-8")
+WIFI_HDR = (FW / "include" / "cottage_wifi.hpp").read_text(encoding="utf-8")
 UI = (FW / "include" / "cottage_premium_dashboard.hpp").read_text(encoding="utf-8")
 
 
@@ -76,7 +78,10 @@ class WifiOnboardingSource(unittest.TestCase):
         self.assertIn('control_intent_restorable(saved,site_settings_snapshot(),', MAIN)
         self.assertIn('const size_t stored_size=prefs.getBytesLength("intent1")', MAIN)
         self.assertIn('control_armed.store(restore && !must_revoke)', MAIN)
-        self.assertIn('p.putBytes("intent1",&record,sizeof(record))==sizeof(record)', MAIN)
+        # Newer P0 PR #49 writes enabled intent through native NVS to
+        # expose the real save failure and reclaim only disposable caches.
+        self.assertIn('nvs_set_blob(handle,"intent1",&record,sizeof(record))', MAIN)
+        self.assertIn('nvs_commit(handle)', MAIN)
         self.assertIn('control_armed_endpoint.store(site_settings_endpoint_generation())', MAIN)
         disarm = MAIN.split("static void cottage_control_disarm() {", 1)[1].split(
             "static void cottage_control_tick()", 1)[0]
@@ -144,7 +149,34 @@ class WifiOnboardingSource(unittest.TestCase):
         self.assertNotIn("WiFi.begin(COTTAGE_WIFI_SSID", MAIN)
         self.assertLess(MAIN.index("c23_initialize();"), MAIN.index("cottage_wifi_begin(web);"))
         self.assertLess(MAIN.index("site_settings_initialize();"),
-                        MAIN.index("enevina_firmware::start_weather_reader();"))
+                        MAIN.index("enevina_firmware::start_weather_reader(site_settings_snapshot().fmi_latlon);"))
+
+    def test_setup_ap_exposes_wifi_only_even_while_home_connected(self):
+        # Codex P1 (PR #30): a public, intentionally passwordless setup AP
+        # must never expose a physical pump command or phase-2 settings.
+        self.assertIn("web.client().localIP()==WiFi.softAPIP()", WIFI)
+        self.assertIn("bool cottage_wifi_require_home_lan(WebServer& web)", WIFI_HDR)
+        self.assertIn("if(!cottage_wifi_request_via_ap(web)) return true;", WIFI)
+        self.assertIn('web.send(403,"application/json"', WIFI)
+        arm = MAIN.split('web.on("/api/control/arm",HTTP_POST', 1)[1]
+        self.assertLess(arm.index("cottage_wifi_require_home_lan(web)"),
+                        arm.index('web.hasArg("token")'))
+        for endpoint in ("status", "plan", "prices"):
+            self.assertIn('web.on("/api/'+endpoint+'",HTTP_GET,[](){', MAIN)
+            self.assertIn("if(cottage_wifi_require_home_lan(web))"+
+                          endpoint+"_endpoint();", MAIN)
+        for endpoint in ("config", "thresholds", "bind", "ack"):
+            handler = AIR.split('web.on("/api/air/'+endpoint+'",HTTP_POST', 1)[1]
+            self.assertLess(handler.index("cottage_wifi_require_home_lan(web)"),
+                            handler.index("check_token(web)"))
+        self.assertIn("if(cottage_wifi_require_home_lan(web))c23_history_http(web);", AIR)
+        self.assertIn("if(cottage_wifi_require_home_lan(web))send_settings(web);", SITE)
+        settings_post = SITE.split('web.on("/api/settings",HTTP_POST', 1)[1]
+        self.assertLess(settings_post.index("cottage_wifi_require_home_lan(web)"),
+                        settings_post.index('web.hasArg("token")'))
+        # Wi-Fi setup remains usable from the AP.
+        self.assertIn('web.on("/api/wifi/connect",HTTP_POST,connect_route);', WIFI)
+        self.assertIn('web.on("/api/wifi/status",HTTP_GET,status_route);', WIFI)
 
     def test_captive_probes_and_mdns_fallback(self):
         for probe in ("/generate_204", "/hotspot-detect.html", "/connecttest.txt"):
@@ -186,9 +218,11 @@ class SiteSettingsSource(unittest.TestCase):
     def test_location_bounds_match_weather_reader(self):
         weather = (ROOT / "firmware" / "main" / "weather.cpp").read_text(encoding="utf-8")
         settings = (ROOT / "cottage" / "site_settings.hpp").read_text(encoding="utf-8")
-        self.assertIn("latitude>=59 && latitude<=71", weather)
-        self.assertIn("longitude>=19 && longitude<=32", weather)
-        self.assertIn("y>=59&&y<=71&&x>=19&&x<=32", settings)
+        # MET Norway's global coverage replaced the older Finland-only
+        # latitude/longitude validation in both firmware and dashboard.
+        self.assertIn("new_lat < -90 || new_lat>90", weather)
+        self.assertIn("new_lon < -180 || new_lon>180", weather)
+        self.assertIn("y>=-90&&y<=90&&x>=-180&&x<=180", settings)
 
     def test_only_firmware_adapters_selectable(self):
         self.assertIn("adapter_selectable_in_lite_firmware(next.pump_adapter)", SITE)
