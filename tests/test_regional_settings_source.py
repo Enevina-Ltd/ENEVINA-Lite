@@ -64,8 +64,11 @@ class RegionalWiring(unittest.TestCase):
         self.assertIn('!cottage_ota_confirmation_pending()', SITE)
         self.assertLess(SITE.index('p.putBytes("v3"'), SITE.index('p.remove("v1")'))
         self.assertIn('if(p.isKey("v2")) p.remove("v2")',SITE)
-        self.assertIn('p.getBytesLength("v3")==sizeof(blob)',SITE)
+        self.assertIn('v3_len==sizeof(blob) || v3_len==sizeof(StoredLegacyV3)',SITE)
         self.assertIn('version==2',SITE)
+        self.assertIn('blob.rollback_v2_signature=rollback_v2_signature(p);',SITE)
+        self.assertIn('site_rollback_v2_modified(',SITE)
+        self.assertLess(SITE.index('rollback_v2_signature(p)'), SITE.index('p.putBytes("v3"'))
         self.assertIn("site_settings_from_v1(old.settings)", SITE)
         self.assertIn("apply_site_settings_batch", SITE)
 

@@ -31,6 +31,15 @@ struct Stored {
     uint16_t version=kVersion;
     uint16_t size=sizeof(SiteSettings);
     SiteSettings settings{};
+    uint64_t rollback_v2_signature=0; // v2 snapshot on latest v3 save
+};
+// A short-lived pre-signature v3 draft used the same key. Never silently
+// discard its settings when the rollback v2 key has already been reclaimed.
+struct StoredLegacyV3 {
+    uint32_t magic=kMagic;
+    uint16_t version=kVersion;
+    uint16_t size=sizeof(SiteSettings);
+    SiteSettings settings{};
 };
 using enevina::cottage::SiteSettingsV1;
 struct StoredV1 {
@@ -89,12 +98,25 @@ bool erase_disposable_cache(const char* nspace,const char* key) {
     if(ok) ESP_LOGW("enevina_site","NVS cache reclaimed: %s/%s",nspace,key);
     return ok;
 }
+// Snapshot the currently installed rollback v2 settings before writing v3.
+// The digest travels WITH the v3 payload so a reboot cannot split metadata
+// and settings across two different NVS commits.
+uint64_t rollback_v2_signature(Preferences& p) {
+    const size_t n=p.getBytesLength("v2");
+    if(n==0 || n>sizeof(Stored))return 0;
+    uint8_t raw[sizeof(Stored)]{};
+    if(p.getBytes("v2",raw,n)!=n)return 0;
+    return enevina::cottage::site_v2_signature(raw,n);
+}
 bool persist(const SiteSettings& s) {
     Stored blob{};
     blob.settings=s;
     const auto write_site=[&]() {
         Preferences p;
         if(!p.begin("site",false)) return false;
+        // Preserve a snapshot of v2 inside v3 to recognize edits made by
+        // rollback firmware before a subsequent upgrade boots this version.
+        blob.rollback_v2_signature=rollback_v2_signature(p);
         // The previous firmware only understands site/v2 (or site/v1).
         // Never overwrite its rollback-readable blob while OTA is pending.
         const size_t written=p.putBytes("v3",&blob,sizeof(blob));
@@ -219,8 +241,9 @@ void site_settings_initialize() {
         StoredV1 old{};
         // v3 is our own expanded schema. v2 stays untouched during OTA
         // probation so the previous firmware can still load it on rollback.
-        if(p.getBytesLength("v3")==sizeof(blob) &&
-           p.getBytes("v3",&blob,sizeof(blob))==sizeof(blob) &&
+        const size_t v3_len=p.getBytesLength("v3");
+        if((v3_len==sizeof(blob) || v3_len==sizeof(StoredLegacyV3)) &&
+           p.getBytes("v3",&blob,v3_len)==v3_len &&
            blob.magic==kMagic && blob.version==kVersion &&
            blob.size==sizeof(SiteSettings) && acceptable(blob.settings)) {
             s=blob.settings;
@@ -232,15 +255,19 @@ void site_settings_initialize() {
         const size_t stored_len=p.getBytesLength("v2");
         uint8_t raw[sizeof(Stored)]{};
         SiteSettings restored{};
-        if(!loaded_from_nvs &&
-           stored_len>offsetof(Stored,settings) && stored_len<=sizeof(raw) &&
+        if(stored_len>offsetof(Stored,settings) && stored_len<=sizeof(raw) &&
            p.getBytes("v2",raw,stored_len)==stored_len) {
             uint32_t magic=0;uint16_t version=0,size=0;
             memcpy(&magic,raw,4);memcpy(&version,raw+4,2);memcpy(&size,raw+6,2);
             if(magic==kMagic && version==2 &&
                size==stored_len-offsetof(Stored,settings) &&
                enevina::cottage::restore_site_settings(raw+offsetof(Stored,settings),size,restored) &&
-               acceptable(restored)) {
+               acceptable(restored) &&
+               (!loaded_from_nvs ||
+                enevina::cottage::site_rollback_v2_modified(
+                    blob.rollback_v2_signature,raw,stored_len))) {
+                // This v2 was written by rollback firmware *after* the v3
+                // candidate last saved. Recover the latest owner settings.
                 s=restored;
                 loaded_from_nvs=true;
             }
