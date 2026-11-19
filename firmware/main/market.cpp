@@ -42,6 +42,8 @@ constexpr size_t max_slots=price_cache_max_slots;
 constexpr uint32_t cache_version=price_cache_version;
 PriceCache cache;
 SemaphoreHandle_t mutex=nullptr;
+TaskHandle_t reader_task=nullptr; // notify on live region change, no new watchdog
+
 // Region the cache belongs to. Default keeps Finland/EUR so an unconfigured
 // or upgraded device behaves exactly as before. Guarded by `mutex`.
 char region_area[8]="FI";
@@ -268,7 +270,7 @@ void poll_prices(void*) {
             generation=region_generation;
             xSemaphoreGive(mutex);
             if(!area[0]) {   // no bidding zone chosen: nothing to fetch
-                vTaskDelay(pdMS_TO_TICKS(5000));
+                ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(5000));
                 continue;
             }
             std::snprintf(stamp,sizeof(stamp),"%s/%s",area,currency);
@@ -326,7 +328,7 @@ void poll_prices(void*) {
         }
         const int next_ms=updated ? 30*60*1000 :
             (now>1700000000 ? 60*1000 : 5*1000);
-        vTaskDelay(pdMS_TO_TICKS(next_ms));
+        ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(next_ms));
     }
 }
 }
@@ -334,8 +336,10 @@ void poll_prices(void*) {
 void start_market_reader() {
     if(!mutex) mutex=xSemaphoreCreateMutex();
     if(!mutex) { ESP_LOGE(tag,"market mutex allocation failed"); return; }
-    if(xTaskCreate(poll_prices,"market_read",8192,nullptr,3,nullptr)!=pdPASS)
+    if(xTaskCreate(poll_prices,"market_read",8192,nullptr,3,&reader_task)!=pdPASS) {
+        reader_task=nullptr;
         ESP_LOGE(tag,"market task creation failed");
+    }
 }
 
 bool market_set_region(const char* area,const char* currency) {
@@ -380,6 +384,9 @@ bool market_set_region(const char* area,const char* currency) {
             nvs_commit(handle);
             nvs_close(handle);
         }
+        // Clear cache only for a genuine runtime region change, then wake the
+        // existing reader even if its previous successful fetch scheduled 30m.
+        if(reader_task) xTaskNotifyGive(reader_task);
     }
     return true;
 }
