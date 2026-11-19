@@ -1444,6 +1444,13 @@ static void status_endpoint() {
     else cJSON_AddNullToObject(root,"weather_c");
     if(valid_total)cJSON_AddNumberToObject(root,"total_price",total);
     else cJSON_AddNullToObject(root,"total_price");
+    // Every price above is in `price_currency` per kWh for `price_area`.
+    cJSON_AddStringToObject(root,"price_currency",price.currency);
+    cJSON_AddStringToObject(root,"price_area",price.area);
+    cJSON_AddNumberToObject(root,"price_error",price.last_error);
+    cJSON_AddNumberToObject(root,"price_http_status",price.last_http_status);
+    cJSON_AddNumberToObject(root,"price_last_attempt_utc",
+                            static_cast<double>(price.last_attempt_utc));
     cJSON_AddNumberToObject(root,"bridge_status",static_cast<int>(bs));
     cJSON_AddNumberToObject(root,"mpc_status",static_cast<int>(plan.status));
     cJSON_AddNumberToObject(root,"mpc_ms",ms);
