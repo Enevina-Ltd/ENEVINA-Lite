@@ -92,7 +92,7 @@ inline bool site_transfer_is_day(const SiteTariff& t,int64_t utc,bool& day,
 // Every consumer (MPC bridge, price bootstrap, dashboard, audit) uses this.
 inline bool site_total_price(const SiteTariff& t,int64_t slot_start_utc,
                              double spot_eur_per_kwh,double& total,
-                             int std_offset_hours=2,double limit_scale=12.0) {
+                             int std_offset_hours=2,double limit_scale=1.0) {
     if(!valid_site_tariff(t,limit_scale) || !std::isfinite(spot_eur_per_kwh)) return false;
     bool day=false;
     if(!site_transfer_is_day(t,slot_start_utc,day,std_offset_hours)) return false;
