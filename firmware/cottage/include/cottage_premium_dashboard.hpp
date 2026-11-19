@@ -796,7 +796,7 @@ const UI_EN_FRAGMENTS=Object.entries(UI_EN)
 function uiLocale(){return uiLanguage==='en'?'en-GB':'fi-FI';}
 // Civil time zone and price currency follow the configured country.
 let uiTz='Europe/Helsinki',uiCurrency='EUR';
-function uiTimeZone(){return uiTz;}
+function uiTimeZone(){return regionTimeZone();}
 function uiMinorUnit(){
   const m={SEK:'öre',NOK:'øre',DKK:'øre',PLN:'gr'}[uiCurrency];
   return m||(uiLanguage==='en'?'c':'snt');
@@ -916,7 +916,21 @@ const state={status:null,prices:null,weather:null,plan:null,history:null,mode:0,
   alertSettingsDirty:false,alertSettingsSaving:false,alertSettingsRevision:0};
 const fmt=(v,d=1)=>Number.isFinite(v)?v.toLocaleString(uiLocale(),{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
 const text=(id,value)=>{const e=$(id);if(e)e.textContent=value==null?'—':String(value);};
-const time=sec=>Number.isFinite(sec)&&sec>1700000000?new Date(sec*1000).toLocaleString(uiLocale(),{timeZone:uiTimeZone(),day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'Ei aikaa';
+// Civil timestamps follow the home's selected city timezone, not the
+// browser device's timezone or an assumed Finland-only market.
+function regionTimeZone(){
+  const r=state.site&&state.site.region||{};
+  if(r.timezone){
+    try{new Intl.DateTimeFormat('en-GB',{timeZone:r.timezone});return r.timezone;}catch(_){}
+  }
+  const fallback={FI:'Europe/Helsinki',SE:'Europe/Stockholm',NO:'Europe/Oslo',
+    DK:'Europe/Copenhagen',EE:'Europe/Tallinn',LV:'Europe/Riga',
+    LT:'Europe/Vilnius',DE:'Europe/Berlin',NL:'Europe/Amsterdam',
+    BE:'Europe/Brussels',FR:'Europe/Paris',PL:'Europe/Warsaw',
+    AT:'Europe/Vienna',BG:'Europe/Sofia'};
+  return fallback[r.country]||(typeof uiTz==='string'?uiTz:'Europe/Helsinki');
+}
+const time=sec=>Number.isFinite(sec)&&sec>1700000000?new Date(sec*1000).toLocaleString(uiLocale(),{timeZone:regionTimeZone(),day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'Ei aikaa';
 const number=v=>typeof v==='number'&&Number.isFinite(v)?v:null;
 const modes=['Kylmillään','Kuivanapito','Ylläpitolämpö','Asuttu'];
 function priceDisplayCurrency(){
@@ -1001,7 +1015,7 @@ function drawBars(target,items){
   list.forEach((p,i)=>{const bar=document.createElement('div');bar.className='bar'+(p.spot<=lo+range*.33?' cheap':p.spot>=lo+range*.75?' high':'')+(i===0?' current':'');
     bar.style.height=Math.max(7,((p.spot-lo)/range)*155+8)+'px';bar.title=time(p.utc)+': '+priceFmt(p.spot);wrap.append(bar);});
   const ticks=document.createElement('div');ticks.className='ticks';
-  [0,Math.floor((list.length-1)/3),Math.floor(2*(list.length-1)/3),list.length-1].forEach(i=>{let t=document.createElement('span');t.textContent=new Date(list[i].utc*1000).toLocaleTimeString(uiLocale(),{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Helsinki'});ticks.append(t);});
+  [0,Math.floor((list.length-1)/3),Math.floor(2*(list.length-1)/3),list.length-1].forEach(i=>{let t=document.createElement('span');t.textContent=new Date(list[i].utc*1000).toLocaleTimeString(uiLocale(),{hour:'2-digit',minute:'2-digit',timeZone:regionTimeZone()});ticks.append(t);});
   box.append(wrap,ticks);
   const caption=document.createElement('div');caption.className='legend';caption.textContent='Vaihteluväli: '+priceFmt(lo)+' – '+priceFmt(hi);box.append(caption);
 }
@@ -1145,7 +1159,7 @@ function showWeather() {
   text('home-weather-summary',valid?
     'Seuraava ulkolämpötila '+fmt(slots[0].temperature_c,1)+' °C klo '+
       new Date(slots[0].utc*1000).toLocaleTimeString(uiLocale(),{
-       timeZone:uiTimeZone(),hour:'2-digit',minute:'2-digit'})+
+       timeZone:regionTimeZone(),hour:'2-digit',minute:'2-digit'})+
       '. '+slots.length+' ennustetuntia saatavilla.':
     'Ennustetta ei ole saatavilla. Lämmityksen ohjaus ei käytä keksittyjä sääarvoja.');
   const box=$('weather-chart');box.replaceChildren();
@@ -1421,6 +1435,7 @@ const siteErrors={BAD_NUMBER:'Tarkista numero',OUT_OF_RANGE:'Arvo on sallitun al
 const maturityText={FIELD_PILOT:'Kenttäpilotti',HOST_TESTED_ONLY:'Vain PC-testattu',FIRMWARE_READ_ONLY:'Lukuyhteys (testivaihe)',FIRMWARE_CONTROL_EXPERIMENTAL:'Kokeellinen manuaaliohjaus',DOCUMENTED_ONLY:'Vain selvitetty'};
 async function reloadSite(){try{const s=await fetchJSON('/api/settings');state.site=s;const t=s.tariff;
  if(s.region)setRegionDisplay(s.region.timezone,s.region.currency);
+  if(state.status)showStatus();if(state.prices)showPrices();if(state.weather)showWeather();
  const put=(id,v)=>{if(document.activeElement!==$(id))$(id).value=v};
  const c=v=>(Math.round(v*1000)/1000).toString().replace('.',',');
  put('site-margin',c(t.margin_c_per_kwh));put('site-tday',c(t.transfer_day_c_per_kwh));put('site-tnight',c(t.transfer_night_c_per_kwh));
@@ -1440,7 +1455,7 @@ $('site-save').addEventListener('click',async()=>{const token=state.status&&stat
  const fields={margin_c_per_kwh:$('site-margin').value,transfer_day_c_per_kwh:$('site-tday').value,transfer_night_c_per_kwh:$('site-tnight').value,
   electricity_tax_c_per_kwh:$('site-tax').value,vat_percent:$('site-vat').value,transfer_kind:$('site-kind').value,day_start_hour:$('site-dstart').value,
   night_start_hour:$('site-nstart').value,components_include_vat:$('site-incl').value,min_price_advantage_percent:$('site-adv').value,
-  pump_adapter:$('site-adapter').value,cn105_url:$('site-cn105').value.trim(),shelly_url:$('site-shelly').value.trim(),fmi_latlon:$('site-fmi').value.trim()};
+  tariff_confirmed:'true',pump_adapter:$('site-adapter').value,cn105_url:$('site-cn105').value.trim(),shelly_url:$('site-shelly').value.trim(),fmi_latlon:$('site-fmi').value.trim()};
  $('site-save').disabled=true;
  try{const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({...fields,token})});
   const j=await r.json().catch(()=>({}));
@@ -1465,7 +1480,7 @@ async function reloadMidea(){try{const m=await fetchJSON('/api/midea/status');
    showMideaProtocolFields();
  }
  const reason=mideaReadErrors[m.read_code]||'Tuntematon Midea-yhteysvirhe.';
- const last=m.last_attempt_utc?new Date(m.last_attempt_utc*1000).toLocaleTimeString(uiLocale(),{hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—';
+ const last=m.last_attempt_utc?new Date(m.last_attempt_utc*1000).toLocaleTimeString(uiLocale(),{timeZone:regionTimeZone(),hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—';
  text('midea-diagnostic',(m.polling?'Yhteystesti käynnissä. ':reason)+' Viimeisin yritys: '+last);
  text('midea-state',!m.selected?'Midea ei valittu':!m.configured?'Ei asetuksia':m.fresh?'Paikallinen tilanluku toimii':'Ei tuoretta mittausta');
  text('midea-read',m.fresh?(m.protocol===2?'V2-yhteys onnistui':'V3-yhteys onnistui'):m.configured?'Yhteyttä ei ole':'Midea-yhteyttä ei ole asetettu');
