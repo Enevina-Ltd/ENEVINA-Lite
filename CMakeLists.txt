@@ -311,3 +311,19 @@ else()
   target_compile_options(midea_lan_catalog_tests PRIVATE -UNDEBUG)
 endif()
 add_test(NAME midea_lan_catalog_tests COMMAND midea_lan_catalog_tests)
+# Regional price foundation: zone table, EU time, Nord Pool day-ahead parser
+# against real recorded responses for every supported bidding zone.
+add_executable(market_zones_tests tests/market_zones_tests.cpp)
+target_include_directories(market_zones_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(market_zones_tests PRIVATE enevina_core)
+target_compile_definitions(market_zones_tests PRIVATE
+    ENEVINA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+add_test(NAME market_zones_tests COMMAND market_zones_tests)
+
+# City search (geocoder) parser and filters against real recorded responses.
+add_executable(geocode_tests tests/geocode_tests.cpp)
+target_include_directories(geocode_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(geocode_tests PRIVATE enevina_core)
+target_compile_definitions(geocode_tests PRIVATE
+    ENEVINA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+add_test(NAME geocode_tests COMMAND geocode_tests)

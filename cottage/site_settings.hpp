@@ -3,11 +3,16 @@
 // Pure C++: no NVS, HTTP or Arduino dependency, so validation and the price
 // rules are host-tested. The firmware persists the validated struct in NVS.
 //
-// Units: the HTTP/UI keys carry their unit in the name (c/kWh, %), the stored
-// values are EUR/kWh and a 0..1 VAT rate. Timestamps are UTC; the transfer
-// schedule is evaluated in Finnish civil time at the 15-minute slot START.
+// Units: the HTTP/UI keys carry their unit in the name (c/kWh = minor currency
+// unit per kWh: cent, ore, grosz; %), the stored values are CURRENCY/kWh of the
+// configured region (EUR unless the zone settles in SEK/NOK/DKK/PLN; the
+// *_eur_* identifiers predate regional pricing) and a 0..1 VAT rate.
+// Timestamps are UTC; the transfer schedule is evaluated in the civil time of
+// the selected country (EU summer-time rule) at the 15-minute slot START.
 #include "cottage/finnish_tariff.hpp"
 #include "cottage/url_guard.hpp"
+#include "forecast/eu_time.hpp"
+#include "forecast/market_zones.hpp"
 #include "forecast/pricing.hpp"
 #include <cerrno>
 #include <cmath>
@@ -37,20 +42,33 @@ struct SiteTariff {
     uint8_t night_start_hour=22;
 };
 
-inline bool valid_site_tariff(const SiteTariff& t) {
+// Plausibility limits are defined in EUR and scaled for currencies with a
+// larger unit count (a SEK/NOK component of 0.60/kWh is normal). They reject
+// unit mistakes such as entering cents as whole currency units.
+inline double currency_limit_scale(const char* currency) {
+    if(!currency || !*currency) return 1.0;
+    if(!std::strcmp(currency,"EUR")) return 1.0;
+    if(!std::strcmp(currency,"SEK") || !std::strcmp(currency,"NOK")) return 12.0;
+    if(!std::strcmp(currency,"DKK")) return 8.0;
+    if(!std::strcmp(currency,"PLN")) return 5.0;
+    return 1.0;
+}
+inline bool valid_site_tariff(const SiteTariff& t,double scale=1.0) {
     auto in=[](double v,double lo,double hi){return std::isfinite(v)&&v>=lo&&v<=hi;};
-    return in(t.margin_eur_per_kwh,0,0.5) && in(t.transfer_day_eur_per_kwh,0,0.5) &&
-        in(t.transfer_night_eur_per_kwh,0,0.5) &&
-        in(t.electricity_tax_eur_per_kwh,0,0.2) && in(t.vat_rate,0,0.5) &&
+    return in(t.margin_eur_per_kwh,0,0.5*scale) &&
+        in(t.transfer_day_eur_per_kwh,0,0.5*scale) &&
+        in(t.transfer_night_eur_per_kwh,0,0.5*scale) &&
+        in(t.electricity_tax_eur_per_kwh,0,0.2*scale) && in(t.vat_rate,0,0.5) &&
         static_cast<uint8_t>(t.kind)<=2 && t.day_start_hour<24 &&
         t.night_start_hour<24 &&
         (t.kind!=TransferKind::TimeOfDay || t.day_start_hour!=t.night_start_hour);
 }
 
 // True when the DAY (or General / winter-weekday) transfer price applies.
-inline bool site_transfer_is_day(const SiteTariff& t,int64_t utc,bool& day) {
+inline bool site_transfer_is_day(const SiteTariff& t,int64_t utc,bool& day,
+                                 int std_offset_hours=2) {
     std::tm local{};
-    if(!finnish_local_time(utc,local)) return false;
+    if(!enevina::eu_local_time(utc,std_offset_hours,local)) return false;
     const int h=local.tm_hour;
     switch(t.kind) {
     case TransferKind::General: day=true; return true;
@@ -73,10 +91,11 @@ inline bool site_transfer_is_day(const SiteTariff& t,int64_t utc,bool& day) {
 // Single source of truth for the marginal TOTAL EUR/kWh of a 15-minute slot.
 // Every consumer (MPC bridge, price bootstrap, dashboard, audit) uses this.
 inline bool site_total_price(const SiteTariff& t,int64_t slot_start_utc,
-                             double spot_eur_per_kwh,double& total) {
-    if(!valid_site_tariff(t) || !std::isfinite(spot_eur_per_kwh)) return false;
+                             double spot_eur_per_kwh,double& total,
+                             int std_offset_hours=2,double limit_scale=1.0) {
+    if(!valid_site_tariff(t,limit_scale) || !std::isfinite(spot_eur_per_kwh)) return false;
     bool day=false;
-    if(!site_transfer_is_day(t,slot_start_utc,day)) return false;
+    if(!site_transfer_is_day(t,slot_start_utc,day,std_offset_hours)) return false;
     enevina::Tariff x{};
     x.spot_eur_per_kwh=spot_eur_per_kwh;
     x.margin_eur_per_kwh=t.margin_eur_per_kwh;
@@ -89,6 +108,10 @@ inline bool site_total_price(const SiteTariff& t,int64_t slot_start_utc,
     return enevina::calculate_total_price(x,total);
 }
 
+// Where the home is and which market prices apply. Defaults reproduce the
+// original Finland-only behaviour, so an upgraded device keeps working. An
+// empty price_zone with a non-empty country means "the user still has to pick
+// a bidding zone": prices are NOT fetched until it is chosen.
 struct SiteSettings {
     SiteTariff tariff{};
     char cn105_url[128]="";   // ESPHome /events URL, empty = not configured
@@ -96,7 +119,94 @@ struct SiteSettings {
     char fmi_latlon[32]="";   // "lat,lon", empty = no weather forecast
     char pump_adapter[40]=""; // adapter catalog id, empty = not selected
     double min_price_advantage_fraction=0.10;
+    // --- Regional setup (settings layout v2) ---
+    char country[3]="FI";     // ISO 3166-1 alpha-2 of the home
+    char price_zone[8]="FI";  // enevina::MarketZone::id, empty = not chosen
+    char city[48]="";         // display name chosen from the geocoder
+    char timezone[40]="";     // IANA name reported by the geocoder (display)
+    char language[3]="";      // "fi"/"en"; empty = follow the browser
+    bool tariff_confirmed=false; // user entered/confirmed contract prices
+    bool setup_complete=true; // first-run wizard finished (fresh devices: false)
+    uint8_t setup_step=0;     // resume point of the wizard
 };
+
+// Byte layout of the shipped v1 settings blob (Finland-only, before regional
+// setup). It exists ONLY so devices that already hold a configuration keep it
+// on upgrade; members and order must never change.
+struct SiteSettingsV1 {
+    SiteTariff tariff{};
+    char cn105_url[128]="";
+    char shelly_url[96]="";
+    char fmi_latlon[32]="";
+    char pump_adapter[40]="";
+    double min_price_advantage_fraction=0.10;
+};
+// An already configured owner keeps every value; the first-start wizard must
+// not reappear and the contract they entered counts as confirmed. Region
+// fields take the Finland defaults the v1 firmware implicitly used.
+inline SiteSettings site_settings_from_v1(const SiteSettingsV1& old) {
+    SiteSettings s{};
+    s.tariff=old.tariff;
+    std::memcpy(s.cn105_url,old.cn105_url,sizeof(s.cn105_url));
+    std::memcpy(s.shelly_url,old.shelly_url,sizeof(s.shelly_url));
+    std::memcpy(s.fmi_latlon,old.fmi_latlon,sizeof(s.fmi_latlon));
+    std::memcpy(s.pump_adapter,old.pump_adapter,sizeof(s.pump_adapter));
+    s.min_price_advantage_fraction=old.min_price_advantage_fraction;
+    std::strcpy(s.country,"FI");
+    std::strcpy(s.price_zone,"FI");
+    std::strcpy(s.timezone,"Europe/Helsinki");
+    s.tariff_confirmed=true;
+    s.setup_complete=true;
+    s.setup_step=9;
+    return s;
+}
+
+// Region that prices are fetched for, or false when the user has not finished
+// choosing one (unsupported country, or multi-zone country without a zone).
+inline bool site_market_region(const SiteSettings& s,const char*& nordpool_area,
+                               const char*& currency,int& std_offset_hours) {
+    const enevina::MarketCountry* c=enevina::find_market_country(s.country);
+    if(!c) return false;
+    const enevina::MarketZone* z=enevina::find_market_zone(*c,s.price_zone);
+    if(!z) return false;
+    nordpool_area=z->np_area;
+    currency=c->currency;
+    std_offset_hours=c->std_offset_hours;
+    return true;
+}
+// TOTAL price rule bound to the selected region (offset and currency scale).
+inline bool site_region_total_price(const SiteSettings& s,int64_t slot_start_utc,
+                                    double spot_per_kwh,double& total) {
+    // The selected country may have invalidated the previous contract. Spot
+    // remains displayable, but spot-only is NOT a confirmed total cost for
+    // price-aware optimization. The live controller falls back to thermostat.
+    if(!s.tariff_confirmed) return false;
+    const enevina::MarketCountry* c=enevina::find_market_country(s.country);
+    const int offset=c ? c->std_offset_hours : 2;
+    const double scale=currency_limit_scale(c ? c->currency : "EUR");
+    return site_total_price(s.tariff,slot_start_utc,spot_per_kwh,total,offset,scale);
+}
+inline bool valid_site_region(const SiteSettings& s);
+// Whole-struct check used before every commit: region and tariff limits agree.
+inline bool valid_site_settings(const SiteSettings& s) {
+    if(!valid_site_region(s)) return false;
+    const enevina::MarketCountry* c=enevina::find_market_country(s.country);
+    return valid_site_tariff(s.tariff,currency_limit_scale(c ? c->currency : "EUR"));
+}
+inline bool valid_site_region(const SiteSettings& s) {
+    auto terminated=[](const char* p,size_t n){return std::memchr(p,0,n)!=nullptr;};
+    if(!terminated(s.country,sizeof(s.country)) ||
+       !terminated(s.price_zone,sizeof(s.price_zone)) ||
+       !terminated(s.city,sizeof(s.city)) ||
+       !terminated(s.timezone,sizeof(s.timezone)) ||
+       !terminated(s.language,sizeof(s.language))) return false;
+    if(s.setup_step>9) return false;
+    if(!s.country[0]) return !s.price_zone[0];
+    const enevina::MarketCountry* c=enevina::find_market_country(s.country);
+    if(!c) return false;
+    if(!s.price_zone[0]) return true;           // zone still to be chosen
+    return enevina::find_market_zone(*c,s.price_zone)!=nullptr;
+}
 
 enum class SettingError : uint8_t {
     Ok, UnknownKey, BadNumber, OutOfRange, BadUrl, TooLong, BadChoice
@@ -139,6 +249,34 @@ inline bool copy_text(char* dst,size_t cap,const char* src) {
     std::memcpy(dst,src,n+1);
     return true;
 }
+// Display text from the geocoder: valid UTF-8, no control characters, no
+// markup characters, so it can be echoed into the dashboard safely.
+inline bool printable_utf8(const char* s) {
+    const unsigned char* p=reinterpret_cast<const unsigned char*>(s);
+    while(*p) {
+        const unsigned char c=*p;
+        if(c<0x20 || c==0x7f || c=='<' || c=='>' || c=='"' || c=='&' || c=='\\') return false;
+        size_t extra=0;
+        if(c>=0xF0 && c<=0xF4) extra=3;
+        else if(c>=0xE0) extra=2;
+        else if(c>=0xC2) extra=1;
+        else if(c>=0x80) return false;
+        ++p;
+        for(size_t i=0;i<extra;++i,++p) if((*p&0xC0)!=0x80) return false;
+    }
+    return true;
+}
+inline bool iana_name(const char* s) {
+    if(!*s) return true;
+    const size_t n=std::strlen(s);
+    if(n<3 || n>39) return false;
+    for(size_t i=0;i<n;++i) {
+        const char c=s[i];
+        if(!((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||
+             c=='/'||c=='_'||c=='-'||c=='+')) return false;
+    }
+    return true;
+}
 inline bool valid_latlon(const char* s) {
     if(!*s) return true;
     const char* comma=std::strchr(s,',');
@@ -160,8 +298,13 @@ inline bool valid_latlon(const char* s) {
 // commits atomically, so a rejected form never leaves half-applied values.
 inline SettingError apply_site_setting(SiteSettings& s,const char* key,const char* value) {
     if(!key || !value) return SettingError::UnknownKey;
+    // Limits are EUR-based and scaled by the CURRENT country's currency.
+    // Order-independent consistency is enforced again by valid_site_settings().
+    const enevina::MarketCountry* home=enevina::find_market_country(s.country);
+    const double scale=currency_limit_scale(home ? home->currency : "EUR");
     auto cents=[&](double& field,double max_c)->SettingError {
         double v=0;
+        max_c*=scale;
         if(!detail::parse_decimal(value,v)) return SettingError::BadNumber;
         if(v<0 || v>max_c) return SettingError::OutOfRange;
         field=v/100.0;
@@ -228,6 +371,93 @@ inline SettingError apply_site_setting(SiteSettings& s,const char* key,const cha
         return detail::copy_text(s.pump_adapter,sizeof(s.pump_adapter),value)?
             SettingError::Ok:SettingError::TooLong; // catalog check by caller
     }
+    if(!std::strcmp(key,"country")) {
+        if(*value && !enevina::find_market_country(value)) return SettingError::BadChoice;
+        char previous_country[3];
+        std::memcpy(previous_country,s.country,sizeof(previous_country));
+        if(!detail::copy_text(s.country,sizeof(s.country),value)) return SettingError::TooLong;
+        // A different country means different currency/VAT/contract: the old
+        // amounts would be silently wrong, so they are cleared and must be
+        // confirmed again. Everything else (pump, sensors, comfort) is kept.
+        if(std::strcmp(previous_country,s.country)!=0 && previous_country[0]) {
+            s.tariff.margin_eur_per_kwh=s.tariff.transfer_day_eur_per_kwh=
+                s.tariff.transfer_night_eur_per_kwh=
+                s.tariff.electricity_tax_eur_per_kwh=0;
+            s.tariff.vat_rate=0;
+            s.tariff_confirmed=false;
+        }
+        // Changing country never leaves a zone from another country; a
+        // single-zone country implies its zone, otherwise the user picks.
+        const enevina::MarketCountry* c=enevina::find_market_country(s.country);
+        // Civil time zone follows the country (every supported country has a
+        // single zone); the display name is never typed by hand.
+        if(c) std::strcpy(s.timezone,c->iana); else s.timezone[0]=0;
+        if(c && !enevina::find_market_zone(*c,s.price_zone)) {
+            const enevina::MarketZone* only=enevina::implied_market_zone(*c);
+            std::strcpy(s.price_zone,only ? only->id : "");
+        } else if(!c) s.price_zone[0]=0;
+        return SettingError::Ok;
+    }
+    if(!std::strcmp(key,"price_zone")) {
+        if(*value) {
+            const enevina::MarketCountry* c=enevina::find_market_country(s.country);
+            if(!c || !enevina::find_market_zone(*c,value)) return SettingError::BadChoice;
+        }
+        return detail::copy_text(s.price_zone,sizeof(s.price_zone),value)?
+            SettingError::Ok:SettingError::TooLong;
+    }
+    if(!std::strcmp(key,"city")) {
+        if(!detail::printable_utf8(value)) return SettingError::BadChoice;
+        return detail::copy_text(s.city,sizeof(s.city),value)?
+            SettingError::Ok:SettingError::TooLong;
+    }
+    if(!std::strcmp(key,"timezone")) {
+        if(!detail::iana_name(value)) return SettingError::BadChoice;
+        return detail::copy_text(s.timezone,sizeof(s.timezone),value)?
+            SettingError::Ok:SettingError::TooLong;
+    }
+    if(!std::strcmp(key,"language")) {
+        if(*value && std::strcmp(value,"fi") && std::strcmp(value,"en"))
+            return SettingError::BadChoice;
+        return detail::copy_text(s.language,sizeof(s.language),value)?
+            SettingError::Ok:SettingError::TooLong;
+    }
+    if(!std::strcmp(key,"tariff_confirmed") || !std::strcmp(key,"setup_complete")) {
+        bool v=false;
+        if(!std::strcmp(value,"true")) v=true;
+        else if(std::strcmp(value,"false")) return SettingError::BadChoice;
+        (key[0]=='t'?s.tariff_confirmed:s.setup_complete)=v;
+        return SettingError::Ok;
+    }
+    if(!std::strcmp(key,"setup_step")) {
+        double v=0;
+        if(!detail::parse_decimal(value,v)) return SettingError::BadNumber;
+        if(v<0 || v>9 || v!=std::floor(v)) return SettingError::OutOfRange;
+        s.setup_step=static_cast<uint8_t>(v);
+        return SettingError::Ok;
+    }
     return SettingError::UnknownKey;
+}
+
+// Applies a whole form. Region keys (country, price_zone) go first so tariff
+// limits are always checked against the NEW currency regardless of the order
+// the browser happened to send the fields in. On the first rejected key the
+// index is reported and `s` must be discarded by the caller (it works on a
+// copy). The final whole-struct validation is still the caller's job.
+inline SettingError apply_site_settings_batch(SiteSettings& s,size_t count,
+        const char* const* keys,const char* const* values,size_t& bad_index) {
+    bad_index=count;
+    // Phase 0: country, phase 1: price_zone (needs the country), phase 2: rest.
+    for(int phase=0;phase<3;++phase) {
+        for(size_t i=0;i<count;++i) {
+            if(!keys[i]) continue;
+            const int own=!std::strcmp(keys[i],"country") ? 0 :
+                          !std::strcmp(keys[i],"price_zone") ? 1 : 2;
+            if(own!=phase) continue;
+            const SettingError e=apply_site_setting(s,keys[i],values[i]);
+            if(e!=SettingError::Ok) {bad_index=i;return e;}
+        }
+    }
+    return SettingError::Ok;
 }
 } // namespace enevina::cottage

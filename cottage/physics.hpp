@@ -26,6 +26,7 @@ struct Parameters {
     double switching_penalty_eur = 0.02;
     unsigned min_heat_minutes = 60;
     unsigned min_off_minutes = 60;
+    double currency_limit_scale = 1.0; // price-unit plausibility: site currency / EUR scale
 };
 struct State {
     double indoor_c = 0;

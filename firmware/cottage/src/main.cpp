@@ -651,6 +651,10 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     input.price_count=N;
     input.prices_contiguous_and_fresh=valid_prices;
     input.min_price_advantage_fraction=site_settings_snapshot().min_price_advantage_fraction;
+    input.price_limit_scale=currency_limit_scale(market.currency);
+    // The minimum *absolute* advantage is in the selected market currency;
+    // keep approximately the same tariff-relative significance as EUR.
+    input.min_price_advantage_eur_per_kwh=0.005*input.price_limit_scale;
     return bootstrap_price_decision(input);
 }
 // CN105 is a separate local ESPHome gateway. These HTTP calls are the only
@@ -1144,6 +1148,9 @@ static void optimizer_worker(void*) {
             xSemaphoreGive(lock_data);
             ts=c23_temperature_sample();
             const auto ms=enevina_firmware::market_status();
+            Parameters priced_model=model;
+            priced_model.currency_limit_scale=currency_limit_scale(ms.currency);
+            priced_model.switching_penalty_eur*=priced_model.currency_limit_scale;
             const auto ws=enevina_firmware::weather_status();
             const size_t pc=enevina_firmware::future_prices(prices,200);
             const size_t wc=enevina_firmware::future_weather(weather,64);
@@ -1167,7 +1174,7 @@ static void optimizer_worker(void*) {
                valid_cn105(cp,now) && valid_temperature(ts,now) &&
                (cp.mode==ObservedPumpMode::Off ||
                 cp.mode==ObservedPumpMode::Heat) &&
-               COTTAGE_SYNTHETIC_TEST_MODEL && valid(model)) {
+               COTTAGE_SYNTHETIC_TEST_MODEL && valid(priced_model)) {
                 const State initial{ts.indoor_c,
                     cp.mode==ObservedPumpMode::Heat,observed_mode_minutes};
                 const uint32_t begun=millis();
@@ -1175,7 +1182,7 @@ static void optimizer_worker(void*) {
                 limits.runtime_budget_ms=1800;
                 limits.monotonic_now_ms=cottage_now_ms;
                 limits.cancel_requested=cottage_cancel;
-                const MpcResult result=optimize(model,initial,bridge->periods.data(),
+                const MpcResult result=optimize(priced_model,initial,bridge->periods.data(),
                     bridge->count,3*1024*1024,limits);
                 const uint32_t elapsed=millis()-begun;
                 optimizer_ms=elapsed;max_optimizer_ms=std::max(max_optimizer_ms,elapsed);
@@ -1184,7 +1191,7 @@ static void optimizer_worker(void*) {
                 if(result.status==MpcStatus::Ok) {
                     for(size_t i=0;i<result.count;i++) {
                         const bool heat16=result.heat_16_c[i]!=0;
-                        const auto step=advance(model,state,bridge->periods[i],heat16);
+                        const auto step=advance(priced_model,state,bridge->periods[i],heat16);
                         state=step.next;
                         rows[i]={bridge->first_utc+static_cast<int64_t>(900*i),
                             state.indoor_c,step.electric_kwh,step.cost_eur,heat16};
@@ -1444,6 +1451,13 @@ static void status_endpoint() {
     else cJSON_AddNullToObject(root,"weather_c");
     if(valid_total)cJSON_AddNumberToObject(root,"total_price",total);
     else cJSON_AddNullToObject(root,"total_price");
+    // Every price above is in `price_currency` per kWh for `price_area`.
+    cJSON_AddStringToObject(root,"price_currency",price.currency);
+    cJSON_AddStringToObject(root,"price_area",price.area);
+    cJSON_AddNumberToObject(root,"price_error",price.last_error);
+    cJSON_AddNumberToObject(root,"price_http_status",price.last_http_status);
+    cJSON_AddNumberToObject(root,"price_last_attempt_utc",
+                            static_cast<double>(price.last_attempt_utc));
     cJSON_AddNumberToObject(root,"bridge_status",static_cast<int>(bs));
     cJSON_AddNumberToObject(root,"mpc_status",static_cast<int>(plan.status));
     cJSON_AddNumberToObject(root,"mpc_ms",ms);

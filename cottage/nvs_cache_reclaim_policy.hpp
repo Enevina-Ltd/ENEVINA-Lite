@@ -10,6 +10,7 @@ struct NvsDisposableCache {
 constexpr NvsDisposableCache kDisposableSiteRecovery[]={
     {"enevina_weather","weather_v2"},
     {"enevina_market","price_v2"},
+    {"enevina_market","price_reg_v2"},
 };
 template<class Store,class Erase>
 bool persist_with_optional_cache_reclaim(Store store,Erase erase) {
