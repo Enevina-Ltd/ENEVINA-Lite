@@ -47,6 +47,11 @@ std::atomic<bool> pause_readers{false};
 std::atomic<uint32_t> ota_written_bytes{0};
 std::atomic<uint32_t> ota_completed_chunks{0};
 std::atomic<uint32_t> ota_flash_yields{0};
+// Dashboard requests schedule the existing signed worker. No HTTP upload and
+// no direct flash write from WebServer callbacks.
+std::atomic<TaskHandle_t> ota_worker_task{nullptr};
+std::atomic<bool> ota_manual_pending{false};
+std::atomic<uint32_t> ota_last_checked_utc{0};
 
 namespace ota=enevina::cottage::ota;
 // Compile-time check against the actual ESP-IDF headers in this firmware.
@@ -435,6 +440,16 @@ bool cottage_ota_network_maintenance(){return pause_readers.load();}
 uint32_t cottage_ota_downloaded_bytes(){return ota_written_bytes.load();}
 uint32_t cottage_ota_chunk_count(){return ota_completed_chunks.load();}
 uint32_t cottage_ota_idle_yields(){return ota_flash_yields.load();}
+bool cottage_ota_request_immediate() {
+    const auto task=ota_worker_task.load();
+    if(!cottage_ota_configured() || cottage_ota_confirmation_pending() ||
+       !task || pause_readers.load())return false;
+    // Repeated clicks are idempotent until the worker begins the check.
+    if(!ota_manual_pending.exchange(true))xTaskNotifyGive(task);
+    return true;
+}
+bool cottage_ota_dashboard_request_pending(){return ota_manual_pending.load();}
+uint32_t cottage_ota_last_check_utc(){return ota_last_checked_utc.load();}
 void cottage_ota_worker(void*) {
 #if !ENEVINA_SIGNED_OTA_AVAILABLE
     last_status.store(1);
@@ -442,8 +457,20 @@ void cottage_ota_worker(void*) {
 #else
     // This is deliberately an operator-staged, signed pull. No unauthenticated
     // device-side HTTP POST or firmware upload exists.
+    ota_worker_task.store(xTaskGetCurrentTaskHandle());
+    // Retain the boot stabilization interval; a queued dashboard request
+    // survives it and is serviced as soon as the worker is ready.
     vTaskDelay(pdMS_TO_TICKS(90000));
+    // The first check services any dashboard request queued during boot.
+    // Consume only its wakeup now: otherwise the stale notification would
+    // wrongly skip the ten-minute cooldown if that first check fails.
+    // Do not drain at the top of every loop: requests arriving during an
+    // in-progress check must still wake the subsequent retry wait.
+    ulTaskNotifyTake(pdTRUE,0);
     while(true) {
+        ota_manual_pending.store(false);
+        const time_t now=time(nullptr);
+        if(now>1700000000)ota_last_checked_utc.store(static_cast<uint32_t>(now));
         // Keep normal CN105/Shelly readers running during routine manifest
         // checks. Briefly pause ONLY after the signed version is eligible.
         // Every exit path from an attempted update restores reader activity.
@@ -503,14 +530,18 @@ void cottage_ota_worker(void*) {
                         esp_restart();
                     }
                     // A failed image stays non-authoritative. Keep current
-                    // firmware, preserve user settings and avoid retry storms.
-                    vTaskDelay(pdMS_TO_TICKS(10*60*1000));
+                    // firmware and settings. Automatic retries retain the
+                    // 10-minute cooldown; an explicit dashboard request can
+                    // wake this worker once without bypassing signed checks.
+                    ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(10*60*1000));
                     continue;
                 }
             }
             enevina_firmware::network_budget_release();
         }
-        vTaskDelay(pdMS_TO_TICKS(60000));
+        // Routine 60 s checks remain unchanged, but the dashboard can
+        // request an immediate pass without bypassing signature verification.
+        ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(60000));
     }
 #endif
 }
