@@ -9,7 +9,7 @@
 namespace enevina::midea {
 enum class ReadStatus : uint8_t {
     Ok, InvalidAddress, InvalidCredentials, ConnectionFailed,
-    AuthenticationFailed, ProtocolFailed, UnsupportedState
+    AuthenticationFailed, ProtocolFailed, UnsupportedState, TimeNotReady
 };
 ReadStatus read_device(const char* private_ipv4,const Credential& credentials,
                        State& reading);
