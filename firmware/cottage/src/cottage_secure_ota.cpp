@@ -524,8 +524,10 @@ void cottage_ota_worker(void*) {
                         esp_restart();
                     }
                     // A failed image stays non-authoritative. Keep current
-                    // firmware, preserve user settings and avoid retry storms.
-                    vTaskDelay(pdMS_TO_TICKS(10*60*1000));
+                    // firmware and settings. Automatic retries retain the
+                    // 10-minute cooldown; an explicit dashboard request can
+                    // wake this worker once without bypassing signed checks.
+                    ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(10*60*1000));
                     continue;
                 }
             }
