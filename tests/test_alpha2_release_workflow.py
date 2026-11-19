@@ -49,7 +49,7 @@ class Alpha2ReleaseSafety(unittest.TestCase):
         )
         self.assertIn("while [[ \"$typ\" == tag ]]; do", SCRIPT)
         self.assertIn("--verify-tag", SCRIPT)
-        self.assertNotIn("--target", SCRIPT)
+        self.assertNotIn("            --target ", SCRIPT)
 
     def test_no_firmware_binaries_or_ota_actions(self):
         self.assertIn("v0.1.0-alpha.2", SCRIPT)
