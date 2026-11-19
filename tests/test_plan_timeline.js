@@ -21,7 +21,7 @@ assert(card.includes('ei käytä sitä päätöksessään'),'outdoor-not-used no
 
 const ctx={document:{},state:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={tlValidate,tlLayout,tlSlotIndex,tlOutdoorAt,tlControlText,tlNowText,tlSegmentText,tlTicks,tlDeg};',ctx);
+vm.runInContext(src+';this.api={tlValidate,tlLayout,tlSlotIndex,tlOutdoorAt,tlOutdoorRuns,tlControlText,tlNowText,tlSegmentText,tlTicks,tlDeg};',ctx);
 const A=ctx.api;
 
 const slot=(i,total,cls='neutral')=>({utc:1794999600+i*900,total,class:cls,median:0.2});
@@ -59,12 +59,37 @@ assert.equal(A.tlOutdoorAt(null,1794999600),null);
 assert.equal(A.tlOutdoorAt({valid:false,slots:wx.slots},1794999600),null);   // invalid forecast is not used
 
 // controller texts reflect the profile headroom
-assert(A.tlControlText('cheap',{preheat_c:1.0,coast_c:1.0}).includes('+1,0 °C'));
-assert(A.tlControlText('cheap',{preheat_c:0,coast_c:0}).includes('vain, jos huone on tavoitetta kylmempi'));
-assert(A.tlControlText('expensive',{preheat_c:0.7,coast_c:0.7}).includes('0,7 °C'));
-assert(A.tlControlText('expensive',{preheat_c:0,coast_c:0}).includes('ei lämmitetä'));
-assert(A.tlControlText('neutral',{}).includes('±0,5'));
-assert(A.tlControlText('unknown',{}).includes('ei ole riittävästi'));
+assert(A.tlControlText('cheap',{target_c:21,preheat_c:1.0,coast_c:1.0}).includes('+1,0 °C'));
+assert(A.tlControlText('cheap',{target_c:21,preheat_c:0,coast_c:0}).includes('vain, jos huone on tavoitetta kylmempi'));
+assert(A.tlControlText('expensive',{target_c:21,preheat_c:0.7,coast_c:0.7}).includes('0,7 °C'));
+assert(A.tlControlText('expensive',{target_c:21,preheat_c:0,coast_c:0}).includes('ei lämmitetä'));
+assert(A.tlControlText('neutral',{target_c:21}).includes('±0,5'));
+assert(A.tlControlText('unknown',{target_c:21}).includes('ei ole riittävästi'));
+// Codex P2 (#59): a mode without a target (Cold) must not advertise heating behaviour
+for(const meta of [{target_c:null,preheat_c:2,coast_c:2},{preheat_c:2,coast_c:2},{target_c:NaN}])
+  for(const cls of ['cheap','neutral','expensive']){
+    const t=A.tlControlText(cls,meta);
+    assert(t.includes('ei ohjata lämmitystä'),t);
+    assert(!/lämmitetään|lämmitys sallittu|termostaatti|ei lämmitetä|lämmitys pidetään/.test(t),t);
+  }
+assert(A.tlControlText('unknown',{target_c:null}).includes('ei ole riittävästi'));
+assert(A.tlSegmentText({class:'cheap',start:1794999600,end:1795003200,avg_total:0.1,avg_median:0.2},{target_c:null},v=>String(v),(a,b)=>'x').includes('ei ohjata lämmitystä'));
+
+// Codex P2 (#59): the outdoor line breaks at forecast gaps
+{
+  const slots=[];for(let i=0;i<48;i++)slots.push(slot(i,0.2));      // 12 h of slots
+  const t0=slots[0].utc;
+  const wxGap={valid:true,slots:[{utc:t0,temperature_c:0},{utc:t0+3600,temperature_c:1},{utc:t0+7200,temperature_c:2},
+    {utc:t0+7200+3*3600,temperature_c:-3},{utc:t0+7200+4*3600,temperature_c:-4}]};
+  const runs=A.tlOutdoorRuns(wxGap,slots);
+  assert(runs.length>=2,'gap must split the line, got '+runs.length+' run(s)');
+  for(const r of runs)for(let i=1;i<r.length;i++)assert(r[i][0]-r[i-1][0]<=7200,'a run bridges a gap');
+  const all=[].concat(...runs);
+  assert(all.every(p=>A.tlOutdoorAt(wxGap,p[0])!==null));
+  assert.equal(A.tlOutdoorRuns(null,slots).length,0);
+  const wxFull={valid:true,slots:[{utc:t0-3600,temperature_c:0},{utc:t0+13*3600,temperature_c:3}]};
+  assert.equal(A.tlOutdoorRuns(wxFull,slots).length,0);            // 14 h between points: nothing is drawn
+}
 
 // "now" line uses real reasons, setpoint only when heating
 assert.equal(A.tlNowText({action:'HEAT_SETPOINT',setpoint_c:22.5,reason:'LOW_COST_WINDOW'}),'Lämmitys päällä 22,5 °C — sähkö on nyt edullista');

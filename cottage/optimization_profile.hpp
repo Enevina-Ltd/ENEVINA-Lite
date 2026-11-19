@@ -62,6 +62,9 @@ inline ProfileTuning profile_tuning(OptimizationProfile p) {
     return {1.0,0.4,8,0.25};
 }
 constexpr double kComfortMinAllowedC=5.0;
+// Strictly below the limits bootstrap_price_decision() enforces (5 and 10).
+constexpr double kMaxPreheatC=4.0;
+constexpr double kMaxCoastC=8.0;
 constexpr double kComfortMaxAllowedC=26.0;
 
 // 0 = unset, otherwise 5..26 C in 0.5 steps; both set must leave >= 1 C
@@ -99,8 +102,12 @@ inline bool apply_profile(BootstrapInput& in,OptimizationProfile profile,
     const double work_hi=hi>0?std::max(hi-t.limit_margin_c,d+0.5):0;
     in.comfort_lower_c=work_lo;
     in.comfort_upper_c=work_hi;
-    in.preheat_c=work_hi>0?t.headroom_share*(work_hi-d):0;
-    in.coast_c=work_lo>0?t.headroom_share*(d-work_lo):0;
+    // The controller refuses tuning above kMaxPreheatC / kMaxCoastC as malformed
+    // (price_bootstrap.hpp). A valid but WIDE owner band (e.g. 5..26 C around a
+    // 12 C target) must therefore be clamped here, never passed through: the
+    // alternative was a controller that returned "no decision" and never heated.
+    in.preheat_c=work_hi>0?std::min(kMaxPreheatC,t.headroom_share*(work_hi-d)):0;
+    in.coast_c=work_lo>0?std::min(kMaxCoastC,t.headroom_share*(d-work_lo)):0;
     window_slots=t.window_slots;
     return true;
 }

@@ -28,7 +28,7 @@ static BootstrapDecision controller(const FreshnessInputs& in) {
     b.indoor_fresh=in.sensor_fresh;b.indoor_c=20.0;b.desired_room_c=21.0;
     static const double prices[8]={0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1};
     const bool eligible=in.clock_trusted&&in.price_current_valid&&in.price_last_fetch<=in.now&&
-        in.price_last_fetch>=in.now-36*3600&&in.price_valid_until>=in.now+8*900;
+        in.price_last_fetch>=in.now-36*3600&&in.price_valid_until>=(in.now/900)*900+8*900;
     b.next_total_prices=prices;b.price_count=8;b.prices_contiguous_and_fresh=eligible;
     return bootstrap_price_decision(b);
 }
@@ -76,6 +76,20 @@ static void going_offline_changes_nothing_until_data_expires() {
     f=assess_freshness(in);
     CHECK(f.weather.state==SourceState::Expired&&f.next_expiry_utc==0);
     CHECK(f.last_contact_utc==NOW-600);                     // "last successful contact" stays the old one
+}
+
+static void quarter_hour_alignment() {
+    FreshnessInputs in=healthy();
+    // A full 8 slots remain from the START of the current quarter hour.
+    in.now=NOW+60;in.price_valid_until=NOW+8*900;
+    CHECK(assess_freshness(in).prices.state==SourceState::Ok);
+    agrees_with_controller(in,ControllerFallback::PriceControl);
+    in.now=NOW+899;
+    CHECK(assess_freshness(in).fallback==ControllerFallback::PriceControl);
+    agrees_with_controller(in,ControllerFallback::PriceControl);
+    in.now=NOW+900;
+    CHECK(assess_freshness(in).prices.state==SourceState::Short);
+    agrees_with_controller(in,ControllerFallback::Thermostat);
 }
 
 static void thirty_six_hour_rule() {
@@ -153,6 +167,7 @@ int main() {
     healthy_device();
     going_offline_changes_nothing_until_data_expires();
     thirty_six_hour_rule();
+    quarter_hour_alignment();
     missing_and_unconfigured_sources();
     sensor_and_pump();
     untrusted_clock();

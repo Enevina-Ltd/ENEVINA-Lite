@@ -32,6 +32,7 @@ struct HistorySummary {
     double kwh=0;                // energy of the METERED load over present power slots
     size_t kwh_slots=0;          // how many slots had a power reading
     size_t armed_slots=0;
+    uint8_t scope_mask=0;        // bit s set: a present power slot was measured under scope s (0/1/2)
     double coverage() const {return slots_total?static_cast<double>(slots_present)/static_cast<double>(slots_total):0;}
 };
 
@@ -55,6 +56,7 @@ inline size_t build_history_series(const HistoryStore& store,int64_t end_utc,siz
         const int64_t b0=first+static_cast<int64_t>(b*step_slots);
         p.t=b0*kHistoryStepS;
         Range in,rh,od,pw,pr;
+        uint8_t bucket_scopes=0;
         for(size_t k=0;k<step_slots;++k) {
             const HistoryRecord* r=store.get(static_cast<uint32_t>(b0+static_cast<int64_t>(k)));
             if(!r) continue;
@@ -67,6 +69,9 @@ inline size_t build_history_series(const HistoryStore& store,int64_t end_utc,siz
             }
             if(r->setpoint_c10!=kMissingI16) {p.setpoint=r->setpoint_c10/10.0;summary.setpoint.add(p.setpoint);}
             if(r->power_w!=kMissingU16) {
+                const unsigned scope=(r->flags&kPowerScopeMask)>>kPowerScopeShift;
+                const uint8_t bit=static_cast<uint8_t>(1u<<(scope<=2?scope:0));
+                bucket_scopes|=bit;summary.scope_mask|=bit;
                 pw.add(r->power_w);
                 summary.kwh+=r->power_w*0.25/1000.0;++summary.kwh_slots;
             }
@@ -74,7 +79,10 @@ inline size_t build_history_series(const HistoryStore& store,int64_t end_utc,siz
             p.action=static_cast<uint8_t>(r->flags&kActionMask);
             if(r->flags&kControlArmed) {p.armed=true;++summary.armed_slots;}
         }
-        p.indoor=in.avg();p.rh=rh.avg();p.outdoor=od.avg();p.power=pw.avg();p.price=pr.avg();
+        p.indoor=in.avg();p.rh=rh.avg();p.outdoor=od.avg();p.price=pr.avg();
+        // A bucket that spans two measurement targets has no honest average power.
+        const bool bucket_mixed=(bucket_scopes&(bucket_scopes-1))!=0;
+        p.power=bucket_mixed?kNaN:pw.avg();
     }
     return buckets;
 }
@@ -91,6 +99,16 @@ inline bool history_range_spec(const char* name,RangeSpec& out) {
 }
 
 namespace history_detail {
+// What the meter measured over the slots that are actually in the response.
+// "mixed" = the target changed inside the range: energy must not be summed.
+inline const char* scope_of_range(const HistorySummary& s,const char* current) {
+    const uint8_t m=s.scope_mask;
+    if(m==0) return current;                 // no power slots: nothing to label
+    if(m==1) return "unknown";
+    if(m==2) return "heat_pump";
+    if(m==4) return "whole_house";
+    return "mixed";
+}
 template<class Emit>
 inline void val(Emit& emit,double v,const char* fmt) {
     if(!std::isfinite(v)) {emit("null");return;}
@@ -100,23 +118,24 @@ inline void val(Emit& emit,double v,const char* fmt) {
 }
 } // namespace history_detail
 
-// Streams the /api/history document. `scope` is the owner's statement about the
-// consumption meter ("heat_pump", "whole_house", "unknown"), echoed so the UI
-// labels the energy correctly.
+// Streams the /api/history document. `meter_scope` in the output describes what
+// the meter measured when the readings in THIS range were taken (stored with each
+// record; "mixed" when it changed inside the range). `current_meter_scope` is only
+// the owner's present statement and never relabels older readings.
 template<class Emit>
 inline void history_json(const char* range_name,size_t step_slots,const HistoryPoint* pts,size_t n,
                          const HistorySummary& s,const EventLog& events,int64_t from_utc,
                          const char* currency,const char* meter_scope,bool persistent,Emit emit) {
     using namespace history_detail;
     char b[200];
-    std::snprintf(b,sizeof(b),"{\"valid\":%s,\"range\":\"%s\",\"step_s\":%lld,\"currency\":\"%s\",\"meter_scope\":\"%s\",\"persistent\":%s,",
-        n?"true":"false",range_name,static_cast<long long>(step_slots*kHistoryStepS),currency,meter_scope,
-        persistent?"true":"false");
+    std::snprintf(b,sizeof(b),"{\"valid\":%s,\"range\":\"%s\",\"step_s\":%lld,\"currency\":\"%s\",\"meter_scope\":\"%s\",\"current_meter_scope\":\"%s\",\"persistent\":%s,",
+        n?"true":"false",range_name,static_cast<long long>(step_slots*kHistoryStepS),currency,
+        scope_of_range(s,meter_scope),meter_scope,persistent?"true":"false");
     emit(b);
     std::snprintf(b,sizeof(b),"\"slots_total\":%zu,\"slots_present\":%zu,\"kwh_slots\":%zu,\"armed_slots\":%zu,",
         s.slots_total,s.slots_present,s.kwh_slots,s.armed_slots);
     emit(b);
-    emit("\"kwh\":");val(emit,s.kwh_slots?s.kwh:kNaN,"%.3f");
+    emit("\"kwh\":");val(emit,(s.kwh_slots&&s.scope_mask!=0&&(s.scope_mask&(s.scope_mask-1))==0)?s.kwh:kNaN,"%.3f");
     emit(",\"indoor\":{\"min\":");val(emit,s.indoor.min,"%.2f");
     emit(",\"max\":");val(emit,s.indoor.max,"%.2f");emit(",\"avg\":");val(emit,s.indoor.avg(),"%.2f");
     emit("},\"outdoor\":{\"min\":");val(emit,s.outdoor.min,"%.2f");

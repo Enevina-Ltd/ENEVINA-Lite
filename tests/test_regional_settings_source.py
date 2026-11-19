@@ -35,6 +35,17 @@ class RegionalWiring(unittest.TestCase):
         self.assertIn("market_set_region(nullptr,nullptr)", SITE)
         self.assertIn("if(!area[0])", MARKET)
 
+    def test_boot_adoption_never_erases_the_saved_price_cache(self):
+        # Codex P1 (#55): the first region call at boot compared with the FI/EUR
+        # defaults and erased valid prices of every non-Finnish device.
+        body = MARKET.split("bool market_set_region(")[1]
+        self.assertIn("region_adopted", MARKET)
+        self.assertLess(body.index("if(!region_adopted)"), body.index('nvs_erase_key(handle,"price_v2")'))
+        first = body.split("if(!region_adopted) {")[1].split("return true;")[0]
+        self.assertNotIn("nvs_", first)
+        self.assertNotIn("++region_generation", first)
+        self.assertNotIn("cache=PriceCache{}", first)
+
     def test_settings_v2_migrates_v1_and_drops_it_after_durable_write(self):
         self.assertIn('p.putBytes("v2",&blob,sizeof(blob))', SITE)
         self.assertIn('p.remove("v1")', SITE)
@@ -56,6 +67,13 @@ class RegionalWiring(unittest.TestCase):
 class ProfileWiring(unittest.TestCase):
     MAIN = (ROOT / "firmware/cottage/src/main.cpp").read_text(encoding="utf-8")
 
+    def test_saved_settings_survive_an_upgrade_by_prefix_restore(self):
+        # Codex P1 (#57): the loader demanded sizeof(blob) exactly and reset the
+        # owner's configuration whenever the layout had grown.
+        self.assertNotIn('getBytesLength("v2")==sizeof(blob)', SITE)
+        self.assertIn("restore_site_settings(", SITE)
+        self.assertIn('getBytesLength("v2")', SITE)
+
     def test_live_controller_uses_profile_and_never_guesses(self):
         self.assertIn("apply_profile(input,site.profile,site.comfort_min_c", self.MAIN)
         # inconsistent settings -> no decision
@@ -74,6 +92,19 @@ class DiscoveryWiring(unittest.TestCase):
     AIR = (ROOT / "firmware/cottage/src/cottage_air_service.cpp").read_text(encoding="utf-8")
     SHELLY = (ROOT / "firmware/cottage/src/cottage_shelly_discovery.cpp").read_text(encoding="utf-8")
     SITE = (ROOT / "firmware/cottage/src/cottage_site_settings.cpp").read_text(encoding="utf-8")
+
+    def test_finished_scan_results_are_kept_from_completion_not_start(self):
+        # Codex P2 (#58): a scan slower than 8 s was "old" on the first poll after
+        # it finished, so it was discarded and restarted in a loop.
+        body = self.SHELLY.split("ShellyScanState shelly_scan(")[1]
+        self.assertIn("shared.state==ShellyScanState::Done?finished_ms:started_ms", body)
+        self.assertNotIn("now-started_ms<8000", body)
+
+    def test_sensor_list_freshness_follows_accepted_measurements(self):
+        # Codex P2 (#58): replayed frames refreshed the age and made a sensor "live".
+        self.assertIn("e.has_measurement&&age_ms<=kRuuviFreshMs", self.AIR)
+        self.assertIn("now-e.measured_ms", self.AIR)
+        self.assertIn('"heard_age_s"', self.AIR)
 
     def test_ble_callback_feeds_registry_and_names_never_run_ahead_of_flash(self):
         self.assertIn("sensor_registry.observe(parsed,ms)", self.AIR)
@@ -137,6 +168,21 @@ class HistoryWiring(unittest.TestCase):
         self.assertIn("in.outdoor_is_forecast=false", body)
         self.assertIn("sse_fresh", body)
         self.assertIn("in.clock_trusted=clock_ok()", body)
+
+    def test_setpoint_comes_from_the_verified_snapshot_and_scope_is_recorded(self):
+        # Codex P2/P1 (#60): sse_observed_pump is never marked received, so the
+        # setpoint history was always empty; and the meter scope must be stored
+        # with each reading, not looked up from today's setting.
+        body = self.MAIN.split("static enevina::cottage::HistoryInputs history_collect()")[1].split("static void history_worker")[0]
+        self.assertIn("in.setpoint_valid=valid_cn105(cp,now);in.setpoint_c=cp.setpoint_c;", body)
+        self.assertNotIn("in.setpoint_valid=sse_fresh", body)
+        self.assertIn("in.power_scope=", body)
+
+    def test_dashboard_defines_the_six_column_card(self):
+        # Codex P2 (#60): only the mobile rule had .span6, so the two history cards
+        # took one grid column each on tablet/desktop.
+        dash = (ROOT / "firmware/cottage/include/cottage_premium_dashboard.hpp").read_text(encoding="utf-8")
+        self.assertIn(".span6{grid-column:span 6}", dash)
 
     def test_worker_is_separate_low_priority_and_not_in_health_gate(self):
         self.assertIn('xTaskCreatePinnedToCore(history_worker,"cottage_hist",8192,nullptr,1,nullptr,0)', self.MAIN)

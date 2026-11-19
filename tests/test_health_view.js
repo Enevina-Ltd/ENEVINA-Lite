@@ -60,14 +60,21 @@ const pu=(state,age)=>A.frSourceText(src_('pump',state,{age_s:age}),fmt);
 assert.equal(pu('stale',600).dot,'warn');assert.equal(pu('ok',5).dot,'ok');assert.equal(pu('not_configured',-1).dot,'off');
 
 // overall statement mirrors the controller's fallback
-let o=A.frOverall(report(),fmt);
-assert.equal(o.kind,'ok');assert.equal(o.headline,'Kaikki tiedot ovat tuoreita');
+let o=A.frOverall(report({control_armed:true}),fmt);
+assert.equal(o.kind,'ok');assert.equal(o.headline,'Ohjaustiedot ovat tuoreita');
+let disabled=A.frOverall(report(),fmt);
+assert.equal(disabled.kind,'warn');assert(disabled.headline.includes('Vain lämmitysehdotus'));
+assert(disabled.detail.includes('omilla asetuksillaan')&&disabled.detail.includes('ei lähetä komentoja'));
+let linkDown=A.frOverall(report({control_armed:true,sources:report().sources.map(x=>x.id==='pump'?{...x,state:'stale'}:x)}),fmt);
+assert(linkDown.detail.includes('yhteys ei ole todennetusti kunnossa'));
 o=A.frOverall(report({offline:true,wifi_ok:false}),fmt);
-assert.equal(o.kind,'warn');assert(o.detail.includes('T5000')&&o.detail.includes('termostaattina'));     // when stored data ends
+assert.equal(o.kind,'warn');assert(o.detail.includes('T5000')&&o.detail.includes('Wi-Fi-pumppuyhteyttä')); // cached data is not working pump control
 o=A.frOverall(report({offline:true,wifi_ok:false,next_expiry_utc:0}),fmt);
-assert(o.detail.includes('Ei verkkoyhteyttä'));
-o=A.frOverall(report({fallback:'thermostat'}),fmt);
+assert(o.detail.includes('Ei Wi-Fi-yhteyttä'));
+o=A.frOverall(report({fallback:'thermostat',control_armed:true}),fmt);
 assert.equal(o.kind,'warn');assert(o.detail.includes('±0,5'));
+assert(!o.detail.includes('huone pidetään'));
+assert(A.frOverall(report({fallback:'thermostat'}),fmt).headline.includes('Vain lämmitysehdotus'));
 o=A.frOverall(report({fallback:'blocked',offline:true,wifi_ok:false}),fmt);
 assert.equal(o.kind,'bad');assert(o.detail.includes('omalla säätimellään')&&o.detail.includes('ei lähetä komentoja'));
 o=A.frOverall(report({clock_ok:false,fallback:'thermostat'}),fmt);

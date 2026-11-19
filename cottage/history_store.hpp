@@ -39,8 +39,13 @@ enum HistoryFlags : uint16_t {
     kOutdoorIsForecast=1<<2,  // outdoor value is the weather forecast, not a sensor
     kControlArmed=1<<3,       // automatic control was armed in this slot
     kPumpOnline=1<<4,
-    kWifiOk=1<<5
+    kWifiOk=1<<5,
+    kPowerScopeMask=0xC0      // bits 6-7: what the power meter measured in this slot
 };
+constexpr unsigned kPowerScopeShift=6;
+// 0 unknown (owner has not confirmed), 1 heat pump only, 2 whole house. The scope
+// is stored WITH each record: a later change of meter or of the owner's answer
+// must never relabel readings that were taken under another one.
 
 struct HistoryRecord {
     uint32_t slot=0;          // utc / 900
@@ -151,7 +156,7 @@ struct HistoryInputs {
     bool rh_valid=false;       double rh_pct=0;
     bool outdoor_valid=false;  double outdoor_c=0;  bool outdoor_is_forecast=false;
     bool setpoint_valid=false; double setpoint_c=0;
-    bool power_valid=false;    double power_w=0;
+    bool power_valid=false;    double power_w=0;  uint8_t power_scope=0;
     bool price_valid=false;    double price_per_kwh=0;
     uint8_t action=0;          // 0 unknown, 1 off, 2 heat, 3 hold
     bool armed=false;
@@ -165,6 +170,9 @@ public:
     static constexpr int64_t kDebounceS=60;      // a state must hold this long to become an event
     // Feed every ~10-15 s. Returns true when a record was finalized.
     bool observe(const HistoryInputs& in,HistoryStore& store,EventLog& events) {
+        // OTA boot confirmation may precede NTP. Remember the previously
+        // observed confirmed version even while event timestamps are unknown.
+        track_ota_version(in.ota_good_version);
         if(!in.clock_trusted||in.utc<=1700000000) return false;
         const uint32_t now_slot=static_cast<uint32_t>(in.utc/kHistoryStepS);
         bool finalized=false;
@@ -175,17 +183,13 @@ public:
             counters_known_=true;
             sent_=in.commands_sent;confirmed_=in.commands_confirmed;failed_=in.commands_failed;
         }
-        // A confirmed-good version that RISES above a previously seen non-zero
-        // value is a successful update. 0 means "not loaded yet/unknown" and is
-        // ignored (otherwise every boot would log an update while the OTA store
-        // is still being read). Consequence: a device that had no confirmed
-        // version before cannot log its first update (documented, never invented).
-        if(in.ota_good_version!=0) {
-            if(ota_good_!=0&&in.ota_good_version>ota_good_) {
-                events.put({static_cast<uint32_t>(in.utc),static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed),0,0,
-                            in.ota_good_version});
-            }
-            ota_good_=in.ota_good_version;
+        // The clock may have become trusted after OTA confirmation. The
+        // event is recorded at the first trusted observation, never with an
+        // invented timestamp from the clock-untrusted period.
+        if(ota_pending_version_!=0) {
+            events.put({static_cast<uint32_t>(in.utc),static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed),0,0,
+                        ota_pending_version_});
+            ota_pending_version_=0;
         }
         track_source(in,HistorySource::Wifi,in.wifi_ok,events);
         track_source(in,HistorySource::Pump,in.pump_online,events);
@@ -210,28 +214,45 @@ private:
     Sum indoor_,rh_,outdoor_,power_,price_;
     bool have_setpoint_=false;double setpoint_=0;
     uint8_t action_=0;bool armed_=false,outdoor_forecast_=false,pump_online_=false,wifi_ok_=false;
+    uint8_t power_scope_=0;bool power_scope_set_=false,power_mixed_=false;
     uint32_t samples_=0;
     bool booted_=false,counters_known_=false;
     uint32_t sent_=0,confirmed_=0,failed_=0;
-    uint32_t ota_good_=0;
+    uint32_t ota_good_=0,ota_pending_version_=0;
     Track tracks_[5];
+
+    void track_ota_version(uint32_t version) {
+        if(version==0) return; // OTA store not loaded yet, not a transition
+        if(ota_good_!=0 && version>ota_good_) ota_pending_version_=version;
+        else if(ota_good_!=0 && version<ota_good_) ota_pending_version_=0; // rollback, not success
+        ota_good_=version;
+    }
 
     void reset(uint32_t slot) {
         acc_slot_=slot;indoor_=rh_=outdoor_=power_=price_=Sum{};
         have_setpoint_=false;action_=0;armed_=false;outdoor_forecast_=false;
         pump_online_=false;wifi_ok_=false;samples_=0;
+        power_scope_=0;power_scope_set_=false;power_mixed_=false;
     }
     void add(const HistoryInputs& in) {
         ++samples_;
         if(in.indoor_valid&&std::isfinite(in.indoor_c)&&in.indoor_c>-40&&in.indoor_c<60) indoor_.add(in.indoor_c);
         if(in.rh_valid&&std::isfinite(in.rh_pct)&&in.rh_pct>=0&&in.rh_pct<=100) rh_.add(in.rh_pct);
         if(in.outdoor_valid&&std::isfinite(in.outdoor_c)&&in.outdoor_c>-60&&in.outdoor_c<60) {
-            outdoor_.add(in.outdoor_c);outdoor_forecast_=in.outdoor_is_forecast;
+            // Any forecast-derived sample makes the slot's average a forecast value:
+            // the later measured sample must not clear the flag (it is an average
+            // of both, so presenting it as a measurement would be false).
+            outdoor_.add(in.outdoor_c);outdoor_forecast_=outdoor_forecast_||in.outdoor_is_forecast;
         }
         if(in.setpoint_valid&&std::isfinite(in.setpoint_c)&&in.setpoint_c>=0&&in.setpoint_c<=40) {
             have_setpoint_=true;setpoint_=in.setpoint_c;                  // last value of the slot
         }
-        if(in.power_valid&&std::isfinite(in.power_w)&&in.power_w>=0&&in.power_w<65000) power_.add(in.power_w);
+        if(in.power_valid&&std::isfinite(in.power_w)&&in.power_w>=0&&in.power_w<65000) {
+            const uint8_t scope=in.power_scope<=2?in.power_scope:0;
+            if(!power_scope_set_) {power_scope_=scope;power_scope_set_=true;}
+            else if(power_scope_!=scope) power_mixed_=true;          // meter changed inside the slot
+            power_.add(in.power_w);
+        }
         if(in.price_valid&&std::isfinite(in.price_per_kwh)&&std::fabs(in.price_per_kwh)<20000) price_.add(in.price_per_kwh);
         if(in.action<=3) action_=in.action;
         armed_=armed_||in.armed;
@@ -246,10 +267,15 @@ private:
         if(rh_.any()) r.rh_c100=static_cast<uint16_t>(std::lround(rh_.avg()*100));
         if(outdoor_.any()) r.outdoor_c100=static_cast<int16_t>(std::lround(outdoor_.avg()*100));
         if(have_setpoint_) r.setpoint_c10=static_cast<int16_t>(std::lround(setpoint_*10));
-        if(power_.any()) r.power_w=static_cast<uint16_t>(std::min(65000.0,std::lround(power_.avg())*1.0));
+        // Two different measurement targets in one slot cannot be averaged into one
+        // honest number: the power stays missing for that slot.
+        if(power_.any()&&!power_mixed_) {
+            r.power_w=static_cast<uint16_t>(std::min(65000.0,std::lround(power_.avg())*1.0));
+        }
         if(price_.any()) r.price_e5=static_cast<int32_t>(std::lround(price_.avg()*1e5));
         r.flags=static_cast<uint16_t>(action_&kActionMask)|(outdoor_forecast_?kOutdoorIsForecast:0)|
                 (armed_?kControlArmed:0)|(pump_online_?kPumpOnline:0)|(wifi_ok_?kWifiOk:0);
+        if(r.power_w!=kMissingU16) r.flags|=static_cast<uint16_t>(power_scope_<<kPowerScopeShift);
         return store.put(r);
     }
     void track_source(const HistoryInputs& in,HistorySource src,bool ok,EventLog& events) {

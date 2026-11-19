@@ -82,7 +82,12 @@ assert.equal(A.hsEnergyText({kwh:null},kwh),'Ei kulutuslukemia tältä ajalta.')
 assert(A.hsEnergyText({kwh:3.2,kwh_slots:6,meter_scope:'heat_pump'},kwh).includes('vain lämpöpumppua'));
 assert(A.hsEnergyText({kwh:3.2,kwh_slots:6,meter_scope:'whole_house'},kwh).includes('koko talon'));
 assert(A.hsEnergyText({kwh:3.2,kwh_slots:6,meter_scope:'unknown'},kwh).includes('ei ole varmistettu'));
-assert(A.hsEnergyText({kwh:0,kwh_slots:6,meter_scope:'unknown'},kwh).startsWith('0,0 kWh'));   // a real zero is a zero
+assert(A.hsEnergyText({kwh:0,kwh_slots:6,meter_scope:'unknown'},kwh).startsWith('0,0 kWh'));
+// Codex P1 (#60): a target change inside the range is never summed or relabelled
+const mixed=A.hsEnergyText({kwh:null,kwh_slots:6,meter_scope:'mixed',current_meter_scope:'heat_pump'},kwh);
+assert(mixed.includes('vaihtunut')&&!mixed.includes('kWh')&&!mixed.includes('vain lämpöpumppua'),mixed);
+// the label follows the range's scope, not the owner's present statement
+assert(A.hsEnergyText({kwh:3.2,kwh_slots:6,meter_scope:'whole_house',current_meter_scope:'heat_pump'},kwh).includes('koko talon'));   // a real zero is a zero
 
 // CSV: exactly the shown data, empty cells for missing, forecast flag only when an outdoor value exists
 const csv=A.hsCsv({...good,points:[pt(0),pt(1,{in:null,out:null,w:null,sp:null,p:null,a:1,r:1,f:1})]});

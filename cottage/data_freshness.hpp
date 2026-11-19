@@ -101,7 +101,8 @@ inline Freshness assess_freshness(const FreshnessInputs& in) {
     else if(!in.clock_trusted) p.state=in.price_last_fetch>0?SourceState::Stale:SourceState::Missing;
     else if(in.price_current_valid&&in.price_last_fetch>0&&in.price_last_fetch<=now&&
             now-in.price_last_fetch<=kPriceMaxAgeS) {
-        p.state=in.price_valid_until-now>=kPriceMinAheadS?SourceState::Ok:SourceState::Short;
+        // The live controller uses the current 15-minute slot START as its window anchor.
+        p.state=in.price_valid_until>=((now/900)*900+kPriceMinAheadS)?SourceState::Ok:SourceState::Short;
     } else if(in.price_last_fetch>0) {
         // had prices once: too old (36 h rule) or their validity ended
         const bool too_old=now-in.price_last_fetch>kPriceMaxAgeS;
