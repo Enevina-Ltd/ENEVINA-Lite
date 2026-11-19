@@ -326,7 +326,46 @@ static void profile_and_comfort_limits() {
     assert(m.profile==OptimizationProfile::Balanced&&m.comfort_min_c==0&&m.comfort_max_c==0);
 }
 
+static void older_layout_is_restored_not_reset() {
+    // Codex P1 (#57): a blob written before profiles existed used to fail an
+    // exact-size check, silently resetting pump endpoint, location and tariff.
+    SiteSettings full{};
+    std::strcpy(full.cn105_url,"http://192.168.1.50/events");
+    std::strcpy(full.pump_adapter,"mitsubishi_cn105");
+    std::strcpy(full.country,"SE");std::strcpy(full.price_zone,"SE3");
+    full.tariff_confirmed=true;full.setup_complete=true;full.setup_step=9;
+    full.tariff.margin_eur_per_kwh=0.005;
+    full.profile=OptimizationProfile::Saving;full.comfort_min_c=19;full.comfort_max_c=23;
+    uint8_t buf[sizeof(SiteSettings)];
+    std::memcpy(buf,&full,sizeof(buf));
+    const size_t boundary=kSettingsLayoutBoundaries[0];
+    const size_t align=alignof(SiteSettings);
+    const size_t old_size=(boundary+align-1)/align*align;
+    // poison everything the old firmware could not have written
+    std::memset(buf+boundary,0xA5,sizeof(buf)-boundary);
+    SiteSettings out{};
+    assert(restore_site_settings(buf,old_size,out));
+    assert(std::strcmp(out.cn105_url,"http://192.168.1.50/events")==0);
+    assert(std::strcmp(out.pump_adapter,"mitsubishi_cn105")==0);
+    assert(std::strcmp(out.country,"SE")==0&&std::strcmp(out.price_zone,"SE3")==0);
+    assert(out.tariff_confirmed&&out.setup_complete&&out.setup_step==9);
+    assert(near(out.tariff.margin_eur_per_kwh,0.005));
+    // newer members take their defaults, never the poison bytes
+    assert(out.profile==OptimizationProfile::Balanced&&out.comfort_min_c==0&&out.comfort_max_c==0);
+    assert(valid_site_settings(out));
+    // the current layout restores whole
+    std::memcpy(buf,&full,sizeof(buf));
+    assert(restore_site_settings(buf,sizeof(buf),out)&&out.profile==OptimizationProfile::Saving&&near(out.comfort_max_c,23));
+    // sizes that match no known layout are refused (corrupt or from newer firmware)
+    assert(!restore_site_settings(buf,sizeof(buf)+8,out));
+    assert(!restore_site_settings(buf,boundary-1,out));
+    assert(!restore_site_settings(buf,0,out));
+    assert(!restore_site_settings(nullptr,sizeof(buf),out));
+    if(old_size+1<sizeof(buf)&&old_size+1>(boundary+align-1)/align*align) assert(!restore_site_settings(buf,old_size+1,out));
+}
+
 int main() {
+    older_layout_is_restored_not_reset();
     total_price_rules();
     seasonal_and_dst();
     parsing();

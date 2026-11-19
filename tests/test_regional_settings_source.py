@@ -67,6 +67,13 @@ class RegionalWiring(unittest.TestCase):
 class ProfileWiring(unittest.TestCase):
     MAIN = (ROOT / "firmware/cottage/src/main.cpp").read_text(encoding="utf-8")
 
+    def test_saved_settings_survive_an_upgrade_by_prefix_restore(self):
+        # Codex P1 (#57): the loader demanded sizeof(blob) exactly and reset the
+        # owner's configuration whenever the layout had grown.
+        self.assertNotIn('getBytesLength("v2")==sizeof(blob)', SITE)
+        self.assertIn("restore_site_settings(", SITE)
+        self.assertIn('getBytesLength("v2")', SITE)
+
     def test_live_controller_uses_profile_and_never_guesses(self):
         self.assertIn("apply_profile(input,site.profile,site.comfort_min_c", self.MAIN)
         # inconsistent settings -> no decision

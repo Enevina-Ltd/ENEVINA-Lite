@@ -211,13 +211,25 @@ void site_settings_initialize() {
     if(p.begin("site",true)) {
         Stored blob{};
         StoredV1 old{};
-        if(p.getBytesLength("v2")==sizeof(blob) &&
-           p.getBytes("v2",&blob,sizeof(blob))==sizeof(blob) &&
-           blob.magic==kMagic && blob.version==kVersion &&
-           blob.size==sizeof(SiteSettings) && acceptable(blob.settings)) {
-            s=blob.settings;
-            loaded_from_nvs=true;
-        } else if(p.getBytesLength("v1")==sizeof(old) &&
+        // v2 blobs written by an earlier layout of SiteSettings are restored
+        // prefix-wise (see restore_site_settings); exact-size matching used to
+        // discard them and reset the owner's configuration on every upgrade.
+        const size_t stored_len=p.getBytesLength("v2");
+        uint8_t raw[sizeof(Stored)]{};
+        SiteSettings restored{};
+        if(stored_len>offsetof(Stored,settings) && stored_len<=sizeof(raw) &&
+           p.getBytes("v2",raw,stored_len)==stored_len) {
+            uint32_t magic=0;uint16_t version=0,size=0;
+            memcpy(&magic,raw,4);memcpy(&version,raw+4,2);memcpy(&size,raw+6,2);
+            if(magic==kMagic && version==kVersion &&
+               size==stored_len-offsetof(Stored,settings) &&
+               enevina::cottage::restore_site_settings(raw+offsetof(Stored,settings),size,restored) &&
+               acceptable(restored)) {
+                s=restored;
+                loaded_from_nvs=true;
+            }
+        }
+        if(!loaded_from_nvs && p.getBytesLength("v1")==sizeof(old) &&
            p.getBytes("v1",&old,sizeof(old))==sizeof(old) &&
            old.magic==kMagic && old.version==1 &&
            old.size==sizeof(SiteSettingsV1)) {
