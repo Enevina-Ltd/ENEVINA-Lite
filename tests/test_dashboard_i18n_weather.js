@@ -2,7 +2,8 @@
 // The actual flash-backed dashboard script, exercised without live pump writes.
 const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict'),path=require('path');
 const header=fs.readFileSync(path.join(__dirname,'../firmware/cottage/include/cottage_premium_dashboard.hpp'),'utf8');
-const script=header.split('<script>').at(-1).split('</script>')[0].split('\ninitialRefresh();')[0];
+const helperScripts=[...header.matchAll(/<script id="[a-z-]+">([\s\S]*?)<\/script>/g)].map(m=>m[1]).join('\n');
+const script=helperScripts+'\n'+header.split('<script>').at(-1).split('</script>')[0].split('\ninitialRefresh();')[0];
 const elementCache=new Map();
 function element(id) {
   return {id,value:'',textContent:'',className:'',dataset:{},disabled:false,

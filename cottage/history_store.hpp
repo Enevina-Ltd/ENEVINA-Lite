@@ -103,7 +103,8 @@ enum class HistoryEventKind : uint8_t {
     SourceBack=3,      // value: seconds it was missing (saturated)
     CommandSent=4,     // value: how many since the last check
     CommandConfirmed=5,
-    CommandFailed=6
+    CommandFailed=6,
+    UpdateConfirmed=7  // arg: the signed release version that was confirmed good
 };
 enum class HistorySource : uint8_t { None=0, Wifi=1, Pump=2, Sensor=3, Prices=4 };
 struct HistoryEvent {
@@ -111,8 +112,9 @@ struct HistoryEvent {
     uint8_t kind=0;
     uint8_t source=0;
     int16_t value=0;
+    uint32_t arg=0;           // kind-specific 32-bit detail (e.g. release version)
 };
-static_assert(sizeof(HistoryEvent)==8,"event must stay 8 bytes");
+static_assert(sizeof(HistoryEvent)==12,"event must stay 12 bytes");
 
 class EventLog {
 public:
@@ -155,6 +157,7 @@ struct HistoryInputs {
     bool armed=false;
     uint32_t commands_sent=0,commands_confirmed=0,commands_failed=0;   // monotone counters
     int reset_reason=0;
+    uint32_t ota_good_version=0;   // last version the signed OTA confirmed good (0 = unknown)
 };
 
 class HistoryRecorder {
@@ -171,6 +174,18 @@ public:
                         static_cast<int16_t>(in.reset_reason)});
             counters_known_=true;
             sent_=in.commands_sent;confirmed_=in.commands_confirmed;failed_=in.commands_failed;
+        }
+        // A confirmed-good version that RISES above a previously seen non-zero
+        // value is a successful update. 0 means "not loaded yet/unknown" and is
+        // ignored (otherwise every boot would log an update while the OTA store
+        // is still being read). Consequence: a device that had no confirmed
+        // version before cannot log its first update (documented, never invented).
+        if(in.ota_good_version!=0) {
+            if(ota_good_!=0&&in.ota_good_version>ota_good_) {
+                events.put({static_cast<uint32_t>(in.utc),static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed),0,0,
+                            in.ota_good_version});
+            }
+            ota_good_=in.ota_good_version;
         }
         track_source(in,HistorySource::Wifi,in.wifi_ok,events);
         track_source(in,HistorySource::Pump,in.pump_online,events);
@@ -198,6 +213,7 @@ private:
     uint32_t samples_=0;
     bool booted_=false,counters_known_=false;
     uint32_t sent_=0,confirmed_=0,failed_=0;
+    uint32_t ota_good_=0;
     Track tracks_[5];
 
     void reset(uint32_t slot) {

@@ -14,4 +14,6 @@ void history_initialize();
 // Every ~15 s from one worker task.
 void history_observe(const enevina::cottage::HistoryInputs& inputs);
 void history_http(WebServer& web);
+// Newest event of a kind (persisted across reboots): utc and its 32-bit arg.
+bool history_last_event(uint8_t kind,uint32_t& utc,uint32_t& arg);
 }

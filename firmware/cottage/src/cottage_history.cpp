@@ -137,6 +137,18 @@ void history_observe(const HistoryInputs& inputs) {
     xSemaphoreGive(guard);
 }
 
+bool history_last_event(uint8_t kind,uint32_t& utc,uint32_t& arg) {
+    if(!guard||!store) return false;
+    bool found=false;
+    xSemaphoreTake(guard,portMAX_DELAY);
+    for(size_t i=0;i<events.count();++i) {
+        const HistoryEvent& e=events.newest(i);
+        if(e.kind==kind) {utc=e.utc;arg=e.arg;found=true;break;}
+    }
+    xSemaphoreGive(guard);
+    return found;
+}
+
 void history_http(WebServer& web) {
     web.sendHeader("Cache-Control","no-store");
     if(!guard||!store) {

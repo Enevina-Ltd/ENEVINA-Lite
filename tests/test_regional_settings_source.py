@@ -143,5 +143,29 @@ class HistoryWiring(unittest.TestCase):
         self.assertIn("enevina_firmware::history_initialize();", self.MAIN)
 
 
+class FreshnessWiring(unittest.TestCase):
+    MAIN = (ROOT / "firmware/cottage/src/main.cpp").read_text(encoding="utf-8")
+    FRESH = (ROOT / "cottage/data_freshness.hpp").read_text(encoding="utf-8")
+
+    def test_endpoint_uses_the_shared_assessment_and_fresh_validators(self):
+        body = self.MAIN.split("static void freshness_endpoint()")[1].split("static void history_worker")[0]
+        self.assertIn("assess_freshness(in)", body)
+        self.assertIn("valid_temperature(te,now)", body)
+        self.assertIn("valid_cn105(cp,now)", body)
+        self.assertIn("in.clock_trusted=clock_ok()", body)
+        self.assertIn('web.on("/api/freshness",HTTP_GET', self.MAIN)
+
+    def test_price_limits_match_the_controller(self):
+        # the controller's own eligibility constants in main.cpp
+        self.assertIn("now-36*3600", self.MAIN)
+        self.assertIn("kPriceMaxAgeS=36*3600", self.FRESH)
+        self.assertIn("kPriceMinAheadS=8*900", self.FRESH)
+
+    def test_ota_trust_chain_and_update_event_wiring(self):
+        self.assertIn("in.ota_good_version=cottage_ota_good_version()", self.MAIN)
+        self.assertIn("history_last_event(", self.MAIN)
+        self.assertIn('"ota_last_update_utc"', self.MAIN)
+
+
 if __name__ == "__main__":
     unittest.main()

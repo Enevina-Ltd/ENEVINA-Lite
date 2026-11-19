@@ -42,6 +42,7 @@
 #include "cottage/price_bootstrap.hpp"
 #include "cottage/plan_timeline.hpp"
 #include "cottage_history.hpp"
+#include "cottage/data_freshness.hpp"
 #include "cottage/mitsubishi_climate_command.hpp"
 #include "cottage/cn105_read_retry.hpp"
 #include "cottage/mitsubishi_control_policy.hpp"
@@ -1522,6 +1523,17 @@ static void status_endpoint() {
     cJSON_AddBoolToObject(root,"ota_boot_confirmed",ota_boot_confirmed);
     cJSON_AddBoolToObject(root,"ota_upload_enabled",false);
     cJSON_AddBoolToObject(root,"ota_signed_pull_enabled",cottage_ota_configured());
+    {   // last SUCCESSFUL update, from the persisted event log (absent = unknown)
+        uint32_t when=0,version=0;
+        if(enevina_firmware::history_last_event(
+               static_cast<uint8_t>(enevina::cottage::HistoryEventKind::UpdateConfirmed),when,version)) {
+            cJSON_AddNumberToObject(root,"ota_last_update_utc",when);
+            cJSON_AddNumberToObject(root,"ota_last_update_version",version);
+        } else {
+            cJSON_AddNullToObject(root,"ota_last_update_utc");
+            cJSON_AddNullToObject(root,"ota_last_update_version");
+        }
+    }
     cJSON_AddNumberToObject(root,"ota_signed_good_version",cottage_ota_good_version());
     cJSON_AddNumberToObject(root,"ota_signed_candidate",cottage_ota_last_candidate());
     cJSON_AddNumberToObject(root,"ota_signed_status",cottage_ota_status());
@@ -1703,7 +1715,54 @@ static enevina::cottage::HistoryInputs history_collect() {
     in.commands_confirmed=control_commands_confirmed.load();
     in.commands_failed=control_commands_failed.load();
     in.reset_reason=boot_reset_reason_code;
+    in.ota_good_version=cottage_ota_good_version();
     return in;
+}
+// GET /api/freshness: which data the device is using, how old it is, when it
+// expires and what the controller does if it is missing (same rules as the
+// controller, see cottage/data_freshness.hpp).
+static void freshness_endpoint() {
+    using namespace enevina::cottage;
+    FreshnessInputs in;
+    const int64_t now=time(nullptr);
+    in.clock_trusted=clock_ok();in.now=now;in.wifi_ok=wifi_ok.load();
+    const auto market=enevina_firmware::market_status();
+    const SiteSettings site=site_settings_snapshot();
+    const char* area=nullptr;const char* currency=nullptr;int offset=0;
+    in.price_zone_configured=site_market_region(site,area,currency,offset);
+    in.price_current_valid=market.current_price_valid;
+    in.price_last_fetch=market.last_fetch_utc;in.price_valid_until=market.valid_until_utc;
+    in.price_error=market.last_error;
+    const auto ws=enevina_firmware::weather_status();
+    in.weather_configured=site.fmi_latlon[0]!=0;in.weather_available=ws.available;
+    in.weather_fetched=ws.fetched_utc;in.weather_valid_until=ws.valid_until_utc;
+    CN105Telemetry cp,observed;
+    int64_t climate_time=0;
+    xSemaphoreTake(lock_data,portMAX_DELAY);
+    cp=pump;observed=sse_observed_pump;climate_time=climate_utc;
+    xSemaphoreGive(lock_data);
+    const TemperatureSample te=c23_temperature_sample();
+    in.sensor_bound=c23_indoor_bound();
+    in.sensor_fresh=valid_temperature(te,now);
+    in.sensor_age_s=te.received&&now>=te.captured_utc?now-te.captured_utc:-1;
+    const bool sse_fresh=observed.received && climate_time>0 && now>=climate_time && now-climate_time<=180;
+    in.pump_configured=site.pump_adapter[0]!=0;
+    in.pump_fresh=valid_cn105(cp,now) || sse_fresh;
+    in.pump_age_s=climate_time>0&&now>=climate_time?now-climate_time:-1;
+    in.control_armed=control_armed.load();
+    const Freshness f=assess_freshness(in);
+    web.sendHeader("Cache-Control","no-store");
+    web.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    web.send(200,"application/json; charset=utf-8","");
+    char chunk[512];
+    size_t used=0;
+    freshness_json(f,in.control_armed,[&](const char* part) {
+        const size_t len=strlen(part);
+        if(used+len>=sizeof(chunk)) {chunk[used]=0;web.sendContent(chunk);used=0;}
+        memcpy(chunk+used,part,len);used+=len;
+    });
+    if(used) {chunk[used]=0;web.sendContent(chunk);}
+    web.sendContent("");
 }
 static void history_worker(void*) {
     for(;;) {
@@ -1908,6 +1967,9 @@ void setup() {
     });
     web.on("/api/plan",HTTP_GET,[](){
         if(cottage_wifi_require_home_lan(web))plan_endpoint();
+    });
+    web.on("/api/freshness",HTTP_GET,[](){
+        if(cottage_wifi_require_home_lan(web))freshness_endpoint();
     });
     web.on("/api/history",HTTP_GET,[](){
         if(cottage_wifi_require_home_lan(web))enevina_firmware::history_http(web);

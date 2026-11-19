@@ -5,6 +5,8 @@ const html=fs.readFileSync(require('path').join(__dirname,'../firmware/cottage/i
 let source=html.split('<script>').at(-1).split('</script>')[0];
 assert(source.includes('function showStatus'));
 source=source.split('\ninitialRefresh();')[0]; // avoid starting network activity on test bootstrap
+// Helper scripts (wizard, timeline, history, health) are separate blocks the page loads first.
+source=[...html.matchAll(/<script id="[a-z-]+">([\s\S]*?)<\/script>/g)].map(m=>m[1]).join('\n')+'\n'+source;
 
 function el(id){
   return {id, value:'', textContent:'', className:'', disabled:false, dataset:{},

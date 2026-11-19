@@ -509,6 +509,13 @@ void c23_history_air(double& rh_pct,bool& rh_ok,double& outdoor_c,bool& outdoor_
     }
     unlock();
 }
+bool c23_indoor_bound() {
+    if(!guard)return false;
+    lock();
+    const bool bound=indoor_binding.bound();
+    unlock();
+    return bound;
+}
 const char* c23_config_token() { return csrf_token; }
 bool c23_authorize_local_setting(const char* submitted_token) {
     return guard && submitted_token && strlen(submitted_token)==strlen(csrf_token) &&

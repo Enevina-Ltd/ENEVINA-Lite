@@ -371,6 +371,56 @@ static void bounded_file_growth_and_compaction() {
     CHECK(l.records>=2880&&s2.newest_slot()==first+120*96-1&&s2.size()==2880);
 }
 
+
+static void update_confirmation_events() {
+    HistoryStore store(2880);EventLog ev;HistoryRecorder rec_;
+    int64_t t=T0;
+    HistoryInputs in=sample(t);
+    in.ota_good_version=20261101;
+    rec_.observe(in,store,ev);
+    CHECK(ev.count()==1);                                     // boot only: a normal reboot is not an update
+    in=sample(t+15);in.ota_good_version=20261101;rec_.observe(in,store,ev);
+    CHECK(ev.count()==1);
+    // the signed OTA confirms the new version after the boot health check
+    in=sample(t+400);in.ota_good_version=20261119;rec_.observe(in,store,ev);
+    CHECK(ev.count()==2);
+    CHECK(ev.newest(0).kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed)&&ev.newest(0).arg==20261119);
+    CHECK(ev.newest(0).utc==static_cast<uint32_t>(t+400));
+    in=sample(t+500);in.ota_good_version=20261119;rec_.observe(in,store,ev);
+    CHECK(ev.count()==2);                                     // not repeated
+    // an unknown (0) reading never logs, and re-bases so the next real value is compared fairly
+    in=sample(t+600);in.ota_good_version=0;rec_.observe(in,store,ev);
+    CHECK(ev.count()==2);
+    in=sample(t+700);in.ota_good_version=20261119;rec_.observe(in,store,ev);
+    CHECK(ev.count()==2);                                     // 0 is "unknown", never a baseline: no false update
+    // a boot where the OTA store is read late (0 first, then the stored version) is not an update
+    HistoryStore sb(2880);EventLog eb;HistoryRecorder rb;
+    in=sample(T0+10);in.ota_good_version=0;rb.observe(in,sb,eb);
+    in=sample(T0+25);in.ota_good_version=20261101;rb.observe(in,sb,eb);
+    CHECK(eb.count()==1);
+    in=sample(T0+40);in.ota_good_version=20261119;rb.observe(in,sb,eb);
+    CHECK(eb.count()==2&&eb.newest(0).arg==20261119);
+    // the 32-bit argument survives flash and reload
+    MemFile rf,ef;HistoryPersistence p(rf,ef);
+    HistoryStore s2(2880);EventLog e2;
+    p.load(s2,e2);
+    s2.put(rec(static_cast<uint32_t>(T0/900)));
+    CHECK(p.flush(s2,ev));
+    HistoryStore s3(2880);EventLog e3;MemFile rf3=rf,ef3=ef;HistoryPersistence p3(rf3,ef3);
+    CHECK(p3.load(s3,e3).events==ev.count());
+    bool found=false;
+    for(size_t i=0;i<e3.count();++i) found|=e3.newest(i).kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed)&&e3.newest(i).arg==20261119;
+    CHECK(found);
+    // JSON carries it as "a"
+    std::string out;
+    std::vector<HistoryPoint> pts(kMaxHistoryPoints);HistorySummary sum;
+    HistoryStore s4(2880);
+    for(uint32_t i=0;i<100;++i) s4.put(rec(static_cast<uint32_t>(T0/900)+i));
+    const size_t n=build_history_series(s4,(T0/900+99)*900,96,1,pts.data(),pts.size(),sum);
+    history_json("24h",1,pts.data(),n,sum,ev,pts[0].t-100000,"EUR","unknown",true,[&](const char* part){out+=part;});
+    CHECK(out.find("\"k\":7")!=std::string::npos&&out.find("\"a\":20261119")!=std::string::npos);
+}
+
 int main() {
     ring_semantics();
     recorder_averages_and_gaps();
@@ -381,6 +431,7 @@ int main() {
     persistence_roundtrip_and_wear();
     torn_and_corrupt_files();
     bounded_file_growth_and_compaction();
+    update_confirmation_events();
     if(failures) {std::fprintf(stderr,"%d failures\n",failures);return 1;}
     std::puts("history_tests OK");
     return 0;

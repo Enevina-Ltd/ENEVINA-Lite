@@ -65,7 +65,8 @@ STATE = {
 }
 GEO_STATE = {"q": None, "since": 0.0}
 TIMELINE = {"cli": None, "start": 300}
-HISTORY = {"cli": None}     # set by --timeline-cli; start = index into the FI week
+HISTORY = {"cli": None}
+FRESH = {"cli": None, "args": ["0.5", "1", "1", "0", "1", "1", "0"]}   # hours, wifi, sensor, price_error, zone, clock, armed     # set by --timeline-cli; start = index into the FI week
 # Sensors: values are the official Ruuvi Data Format 5 test vector (24.3 C) with
 # different MACs/RSSI. The 3rd one stopped advertising (stale) to show that case.
 SENSORS = {"CB:B8:33:4C:88:01": {"rssi": -48, "age0": 4, "live": True, "t": 21.4, "rh": 45.2, "v": 2.98},
@@ -169,7 +170,10 @@ def status():
     st = {"air": {"config_token": "sim-token", "sensor_fresh": False, "bound_mac": "", "discovered_mac": "", **AIR},
           "firmware_version": "simulator", "control_armed": False, "price_error": 0, "price_http_status": 0,
           "price_currency": reg.get("currency", "EUR"), "price_area": reg.get("nordpool_area", ""),
-          "spot": None, "total_price": None, "weather_c": None, "market_last_fetch_utc": 0}
+          "spot": None, "total_price": None, "weather_c": None, "market_last_fetch_utc": 0,
+          "ota_signed_pull_enabled": True, "ota_signed_status": 0, "ota_signed_good_version": 20261101,
+          "ota_signed_candidate": 20261101, "ota_last_check_utc": int(time.time()) - 600, "ota_dashboard_pending": False,
+          "ota_downloaded_bytes": 0, "ota_last_update_utc": int(time.time()) - 5 * 86400, "ota_last_update_version": 20261101}
     area = reg.get("nordpool_area")
     if area:
         f = ROOT / "tests/data/nordpool" / f"{area}_2026-11-18.json"
@@ -281,6 +285,15 @@ class H(BaseHTTPRequestHandler):
                                   str(opt["comfort_min_c"] or 0), str(opt["comfort_max_c"] or 0), "0.06", "EUR", "FI",
                                   str(target - 0.3 if target > 0 else 21)], capture_output=True, text=True, timeout=10)
             return self.send(200, out.stdout.strip().encode("utf-8"))
+        if u.path == "/sim/freshness":                      # harness control: change the scenario
+            names = ["hours", "wifi", "sensor", "price_error", "zone", "clock", "armed"]
+            FRESH["args"] = [q.get(n, [FRESH["args"][i]])[0] for i, n in enumerate(names)]
+            return self.send(200, {"scenario": dict(zip(names, FRESH["args"]))})
+        if u.path == "/api/freshness":
+            if not FRESH["cli"]:
+                return self.send(404, {"error": "no freshness cli"})
+            out = subprocess.run([FRESH["cli"], *FRESH["args"]], capture_output=True, text=True, timeout=10)
+            return self.send(200, out.stdout.strip().encode("utf-8"))
         if u.path == "/api/history":
             rng = q.get("range", ["24h"])[0]
             if not HISTORY["cli"] or rng not in ("24h", "7d", "30d"):
@@ -344,11 +357,13 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--configured", action="store_true", help="start with setup already complete")
+    ap.add_argument("--freshness-cli", help="path to freshness_cli(.exe) built from tools/freshness_cli.cpp")
     ap.add_argument("--history-cli", help="path to history_cli(.exe) built from tools/history_cli.cpp")
     ap.add_argument("--timeline-cli", help="path to plan_timeline_cli(.exe) built from tools/plan_timeline_cli.cpp")
     a = ap.parse_args()
     TIMELINE["cli"] = a.timeline_cli
     HISTORY["cli"] = a.history_cli
+    FRESH["cli"] = a.freshness_cli
     if a.configured:
         STATE["region"].update(setup_complete=True, setup_step=9)
     print(f"simulator on http://127.0.0.1:{a.port}/ ({len(COUNTRIES)} countries)", flush=True)
