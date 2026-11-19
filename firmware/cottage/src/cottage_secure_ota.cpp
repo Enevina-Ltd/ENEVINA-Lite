@@ -461,6 +461,12 @@ void cottage_ota_worker(void*) {
     // Retain the boot stabilization interval; a queued dashboard request
     // survives it and is serviced as soon as the worker is ready.
     vTaskDelay(pdMS_TO_TICKS(90000));
+    // The first check services any dashboard request queued during boot.
+    // Consume only its wakeup now: otherwise the stale notification would
+    // wrongly skip the ten-minute cooldown if that first check fails.
+    // Do not drain at the top of every loop: requests arriving during an
+    // in-progress check must still wake the subsequent retry wait.
+    ulTaskNotifyTake(pdTRUE,0);
     while(true) {
         ota_manual_pending.store(false);
         const time_t now=time(nullptr);
