@@ -4,6 +4,8 @@
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <Preferences.h>
+#include <nvs.h>
+#include "cottage/nvs_cache_reclaim_policy.hpp"
 #include <esp_task_wdt.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
@@ -835,6 +837,48 @@ static bool control_current_image_sha256(uint8_t out[32]) {
     const esp_partition_t* running=esp_ota_get_running_partition();
     return running && esp_partition_get_sha256(running,out)==ESP_OK;
 }
+// Persistent pump authorization belongs to one image and pump identity.
+// The installed 20-KiB NVS partition can fill with disposable weather/market
+// caches.  Only an explicitly authorized /api/control/arm request may
+// recover space, and ONLY by erasing the two known re-fetchable cache keys.
+// Never erase Wi-Fi, the signed OTA journal or any previous control intent.
+static std::atomic<uint32_t> control_arm_nvs_reclaimed{0};
+static std::atomic<uint32_t> control_arm_nvs_save_failures{0};
+static std::atomic<int32_t> control_arm_nvs_last_error{0};
+static bool control_erase_disposable_cache(const char* nspace,const char* key) {
+    nvs_handle_t handle=0;
+    const esp_err_t opened=nvs_open(nspace,NVS_READWRITE,&handle);
+    if(opened!=ESP_OK) {
+        control_arm_nvs_last_error.store(opened);
+        return false;
+    }
+    const esp_err_t erased=nvs_erase_key(handle,key);
+    const esp_err_t committed=erased==ESP_OK?nvs_commit(handle):erased;
+    nvs_close(handle);
+    control_arm_nvs_last_error.store(committed);
+    if(committed==ESP_OK) {
+        control_arm_nvs_reclaimed.fetch_add(1);
+        ESP_LOGW("enevina_ctl","Reclaimed disposable NVS cache %s/%s",nspace,key);
+        return true;
+    }
+    return false;
+}
+static bool control_save_user_arm(const StoredControlIntent& record) {
+    const auto store=[&]() {
+        Preferences p;
+        if(!p.begin("cottage_ctl",false))return false;
+        const bool saved=p.putBytes("intent1",&record,sizeof(record))==sizeof(record);
+        p.end();
+        return saved;
+    };
+    if(enevina::cottage::persist_with_optional_cache_reclaim(
+            store,control_erase_disposable_cache)) {
+        control_arm_nvs_last_error.store(ESP_OK);
+        return true;
+    }
+    control_arm_nvs_save_failures.fetch_add(1);
+    return false;
+}
 // Also called from the site-settings HTTP handler BEFORE it commits a changed
 // endpoint. The current physical command is stopped first, then the previous
 // device-specific NVS authorization is durably revoked.
@@ -1028,13 +1072,10 @@ static void cottage_control_registration() {
             !pending_ota && !cottage_ota_confirmation_pending() : true;
         const auto record=control_intent_for(
             site_settings_snapshot(),requested && allowed,digest);
-        Preferences p;
-        bool stored=false;
-        if(allowed && p.begin("cottage_ctl",false)) {
-            // Exact pump/adapter AND signed/USB image identity together.
-            stored=p.putBytes("intent1",&record,sizeof(record))==sizeof(record);
-            p.end();
-        }
+        // Exact pump/adapter AND signed/USB image identity together.
+        // Reclaim only re-fetchable forecast/price caches on an explicitly
+        // authorized user request when durable NVS authorization cannot fit.
+        const bool stored=allowed && control_save_user_arm(record);
         if(stored) {
             control_armed_endpoint.store(site_settings_endpoint_generation());
             // Arming starts the dwell window: mode history while disarmed
@@ -1232,6 +1273,12 @@ static void status_endpoint() {
         "CN105_AUTOMAATIO_KAYTOSSA":"VARJOTILA_EI_KOMENTOJA");
     cJSON_AddBoolToObject(root,"physical_writes",control_armed.load());
     cJSON_AddBoolToObject(root,"control_armed",control_armed.load());
+    cJSON_AddNumberToObject(root,"control_arm_nvs_reclaimed",
+                            control_arm_nvs_reclaimed.load());
+    cJSON_AddNumberToObject(root,"control_arm_nvs_save_failures",
+                            control_arm_nvs_save_failures.load());
+    cJSON_AddNumberToObject(root,"control_arm_nvs_last_error",
+                            control_arm_nvs_last_error.load());
     cJSON_AddStringToObject(root,"control_gate",
         control_gate_name(static_cast<ControlBlock>(control_gate.load())));
     cJSON_AddStringToObject(root,"control_last_step",
