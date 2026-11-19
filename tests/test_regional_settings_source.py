@@ -24,13 +24,25 @@ class RegionalWiring(unittest.TestCase):
         self.assertIn("nordpool_market_date(now,day", MARKET)
         self.assertIn("parse_day_ahead(body,used,area", MARKET)
 
+    def test_region_change_wakes_reader_and_scales_consumers(self):
+        self.assertIn("xTaskNotifyGive(reader_task)", MARKET)
+        self.assertIn("ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(next_ms))", MARKET)
+        self.assertIn("price_limit_scale=currency_limit_scale(market.currency)", (ROOT / "firmware/cottage/src/main.cpp").read_text())
+        self.assertIn("priced_model.currency_limit_scale=currency_limit_scale(ms.currency)", (ROOT / "firmware/cottage/src/main.cpp").read_text())
+
     def test_region_change_invalidates_cache_and_inflight_fetch(self):
         self.assertIn("++region_generation", MARKET)
         self.assertIn("generation==region_generation", MARKET)
         self.assertIn('nvs_erase_key(handle,"price_v2")', MARKET)
         # Stamp is written after the blob so a torn write is rejected on load.
-        self.assertLess(MARKET.index('nvs_set_blob(handle,"price_v2"'),
+        self.assertLess(MARKET.index('nvs_set_blob(handle,cache_blob_key'),
                         MARKET.index("nvs_set_str(handle,region_key,stamp)"))
+        # Rollback firmware reads price_v2 without a region stamp, so other
+        # regions must use a distinct key rather than poison its price cache.
+        self.assertIn('regional_cache_key[]="price_reg_v2"',MARKET)
+        self.assertIn('legacy_fi?"price_v2":regional_cache_key',MARKET)
+        self.assertIn('const char* obsolete_key=legacy_fi?regional_cache_key:"price_v2"',MARKET)
+        self.assertIn('migrate_early_region',MARKET)
         # No zone chosen = no fetch, never another country's prices.
         self.assertIn("market_set_region(nullptr,nullptr)", SITE)
         self.assertIn("if(!area[0])", MARKET)
@@ -46,12 +58,20 @@ class RegionalWiring(unittest.TestCase):
         self.assertNotIn("++region_generation", first)
         self.assertNotIn("cache=PriceCache{}", first)
 
-    def test_settings_v2_migrates_v1_and_drops_it_after_durable_write(self):
-        self.assertIn('p.putBytes("v2",&blob,sizeof(blob))', SITE)
+    def test_settings_v3_preserves_rollback_v2_during_ota_probation(self):
+        self.assertIn('p.putBytes("v3",&blob,sizeof(blob))', SITE)
         self.assertIn('p.remove("v1")', SITE)
-        self.assertLess(SITE.index('p.putBytes("v2"'), SITE.index('p.remove("v1")'))
+        self.assertIn('!cottage_ota_confirmation_pending()', SITE)
+        self.assertLess(SITE.index('p.putBytes("v3"'), SITE.index('p.remove("v1")'))
+        self.assertIn('if(p.isKey("v2")) p.remove("v2")',SITE)
+        self.assertIn('p.getBytesLength("v3")==sizeof(blob)',SITE)
+        self.assertIn('version==2',SITE)
         self.assertIn("site_settings_from_v1(old.settings)", SITE)
         self.assertIn("apply_site_settings_batch", SITE)
+
+    def test_unconfirmed_contract_cannot_drive_price_optimization(self):
+        tariff=(ROOT / "cottage/site_settings.hpp").read_text()
+        self.assertIn("if(!s.tariff_confirmed) return false;",tariff)
 
     def test_geocode_request_runs_in_worker_not_in_web_handler(self):
         self.assertIn("xTaskCreate(worker_main", GEO)
@@ -82,6 +102,7 @@ class ProfileWiring(unittest.TestCase):
         self.assertIn("n>=kMinSlots", self.MAIN)
         self.assertIn("points[n].start_utc==start+static_cast<int64_t>(n)*900", self.MAIN)
         self.assertNotIn("constexpr size_t N=8;", self.MAIN)
+        self.assertNotIn("input.min_price_advantage_fraction=site_settings_snapshot()",self.MAIN)
 
     def test_profile_is_visible_in_status_and_never_arms_control(self):
         self.assertIn('"optimization_profile"', self.MAIN)

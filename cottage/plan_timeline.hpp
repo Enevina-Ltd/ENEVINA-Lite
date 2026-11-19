@@ -50,6 +50,7 @@ struct TimelineParams {
     size_t window_slots=8;           // profile window
     double advantage_fraction=0.10;  // already scaled by the profile
     double advantage_eur_floor=0.005;
+    double price_limit_scale=1.0; // selected currency's ratio to EUR-unit bounds
     size_t min_segment_slots=2;      // a single odd slot is not a "period"
 };
 
@@ -58,12 +59,16 @@ struct TimelineParams {
 inline bool build_timeline(const int64_t* utc,const double* total,size_t count,
                            const TimelineParams& params,Timeline& out) {
     out=Timeline{};
-    if(!utc||!total||count==0||params.window_slots<8||params.window_slots>96) return false;
+    if(!utc||!total||count==0||params.window_slots<8||params.window_slots>96 ||
+       !std::isfinite(params.price_limit_scale) || params.price_limit_scale<1 ||
+       params.price_limit_scale>12) return false;
     if(utc[0]<=0||utc[0]%900!=0) return false;
     size_t n=0;
     for(;n<count&&n<kMaxTimelineSlots;++n) {
         if(utc[n]!=utc[0]+static_cast<int64_t>(n)*900) {out.truncated_at_gap=true;break;}
-        if(!std::isfinite(total[n])||total[n]< -1||total[n]>10) {out.truncated_at_gap=true;break;}
+        if(!std::isfinite(total[n]) ||
+           total[n]< -params.price_limit_scale ||
+           total[n]>10*params.price_limit_scale) {out.truncated_at_gap=true;break;}
     }
     if(n==0) return false;
     // `total` window slices are contiguous because the prefix is verified above.
@@ -73,7 +78,7 @@ inline bool build_timeline(const int64_t* utc,const double* total,size_t count,
         s.total=total[i];
         const size_t w=std::min(params.window_slots,n-i);
         const PriceClassResult c=classify_price(total+i,w,params.advantage_fraction,
-                                                params.advantage_eur_floor);
+                                                params.advantage_eur_floor,params.price_limit_scale);
         s.cls=c.cls;
         s.median=c.median;
     }
