@@ -1,6 +1,7 @@
 #pragma once
-// Standalone read-only Midea LAN service. The selected Midea never enters
-// the Mitsubishi CN105 physical write path or masquerades as CN105 telemetry.
+// Standalone local Midea V2/V3 service with explicit manual control.
+// The selected Midea never enters the Mitsubishi CN105 writer,
+// and unverified Midea control is not triggered by automatic optimization.
 #ifndef COTTAGE_BENCH_MODE
 class WebServer;
 void cottage_midea_service_initialize();

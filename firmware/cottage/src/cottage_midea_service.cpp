@@ -8,6 +8,9 @@
 #include <cstring>
 #include <atomic>
 #include <ctime>
+#include <cstdlib>
+#include <cerrno>
+#include <cmath>
 #include "cottage_midea_service.hpp"
 #include "cottage_midea.hpp"
 #include "cottage_air_service.hpp"
@@ -52,11 +55,38 @@ std::atomic<int64_t> last_success{0};
 std::atomic<int64_t> last_attempt{0};
 std::atomic<bool> polling{false};
 std::atomic<TaskHandle_t> poll_task{nullptr};
+std::atomic<bool> control_pending{false};
+bool control_busy=false; // guarded by mutex
+enevina::midea::ControlPatch pending_patch{}; // guarded by mutex
+std::atomic<int> control_result{-1};
+std::atomic<int64_t> control_attempt{0};
+std::atomic<int64_t> control_success{0};
+std::atomic<int64_t> control_queued_utc{0};
 enevina::midea::State observed{};
 bool configured=false;
 bool is_midea_selected() {
     const auto s=site_settings_snapshot();
     return std::strcmp(s.pump_adapter,"midea_lan")==0;
+}
+bool decimal_u8(const String& text,uint8_t& value) {
+    if(text.isEmpty())return false;
+    for(size_t i=0;i<text.length();++i)
+        if(text[i]<'0'||text[i]>'9')return false;
+    errno=0;
+    char* end=nullptr;
+    const unsigned long parsed=std::strtoul(text.c_str(),&end,10);
+    if(errno || !end || *end || parsed>255)return false;
+    value=static_cast<uint8_t>(parsed);
+    return true;
+}
+bool strict_temperature(const String& text,double& value) {
+    if(text.isEmpty())return false;
+    errno=0;
+    char* end=nullptr;
+    const double result=std::strtod(text.c_str(),&end);
+    if(errno || !end || *end || !std::isfinite(result))return false;
+    value=result;
+    return true;
 }
 bool private_ipv4(const char* host) {
     if(!host)return false;
@@ -174,6 +204,8 @@ const char* read_code(int status) {
         case R::ProtocolFailed: return "protocol_failed";
         case R::UnsupportedState: return "unsupported_state";
         case R::TimeNotReady: return "time_not_ready";
+        case R::ControlNotConfirmed: return "control_not_confirmed";
+        case R::ResourceBusy: return "resource_busy";
     }
     return "not_tested";
 }
@@ -186,6 +218,7 @@ void send_status(WebServer& web) {
     int status=-1;
     int64_t attempted=0;
     bool busy=false;
+    bool writing=false;
     // Read the sample and its metadata in one consistent critical section.
     // Otherwise a fresh timestamp can be paired with the previous sample.
     xSemaphoreTake(mutex,portMAX_DELAY);
@@ -196,16 +229,23 @@ void send_status(WebServer& web) {
     status=last_result.load();
     attempted=last_attempt.load();
     busy=polling.load();
+    writing=control_busy;
     xSemaphoreGive(mutex);
     const auto now=static_cast<int64_t>(time(nullptr));
     const bool fresh=selected && stored && last>0 &&
        now>=last && now-last<=90;
     const char* code=!selected?"not_selected":
         !stored?"not_configured":attempted<=0?"not_tested":read_code(status);
-    char data[650];
+    const int write_status=control_result.load();
+    const bool queued=control_pending.load();
+    char data[1000];
     const int written=snprintf(data,sizeof(data),
         "{\"selected\":%s,\"configured\":%s,\"fresh\":%s,"
-        "\"protocol\":%u,\"read_only\":true,"
+        "\"protocol\":%u,\"read_only\":false,\"manual_control\":true,"
+        "\"control_pending\":%s,\"control_busy\":%s,"
+        "\"control_last_attempt_utc\":%lld,"
+        "\"control_last_confirmed_utc\":%lld,"
+        "\"control_code\":\"%s\","
         "\"last_poll_utc\":%lld,\"last_attempt_utc\":%lld,"
         "\"polling\":%s,\"read_code\":\"%s\",\"read_status\":%d,\"power\":%s,"
         "\"mode\":%u,\"target_c\":%.1f,"
@@ -213,6 +253,10 @@ void send_status(WebServer& web) {
         "\"outdoor_available\":%s,\"outdoor_c\":%.2f}",
         selected?"true":"false",stored?"true":"false",fresh?"true":"false",
         static_cast<unsigned>(selected_protocol),
+        queued?"true":"false",writing?"true":"false",
+        static_cast<long long>(control_attempt.load()),
+        static_cast<long long>(control_success.load()),
+        write_status<0?"not_requested":read_code(write_status),
         static_cast<long long>(fresh?last:0),
         static_cast<long long>(attempted>0?attempted:0),
         busy?"true":"false",code,status,
@@ -239,7 +283,7 @@ void cottage_midea_service_initialize() {
     }
 }
 void cottage_midea_service_register_routes(WebServer& web) {
-    web.on("/api/midea/status",HTTP_GET,[&web](){send_status(web);});
+    web.on("/api/midea/status",HTTP_GET,[&web](){if(cottage_wifi_require_home_lan(web))send_status(web);});
     web.on("/api/midea/config",HTTP_POST,[&web](){
         // This is a development-only LAN enrollment endpoint. Reject open
         // setup-AP requests; secrets must not travel on the open Wi-Fi.
@@ -283,6 +327,15 @@ void cottage_midea_service_register_routes(WebServer& web) {
             web.send(400,"application/json","{\"saved\":false,\"error\":\"INVALID\"}");
             return;
         }
+        // Do not change the target credentials mid-command. The older
+        // configuration is left untouched if a manual control is in flight.
+        xSemaphoreTake(mutex,portMAX_DELAY);
+        const bool writing=control_busy;
+        xSemaphoreGive(mutex);
+        if(writing) {
+            web.send(409,"application/json","{\"saved\":false,\"error\":\"CONTROL_BUSY\"}");
+            return;
+        }
         // Never print credentials or addresses to ESP logs or API responses.
         if(!persist_config(next)) {
             web.send(507,"application/json","{\"saved\":false,\"error\":\"NVS\"}");
@@ -296,9 +349,91 @@ void cottage_midea_service_register_routes(WebServer& web) {
         last_result.store(0);
         revision.fetch_add(1);
         last_attempt.store(0);
+        control_pending.store(false);
+        control_result.store(-1);
+        control_queued_utc.store(0);
         xSemaphoreGive(mutex);
         if(auto task=poll_task.load())xTaskNotifyGive(task);
         web.send(200,"application/json","{\"saved\":true,\"control_armed\":false}");
+    });
+    web.on("/api/midea/control",HTTP_POST,[&web](){
+        // Manual control uses the existing local settings authorization.
+        // Never permit commands from the intentionally open setup-AP.
+        if(WiFi.status()!=WL_CONNECTED || cottage_wifi_request_via_ap(web) ||
+           !web.hasArg("token") ||
+           !enevina::cottage::c23_authorize_local_setting(
+              web.arg("token").c_str())) {
+            web.send(403,"application/json","{\"queued\":false,\"error\":\"TOKEN\"}");
+            return;
+        }
+        enevina::midea::ControlPatch patch{};
+        uint8_t byte=0;
+        if(web.hasArg("power")) {
+            const String value=web.arg("power");
+            if(value!="true" && value!="false") {
+                web.send(400,"application/json","{\"queued\":false,\"error\":\"POWER\"}");
+                return;
+            }
+            patch.changed|=enevina::midea::ControlPower;
+            patch.power=value=="true";
+        }
+        if(web.hasArg("mode")) {
+            if(!decimal_u8(web.arg("mode"),byte)) {
+                web.send(400,"application/json","{\"queued\":false,\"error\":\"MODE\"}");
+                return;
+            }
+            patch.changed|=enevina::midea::ControlMode;
+            patch.mode=byte;
+        }
+        if(web.hasArg("target_c")) {
+            if(!strict_temperature(web.arg("target_c"),patch.setpoint_c)) {
+                web.send(400,"application/json","{\"queued\":false,\"error\":\"TEMPERATURE\"}");
+                return;
+            }
+            patch.changed|=enevina::midea::ControlTemperature;
+        }
+        if(web.hasArg("fan")) {
+            if(!decimal_u8(web.arg("fan"),byte)) {
+                web.send(400,"application/json","{\"queued\":false,\"error\":\"FAN\"}");
+                return;
+            }
+            patch.changed|=enevina::midea::ControlFan;
+            patch.fan=byte;
+        }
+        if(web.hasArg("swing")) {
+            if(!decimal_u8(web.arg("swing"),byte)) {
+                web.send(400,"application/json","{\"queued\":false,\"error\":\"SWING\"}");
+                return;
+            }
+            patch.changed|=enevina::midea::ControlSwing;
+            patch.swing=byte;
+        }
+        if(!enevina::midea::valid_control_patch(patch)) {
+            web.send(400,"application/json","{\"queued\":false,\"error\":\"INVALID\"}");
+            return;
+        }
+        const auto now=static_cast<int64_t>(time(nullptr));
+        bool ready=false;
+        // The existing service owns one pump, one worker and one queued
+        // command. No HTTP callback writes directly to the heat pump.
+        xSemaphoreTake(mutex,portMAX_DELAY);
+        const auto previous=last_success.load();
+        ready=configured && !control_busy && !control_pending.load() &&
+              previous>0 && now>=previous && now-previous<=90 &&
+              poll_task.load()!=nullptr;
+        if(ready && is_midea_selected()) {
+            pending_patch=patch;
+            control_pending.store(true);
+            control_queued_utc.store(now);
+            control_result.store(-1);
+        } else ready=false;
+        xSemaphoreGive(mutex);
+        if(!ready) {
+            web.send(409,"application/json","{\"queued\":false,\"error\":\"NOT_READY\"}");
+            return;
+        }
+        xTaskNotifyGive(poll_task.load());
+        web.send(202,"application/json","{\"queued\":true}");
     });
     web.on("/api/midea/test",HTTP_POST,[&web](){
         // A manual diagnostic only schedules the same read-only worker.
@@ -325,60 +460,86 @@ void cottage_midea_service_register_routes(WebServer& web) {
 void cottage_midea_service_worker(void*) {
     poll_task.store(xTaskGetCurrentTaskHandle());
     for(;;) {
-        if(WiFi.status()==WL_CONNECTED && !cottage_ota_network_maintenance() &&
-           is_midea_selected()) {
-            Config cfg{};
-            bool ready=false;
-            uint32_t before=0;
-            xSemaphoreTake(mutex,portMAX_DELAY);
-            cfg=saved;
-            ready=configured;
-            before=revision.load();
-            xSemaphoreGive(mutex);
-            if(ready && valid_config(cfg)) {
-                // Serialized against TLS-heavy readers; both V2 and V3
-                // send only the AC 0x41 QUERY, never any control command.
-                enevina_firmware::NetworkBudgetLease lease(300,60*1024,16*1024);
-                if(lease.held()) {
-                    polling.store(true);
-                    last_attempt.store(time(nullptr));
-                    enevina::midea::State sample{};
-                    enevina::midea::ReadStatus result=
-                        enevina::midea::ReadStatus::InvalidCredentials;
-                    if(cfg.protocol==2) {
-                        uint64_t id=0;
-                        if(enevina::midea::decode_device_id(cfg.device_id,id))
-                            result=enevina::midea::read_device_v2(cfg.host,id,sample);
-                    } else {
-                        enevina::midea::Credential auth{};
-                        if(enevina::midea::decode_credentials(
-                           cfg.device_id,cfg.token_hex,cfg.key_hex,auth))
-                            result=enevina::midea::read_device(cfg.host,auth,sample);
-                    }
-                    polling.store(false);
-                    if(before==revision.load() && is_midea_selected()) {
-                        xSemaphoreTake(mutex,portMAX_DELAY);
-                        if(before==revision.load()) {
-                            last_result.store(static_cast<int>(result));
-                            if(result==enevina::midea::ReadStatus::Ok) {
-                                observed=sample;
-                                last_success.store(time(nullptr));
-                            } else last_success.store(0);
-                        }
-                        xSemaphoreGive(mutex);
-                    }
-                }
-            }
-        } else {
-            // Invalidate under the same mutex as the status snapshot, so the
-            // timestamp never contradicts an independently copied sample.
-            xSemaphoreTake(mutex,portMAX_DELAY);
-            last_success.store(0);
-            xSemaphoreGive(mutex);
+        const bool connected=WiFi.status()==WL_CONNECTED &&
+                             !cottage_ota_network_maintenance();
+        const bool selected=is_midea_selected();
+        Config cfg{};
+        bool ready=false,action=false;
+        uint32_t before=0;
+        enevina::midea::ControlPatch patch{};
+        xSemaphoreTake(mutex,portMAX_DELAY);
+        cfg=saved;
+        ready=configured;
+        before=revision.load();
+        if(control_pending.load()) {
+            patch=pending_patch;
+            control_pending.store(false);
+            control_busy=true;
+            action=true;
         }
-        // A test request or a newly saved connection wakes the read-only
-        // worker without blocking HTTP handling for the TCP handshake.
+        xSemaphoreGive(mutex);
+        enevina::midea::ReadStatus result=
+            enevina::midea::ReadStatus::ResourceBusy;
+        enevina::midea::State sample{};
+        bool attempted=false;
+        // A momentary Wi-Fi disconnection must NEVER lead to a delayed
+        // command firing later when the connection returns.
+        const auto now=static_cast<int64_t>(time(nullptr));
+        const auto queued=control_queued_utc.load();
+        const bool within_window=!action ||
+            (queued>0 && now>=queued && now-queued<=15);
+        if(connected && selected && ready && valid_config(cfg) &&
+           within_window) {
+            // Independent worker, shared RAM budget, no HTTP callback writes.
+            enevina_firmware::NetworkBudgetLease lease(300,60*1024,16*1024);
+            if(lease.held()) {
+                attempted=true;
+                polling.store(true);
+                if(!action)last_attempt.store(time(nullptr));
+                else control_attempt.store(time(nullptr));
+                if(cfg.protocol==2) {
+                    uint64_t id=0;
+                    if(enevina::midea::decode_device_id(cfg.device_id,id)) {
+                        result=action?
+                            enevina::midea::write_device_v2(cfg.host,id,patch,sample):
+                            enevina::midea::read_device_v2(cfg.host,id,sample);
+                    } else result=enevina::midea::ReadStatus::InvalidCredentials;
+                } else {
+                    enevina::midea::Credential auth{};
+                    if(enevina::midea::decode_credentials(
+                       cfg.device_id,cfg.token_hex,cfg.key_hex,auth)) {
+                        result=action?
+                            enevina::midea::write_device(cfg.host,auth,patch,sample):
+                            enevina::midea::read_device(cfg.host,auth,sample);
+                    } else result=enevina::midea::ReadStatus::InvalidCredentials;
+                }
+                polling.store(false);
+            }
+        }
+        xSemaphoreTake(mutex,portMAX_DELAY);
+        if(action) {
+            control_result.store(static_cast<int>(result));
+            if(result==enevina::midea::ReadStatus::Ok &&
+               before==revision.load() && is_midea_selected()) {
+                control_success.store(time(nullptr));
+            }
+            control_busy=false;
+        }
+        if(connected && selected && ready && within_window &&
+           before==revision.load()) {
+            if(action || attempted) {
+                last_result.store(static_cast<int>(result));
+                if(result==enevina::midea::ReadStatus::Ok) {
+                    observed=sample;
+                    last_success.store(time(nullptr));
+                } else last_success.store(0);
+            }
+        } else last_success.store(0);
+        xSemaphoreGive(mutex);
+        // A user action or settings change wakes the worker immediately.
+        // Normal read polling remains every 30 seconds.
         ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(30000));
     }
 }
+
 #endif

@@ -1,4 +1,4 @@
-"""Cross-check V2 config migration, no silent downgrade, no pump writes."""
+"""Cross-check V2 config migration and explicit manual control isolation."""
 import json
 from pathlib import Path
 import unittest
@@ -18,7 +18,7 @@ class NativeMideaV2(unittest.TestCase):
         self.assertIn('if(cfg.protocol==2)',SRV)
         self.assertIn('read_device_v2(cfg.host,id,sample)',SRV)
         self.assertIn('read_device(cfg.host,auth,sample)',SRV)
-        self.assertNotIn('read_device_v2(',TCP.split('ReadStatus read_device(const char* host,',1)[1])
+        self.assertNotIn('read_device_v2(',TCP.split('ReadStatus read_device(const char* host,',1)[1].split('ReadStatus write_device_v2(',1)[0])
         self.assertIn('bool v2_packet_matches_device(',CODEC)
 
     def test_v2_only_queries_and_rejects_untrusted_data(self):
@@ -35,7 +35,7 @@ class NativeMideaV2(unittest.TestCase):
         self.assertNotIn('send_control(',v2)
         self.assertIn('allowed_lan_address(ip)',v2)
         self.assertIn('ReadStatus read_device_v2(',API)
-        self.assertIn('"none implemented"',CAT)
+        self.assertIn('FirmwareControlExperimental',CAT)
 
     def test_legacy_v3_settings_stay_v3(self):
         self.assertIn('struct LegacyConfig',SRV)
@@ -67,9 +67,9 @@ class NativeMideaV2(unittest.TestCase):
                         persist.index('preferences.putBytes("config_v2",&c'))
         self.assertNotIn('preferences.remove("config_v1")',persist)
 
-    def test_dashboard_v2_needs_no_token_and_never_arms_control(self):
+    def test_dashboard_v2_needs_no_token_and_manual_control_is_explicit(self):
         for value in ("Midea-protokolla","V2 (ei tokenia)",
-                      "Midea V2/V3 on tässä versiossa vain tilanluku. Ohjaus ei ole käytössä.",
+                      "Midean automaattinen optimointiohjaus ei ole vielä käytössä; manuaalinen ohjaus löytyy Midea-asetuksista.",
                       "V2-yhteys onnistui"):
             self.assertIn(value,LANG)
         self.assertIn("protocol==='3' ? $('midea-token').value.trim() : ''",UI)
@@ -79,7 +79,10 @@ class NativeMideaV2(unittest.TestCase):
         self.assertIn(".field[hidden]{display:none!important}",UI)
         self.assertIn('id="midea-protocol"',UI)
         self.assertIn('"protocol":%u',SRV.replace('\\',''))
-        self.assertIn('read_only',SRV)
+        self.assertIn('manual_control',SRV)
+        self.assertIn('web.on("/api/midea/control",HTTP_POST',SRV)
+        self.assertIn('write_device_v2(cfg.host,id,patch,sample)',SRV)
+        self.assertIn('write_device(cfg.host,auth,patch,sample)',SRV)
 
 if __name__=="__main__":
     unittest.main()

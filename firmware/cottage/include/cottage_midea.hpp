@@ -9,7 +9,7 @@
 namespace enevina::midea {
 enum class ReadStatus : uint8_t {
     Ok, InvalidAddress, InvalidCredentials, ConnectionFailed,
-    AuthenticationFailed, ProtocolFailed, UnsupportedState, TimeNotReady
+    AuthenticationFailed, ProtocolFailed, UnsupportedState, TimeNotReady, ControlNotConfirmed, ResourceBusy
 };
 ReadStatus read_device(const char* private_ipv4,const Credential& credentials,
                        State& reading);
@@ -18,7 +18,14 @@ ReadStatus read_device(const char* private_ipv4,const Credential& credentials,
 // selection: never silently downgrade failed V3 authentication to V2.
 ReadStatus read_device_v2(const char* private_ipv4,uint64_t device_id,
                           State& reading);
-// Writes deliberately NOT exposed until full state preservation, readback,
-// model-specific constraints and the existing Lite Supervisor are integrated.
+// Explicit Midea LAN controls. These are never called by polling and
+// never retry a physical 0x40 command after an uncertain write. Each call
+// reads current state first and requires fresh post-write 0x41 readback.
+// Call from a dedicated worker, never the HTTP request handler.
+// The caller is responsible for selected-device and user-authorization gates.
+ReadStatus write_device_v2(const char* private_ipv4,uint64_t device_id,
+                           const ControlPatch& patch,State& confirmed);
+ReadStatus write_device(const char* private_ipv4,const Credential& credentials,
+                        const ControlPatch& patch,State& confirmed);
 } // namespace enevina::midea
 #endif
