@@ -50,6 +50,41 @@ static void registry_lists_and_ages() {
     CHECK(r.snapshot(5000,out,2)==2);                                       // honours capacity
 }
 
+static void replayed_frames_are_heard_but_not_measurements() {
+    // Codex P2 (#58): repeated/older sequences refreshed the age, so the setup
+    // UI showed a replaying sensor as live while RuuviBinding rejected it.
+    RuuviRegistry r;
+    RuuviV5 a=sensor(0x01,-60);a.sequence=100;
+    RuuviV5 same=a;same.rssi_dbm=-50;
+    RuuviV5 older=a;older.sequence=90;
+    RuuviSeen out[8];
+    CHECK(r.observe(a,1000));
+    CHECK(r.observe(same,60000));                       // duplicate, 59 s later
+    CHECK(r.observe(older,119000));                     // replayed older frame
+    size_t n=r.snapshot(125000,out,8);
+    CHECK(n==1&&out[0].last_ms==119000);                // heard recently ...
+    CHECK(out[0].has_measurement&&out[0].measured_ms==1000);   // ... but measured long ago
+    CHECK(out[0].frames==3);
+    CHECK(125000-out[0].measured_ms>kRuuviFreshMs);     // so the UI must say "not live"
+    // an advancing sequence is a new measurement
+    RuuviV5 next=a;next.sequence=101;next.temperature_c=22.5;
+    CHECK(r.observe(next,126000));
+    n=r.snapshot(127000,out,8);
+    CHECK(out[0].measured_ms==126000&&out[0].measured.sequence==101&&out[0].measured.temperature_c==22.5);
+    // a restarted sequence is trusted only after the old measurement is stale
+    // AND two consecutive advancing frames arrived (same rule as the binding)
+    RuuviV5 restart=a;restart.sequence=5;
+    CHECK(r.observe(restart,130000));                   // recent measurement: replay, ignored
+    n=r.snapshot(131000,out,8);
+    CHECK(out[0].measured.sequence==101);
+    const uint64_t stale=126000+700000;
+    RuuviV5 c1=a;c1.sequence=7;RuuviV5 c2=a;c2.sequence=8;
+    CHECK(r.observe(c1,stale));
+    n=r.snapshot(stale+1,out,8);CHECK(out[0].measured.sequence==101);   // first candidate: not yet
+    CHECK(r.observe(c2,stale+3000));
+    n=r.snapshot(stale+3001,out,8);CHECK(out[0].measured.sequence==8&&out[0].measured_ms==stale+3000);
+}
+
 static void registry_evicts_the_stalest_not_the_freshest() {
     RuuviRegistry r;
     for(uint8_t i=1;i<=8;++i) CHECK(r.observe(sensor(i,-60),static_cast<uint64_t>(i)*1000));
@@ -126,6 +161,7 @@ static void names_table_is_bounded_and_load_is_strict() {
 
 int main() {
     registry_lists_and_ages();
+    replayed_frames_are_heard_but_not_measurements();
     registry_evicts_the_stalest_not_the_freshest();
     registry_rejects_implausible_values();
     names_are_validated_labels();

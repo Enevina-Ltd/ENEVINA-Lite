@@ -102,8 +102,13 @@ ShellyScanState shelly_scan(ShellyScanSnapshot& out) {
     bool start=false;
     xSemaphoreTake(guard,portMAX_DELAY);
     const bool pending=shared.state==ShellyScanState::Pending;
+    // Results are kept for 8 s AFTER THE SCAN FINISHED (a scan itself may take
+    // longer than that: sequential mDNS queries plus HTTP probes). Counting from
+    // the start made a slow scan look "old" on the first poll after it completed,
+    // so it was thrown away and restarted - the wizard never saw its devices.
+    const uint32_t since=shared.state==ShellyScanState::Done?finished_ms:started_ms;
     const bool recent=shared.state!=ShellyScanState::Idle &&
-        started_ms && now-started_ms<8000;
+        since && now-since<8000;
     if(!pending && !recent) {
         shared.state=ShellyScanState::Pending;
         shared.count=0;

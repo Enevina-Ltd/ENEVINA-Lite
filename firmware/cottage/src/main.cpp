@@ -1687,8 +1687,12 @@ static enevina::cottage::HistoryInputs history_collect() {
     }
     const bool sse_fresh=observed.received && climate_time>0 && now>=climate_time && now-climate_time<=180;
     in.pump_online=valid_cn105(cp,now) || sse_fresh;
-    in.setpoint_valid=sse_fresh;in.setpoint_c=observed.setpoint_c;
+    // The setpoint comes from the VERIFIED snapshot: sse_observed_pump is never
+    // marked received (proof envelopes update `pump`), so using it left every
+    // stored setpoint missing.
+    in.setpoint_valid=valid_cn105(cp,now);in.setpoint_c=cp.setpoint_c;
     in.power_valid=valid_shelly(st,now);in.power_w=st.watts;
+    in.power_scope=static_cast<uint8_t>(site_settings_snapshot().shelly_scope);
     const auto market=enevina_firmware::market_status();
     in.prices_ok=market.current_price_valid;
     double total=0;

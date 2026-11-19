@@ -104,6 +104,91 @@ static void recorder_averages_and_gaps() {
     CHECK(r1->power_w==400&&r1->setpoint_c10==225);
 }
 
+static void forecast_provenance_survives_a_later_measurement() {
+    // Codex P2 (#60): a forecast sample followed by a measured one averaged the two
+    // but cleared the forecast flag, so the mixed value was shown as measured.
+    HistoryStore store(2880);EventLog ev;HistoryRecorder rec_;
+    HistoryInputs a=sample(T0+10,20.0);
+    a.outdoor_valid=true;a.outdoor_c=10.0;a.outdoor_is_forecast=true;
+    HistoryInputs b=sample(T0+500,20.0);
+    b.outdoor_valid=true;b.outdoor_c=0.0;b.outdoor_is_forecast=false;
+    CHECK(!rec_.observe(a,store,ev));CHECK(!rec_.observe(b,store,ev));
+    CHECK(rec_.observe(sample(T0+910,20.0),store,ev));
+    const HistoryRecord* r=store.get(static_cast<uint32_t>(T0/900));
+    CHECK(r&&r->outdoor_c100==500&&(r->flags&kOutdoorIsForecast));
+    // purely measured slots stay unflagged, and the flag does not leak to the next slot
+    HistoryInputs m=sample(T0+920,20.0);m.outdoor_valid=true;m.outdoor_c=1.0;
+    CHECK(!rec_.observe(m,store,ev));
+    CHECK(rec_.observe(sample(T0+1810,20.0),store,ev));
+    const HistoryRecord* r2=store.get(static_cast<uint32_t>(T0/900)+1);
+    CHECK(r2&&r2->outdoor_c100==100&&!(r2->flags&kOutdoorIsForecast));
+}
+
+static void meter_scope_is_stored_with_each_record() {
+    // Codex P1 (#60): the response labelled ALL retained history with the owner's
+    // CURRENT scope, so switching meters relabelled old whole-house readings.
+    HistoryStore store(2880);EventLog ev;HistoryRecorder rec_;
+    const uint32_t s0=static_cast<uint32_t>(T0/900);
+    auto power=[&](int64_t t,double w,uint8_t scope) {
+        HistoryInputs in=sample(t,20.0);in.power_valid=true;in.power_w=w;in.power_scope=scope;return in;
+    };
+    rec_.observe(power(T0+10,1000,2),store,ev);                        // slot 0: whole house
+    rec_.observe(power(T0+900+10,400,1),store,ev);                     // slot 1: pump only
+    rec_.observe(power(T0+1800+10,300,1),store,ev);
+    // a meter change INSIDE one slot cannot be averaged honestly
+    rec_.observe(power(T0+2700+10,300,1),store,ev);                    // slot 3 starts, finalizes slot 2
+    rec_.observe(power(T0+2700+500,2000,2),store,ev);
+    rec_.observe(power(T0+3600+10,100,1),store,ev);                    // finalizes slot 3
+    const HistoryRecord* r0=store.get(s0);const HistoryRecord* r1=store.get(s0+1);
+    const HistoryRecord* r2=store.get(s0+2);const HistoryRecord* r3=store.get(s0+3);
+    CHECK(r0&&r0->power_w==1000&&((r0->flags&kPowerScopeMask)>>kPowerScopeShift)==2);
+    CHECK(r1&&r1->power_w==400&&((r1->flags&kPowerScopeMask)>>kPowerScopeShift)==1);
+    CHECK(r2&&r2->power_w==300&&((r2->flags&kPowerScopeMask)>>kPowerScopeShift)==1);
+    CHECK(r3&&r3->power_w==kMissingU16);                               // two targets in one slot: missing, not averaged
+    CHECK(r3&&((r3->flags&kPowerScopeMask)>>kPowerScopeShift)==0);
+    // queries label the range by what was measured, never by today's setting
+    std::vector<HistoryPoint> pts(kMaxHistoryPoints);
+    HistorySummary sum;
+    const int64_t end=(static_cast<int64_t>(s0)+3)*900+100;
+    size_t n=build_history_series(store,end+0,96,1,pts.data(),pts.size(),sum);
+    std::string out;
+    EventLog none;
+    history_json("24h",1,pts.data(),n,sum,none,pts[0].t,"EUR","heat_pump",true,[&](const char* p){out+=p;});
+    CHECK(out.find("\"meter_scope\":\"mixed\"")!=std::string::npos);       // whole house + pump only in one range
+    CHECK(out.find("\"current_meter_scope\":\"heat_pump\"")!=std::string::npos);
+    CHECK(out.find("\"kwh\":null")!=std::string::npos);                      // never summed across targets
+    enevina::met_detail::Json v{out.data(),out.data()+out.size()};
+    CHECK(v.value());
+    // only whole-house readings in range: labelled whole house although the owner now says pump-only
+    HistoryStore only;HistoryRecorder r2_;EventLog e2;
+    r2_.observe(power(T0+10,800,2),only,e2);
+    r2_.observe(power(T0+900+10,800,2),only,e2);
+    r2_.observe(power(T0+1800+10,800,2),only,e2);
+    const int64_t end2=(static_cast<int64_t>(s0)+2)*900+100;
+    n=build_history_series(only,end2,96,1,pts.data(),pts.size(),sum);
+    std::string out2;
+    history_json("24h",1,pts.data(),n,sum,e2,pts[0].t,"EUR","heat_pump",true,[&](const char* p){out2+=p;});
+    CHECK(out2.find("\"meter_scope\":\"whole_house\"")!=std::string::npos);
+    CHECK(out2.find("\"current_meter_scope\":\"heat_pump\"")!=std::string::npos);
+    CHECK(out2.find("\"kwh\":null")==std::string::npos);
+    // an unconfirmed meter is "unknown", and stays so
+    HistoryStore unk;HistoryRecorder r3_;EventLog e3;
+    r3_.observe(power(T0+10,500,0),unk,e3);
+    r3_.observe(power(T0+900+10,500,0),unk,e3);
+    n=build_history_series(unk,(static_cast<int64_t>(s0)+1)*900+100,96,1,pts.data(),pts.size(),sum);
+    std::string out3;
+    history_json("24h",1,pts.data(),n,sum,e3,pts[0].t,"EUR","whole_house",true,[&](const char* p){out3+=p;});
+    CHECK(out3.find("\"meter_scope\":\"unknown\"")!=std::string::npos);
+    // a corrupt scope code never becomes a claim
+    HistoryInputs bad=power(T0+5000,100,3);
+    HistoryStore bs;HistoryRecorder br;EventLog be;
+    br.observe(bad,bs,be);
+    HistoryInputs next=sample(T0+6000,20.0);
+    br.observe(next,bs,be);
+    const HistoryRecord* rb=bs.get(static_cast<uint32_t>((T0+5000)/900));
+    CHECK(rb&&((rb->flags&kPowerScopeMask)>>kPowerScopeShift)==0);
+}
+
 static void recorder_clock_rules() {
     HistoryStore store(2880);EventLog ev;HistoryRecorder rec_;
     HistoryInputs in=sample(T0+10);
@@ -374,6 +459,8 @@ static void bounded_file_growth_and_compaction() {
 int main() {
     ring_semantics();
     recorder_averages_and_gaps();
+    forecast_provenance_survives_a_later_measurement();
+    meter_scope_is_stored_with_each_record();
     recorder_clock_rules();
     events_debounce_and_commands();
     series_and_summary();

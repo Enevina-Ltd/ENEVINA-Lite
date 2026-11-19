@@ -347,7 +347,52 @@ static void shelly_scope_setting() {
     assert(site_settings_from_v1(old).shelly_scope==ShellyScope::Unknown);
 }
 
+static void older_layout_is_restored_not_reset() {
+    // Codex P1 (#57/#58): a blob written by an earlier layout used to fail an
+    // exact-size check, silently resetting pump endpoint, location and tariff.
+    SiteSettings full{};
+    std::strcpy(full.cn105_url,"http://192.168.1.50/events");
+    std::strcpy(full.pump_adapter,"mitsubishi_cn105");
+    std::strcpy(full.country,"SE");std::strcpy(full.price_zone,"SE3");
+    full.tariff_confirmed=true;full.setup_complete=true;full.setup_step=9;
+    full.tariff.margin_eur_per_kwh=0.005;
+    full.profile=OptimizationProfile::Saving;full.comfort_min_c=19;full.comfort_max_c=23;
+    full.shelly_scope=ShellyScope::HeatPump;
+    uint8_t buf[sizeof(SiteSettings)];
+    const size_t align=alignof(SiteSettings);
+    for(const size_t boundary:kSettingsLayoutBoundaries) {
+        std::memcpy(buf,&full,sizeof(buf));
+        const size_t old_size=(boundary+align-1)/align*align;
+        // poison everything that layout's firmware could not have written
+        std::memset(buf+boundary,0xA5,sizeof(buf)-boundary);
+        SiteSettings out{};
+        assert(restore_site_settings(buf,old_size,out));
+        assert(std::strcmp(out.cn105_url,"http://192.168.1.50/events")==0);
+        assert(std::strcmp(out.pump_adapter,"mitsubishi_cn105")==0);
+        assert(std::strcmp(out.country,"SE")==0&&std::strcmp(out.price_zone,"SE3")==0);
+        assert(out.tariff_confirmed&&out.setup_complete&&out.setup_step==9);
+        assert(near(out.tariff.margin_eur_per_kwh,0.005));
+        // members the older layout lacked take their defaults, never poison
+        assert(out.shelly_scope==ShellyScope::Unknown);
+        if(boundary<=offsetof(SiteSettings,profile))
+            assert(out.profile==OptimizationProfile::Balanced&&out.comfort_min_c==0&&out.comfort_max_c==0);
+        else
+            assert(out.profile==OptimizationProfile::Saving&&near(out.comfort_min_c,19)&&near(out.comfort_max_c,23));
+        assert(valid_site_settings(out));
+        assert(!restore_site_settings(buf,boundary-1,out));
+    }
+    // the current layout restores whole
+    std::memcpy(buf,&full,sizeof(buf));
+    SiteSettings out{};
+    assert(restore_site_settings(buf,sizeof(buf),out)&&out.shelly_scope==ShellyScope::HeatPump&&near(out.comfort_max_c,23));
+    // sizes that match no known layout are refused (corrupt or from newer firmware)
+    assert(!restore_site_settings(buf,sizeof(buf)+8,out));
+    assert(!restore_site_settings(buf,0,out));
+    assert(!restore_site_settings(nullptr,sizeof(buf),out));
+}
+
 int main() {
+    older_layout_is_restored_not_reset();
     total_price_rules();
     seasonal_and_dst();
     parsing();

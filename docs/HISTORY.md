@@ -34,6 +34,13 @@ acknowledged and failed.
 * **Energy** is the sum over slots that actually had a power reading and states how
   many; it is unknown (not 0) with no readings, and the card says what the meter
   measures (pump only / whole house / unknown, from the owner's `shelly_scope`).
+  The scope is stored in each record (flag bits 6-7), so changing the meter or the
+  owner's answer later never relabels readings taken earlier. `meter_scope` in the
+  response is what the meter measured over the returned range; `current_meter_scope`
+  is only the present setting. If the target changed inside the range the response
+  says `mixed`, energy is not summed (`kwh: null`), and a slot whose meter changed
+  halfway has no power value. Forecast provenance is sticky inside a slot: any
+  forecast-derived outdoor sample flags the whole slot average as a forecast.
 * The UI states coverage ("recorded for 95 % of the time") and warns below 80 % or
   when persistence is unavailable.
 
