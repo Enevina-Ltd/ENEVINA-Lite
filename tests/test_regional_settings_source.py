@@ -35,6 +35,17 @@ class RegionalWiring(unittest.TestCase):
         self.assertIn("market_set_region(nullptr,nullptr)", SITE)
         self.assertIn("if(!area[0])", MARKET)
 
+    def test_boot_adoption_never_erases_the_saved_price_cache(self):
+        # Codex P1 (#55): the first region call at boot compared with the FI/EUR
+        # defaults and erased valid prices of every non-Finnish device.
+        body = MARKET.split("bool market_set_region(")[1]
+        self.assertIn("region_adopted", MARKET)
+        self.assertLess(body.index("if(!region_adopted)"), body.index('nvs_erase_key(handle,"price_v2")'))
+        first = body.split("if(!region_adopted) {")[1].split("return true;")[0]
+        self.assertNotIn("nvs_", first)
+        self.assertNotIn("++region_generation", first)
+        self.assertNotIn("cache=PriceCache{}", first)
+
     def test_settings_v2_migrates_v1_and_drops_it_after_durable_write(self):
         self.assertIn('p.putBytes("v2",&blob,sizeof(blob))', SITE)
         self.assertIn('p.remove("v1")', SITE)
