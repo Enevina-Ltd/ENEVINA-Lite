@@ -139,6 +139,14 @@ void send_settings(WebServer& web) {
     cJSON_AddStringToObject(root,"fmi_latlon",s.fmi_latlon);
     cJSON_AddStringToObject(root,"fmi_latlon_note","applied immediately after save");
     cJSON_AddStringToObject(root,"pump_adapter",s.pump_adapter);
+    cJSON* optimization=cJSON_AddObjectToObject(root,"optimization");
+    if(optimization) {
+        cJSON_AddStringToObject(optimization,"profile",enevina::cottage::profile_name(s.profile));
+        if(s.comfort_min_c>0) cJSON_AddNumberToObject(optimization,"comfort_min_c",s.comfort_min_c);
+        else cJSON_AddNullToObject(optimization,"comfort_min_c");
+        if(s.comfort_max_c>0) cJSON_AddNumberToObject(optimization,"comfort_max_c",s.comfort_max_c);
+        else cJSON_AddNullToObject(optimization,"comfort_max_c");
+    }
     cJSON* region=cJSON_AddObjectToObject(root,"region");
     if(region) {
         cJSON_AddStringToObject(region,"country",s.country);

@@ -53,5 +53,22 @@ class RegionalWiring(unittest.TestCase):
         self.assertIn("96:BC:EC:06:26:49:76:F3", ROOTS)  # documented fingerprint
 
 
+class ProfileWiring(unittest.TestCase):
+    MAIN = (ROOT / "firmware/cottage/src/main.cpp").read_text(encoding="utf-8")
+
+    def test_live_controller_uses_profile_and_never_guesses(self):
+        self.assertIn("apply_profile(input,site.profile,site.comfort_min_c", self.MAIN)
+        # inconsistent settings -> no decision
+        self.assertRegex(self.MAIN, r"site\.min_price_advantage_fraction,window\)\)\s*return \{\};")
+        # a window shorter than 8 contiguous slots is never used
+        self.assertIn("n>=kMinSlots", self.MAIN)
+        self.assertIn("points[n].start_utc==start+static_cast<int64_t>(n)*900", self.MAIN)
+        self.assertNotIn("constexpr size_t N=8;", self.MAIN)
+
+    def test_profile_is_visible_in_status_and_never_arms_control(self):
+        self.assertIn('"optimization_profile"', self.MAIN)
+        self.assertNotIn("control_armed.store(true)", (ROOT / "firmware/cottage/include/cottage_premium_dashboard.hpp").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

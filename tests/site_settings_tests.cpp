@@ -296,6 +296,36 @@ static void batch_is_order_independent() {
     assert(apply_site_settings_batch(d,2,k4,v4,bad)==SettingError::OutOfRange&&bad==1);
 }
 
+
+static void profile_and_comfort_limits() {
+    SiteSettings s{};
+    assert(s.profile==OptimizationProfile::Balanced&&s.comfort_min_c==0&&s.comfort_max_c==0);
+    assert(valid_site_settings(s));
+    assert(apply_site_setting(s,"optimization_profile","saving")==SettingError::Ok&&
+           s.profile==OptimizationProfile::Saving);
+    assert(apply_site_setting(s,"optimization_profile","eco")==SettingError::BadChoice);
+    assert(s.profile==OptimizationProfile::Saving);              // rejected input changes nothing
+    assert(apply_site_setting(s,"comfort_min_c","19")==SettingError::Ok);
+    assert(apply_site_setting(s,"comfort_max_c","23,5")==SettingError::Ok);
+    assert(near(s.comfort_min_c,19)&&near(s.comfort_max_c,23.5)&&valid_site_settings(s));
+    assert(apply_site_setting(s,"comfort_min_c","4")==SettingError::OutOfRange);
+    assert(apply_site_setting(s,"comfort_max_c","27")==SettingError::OutOfRange);
+    assert(apply_site_setting(s,"comfort_min_c","19.3")==SettingError::OutOfRange);   // 0.5 steps
+    assert(apply_site_setting(s,"comfort_min_c","abc")==SettingError::BadNumber);
+    assert(apply_site_setting(s,"comfort_min_c","")==SettingError::Ok&&s.comfort_min_c==0);  // clears
+    // Whole-struct check catches limits that cross after separate edits.
+    s.comfort_min_c=23;s.comfort_max_c=19;
+    assert(!valid_site_settings(s));
+    s.comfort_min_c=20;s.comfort_max_c=20.5;
+    assert(!valid_site_settings(s));                              // need >= 1 C of band
+    s.comfort_min_c=0;s.comfort_max_c=0;s.profile=static_cast<OptimizationProfile>(7);
+    assert(!valid_site_settings(s));
+    // Upgraded devices keep the pre-profile behaviour.
+    SiteSettingsV1 old{};
+    const SiteSettings m=site_settings_from_v1(old);
+    assert(m.profile==OptimizationProfile::Balanced&&m.comfort_min_c==0&&m.comfort_max_c==0);
+}
+
 int main() {
     total_price_rules();
     seasonal_and_dst();
@@ -303,6 +333,7 @@ int main() {
     catalog();
     regional_setup();
     v1_migration();
+    profile_and_comfort_limits();
     batch_is_order_independent();
     transfer_schedule_uses_country_time();
     std::puts("site_settings_tests OK");

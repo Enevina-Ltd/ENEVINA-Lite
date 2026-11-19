@@ -23,7 +23,7 @@ assert.deepEqual(missing,[],'missing English translations');
 
 const ctx={document:{},state:{},uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzParseLatLon,wzTariffFields,wzSummary,wzNeedsAction,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS};',ctx);
+vm.runInContext(src+';this.api={wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS};',ctx);
 const A=ctx.api;
 
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
@@ -64,12 +64,12 @@ const good={site:{fmi_latlon:'61.4638,24.0760',pump_adapter:'mitsubishi_cn105_es
   status:{spot:0.05,price_error:0,cn105_sse_climate_received:true,air:{sensor_fresh:true},shelly_w:300},
   weather:{valid:true},plan:{valid:true}};
 let s=A.wzSummary(good);const by=Object.fromEntries(s.map(x=>[x.key,x.state]));
-assert.deepEqual(by,{wifi:'ok',location:'ok',zone:'ok',tariff:'ok',pump:'ok',sensor:'ok',meter:'ok',optimizer:'ok'});
+assert.deepEqual(by,{wifi:'ok',location:'ok',zone:'ok',tariff:'ok',pump:'ok',sensor:'ok',meter:'ok',profile:'ok',optimizer:'ok'});
 assert.equal(A.wzNeedsAction(s).length,0);
 // fresh device: nothing configured -> todo/warn, never a fake ok
 s=A.wzSummary({site:{region:{}},status:{air:{}},weather:null,plan:null});
 const by2=Object.fromEntries(s.map(x=>[x.key,x.state]));
-assert.deepEqual(by2,{wifi:'ok',location:'todo',zone:'todo',tariff:'warn',pump:'todo',sensor:'warn',meter:'optional',optimizer:'warn'});
+assert.deepEqual(by2,{wifi:'ok',location:'todo',zone:'todo',tariff:'warn',pump:'todo',sensor:'warn',meter:'optional',profile:'ok',optimizer:'warn'});
 assert.equal(A.wzNeedsAction(s).length,6);          // optional meter and wifi are not "action"
 // zone chosen but the price fetch failed: warn with the real reason
 const failing=JSON.parse(JSON.stringify(good));failing.status.spot=null;failing.status.price_error=104;
@@ -87,3 +87,30 @@ console.log('test_setup_wizard OK ('+literals.length+' literals checked)');
  const loc=A.wzSummary(manual).find(x=>x.key==='location');
  assert.equal(loc.state,'ok');assert(loc.detail.includes('61.4638,24.0760'));}
 console.log('manual-location summary ok');
+
+// ---- comfort step: target, limits, profile ---------------------------------
+{
+  const ok=(v,mode)=>A.wzComfortFields({target:'21',min:'19',max:'23',profile:'saving',...v},mode);
+  let r=ok({},3);
+  assert(r.ok);assert.equal(r.target,21);
+  assert.deepEqual({...r.fields},{optimization_profile:'saving',comfort_min_c:'19',comfort_max_c:'23'});
+  // limits are optional and clear when empty
+  r=ok({min:'',max:''},3);assert(r.ok);assert.equal(r.fields.comfort_min_c,'');assert.equal(r.fields.comfort_max_c,'');
+  // Finnish decimal comma and half-degree steps
+  r=ok({target:'21,5'},3);assert(r.ok);assert.equal(r.target,21.5);
+  assert(!ok({target:'21.3'},3).ok);                       // 0.5 steps only
+  assert(!ok({target:'15'},3).ok);                         // Asuttu is 16..26
+  assert(ok({target:'15',min:'',max:''},2).ok);            // Ylläpito allows 5..24
+  assert(!ok({target:'25'},2).ok);
+  assert(!ok({target:'21'},0).ok);                         // no mode that has a target
+  assert(ok({target:''},0).ok);                            // but limits/profile can still be saved
+  // limits must stay in range, ordered, >= 1 C apart and outside target +-0.5
+  for(const bad of [{min:'4'},{max:'27'},{min:'19.3'},{min:'abc'},{min:'23',max:'19'},{min:'20',max:'20.5'},
+                    {min:'20.8'},{max:'21.2'},{profile:'eco'},{profile:''}])
+    assert(!ok(bad,3).ok,JSON.stringify(bad));
+  assert(ok({min:'20.5',max:'21.5'},3).ok);                // exactly 0.5 C either side is allowed
+  assert.deepEqual([...A.WZ_PROFILES.map(p=>p.id)],['comfort','balanced','saving']);
+}
+// The three profile descriptions never promise a saving figure.
+for(const p of A.WZ_PROFILES)assert(!/%|€|EUR/.test(p.text),p.id);
+console.log('comfort step helpers ok');

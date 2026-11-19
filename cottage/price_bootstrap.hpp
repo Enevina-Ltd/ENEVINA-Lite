@@ -33,6 +33,17 @@ struct BootstrapInput {
     // median only adds heat loss. Audit: docs/OPTIMIZATION_AUDIT_20261118.md.
     double min_price_advantage_fraction=0.10;
     double min_price_advantage_eur_per_kwh=0.005;
+    // Owner's comfort limits and how much of the band price decisions may use.
+    // All 0 = the original behaviour: limits desired -/+ 0.5 C, no extra
+    // pre-heat or coasting room. Limits are HARD: price logic never lets a
+    // decision run the room past them (heat at/below lower, off at/above
+    // upper). Values are clamped so the band always contains desired -/+ 0.5.
+    double comfort_lower_c=0;
+    double comfort_upper_c=0;
+    // A cheap slot may store heat up to desired+preheat_c; an expensive slot
+    // may coast down to desired-coast_c. Both are clamped inside the limits.
+    double preheat_c=0;
+    double coast_c=0;
 };
 struct BootstrapDecision {
     BootstrapAction action=BootstrapAction::Unavailable;
@@ -82,25 +93,41 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
         cheap=in.next_total_prices[0]<=d.compared_median_eur_per_kwh-margin;
         expensive=in.next_total_prices[0]>=d.compared_median_eur_per_kwh+margin;
     }
-    const bool below=in.indoor_c<=in.desired_room_c-0.5;
-    const bool above=in.indoor_c>=in.desired_room_c+0.5;
-    if(above) {
+    const bool band_ok=std::isfinite(in.comfort_lower_c) && std::isfinite(in.comfort_upper_c) &&
+        std::isfinite(in.preheat_c) && std::isfinite(in.coast_c) &&
+        in.comfort_lower_c>=0 && in.comfort_upper_c>=0 && in.preheat_c>=0 && in.coast_c>=0 &&
+        in.comfort_lower_c<=30 && in.comfort_upper_c<=30 && in.preheat_c<=5 && in.coast_c<=10;
+    if(!band_ok) return BootstrapDecision{};      // malformed tuning: never guess
+    const double narrow_lo=in.desired_room_c-0.5,narrow_hi=in.desired_room_c+0.5;
+    // Hard comfort limits (never narrower than the thermostat deadband).
+    const double hard_lo=in.comfort_lower_c>0?std::min(in.comfort_lower_c,narrow_lo):narrow_lo;
+    const double hard_hi=in.comfort_upper_c>0?std::max(in.comfort_upper_c,narrow_hi):narrow_hi;
+    // Price room stays strictly inside the limits so the hard rules still fire.
+    const double preheat=std::min(in.preheat_c,std::max(0.0,hard_hi-in.desired_room_c-0.1));
+    const double coast=std::min(in.coast_c,std::max(0.0,in.desired_room_c-hard_lo-0.1));
+    const bool below=in.indoor_c<=narrow_lo;       // narrow thermostat band
+    const bool above=in.indoor_c>=narrow_hi;
+    const bool hard_below=in.indoor_c<=hard_lo;
+    const bool hard_above=in.indoor_c>=hard_hi;
+    if(hard_above) {
         d.action=BootstrapAction::Off;
         d.reason=price_valid?BootstrapReason::TemperatureHigh:
                              BootstrapReason::ThermostatWithoutPrices;
-    } else if(below) {
+    } else if(hard_below) {
         d.action=BootstrapAction::HeatSetpoint;
         d.reason=price_valid?BootstrapReason::TemperatureLow:
                              BootstrapReason::ThermostatWithoutPrices;
     } else if(!price_valid) {
-        // Already within target deadband: keep pump's current mode.
-        d.action=BootstrapAction::Hold;
+        // Without prices the room is a plain thermostat on the narrow band
+        // around the target; the wider limits are only for price decisions.
+        d.action=above?BootstrapAction::Off:below?BootstrapAction::HeatSetpoint:
+                       BootstrapAction::Hold;
         d.reason=BootstrapReason::ThermostatWithoutPrices;
-    } else if(cheap && in.indoor_c<in.desired_room_c) {
+    } else if(cheap && in.indoor_c<in.desired_room_c+preheat) {
         // Pre-heat only in the LOWER half of the deadband ...
         d.action=BootstrapAction::HeatSetpoint;
         d.reason=BootstrapReason::CheapWindow;
-    } else if(expensive && in.indoor_c>=in.desired_room_c) {
+    } else if(expensive && in.indoor_c>=in.desired_room_c-coast) {
         // ... and coast only in the UPPER half. A HEAT<->OFF change then
         // needs >= 0.5 C of real temperature movement or a price-signal
         // change, never a 0.02 C sensor wobble at a deadband edge
@@ -108,8 +135,10 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
         d.action=BootstrapAction::Off;
         d.reason=BootstrapReason::ExpensiveWindow;
     } else if(!cheap && !expensive) {
-        // No material price difference: behave like a thermostat.
-        d.action=BootstrapAction::Hold;
+        // No material price difference: behave like a thermostat on the
+        // narrow band (stored heat above the target is simply not topped up).
+        d.action=above?BootstrapAction::Off:below?BootstrapAction::HeatSetpoint:
+                       BootstrapAction::Hold;
         d.reason=BootstrapReason::NeutralPriceWindow;
     } else {
         d.action=BootstrapAction::Hold;
@@ -117,7 +146,8 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     }
     if(d.action==BootstrapAction::HeatSetpoint) {
         // Device HEAT setpoint is not the room target below 16C.
-        const double lift=price_valid?(cheap?(below?2.0:1.0):0.5):0.5;
+        double lift=price_valid?(cheap?(below?2.0:1.0):0.5):0.5;
+        if(price_valid && cheap && preheat>0) lift=std::max(lift,preheat+0.5);
         const double raw=std::max(16.0,std::min(26.0,in.desired_room_c+lift));
         d.heat_setpoint_c=std::round(raw*2.0)/2.0;
     }

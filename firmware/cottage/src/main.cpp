@@ -628,29 +628,34 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     }
     input.desired_room_c=target_plan.target_c;
     const auto market=enevina_firmware::market_status();
-    constexpr size_t N=8;
-    std::array<enevina_firmware::PricePoint,N> points{};
-    std::array<double,N> prices{};
+    // The owner's profile and comfort limits come from the site settings.
+    // Inconsistent values yield no decision, never a guessed one.
+    const SiteSettings site=site_settings_snapshot();
+    size_t window=8;
+    if(!apply_profile(input,site.profile,site.comfort_min_c,site.comfort_max_c,
+                      site.min_price_advantage_fraction,window))
+        return {};
+    constexpr size_t kMinSlots=8,kMaxSlots=16;
+    std::array<enevina_firmware::PricePoint,kMaxSlots> points{};
+    std::array<double,kMaxSlots> prices{};
     const int64_t start=(now/900)*900;
     const bool eligible=now>=1700000000 && market.clock_trusted &&
         market.current_price_valid && market.last_fetch_utc<=now &&
         market.last_fetch_utc>=now-36*3600 &&
-        market.valid_until_utc>=start+static_cast<int64_t>(N)*900;
-    bool valid_prices=eligible && enevina_firmware::future_prices(
-        points.data(),points.size())==N;
-    for(size_t i=0;valid_prices && i<N;++i) {
-        if(points[i].start_utc!=start+static_cast<int64_t>(i)*900) {
-            valid_prices=false;break;
-        }
-        if(!site_slot_total_price(points[i].start_utc,points[i].spot_eur_per_kwh,
-                                  prices[i])) {
-            valid_prices=false;break;
-        }
-    }
+        market.valid_until_utc>=start+static_cast<int64_t>(kMinSlots)*900;
+    const size_t have=eligible ? enevina_firmware::future_prices(
+        points.data(),points.size()) : 0;
+    // Use as much of the profile's price window as is available and strictly
+    // contiguous from the current slot, but never fewer than 8 slots.
+    size_t n=0;
+    while(n<window && n<have && n<kMaxSlots &&
+          points[n].start_utc==start+static_cast<int64_t>(n)*900 &&
+          site_slot_total_price(points[n].start_utc,points[n].spot_eur_per_kwh,prices[n]))
+        ++n;
+    const bool valid_prices=eligible && n>=kMinSlots;
     input.next_total_prices=prices.data();
-    input.price_count=N;
+    input.price_count=valid_prices?n:0;
     input.prices_contiguous_and_fresh=valid_prices;
-    input.min_price_advantage_fraction=site_settings_snapshot().min_price_advantage_fraction;
     return bootstrap_price_decision(input);
 }
 // CN105 is a separate local ESPHome gateway. These HTTP calls are the only
@@ -1370,6 +1375,16 @@ static void status_endpoint() {
     } else {
         cJSON_AddNullToObject(root,"bootstrap_total_now");
         cJSON_AddNullToObject(root,"bootstrap_median_2h");
+    }
+    {   // The profile that shaped the decision above (never authorizes a write).
+        const SiteSettings profile_site=site_settings_snapshot();
+        cJSON_AddStringToObject(root,"optimization_profile",profile_name(profile_site.profile));
+        if(profile_site.comfort_min_c>0)
+            cJSON_AddNumberToObject(root,"comfort_min_c",profile_site.comfort_min_c);
+        else cJSON_AddNullToObject(root,"comfort_min_c");
+        if(profile_site.comfort_max_c>0)
+            cJSON_AddNumberToObject(root,"comfort_max_c",profile_site.comfort_max_c);
+        else cJSON_AddNullToObject(root,"comfort_max_c");
     }
     const auto pump_quality=enevina::assess_measurement(cp.evidence,now,180);
     const bool verified_uart=valid_cn105(cp,now) &&

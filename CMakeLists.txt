@@ -327,3 +327,16 @@ target_link_libraries(geocode_tests PRIVATE enevina_core)
 target_compile_definitions(geocode_tests PRIVATE
     ENEVINA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 add_test(NAME geocode_tests COMMAND geocode_tests)
+
+# Optimization profiles on the live price-aware room controller.
+add_executable(optimization_profile_tests tests/optimization_profile_tests.cpp)
+target_include_directories(optimization_profile_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(optimization_profile_tests PRIVATE enevina_cottage enevina_core)
+target_compile_definitions(optimization_profile_tests PRIVATE
+    ENEVINA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+add_test(NAME optimization_profile_tests COMMAND optimization_profile_tests)
+
+# Simulated profile comparison on real recorded prices (Markdown to stdout).
+add_executable(profile_benchmark tools/profile_benchmark.cpp)
+target_include_directories(profile_benchmark PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(profile_benchmark PRIVATE enevina_cottage enevina_core)

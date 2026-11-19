@@ -62,6 +62,8 @@ STATE = {
                "tariff_confirmed": False, "setup_complete": False, "setup_step": 0},
 }
 GEO_STATE = {"q": None, "since": 0.0}
+AIR = {"mode": 3, "hold_target_c": 12.0, "occupied_target_c": 21.0, "drying_delta_c": 4.0}
+STATE["optimization"] = {"profile": "balanced", "comfort_min_c": None, "comfort_max_c": None}
 
 
 def country(iso):
@@ -117,6 +119,21 @@ def apply_form(form):
                 new["tariff"][k] = float(v.replace(",", "."))
             except ValueError:
                 return None, "BAD_NUMBER", k
+        elif k == "optimization_profile":
+            if v not in ("comfort", "balanced", "saving"):
+                return None, "BAD_CHOICE", k
+            new["optimization"]["profile"] = v
+        elif k in ("comfort_min_c", "comfort_max_c"):
+            if v == "":
+                new["optimization"][k] = None
+            else:
+                try:
+                    x = float(v.replace(",", "."))
+                except ValueError:
+                    return None, "BAD_NUMBER", k
+                if not (5 <= x <= 26) or abs(x * 2 - round(x * 2)) > 1e-9:
+                    return None, "OUT_OF_RANGE", k
+                new["optimization"][k] = x
         elif k == "components_include_vat":
             new["tariff"][k] = v == "true"
         elif k in ("cn105_url", "shelly_url", "fmi_latlon", "pump_adapter"):
@@ -128,7 +145,7 @@ def apply_form(form):
 
 def status():
     reg = region_view()
-    st = {"air": {"config_token": "sim-token", "sensor_fresh": False, "bound_mac": "", "discovered_mac": ""},
+    st = {"air": {"config_token": "sim-token", "sensor_fresh": False, "bound_mac": "", "discovered_mac": "", **AIR},
           "firmware_version": "simulator", "control_armed": False, "price_error": 0, "price_http_status": 0,
           "price_currency": reg.get("currency", "EUR"), "price_area": reg.get("nordpool_area", ""),
           "spot": None, "total_price": None, "weather_c": None, "market_last_fetch_utc": 0}
@@ -211,6 +228,12 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         n = int(self.headers.get("Content-Length", "0"))
         form = {k: v[0] for k, v in parse_qs(self.rfile.read(n).decode("utf-8")).items()}
+        if u.path == "/api/air/config":
+            if form.pop("token", "") != "sim-token":
+                return self.send(403, {"saved": False})
+            AIR.update(mode=int(form["mode"]), hold_target_c=float(form["hold"]),
+                       occupied_target_c=float(form["occupied"]), drying_delta_c=float(form["delta"]))
+            return self.send(200, {"saved": True, "physical_writes": False})
         if u.path != "/api/settings":
             return self.send(404, {"error": "not in simulator"})
         if form.pop("token", "") != "sim-token":

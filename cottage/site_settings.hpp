@@ -10,6 +10,7 @@
 // Timestamps are UTC; the transfer schedule is evaluated in the civil time of
 // the selected country (EU summer-time rule) at the 15-minute slot START.
 #include "cottage/finnish_tariff.hpp"
+#include "cottage/optimization_profile.hpp"
 #include "cottage/url_guard.hpp"
 #include "forecast/eu_time.hpp"
 #include "forecast/market_zones.hpp"
@@ -128,6 +129,11 @@ struct SiteSettings {
     bool tariff_confirmed=false; // user entered/confirmed contract prices
     bool setup_complete=true; // first-run wizard finished (fresh devices: false)
     uint8_t setup_step=0;     // resume point of the wizard
+    // Optimization profile and the owner's comfort limits (0 = not set).
+    // Balanced without limits behaves exactly like the firmware before profiles.
+    OptimizationProfile profile=OptimizationProfile::Balanced;
+    double comfort_min_c=0;
+    double comfort_max_c=0;
 };
 
 // Byte layout of the shipped v1 settings blob (Finland-only, before regional
@@ -187,7 +193,9 @@ inline bool valid_site_region(const SiteSettings& s);
 inline bool valid_site_settings(const SiteSettings& s) {
     if(!valid_site_region(s)) return false;
     const enevina::MarketCountry* c=enevina::find_market_country(s.country);
-    return valid_site_tariff(s.tariff,currency_limit_scale(c ? c->currency : "EUR"));
+    return static_cast<uint8_t>(s.profile)<=2 &&
+        valid_comfort_limits(s.comfort_min_c,s.comfort_max_c) &&
+        valid_site_tariff(s.tariff,currency_limit_scale(c ? c->currency : "EUR"));
 }
 inline bool valid_site_region(const SiteSettings& s) {
     auto terminated=[](const char* p,size_t n){return std::memchr(p,0,n)!=nullptr;};
@@ -423,6 +431,19 @@ inline SettingError apply_site_setting(SiteSettings& s,const char* key,const cha
         if(!std::strcmp(value,"true")) v=true;
         else if(std::strcmp(value,"false")) return SettingError::BadChoice;
         (key[0]=='t'?s.tariff_confirmed:s.setup_complete)=v;
+        return SettingError::Ok;
+    }
+    if(!std::strcmp(key,"optimization_profile")) {
+        return parse_profile(value,s.profile)?SettingError::Ok:SettingError::BadChoice;
+    }
+    if(!std::strcmp(key,"comfort_min_c") || !std::strcmp(key,"comfort_max_c")) {
+        double v=0;
+        if(*value) {
+            if(!detail::parse_decimal(value,v)) return SettingError::BadNumber;
+            if(v<kComfortMinAllowedC || v>kComfortMaxAllowedC ||
+               std::fabs(v*2.0-std::round(v*2.0))>1e-9) return SettingError::OutOfRange;
+        }
+        (key[9]=='i'?s.comfort_min_c:s.comfort_max_c)=v;   // "" clears the limit
         return SettingError::Ok;
     }
     if(!std::strcmp(key,"setup_step")) {
