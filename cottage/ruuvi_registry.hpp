@@ -11,6 +11,13 @@
 // never the freshest; all values shown come from the latest accepted frame of
 // that MAC with its age - a sensor that stopped advertising keeps its old age
 // and is never presented as fresh.
+//
+// Hearing a sensor is not the same as having a measurement: a sensor that keeps
+// repeating the same (or an older) frame sequence is "heard" but delivers no new
+// measurement, exactly as RuuviBinding::accept() treats it (Duplicate /
+// OldSequence). `last_ms` is when ANY frame arrived; `measured_ms` and `measured`
+// are the last frame whose sequence really advanced. Freshness shown to the
+// owner follows the measurement, so setup never calls a replaying sensor "live".
 #include "cottage/ruuvi_v5.hpp"
 #include <algorithm>
 #include <array>
@@ -25,12 +32,22 @@ constexpr uint64_t kRuuviForgetMs=15ull*60*1000;   // unseen for 15 min: gone
 constexpr uint64_t kRuuviFreshMs=2ull*60*1000;     // "live" if seen within 2 min
 
 struct RuuviSeen {
-    RuuviV5 latest{};
+    RuuviV5 latest{};        // last frame heard (signal strength, MAC)
+    RuuviV5 measured{};      // last frame with an advancing sequence
     uint64_t first_ms=0;
-    uint64_t last_ms=0;
+    uint64_t last_ms=0;      // last frame heard
+    uint64_t measured_ms=0;  // last accepted measurement
+    uint64_t restart_ms=0;   // untrusted restart candidate (battery change)
     uint32_t frames=0;
+    uint16_t restart_sequence=0;
+    bool has_measurement=false;
+    bool restart_candidate=false;
     bool used=false;
 };
+// Same sequence arithmetic as RuuviBinding::accept (modulo 65535).
+inline unsigned ruuvi_sequence_distance(uint16_t from,uint16_t to) {
+    return (static_cast<unsigned>(to)+65535u-static_cast<unsigned>(from))%65535u;
+}
 
 class RuuviRegistry {
 public:
@@ -50,6 +67,11 @@ public:
         slot->latest=s;
         slot->last_ms=now_ms;
         if(slot->frames<0xFFFFFFFFu) ++slot->frames;
+        if(counts_as_measurement(*slot,s,now_ms)) {
+            slot->measured=s;
+            slot->measured_ms=now_ms;
+            slot->has_measurement=true;
+        }
         return true;
     }
     // Copies up to `capacity` live entries, strongest signal first. A clock
@@ -73,6 +95,29 @@ public:
         return n;
     }
 private:
+    // Mirrors RuuviBinding::accept: repeated or older sequences are not new
+    // measurements, and a restarted sequence is trusted only after the old
+    // measurement is stale AND two consecutive advancing frames arrived.
+    static bool counts_as_measurement(RuuviSeen& e,const RuuviV5& s,uint64_t ms) {
+        if(!e.has_measurement) return true;
+        if(ms<e.measured_ms) return false;
+        const unsigned distance=ruuvi_sequence_distance(e.measured.sequence,s.sequence);
+        if(distance==0) return false;
+        if(distance>32767) {
+            if(ms-e.measured_ms<=600000) return false;
+            const unsigned step=ruuvi_sequence_distance(e.restart_sequence,s.sequence);
+            if(!e.restart_candidate||step!=1||ms<=e.restart_ms||ms-e.restart_ms>120000) {
+                e.restart_candidate=true;
+                e.restart_sequence=s.sequence;
+                e.restart_ms=ms;
+                return false;
+            }
+            e.restart_candidate=false;
+            return true;
+        }
+        e.restart_candidate=false;
+        return true;
+    }
     RuuviSeen* find(const std::array<uint8_t,6>& mac) {
         for(auto& e:slots_) if(e.used&&e.latest.mac==mac) return &e;
         return nullptr;

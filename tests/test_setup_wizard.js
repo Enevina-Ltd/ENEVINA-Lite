@@ -23,7 +23,7 @@ assert.deepEqual(missing,[],'missing English translations');
 
 const ctx={document:{},state:{},uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS};',ctx);
+vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS};',ctx);
 const A=ctx.api;
 
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
@@ -61,7 +61,7 @@ assert.equal(A.wzStartStep({}),0);assert.equal(A.wzStartStep(null),0);
 // summary: honest per-item state from live data
 const good={site:{fmi_latlon:'61.4638,24.0760',pump_adapter:'mitsubishi_cn105_esphome',shelly_scope:'heat_pump',
     region:{city:'Kangasala',price_region_resolved:true,nordpool_area:'FI',currency:'EUR',tariff_confirmed:true}},
-  status:{spot:0.05,price_error:0,cn105_sse_climate_received:true,air:{sensor_fresh:true},shelly_w:300},
+  status:{spot:0.05,price_error:0,cn105_source_verified:true,air:{sensor_fresh:true},shelly_w:300},
   weather:{valid:true},plan:{valid:true}};
 let s=A.wzSummary(good);const by=Object.fromEntries(s.map(x=>[x.key,x.state]));
 assert.deepEqual(by,{wifi:'ok',location:'ok',zone:'ok',tariff:'ok',pump:'ok',sensor:'ok',meter:'ok',profile:'ok',optimizer:'ok'});
@@ -76,8 +76,26 @@ const failing=JSON.parse(JSON.stringify(good));failing.status.spot=null;failing.
 s=A.wzSummary(failing);const z=s.find(x=>x.key==='zone');
 assert.equal(z.state,'warn');assert(z.detail.includes('ei ole vielä julkaissut'));
 // a pump that is selected but silent is a warning, not ok
-const quiet=JSON.parse(JSON.stringify(good));quiet.status.cn105_sse_climate_received=false;
+const quiet=JSON.parse(JSON.stringify(good));quiet.status.cn105_source_verified=false;
 assert.equal(A.wzSummary(quiet).find(x=>x.key==='pump').state,'warn');
+// Codex P1 (#56): one old snapshot is not a working connection
+const pumpOf=st=>{const c=JSON.parse(JSON.stringify(good));c.status={...c.status,cn105_source_verified:false,...st};return A.wzSummary(c).find(x=>x.key==='pump');};
+let pm=pumpOf({cn105_sse_climate_received:true,cn105_sse_climate_age_s:7});
+assert.equal(pm.state,'warn');assert(pm.detail.includes('UART-lähdettä ei ole varmennettu'));      // observed is not verified
+pm=pumpOf({cn105_sse_climate_received:true,cn105_sse_climate_age_s:900});
+assert.equal(pm.state,'warn');assert(pm.detail.includes('ei tule'));                              // stale snapshot
+pm=pumpOf({cn105_sse_climate_received:true,cn105_sse_climate_age_s:null});assert(pm.detail.includes('ei tule'));
+pm=pumpOf({cn105_sse_climate_received:true,cn105_sse_climate_age_s:-5});assert(pm.detail.includes('ei tule'));
+pm=pumpOf({cn105_source_verified:true});assert.equal(pm.state,'ok');
+const midea=JSON.parse(JSON.stringify(good));midea.site.pump_adapter='midea_lan';
+assert.equal(A.wzSummary(midea).find(x=>x.key==='pump').state,'warn');                            // never a fake ok for Midea
+// a country change blanks the tariff draft (source guard on the handler below)
+assert.deepEqual({...A.wzBlankTariff()},{margin:'',tday:'',tnight:'',tax:'',vat:'',incl:'false'});
+const handler=header.split("sel.addEventListener('change'")[1].split('});')[0];
+assert(handler.includes('wzBlankTariff()')&&handler.indexOf('wzBlankTariff()')<handler.indexOf('WZ.country=sel.value'));
+// Skip on the devices step posts only the step (a mistyped meter address cannot block it)
+assert(/else if\(s===6\)\{if\(skip\)await wzPost\(\{setup_step:'7'\}\);else await wzSaveDevices\(\);\}/.test(header));
+assert(!header.includes("fmt(p.cost_eur,2)+' €'"),'plan cost must use the zone currency');
 // stale/invalid weather is a warning
 const noWx=JSON.parse(JSON.stringify(good));noWx.weather={valid:false};
 assert.equal(A.wzSummary(noWx).find(x=>x.key==='location').state,'warn');
