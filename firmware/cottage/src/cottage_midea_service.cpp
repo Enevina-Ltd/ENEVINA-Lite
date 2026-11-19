@@ -211,9 +211,11 @@ void cottage_midea_service_worker(void*) {
                 }
             }
         } else {
-            // Selection/network changes invalidate any previous apparent live
-            // measurement; last_result is not misrepresented as fresh.
+            // Invalidate under the same mutex as the status snapshot, so the
+            // timestamp never contradicts an independently copied sample.
+            xSemaphoreTake(mutex,portMAX_DELAY);
             last_success.store(0);
+            xSemaphoreGive(mutex);
         }
         vTaskDelay(pdMS_TO_TICKS(30000));
     }
