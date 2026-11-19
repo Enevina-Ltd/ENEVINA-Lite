@@ -1,6 +1,6 @@
 # F02 ESP32-S3 testikortti – ei-tuhoavat tarkistukset ja palautussuunnitelma (17.11.2026)
 
-**Tämä on testikortin valmistelu, ei lupa fläshätä.** Pihamökin ESP32/CN105/Shelly ja muut tuotantolaitteet pysyvät muuttumattomina.
+**Tämä on testikortin valmistelu, ei lupa fläshätä.** Kenttätestilaitteiden ESP32/CN105/Shelly ja muut tuotantolaitteet pysyvät muuttumattomina.
 
 ## Toteutunut laitetunnistus ja lukutilanne 17.11.2026
 
@@ -12,7 +12,7 @@
 - **230400 baud:** lukeminen keskeytyi `4 509 696 / 16 777 216` tavuun, `Corrupt data, expected 0x1000 bytes but received 0xff3 bytes`.
 - Kumpikaan yritys ei luonut **edes talteen jäänyttä osittaista image-tiedostoa**. Täyden flash-kuvan kokoa, SHA-256:ta, tämänhetkistä osiotaulua eikä palautuksen toimivuutta voida todentaa.
 - Esptool raportoi `Hard resetting via RTS pin` ja USB-portti jäi näkyviin; juuri tämän testikortin normaalista käynnistyksestä ei saatu suoraa sarjatodistetta. Muiden verkkopalvelujen HTTP-vastaus ei sitä yksilöi.
-- Lokit ja `read_audit.json` pysyvät **yksityisessä** hakemistossa `/home/kaelion/.secure/enevina-lite-esp32-backup-20261117/`. Älä kopioi flash-sisältöä, NVS:ää tai yksityisiä avaimia GitHubiin.
+- Lokit ja `read_audit.json` pysyvät **yksityisessä** hakemistossa `<private-local-backup-directory>`. Älä kopioi flash-sisältöä, NVS:ää tai yksityisiä avaimia GitHubiin.
 - Kaksi virhettä eri osoitteissa viittaavat mahdolliseen **lukusiirron epävakauteen**, mutta eivät yksilöi USB-kaapelia, sarjasovitinta, virransyöttöä tai flashia syyksi. Core-koneen kernel-lokissa ei näkynyt katsotulla lukuaikavälillä USB-irrotus- tai alijänniteilmoitusta; sekään ei poissulje lohkosiirtovirhettä.
 
 **Seuraava askel:** tarkista fyysinen USB-kaapeli, liitännät, hubit ja virransyöttö. Vasta tämän jälkeen toista hyväksytty vain-luku-operaatio tarvittaessa hitaammin tai rajatuissa osissa. Yhdistä osat vasta kun offsetit, koot ja niiden eheys täsmäävät. Nykyinen osiotaulu voidaan tällöin todentaa jo ehjästä alkuosasta, mutta **täysi palautus vaatii yhä koko flashin**. Älä tee flash-, NVS-, OTA-, bootloader- tai eFuse-kirjoituksia. Käytössä olevia keräimiä ja OTA-palvelua ei pysäytetä.

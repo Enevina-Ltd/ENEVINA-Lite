@@ -7,6 +7,7 @@
 #endif
 #include "market.hpp"
 #include "market_cache.hpp"
+#include "market_cache_compact.hpp"
 #include "forecast/sources.hpp"
 
 #include <algorithm>
@@ -17,6 +18,7 @@
 #include <cstring>
 #include <ctime>
 #include <new>
+#include <memory>
 
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
@@ -60,25 +62,66 @@ bool same_prices(const PriceCache& a, const PriceCache& b) {
     return true;
 }
 
+void save_cache(const PriceCache& value);
 void load_cache() {
     nvs_handle_t handle;
     if(nvs_open("enevina_market",NVS_READONLY,&handle)!=ESP_OK) return;
     auto* saved=new(std::nothrow) PriceCache;
+    bool migrate_legacy=false;
     if(saved) {
-        size_t size=sizeof(*saved);
-        const bool ok=nvs_get_blob(handle,"price_v1",saved,&size)==ESP_OK &&
-            size==sizeof(*saved) && valid_prices(*saved);
+        auto compact=std::unique_ptr<CompactPriceCache>(
+            new(std::nothrow) CompactPriceCache);
+        size_t size=sizeof(CompactPriceCache);
+        bool ok=compact &&
+            nvs_get_blob(handle,"price_v2",compact.get(),&size)==ESP_OK &&
+            size==sizeof(*compact) &&
+            unpack_price_cache(*compact,*saved) && valid_prices(*saved);
+        if(!ok) {
+            size=sizeof(*saved);
+            ok=nvs_get_blob(handle,"price_v1",saved,&size)==ESP_OK &&
+                size==sizeof(*saved) && valid_prices(*saved);
+            migrate_legacy=ok;
+        }
         if(ok) cache=*saved;
         delete saved;
     }
     nvs_close(handle);
+    // Move the verified in-memory legacy price cache without discarding other
+    // NVS namespaces (Wi-Fi, OTA, sensors and user settings).
+    if(migrate_legacy) save_cache(cache);
 }
 
 void save_cache(const PriceCache& value) {
+    // Market reader has a small RTOS stack. The 1.6-KiB packed buffer must
+    // live on heap, not the stack (physical ESP32 stack-canary regression).
+    auto compact=std::unique_ptr<CompactPriceCache>(
+        new(std::nothrow) CompactPriceCache);
+    if(!compact || !pack_price_cache(value,*compact)) {
+        ESP_LOGW(tag,"Skipping noncontiguous price cache NVS write");
+        return;
+    }
     nvs_handle_t handle;
     if(nvs_open("enevina_market",NVS_READWRITE,&handle)!=ESP_OK) return;
-    if(nvs_set_blob(handle,"price_v1",&value,sizeof(value))==ESP_OK)
-        nvs_commit(handle);
+    // The old 200 x MarketPrice blob occupies most of the 20-KiB NVS area.
+    // Erase only THIS replaceable, already-validated price-cache key before
+    // creating compact v2. Price RAM remains available if flash is full.
+    const esp_err_t previous=nvs_erase_key(handle,"price_v1");
+    if(previous!=ESP_ERR_NVS_NOT_FOUND && previous!=ESP_OK) {
+        ESP_LOGW(tag,"NVS old-price removal failed: %d",previous);
+        nvs_close(handle);
+        return;
+    }
+    if(previous==ESP_OK && nvs_commit(handle)!=ESP_OK) {
+        ESP_LOGW(tag,"NVS old-price deletion commit failed");
+        nvs_close(handle);
+        return;
+    }
+    if(nvs_set_blob(handle,"price_v2",compact.get(),sizeof(*compact))==ESP_OK) {
+        if(nvs_commit(handle)!=ESP_OK)
+            ESP_LOGW(tag,"NVS compact-price commit failed");
+    } else {
+        ESP_LOGW(tag,"NVS compact-price write failed");
+    }
     nvs_close(handle);
 }
 

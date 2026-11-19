@@ -1,6 +1,9 @@
 #ifndef COTTAGE_BENCH_MODE
 #include <Arduino.h>
 #include <Preferences.h>
+#include <nvs.h>
+#include <esp_log.h>
+#include "cottage/nvs_cache_reclaim_policy.hpp"
 #include <WebServer.h>
 #include <cJSON.h>
 #include <atomic>
@@ -9,6 +12,7 @@
 #include "cottage_config.hpp"
 #include "cottage_site_settings.hpp"
 #include "cottage_air_service.hpp"
+#include "../../main/weather.hpp"
 #include "cottage_wifi.hpp"
 #include "pump/adapter_catalog.hpp"
 
@@ -58,14 +62,34 @@ bool acceptable(const SiteSettings& s) {
         memchr(s.fmi_latlon,0,sizeof(s.fmi_latlon)) &&
         memchr(s.pump_adapter,0,sizeof(s.pump_adapter));
 }
+// Only these two NVS values are reconstructible from remote data.
+// Never touch the owner's Wi-Fi, OTA journal, Ruuvi history or authorization.
+bool erase_disposable_cache(const char* nspace,const char* key) {
+    nvs_handle_t handle=0;
+    if(nvs_open(nspace,NVS_READWRITE,&handle)!=ESP_OK)return false;
+    const esp_err_t erased=nvs_erase_key(handle,key);
+    const bool ok=erased==ESP_OK && nvs_commit(handle)==ESP_OK;
+    nvs_close(handle);
+    if(ok) ESP_LOGW("enevina_site","NVS cache reclaimed: %s/%s",nspace,key);
+    return ok;
+}
 bool persist(const SiteSettings& s) {
     Stored blob{};
     blob.settings=s;
-    Preferences p;
-    if(!p.begin("site",false)) return false;
-    const size_t written=p.putBytes("v1",&blob,sizeof(blob));
-    p.end();
-    return written==sizeof(blob);
+    const auto write_site=[&]() {
+        Preferences p;
+        if(!p.begin("site",false)) return false;
+        const size_t written=p.putBytes("v1",&blob,sizeof(blob));
+        p.end();
+        return written==sizeof(blob);
+    };
+    // NVS in existing installed devices is just 16KiB. With persistent
+    // weather, price, Ruuvi history and Wi-Fi, setting a site identity may
+    // fail even when the NVS namespace exists. Reclaim only the two online
+    // caches when the *user-initiated durable write* has failed. Don't touch
+    // non-cache NVS keys or clear a whole partition.
+    return enevina::cottage::persist_with_optional_cache_reclaim(
+        write_site,erase_disposable_cache);
 }
 const char* kind_name(enevina::cottage::TransferKind k) {
     switch(k) {
@@ -95,7 +119,7 @@ void send_settings(WebServer& web) {
     cJSON_AddStringToObject(root,"cn105_url",s.cn105_url);
     cJSON_AddStringToObject(root,"shelly_url",s.shelly_url);
     cJSON_AddStringToObject(root,"fmi_latlon",s.fmi_latlon);
-    cJSON_AddStringToObject(root,"fmi_latlon_note","takes effect after next power-up");
+    cJSON_AddStringToObject(root,"fmi_latlon_note","applied immediately after save");
     cJSON_AddStringToObject(root,"pump_adapter",s.pump_adapter);
     cJSON* list=cJSON_AddArrayToObject(root,"adapters");
     for(const auto& e:enevina::adapter_catalog) {
@@ -197,21 +221,35 @@ void site_settings_register_routes(WebServer& web) {
             web.send(400,"application/json","{\"saved\":false,\"error\":\"INVALID\"}");
             return;
         }
+        const SiteSettings previous=site_settings_snapshot();
+        const bool endpoint_changed=
+            strcmp(previous.cn105_url,next.cn105_url)!=0 ||
+            strcmp(previous.pump_adapter,next.pump_adapter)!=0;
+        // Durable revocation MUST precede new site commit. Otherwise an
+        // immediate reset could reinstate the old pump permission when the
+        // user later selects the previous URL again.
+        if(endpoint_changed && !cottage_control_revoke_saved_intent()) {
+            web.send(500,"application/json",
+                     "{\"saved\":false,\"error\":\"CONTROL_NVS\"}");
+            return;
+        }
         // Durable first: RAM changes only after NVS accepted the full blob.
         if(!persist(next)) {
             web.send(500,"application/json","{\"saved\":false,\"error\":\"NVS\"}");
             return;
         }
         xSemaphoreTake(guard,portMAX_DELAY);
-        // Codex P1 (PR #30): a different pump endpoint/adapter is a different
-        // device; its write authorization must be given again explicitly.
-        const bool endpoint_changed=strcmp(current.cn105_url,next.cn105_url)!=0 ||
-            strcmp(current.pump_adapter,next.pump_adapter)!=0;
+        // The previous endpoint's NVS authorization was already revoked.
         current=next;
         loaded_from_nvs=true;
         xSemaphoreGive(guard);
         if(endpoint_changed) endpoint_generation.fetch_add(1);
         generation.fetch_add(1);
+        // Only weather location changed: keep the CN105 control permission.
+        // Persist before updating RAM; the FMI worker invalidates its old
+        // cache and immediately schedules a fetch for this location.
+        if(strcmp(previous.fmi_latlon,next.fmi_latlon)!=0)
+            enevina_firmware::weather_update_location(next.fmi_latlon);
         web.send(200,"application/json",endpoint_changed?
             "{\"saved\":true,\"control_disarmed\":true}":"{\"saved\":true}");
     });

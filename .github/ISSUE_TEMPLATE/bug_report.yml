@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible Enevina Lite issue (no private device data).
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a developer preview. Please **redact Wi-Fi credentials, private IPs, MAC addresses, GPS coordinates, keys and identifiable device logs**. A host-test failure is not a physical-device certification.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: "v0.1.0-alpha.1 or short commit SHA"
+    validations:
+      required: true
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Area
+      options:
+        - Native C++ / tests
+        - Local web dashboard
+        - Wi-Fi onboarding
+        - Energy price or weather forecast
+        - Sensor or pump adapter
+        - Optimization
+        - OTA / boot or recovery
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest test case or command you can run without controlling a real pump.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual result
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized logs or test output (optional)
+      description: Do not upload confidential data or hardware identifiers.

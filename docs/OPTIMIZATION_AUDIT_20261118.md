@@ -13,7 +13,7 @@ hydroninen G0 [`benchmarks/esp32-optimization-audit.json`](benchmarks/esp32-opti
 |---|---|---|
 | `cottage/price_bootstrap.hpp` (PR #22) | **Ainoa polku, joka voi lähettää CN105-komennon** (armed-pilotti) | Malliton hintaheuristiikka, ei MPC. |
 | `cottage/mpc.cpp` | Varjotila / dashboard | Ei käytössä ilman `COTTAGE_SYNTHETIC_TEST_MODEL=1`; rakennusmallia ei ole kalibroitu. |
-| `optimizer/optimizer.cpp` (G0) | Hydroninen tutkimusydin | Ei mökin firmwaressa. |
+| `optimizer/optimizer.cpp` (G0) | Hydroninen tutkimusydin | Ei tässä ESP32-ohjauspolussa. |
 
 Asuttu-tila (16–26 °C asetusarvo) toimii vain hintaheuristiikalla: HEAT16/OFF-
 fysiikka on validoitu ≤ 16 °C:lle. Pumpun oman termostaatin mallia ei keksitty.
@@ -44,7 +44,7 @@ todellisista kustannuksista; `equalized_cost_eur` on vain tieto. MILP:n aikaraja
 MPC:n ja MILP:n yhteinen tavoite on € + 0,03 €/kytkentä; siksi raportoidaan
 sekä €-ero että tavoite-ero.
 
-## 3. Tulokset (mökkimalli, 76 ajoa)
+## 3. Tulokset (testirakennusmalli, 76 ajoa)
 
 - **Rajarikkeet:** MPC 0 kaikissa täydellisen ennusteen tapauksissa. Perusohjaus
   ja hintaraja rikkovat 8 °C:n rajan nopeasti jäähtyvässä rakennuksessa ja
@@ -82,9 +82,11 @@ Kuolleella alueella hintasignaali päätti joka kierroksella riippumatta siitä,
 kummalla puolella tavoitetta huone oli: 11,49 → 11,51 → 11,49 °C tuotti
 HEAT → OFF → HEAT. Nyt halpa jakso esilämmittää vain tavoitteen alapuolella ja
 kallis sammuttaa vain tavoitteessa tai sen yläpuolella; muuten tila säilyy
-(`HOLD_IN_DEADBAND`). **Avoin (omistajan päätös):** vuorottelevilla halpa/kallis-
-jaksoilla aivan tavoitteessa tila voi edelleen vaihtua 15 min välein, koska
-komentopolusta on poistettu vähimmäiskäynti-/seisonta-aika.
+(`HOLD_IN_DEADBAND`). **Omistajan päätös 18.11.2026:** HEAT↔OFF-vaihtojen
+välillä on vähintään 30 min (`MODE_DWELL`, `cottage/mitsubishi_control_policy.hpp`);
+vuorottelevat halpa/kallis-jaksot eivät enää vaihda tilaa 15 min välein.
+Asetusarvon muutoksia ei viivästetä. Pumpun tilan tarkistukseksi riittää
+CN105-sillan GET (ei UART-lähdetodistetta) – omistajan päätös pilottiin.
 
 **Jäljellä:** hintaraja häviää termostaatille edelleen 20/70 vertailukelpoisessa ajossa (enimmäkseen
 24 jakson horisontit ja leuto sää), koska se nostaa asetusarvoa halvalla

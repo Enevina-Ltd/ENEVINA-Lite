@@ -53,7 +53,7 @@ and ESP32-S3 firmware (BUILD+LINK) successfully after the fix.
 
 Tested code branch: `feat/cottage-c24-memory-ota-safety-20261116`.
 Release identity for the change series up to `8bc6f8c4ceb5` (updated with the ESP-IDF P1 fix).
-Workspace: `/home/kaelion/enevina-lite-pr7-nvs-fault-20261117`.
+Workspace: `<private-local-workspace>`.
 Test logs: `/tmp/pr7_strict_dbgtest.log`,
 `/tmp/pr7_strict_reltest.log`, `/tmp/pr7_strict_pio.log`,
 `/tmp/pr7_nvs_test_ota_signing.log`,

@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 using namespace enevina::cottage;
 
 static WifiCredentials creds(const char* s,const char* p) {
@@ -173,7 +174,19 @@ static void retry_not_decided_by_previous_failure_reason() {
     w.tick(40000+25000,false,0);
     assert(w.last_result()==WifiResult::Timeout);
 }
+// Codex P1 (PR #30): the open setup AP exposes only Wi-Fi provisioning.
+static void setup_ap_only_provisions_wifi() {
+    for(const char* ok:{"/","/setup","/api/wifi/status","/api/wifi/scan",
+                        "/api/wifi/connect","/generate_204","/hotspot-detect.html"})
+        assert(setup_ap_route_allowed(ok));
+    for(const char* no:{"/api/control/arm","/api/settings","/api/status","/api/air/config",
+                        "/api/air/bind","/api/plan","/api/prices","/api/ota","/setup/x",
+                        "/api/wifi","/api/wifi/connectX",""})
+        assert(!setup_ap_route_allowed(no));
+    assert(!setup_ap_route_allowed(nullptr));
+}
 int main() {
+    setup_ap_only_provisions_wifi();
     online_submit_not_decided_by_old_connection();
     retry_not_decided_by_previous_failure_reason();
     first_boot_ap_then_success();

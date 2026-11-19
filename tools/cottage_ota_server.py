@@ -9,7 +9,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         name=paths.get(self.path)
         if not name: self.send_error(404);return
         try:
-            if ipaddress.ip_address(self.client_address[0]) not in self.allowed_cidr:
+            client_ip=ipaddress.ip_address(self.client_address[0])
+            if (client_ip not in self.allowed_cidr or
+                (self.allowed_clients and client_ip not in self.allowed_clients)):
                 self.send_error(403);return
         except ValueError: self.send_error(403);return
         path=self.directory/name
@@ -58,11 +60,22 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument("--bind",required=True)
     p.add_argument("--lan-cidr",required=True)
+    # Optional test-client allowlist. Without it, the normal LAN CIDR applies.
+    # Prevents a signed trial release from updating a second ESP32 on the LAN.
+    p.add_argument("--allow-client",action="append",default=[])
     p.add_argument("--port",type=int,default=8443)
     p.add_argument("--root",type=Path,required=True)
     args=p.parse_args()
-    Handler.allowed_cidr=ipaddress.ip_network(args.lan_cidr)
-    assert ipaddress.ip_address(args.bind) in Handler.allowed_cidr
+    Handler.allowed_cidr=ipaddress.ip_network(args.lan_cidr,strict=False)
+    if ipaddress.ip_address(args.bind) not in Handler.allowed_cidr:
+        p.error("bind address must be inside the configured LAN")
+    try:
+        Handler.allowed_clients=frozenset(
+            ipaddress.ip_address(item) for item in args.allow_client)
+    except ValueError as exc:
+        p.error("invalid OTA client allowlist address: "+str(exc))
+    if any(ip not in Handler.allowed_cidr for ip in Handler.allowed_clients):
+        p.error("OTA client allowlist must be inside configured LAN")
     Handler.directory=args.root/"releases"
     context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version=ssl.TLSVersion.TLSv1_2

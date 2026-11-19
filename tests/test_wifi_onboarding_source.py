@@ -37,6 +37,76 @@ class WifiOnboardingSource(unittest.TestCase):
         connect = WIFI.split("void connect_route()", 1)[1].split("void captive_redirect()", 1)[0]
         self.assertNotIn("persist(", connect)
 
+    def test_credentials_stored_as_one_atomic_blob(self):
+        # Codex P2 (PR #30): never two writes that can split SSID/password.
+        persist = WIFI.split("bool persist(const WifiCredentials& c) {", 1)[1].split("\n}", 1)[0]
+        self.assertIn('p.putBytes("cred1",&blob,sizeof(blob))', persist)
+        self.assertNotIn("putString", persist)
+        self.assertIn("blob.magic==StoredWifi{}.magic", WIFI)
+
+    def test_migrate_legacy_wifi_nvs_without_exposing_credentials(self):
+        # Existing 2026111604 firmware stored separate ssid and pass strings.
+        read = WIFI.split("bool load_stored(WifiCredentials& c) {", 1)[1]\
+            .split("bool persist(const WifiCredentials& c) {", 1)[0]
+        self.assertIn('p.getBytesLength("cred1")', read)
+        self.assertIn('if(!ok && stored_size==0)', read)
+        self.assertIn('p.getString("ssid","")', read)
+        self.assertIn('p.getString("pass","")', read)
+        self.assertIn('valid_ssid(legacy.ssid)', read)
+        self.assertIn('valid_wifi_password(legacy.password)', read)
+        self.assertIn('if(migrate_legacy) legacy_migration_pending=true', read)
+        self.assertNotIn('persist(c)', read)
+        loop = WIFI.split("void cottage_wifi_loop() {", 1)[1]
+        self.assertIn('if(legacy_migration_pending && got_ip.load()', loop)
+        self.assertIn('persist(machine.stored()))', loop)
+        self.assertNotIn('Serial.printf', read)
+        self.assertNotIn('Serial.print(legacy_', read)
+        # Never replace a newer but invalid record with potentially stale keys.
+        self.assertNotIn('if(!ok) {\n            const String legacy_ssid', read)
+
+    def test_compiled_fallback_persists_only_after_verified_ip(self):
+        load = WIFI.split("bool load_stored(WifiCredentials& c) {", 1)[1]\
+            .split("bool persist(const WifiCredentials& c) {", 1)[0]
+        self.assertIn('if(!ok && strlen(COTTAGE_WIFI_SSID))', load)
+        fallback = load.split('if(!ok && strlen(COTTAGE_WIFI_SSID))', 1)[1]
+        self.assertIn('if(ok) legacy_migration_pending=true;', fallback)
+        self.assertNotIn('persist(c)', load)
+        loop = WIFI.split("void cottage_wifi_loop() {", 1)[1]
+        self.assertIn('legacy_migration_pending && got_ip.load()', loop)
+
+    def test_persistent_control_intent_bound_to_pump(self):
+        self.assertIn('control_intent_restorable(saved,site_settings_snapshot(),', MAIN)
+        self.assertIn('const size_t stored_size=prefs.getBytesLength("intent1")', MAIN)
+        self.assertIn('control_armed.store(restore && !must_revoke)', MAIN)
+        # Newer P0 PR #49 writes enabled intent through native NVS to
+        # expose the real save failure and reclaim only disposable caches.
+        self.assertIn('nvs_set_blob(handle,"intent1",&record,sizeof(record))', MAIN)
+        self.assertIn('nvs_commit(handle)', MAIN)
+        self.assertIn('control_armed_endpoint.store(site_settings_endpoint_generation())', MAIN)
+        disarm = MAIN.split("static void cottage_control_disarm() {", 1)[1].split(
+            "static void cottage_control_tick()", 1)[0]
+        self.assertIn('cottage_control_revoke_saved_intent()', disarm)
+        self.assertIn('prefs.putBytes("intent1",&record,sizeof(record))', MAIN)
+
+    def test_ota_boot_does_not_inherit_auto_control(self):
+        self.assertIn('esp_partition_get_sha256(running,out)', MAIN)
+        self.assertIn('image_state==ESP_OTA_IMG_PENDING_VERIFY', MAIN)
+        self.assertIn('cottage_ota_confirmation_pending()', MAIN)
+        self.assertIn('valid_image && !activating_ota', MAIN)
+        self.assertIn('must_revoke=saved.enabled!=0 && !restore', MAIN)
+        self.assertIn('cottage_control_revoke_saved_intent()', MAIN)
+        self.assertIn('!pending_ota && !cottage_ota_confirmation_pending()', MAIN)
+
+    def test_endpoint_change_revoked_before_site_nvs_commit(self):
+        post=SITE.split('web.on("/api/settings",HTTP_POST',1)[1]
+        self.assertLess(post.index('cottage_control_revoke_saved_intent()'),
+                        post.index('persist(next)'))
+        self.assertLess(post.index('cottage_control_revoke_saved_intent()'),
+                        post.index('current=next'))
+        self.assertIn('if(endpoint_changed && !cottage_control_revoke_saved_intent())', post)
+        self.assertIn('CONTROL_NVS', post)
+        self.assertIn('if(endpoint_changed) endpoint_generation.fetch_add(1)', post)
+
     def test_home_wifi_password_never_logged_or_returned(self):
         for line in WIFI.splitlines():
             if "Serial.print" in line:
@@ -63,6 +133,15 @@ class WifiOnboardingSource(unittest.TestCase):
         self.assertIn("const ssid=$('ssid').value,", PAGE)
         self.assertNotIn("$('ssid').value.trim()", PAGE)
 
+    def test_setup_ap_guard_registered_first(self):
+        # Codex P1 (PR #30): control/settings must not be reachable via the open AP.
+        begin = WIFI.split("void cottage_wifi_begin(WebServer& web) {", 1)[1]
+        self.assertLess(begin.index("web.addHandler(new SetupApGuard())"), begin.index("web.on("))
+        self.assertIn("!setup_ap_route_allowed(uri.c_str())", WIFI)
+        self.assertLess(MAIN.index("cottage_wifi_begin(web);"), MAIN.index('web.on("/api/status"'))
+        self.assertLess(MAIN.index("cottage_wifi_begin(web);"), MAIN.index("c23_register_routes(web);"))
+        self.assertLess(MAIN.index("cottage_wifi_begin(web);"), MAIN.index("cottage_control_registration();"))
+
     def test_main_wiring(self):
         self.assertIn("cottage_wifi_begin(web);", MAIN)
         self.assertIn("cottage_wifi_loop();", MAIN)
@@ -70,7 +149,7 @@ class WifiOnboardingSource(unittest.TestCase):
         self.assertNotIn("WiFi.begin(COTTAGE_WIFI_SSID", MAIN)
         self.assertLess(MAIN.index("c23_initialize();"), MAIN.index("cottage_wifi_begin(web);"))
         self.assertLess(MAIN.index("site_settings_initialize();"),
-                        MAIN.index("enevina_firmware::start_weather_reader();"))
+                        MAIN.index("enevina_firmware::start_weather_reader(site_settings_snapshot().fmi_latlon);"))
 
     def test_setup_ap_exposes_wifi_only_even_while_home_connected(self):
         # Codex P1 (PR #30): a public, intentionally passwordless setup AP
@@ -121,13 +200,14 @@ class SiteSettingsSource(unittest.TestCase):
     def test_endpoint_change_revokes_armed_control(self):
         # Codex P1 (PR #30): authorization is bound to the configured pump.
         self.assertIn("endpoint_changed) endpoint_generation.fetch_add(1)", SITE)
-        self.assertIn("strcmp(current.cn105_url,next.cn105_url)!=0", SITE)
+        self.assertIn("strcmp(previous.cn105_url,next.cn105_url)!=0", SITE)
         tick = MAIN.split("static void cottage_control_tick() {", 1)[1].split(
             "ControlSnapshot candidate", 1)[0]
         self.assertIn("control_armed_endpoint.load()!=site_settings_endpoint_generation()", tick)
         self.assertIn("cottage_control_disarm();", tick)
-        disarm = MAIN.split("static void cottage_control_disarm() {", 1)[1].split("}", 3)
-        self.assertIn('prefs.putBool("armed",false)', "}".join(disarm))
+        revoke = MAIN.split("bool cottage_control_revoke_saved_intent() {", 1)[1].split(
+            "static void cottage_control_disarm()", 1)[0]
+        self.assertIn('prefs.putBytes("intent1",&record,sizeof(record))', revoke)
         post = MAIN.split("static bool cn105_bridge_post(", 1)[1].split(
             "static void cottage_control_tick()", 1)[0]
         self.assertIn("control_armed_endpoint.load()!=site_settings_endpoint_generation()", post)
@@ -138,9 +218,11 @@ class SiteSettingsSource(unittest.TestCase):
     def test_location_bounds_match_weather_reader(self):
         weather = (ROOT / "firmware" / "main" / "weather.cpp").read_text(encoding="utf-8")
         settings = (ROOT / "cottage" / "site_settings.hpp").read_text(encoding="utf-8")
-        self.assertIn("latitude>=59 && latitude<=71", weather)
-        self.assertIn("longitude>=19 && longitude<=32", weather)
-        self.assertIn("y>=59&&y<=71&&x>=19&&x<=32", settings)
+        # MET Norway's global coverage replaced the older Finland-only
+        # latitude/longitude validation in both firmware and dashboard.
+        self.assertIn("new_lat < -90 || new_lat>90", weather)
+        self.assertIn("new_lon < -180 || new_lon>180", weather)
+        self.assertIn("y>=-90&&y<=90&&x>=-180&&x<=180", settings)
 
     def test_only_firmware_adapters_selectable(self):
         self.assertIn("adapter_selectable_in_lite_firmware(next.pump_adapter)", SITE)

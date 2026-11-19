@@ -20,6 +20,7 @@ DNSServer dns;
 WifiProvisioning machine;
 bool ap_active=false;
 bool mdns_started=false;
+bool legacy_migration_pending=false;
 char ap_ssid[24]="Enevina-Lite";
 char unique_host[24]="enevina-lite";
 std::atomic<uint16_t> last_reason{0};
@@ -35,32 +36,75 @@ void on_wifi_event(WiFiEvent_t event,WiFiEventInfo_t info) {
         got_ip.store(false);
     }
 }
+// SSID and password are ONE versioned NVS blob written with a single
+// putBytes(): a reset or failed write can never pair a new SSID with an old
+// password (Codex P2, PR #30). NVS replaces a key atomically.
+struct StoredWifi {
+    uint32_t magic=0x45575731; // "EWW1"
+    uint16_t version=1;
+    uint16_t size=sizeof(WifiCredentials);
+    WifiCredentials credentials{};
+};
 bool load_stored(WifiCredentials& c) {
     Preferences p;
     bool ok=false;
+    bool migrate_legacy=false;
     if(p.begin("wifi",true)) {
-        const String ssid=p.getString("ssid","");
-        const String pass=p.getString("pass","");
-        p.end();
-        if(ssid.length() && ssid.length()<sizeof(c.ssid) && pass.length()<sizeof(c.password)) {
-            strlcpy(c.ssid,ssid.c_str(),sizeof(c.ssid));
-            strlcpy(c.password,pass.c_str(),sizeof(c.password));
+        StoredWifi blob{};
+        const size_t stored_size=p.getBytesLength("cred1");
+        if(stored_size==sizeof(blob) &&
+           p.getBytes("cred1",&blob,sizeof(blob))==sizeof(blob) &&
+           blob.magic==StoredWifi{}.magic && blob.version==1 &&
+           blob.size==sizeof(WifiCredentials) &&
+           memchr(blob.credentials.ssid,0,sizeof(blob.credentials.ssid)) &&
+           memchr(blob.credentials.password,0,sizeof(blob.credentials.password))) {
+            c=blob.credentials;
             ok=valid_ssid(c.ssid) && valid_wifi_password(c.password);
         }
+        // C2.4 used two NVS string keys. Migrate them only when the new
+        // atomic record is absent; never override a damaged/newer cred1.
+        if(!ok && stored_size==0) {
+            const String legacy_ssid=p.getString("ssid","");
+            const String legacy_password=p.getString("pass","");
+            if(legacy_ssid.length()>0 &&
+               legacy_ssid.length()<sizeof(c.ssid) &&
+               legacy_password.length()<sizeof(c.password)) {
+                WifiCredentials legacy{};
+                strlcpy(legacy.ssid,legacy_ssid.c_str(),sizeof(legacy.ssid));
+                strlcpy(legacy.password,legacy_password.c_str(),
+                        sizeof(legacy.password));
+                if(valid_ssid(legacy.ssid) &&
+                   valid_wifi_password(legacy.password)) {
+                    c=legacy;
+                    ok=true;
+                    migrate_legacy=true;
+                }
+            }
+        }
+        p.end();
     }
+    // Keep the existing credentials until Wi-Fi actually obtains an IP.
+    // Do not persist an unverified legacy network at boot. Keep old NVS keys
+    // intact for rollback to the previous application.
+    if(migrate_legacy) legacy_migration_pending=true;
     if(!ok && strlen(COTTAGE_WIFI_SSID)) {
         // Existing pilot build: compile-time network is only the default.
         strlcpy(c.ssid,COTTAGE_WIFI_SSID,sizeof(c.ssid));
         strlcpy(c.password,COTTAGE_WIFI_PASSWORD,sizeof(c.password));
         ok=valid_ssid(c.ssid) && valid_wifi_password(c.password);
+        // One-time bootstrap from an existing pilot's compiled configuration.
+        // Once DHCP succeeds, persist the verified pair to the atomic cred1.
+        // Subsequent OTA images then need no embedded Wi-Fi credentials.
+        if(ok) legacy_migration_pending=true;
     }
     return ok;
 }
 bool persist(const WifiCredentials& c) {
+    StoredWifi blob{};
+    blob.credentials=c;
     Preferences p;
     if(!p.begin("wifi",false)) return false;
-    const bool ok=p.putString("ssid",c.ssid)==strlen(c.ssid) &&
-        p.putString("pass",c.password)==strlen(c.password);
+    const bool ok=p.putBytes("cred1",&blob,sizeof(blob))==sizeof(blob);
     p.end();
     return ok;
 }
@@ -182,6 +226,31 @@ void connect_route() {
     }
     server->send(202,"application/json","{\"accepted\":true}");
 }
+// Registered FIRST, so it sees every request before any other route. Only
+// requests that arrive through the setup AP AND are not Wi-Fi provisioning
+// routes are intercepted; the home-network interface is never touched.
+class SetupApGuard : public RequestHandler {
+public:
+    bool canHandle(HTTPMethod,String uri) override { return blocked(uri); }
+    bool canUpload(String uri) override { return blocked(uri); }
+    bool canRaw(String uri) override { return blocked(uri); }
+    bool handle(WebServer& web,HTTPMethod method,String) override {
+        if(method==HTTP_GET) {
+            web.sendHeader("Location",String("http://")+WiFi.softAPIP().toString()+"/setup");
+            web.send(302,"text/plain","");
+        } else {
+            web.send(403,"application/json","{\"error\":\"SETUP_NETWORK_WIFI_ONLY\"}");
+        }
+        return true;
+    }
+    void upload(WebServer&,String,HTTPUpload&) override {} // discard
+    void raw(WebServer&,String,HTTPRaw&) override {}
+private:
+    static bool blocked(const String& uri) {
+        return server && cottage_wifi_request_via_ap(*server) &&
+            !setup_ap_route_allowed(uri.c_str());
+    }
+};
 void captive_redirect() {
     server->sendHeader("Location",String("http://")+WiFi.softAPIP().toString()+"/setup");
     server->send(302,"text/plain","");
@@ -199,6 +268,8 @@ bool cottage_wifi_require_home_lan(WebServer& web) {
 }
 void cottage_wifi_begin(WebServer& web) {
     server=&web;
+    // Must be the first handler: the open setup AP may only provision Wi-Fi.
+    web.addHandler(new SetupApGuard());
     uint8_t mac[6]{};
     WiFi.macAddress(mac);
     snprintf(ap_ssid,sizeof(ap_ssid),"Enevina-Lite-%02X%02X",mac[4],mac[5]);
@@ -239,6 +310,9 @@ void cottage_wifi_loop() {
     machine.tick(now,got_ip.load(),last_reason.load());
     if(machine.take_commit() && !persist(machine.stored()))
         Serial.println("WIFI_WARN: verified network could not be stored in NVS");
+    if(legacy_migration_pending && got_ip.load() && machine.has_stored() &&
+       persist(machine.stored()))
+        legacy_migration_pending=false;
     if(machine.ap_should_run() && !ap_active) start_ap();
     else if(!machine.ap_should_run() && ap_active) stop_ap();
     if(got_ip.load() && !mdns_started) {

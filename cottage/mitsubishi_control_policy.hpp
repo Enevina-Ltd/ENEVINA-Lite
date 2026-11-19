@@ -10,7 +10,39 @@ namespace enevina::cottage {
 enum class ControlStep : uint8_t { None, Setpoint, SetHeat, SetOff };
 enum class ControlBlock : uint8_t {
     Disabled, NotInHeatingMode, InputsUnverified, NoProposal,
-    UnsupportedCommand, AlreadyApplied, Ready
+    UnsupportedCommand, AlreadyApplied, Ready, ModeDwell
+};
+// Owner decision 18.11.2026: minimum 30 min between HEAT<->OFF mode changes
+// (compressor run/off time; AGENTS.md section 11). Setpoint changes are not
+// mode changes and are never delayed.
+constexpr uint32_t mitsubishi_min_mode_dwell_ms=30u*60u*1000u;
+// HEAT<->OFF history feeding ControlSnapshot::ms_since_mode_change.
+// Pure and host-tested; the firmware serializes access. millis()-style
+// uint32 timestamps, wrap-safe by unsigned subtraction.
+//  * construction / reset(now): unknown history -> the dwell starts now
+//  * command_dispatched(now): called right before the actual mode POST
+//  * observe(heat,now): a fresh bridge GET. A mode change, or an observation
+//    gap longer than observation_gap_ms (the pump may have toggled unseen,
+//    Codex P1 post-merge #28), restarts the dwell.
+class MitsubishiModeHistory {
+public:
+    static constexpr uint32_t observation_gap_ms=5u*60u*1000u;
+    void reset(uint32_t now) { last_change_=now; seen_=-1; }
+    void command_dispatched(uint32_t now) { last_change_=now; }
+    void observe(bool heating,uint32_t now) {
+        const int seen=heating?1:0;
+        if(seen_>=0 && (seen!=seen_ ||
+           static_cast<uint32_t>(now-last_observation_)>observation_gap_ms))
+            last_change_=now;
+        seen_=seen;
+        last_observation_=now;
+    }
+    uint32_t since_change(uint32_t now) const {
+        return static_cast<uint32_t>(now-last_change_);
+    }
+private:
+    uint32_t last_change_=0,last_observation_=0;
+    int seen_=-1;
 };
 struct ControlSnapshot {
     bool armed=false;
@@ -22,6 +54,10 @@ struct ControlSnapshot {
     bool current_heat=false;
     double current_setpoint_c=0;
     BootstrapDecision proposal{};
+    // Time since the last HEAT<->OFF change that Lite sent OR observed via the
+    // bridge GET. The caller starts it at boot (unknown history -> wait).
+    uint32_t ms_since_mode_change=0;
+    uint32_t min_mode_dwell_ms=mitsubishi_min_mode_dwell_ms;
 };
 struct ControlProposal {
     ControlBlock gate=ControlBlock::Disabled;
@@ -60,6 +96,12 @@ inline ControlProposal choose_mitsubishi_control(const ControlSnapshot& s) {
         }
         out.step=ControlStep::SetOff;
     }
+    if((out.step==ControlStep::SetHeat || out.step==ControlStep::SetOff) &&
+       s.ms_since_mode_change<s.min_mode_dwell_ms) {
+        out.step=ControlStep::None;
+        out.gate=ControlBlock::ModeDwell;
+        return out;
+    }
     if(out.step!=ControlStep::None)out.gate=ControlBlock::Ready;
     return out;
 }
@@ -72,6 +114,7 @@ inline const char* control_gate_name(ControlBlock x) {
     case ControlBlock::UnsupportedCommand:return "INVALID_SETPOINT";
     case ControlBlock::AlreadyApplied:return "ALREADY_APPLIED";
     case ControlBlock::Ready:return "READY";
+    case ControlBlock::ModeDwell:return "MODE_DWELL";
     }
     return "UNKNOWN";
 }

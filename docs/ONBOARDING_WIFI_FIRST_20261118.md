@@ -3,7 +3,7 @@
 **Tila: toteutettu ja HOST-TESTATTU. Ei FYYSISESTI TODENNETTU.** Firmware kääntyy
 (`esp32s3_cottage_shadow`), mutta yhtään ESP32-S3-korttia ei flashattu eikä
 Android- tai iPhone-puhelimella ole tehty käyttöönottokoetta tämän muutoksen
-yhteydessä. Pihamökin korttia ei ole koskettu.
+yhteydessä. Kenttätestissä käytössä olevaan laitteeseen ei tehty muutoksia.
 
 ## Vaihe 1 – vain Wi-Fi
 
@@ -38,8 +38,14 @@ Muutos ei lisää salasanaa, kirjautumista, watchdogia eikä uutta porttia.
   käyttää olemassa olevaa käynnistyskohtaista CSRF-tunnistetta.
 - **Tunnettu riski:** asennusverkon ollessa auki lähellä oleva henkilö voi liittyä
   siihen ja syöttää laitteelle toisen Wi-Fi-verkon. Uutta verkkoa käytetään vasta,
-  kun siihen saadaan IP-osoite. Pumpun ohjaus ei käynnisty tästä: automaattiohjaus
-  pitää aina ottaa erikseen käyttöön kotiverkon dashboardista.
+  kun siihen saadaan IP-osoite.
+- **Asennusverkko on vain Wi-Fin määritystä varten** (Codex P1, PR #30): sen kautta
+  saapuva pyyntö pääsee vain reitteihin `/`, `/setup`, `/api/wifi/*` ja captive
+  portal -tarkistuksiin. Ohjauksen käyttöönotto, tila- ja sopimusasetukset sekä
+  `/api/status` (jossa on CSRF-tunniste) torjutaan (GET → `/setup`, muut → 403).
+  Automaattiohjaus otetaan siis aina käyttöön vain kotiverkon dashboardista.
+  Ennen korjausta `7f9ab9d` avoimen asennusverkon kautta olisi voinut ottaa
+  ohjauksen käyttöön.
 
 ### Tunnetut rajat (ei testattu oikealla laitteella)
 
