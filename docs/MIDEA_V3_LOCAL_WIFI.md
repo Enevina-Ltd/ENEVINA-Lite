@@ -1,4 +1,4 @@
-# Midea V3 local Wi-Fi integration (experimental)
+# Midea V2 / V3 local Wi-Fi integration (experimental)
 
 ## Scope
 
@@ -28,6 +28,38 @@ and status display implemented in source and firmware build. The model has
 selectable for telemetry only and never enabled for physical writes; the
 existing Mitsubishi CN105 control path is unchanged except for explicit
 prevention of CN105 writes when another manufacturer is selected.
+
+## Midea V2 local LAN (legacy modules)
+
+This branch adds an **explicit V2** option alongside the existing V3 option
+in Settings > Midea. This is not automatic downgrade or a claim that Frezzer
+Nordic uses V2. The owner's already-tested Frezzer uses **V3 in Core**.
+
+- V2 sends the same read-only AC `0x41` status query using the
+  **direct 5A5A packet** on TCP port **6444**, with AES-128-ECB/PKCS#7 for
+  the nested command, the Midea fixed-key MD5 signature, and an unencrypted
+  device ID in the packet header. **No V3 8370 handshake, token or key.**
+- Set **Protokolla V2** and enter private IPv4 address and *device ID*.
+  The V3 token/key fields are hidden and intentionally blank for V2.
+- V3 remains separately selectable and retains full token/key authentication.
+  Existing `midea_v3/config_v1` NVS settings are read by the new service
+  and interpreted as V3; on the next edit, a versioned `config_v2` record
+  is written. No silent V3-to-V2 fallback on authentication failure.
+- The ESP32 permits only private RFC1918 IPv4 destinations and bounded TCP
+  reads. Response outer device ID, fixed-key packet signature, AES padding,
+  AC frame checksum and response fields are checked before accepting status.
+- V2 is **not cryptographically authenticated per device**: the shared
+  fixed key is a public protocol constant. Use only a trusted LAN; do not
+  confuse a signed packet with an authenticated manufacturer endpoint.
+- **No Midea commands or optimizer integration** are added. V2 is read-only
+  until specific hardware validation, readback and a separate user-approved
+  control project.
+- There has not yet been a real Lite ↔ V2 Wi-Fi-module field test, so no
+  retail/OEM model can be certified or listed as confirmed Lite-compatible.
+
+This protocol behavior is independently cross-checked against
+[msmart-ng](https://github.com/mill1000/midea-msmart), notably `_Packet`
+and `Security` in its LAN implementation (MIT-licensed).
 
 ## Frezzer Nordic basement pilot: verified in Core as Midea V3
 
