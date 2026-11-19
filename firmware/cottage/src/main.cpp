@@ -25,6 +25,7 @@
 #include "cottage_network_budget.hpp"
 #include "cottage_secure_ota.hpp"
 #include "cottage_site_settings.hpp"
+#include "cottage_midea_service.hpp"
 #include "cottage/control_intent.hpp"
 #include "cottage_wifi.hpp"
 #include "cottage/physics.hpp"
@@ -461,7 +462,9 @@ static void sse_worker(void*) {
         const auto settings=site_settings_snapshot();
         const uint32_t settings_generation=site_settings_generation();
         if(cottage_ota_network_maintenance() || !wifi_ok.load() ||
-           !clock_ok() || !valid_cn105_events_url(settings.cn105_url)) {
+           !clock_ok() ||
+           std::strcmp(settings.pump_adapter,"mitsubishi_cn105_esphome")!=0 ||
+           !valid_cn105_events_url(settings.cn105_url)) {
             vTaskDelay(pdMS_TO_TICKS(1000));continue;
         }
         WiFiClient client;
@@ -658,7 +661,12 @@ static String cn105_local_url(const char* suffix) {
     root+=suffix;
     return root;
 }
+static bool cn105_selected() {
+    const auto settings=site_settings_snapshot();
+    return enevina::adapter_allowed_cn105_physical_writes(settings.pump_adapter);
+}
 static bool cn105_bridge_get(bool& heating,double& target) {
+    if(!cn105_selected()) return false;
     const String url=cn105_local_url(
         "/climate/Mitsubishi%20Electric%20MSZ-FD25VA?detail=all");
     if(url.isEmpty() || !wifi_ok.load())return false;
@@ -754,6 +762,7 @@ static bool cn105_bridge_get(bool& heating,double& target) {
 static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
                               uint32_t config_generation,ControlStep step,
                               double required_target) {
+    if(!cn105_selected())return false;
     control_post_stage.store(1);
     control_post_http_code.store(0);
     // A browser settings change (URL, tariff) supersedes an in-flight command
@@ -857,6 +866,11 @@ static void cottage_control_disarm() {
 }
 static void cottage_control_tick() {
     control_gate.store(static_cast<int>(ControlBlock::Disabled));
+    // Never reuse CN105 command permissions for a Midea read-only device.
+    if(!cn105_selected()) {
+        if(control_armed.load())cottage_control_disarm();
+        return;
+    }
     if(!control_armed.load())return;
     // Arming is bound to the configured pump. A changed CN105 endpoint or
     // adapter revokes it; a reboot restores only the same pump identity.
@@ -883,8 +897,7 @@ static void cottage_control_tick() {
     }
     // A HOLD proposal does not authorize any physical command. A failed
     // *optional* bridge observation must not mislabel it as an unsafe
-    // heating command; still attempt a read to maintain the 30-min dwell
-    // history and avoid a stale observation gap at the next HEAT request.
+    // heating command; still attempt a read to maintain the 30-min dwell    // history and avoid a stale observation gap at the next HEAT request.
     if(proposal.action==BootstrapAction::Hold) {
         bool observed_heat=false;double observed_setpoint=0;
         if(cn105_bridge_get(observed_heat,observed_setpoint))
@@ -988,7 +1001,7 @@ static void cottage_control_registration() {
         const size_t stored_size=prefs.getBytesLength("intent1");
         if(stored_size==sizeof(saved) &&
            prefs.getBytes("intent1",&saved,sizeof(saved))==sizeof(saved)) {
-            restore=valid_image && !activating_ota &&
+            restore=cn105_selected() && valid_image && !activating_ota &&
                 control_intent_restorable(saved,site_settings_snapshot(),
                                           running_image_sha256);
             must_revoke=saved.enabled!=0 && !restore;
@@ -1015,6 +1028,11 @@ static void cottage_control_registration() {
             return;
         }
         const bool requested=web.arg("enabled")=="true";
+        if(requested && !cn105_selected()) {
+            web.send(409,"application/json",
+                "{\"saved\":false,\"error\":\"ADAPTER_READ_ONLY\"}");
+            return;
+        }
         uint8_t digest[32]{};
         // Never grant authorization when firmware identity cannot be read,
         // or when a new OTA image still awaits confirmation.
@@ -1638,6 +1656,7 @@ void setup() {
     cJSON_InitHooks(&hooks); // Once, before any reader/task starts.
     setup_model();
     site_settings_initialize(); // NVS site settings before any reader starts
+    cottage_midea_service_initialize(); // separate Midea V3 NVS, no CN105 changes
     c23_initialize(); // NVS mode + persistent explicit Ruuvi bonding
     cottage_ota_initialize(); // Persist successful signed release + reject failed candidate
     // Phase 1 commissioning: stored home Wi-Fi (NVS, else the compile-time
@@ -1666,6 +1685,7 @@ void setup() {
     web.on("/api/weather",HTTP_GET,weather_forecast_endpoint);
     c23_register_routes(web);
     site_settings_register_routes(web);
+    cottage_midea_service_register_routes(web);
     cottage_control_registration(); // restore prior explicit choice only
     web.onNotFound([](){
         if(cottage_wifi_request_via_ap(web)) {
@@ -1690,6 +1710,8 @@ void setup() {
     enevina_firmware::start_market_reader();
     enevina_firmware::start_weather_reader(site_settings_snapshot().fmi_latlon);
     xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",8192,nullptr,2,&task_sse,0);
+    xTaskCreatePinnedToCore(cottage_midea_service_worker,"cottage_midea",
+                            10240,nullptr,1,nullptr,0);
     xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,&task_shelly,0);
     // BLE already running. CN105 writes are gated by explicit local arming.
     xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
