@@ -310,17 +310,22 @@ void send_sensors(WebServer& web) {
         cJSON* o=cJSON_CreateObject();
         if(!o) break;
         const auto& e=seen[i];
-        const uint64_t age_ms=now>=e.last_ms?now-e.last_ms:0;
+        // Freshness follows the last ACCEPTED measurement, not the last frame
+        // heard: a sensor replaying one sequence is audible but not measuring.
+        const uint64_t heard_ms=now>=e.last_ms?now-e.last_ms:0;
+        const uint64_t age_ms=e.has_measurement&&now>=e.measured_ms?now-e.measured_ms:heard_ms;
         cJSON_AddStringToObject(o,"mac",mac_string(e.latest.mac).c_str());
         cJSON_AddStringToObject(o,"name",names[i].c_str());
         const char* role=(has_in&&e.latest.mac==indoor)?"indoor":(has_out&&e.latest.mac==outdoor)?"outdoor":"";
         cJSON_AddStringToObject(o,"role",role);
-        cJSON_AddNumberToObject(o,"temperature_c",e.latest.temperature_c);
-        cJSON_AddNumberToObject(o,"humidity_pct",e.latest.relative_humidity_pct);
-        cJSON_AddNumberToObject(o,"battery_v",e.latest.battery_v);
+        const RuuviV5& m=e.has_measurement?e.measured:e.latest;
+        cJSON_AddNumberToObject(o,"temperature_c",m.temperature_c);
+        cJSON_AddNumberToObject(o,"humidity_pct",m.relative_humidity_pct);
+        cJSON_AddNumberToObject(o,"battery_v",m.battery_v);
         cJSON_AddNumberToObject(o,"rssi_dbm",e.latest.rssi_dbm);
         cJSON_AddNumberToObject(o,"age_s",static_cast<double>(age_ms/1000));
-        cJSON_AddBoolToObject(o,"live",age_ms<=kRuuviFreshMs);
+        cJSON_AddNumberToObject(o,"heard_age_s",static_cast<double>(heard_ms/1000));
+        cJSON_AddBoolToObject(o,"live",e.has_measurement&&age_ms<=kRuuviFreshMs);
         cJSON_AddNumberToObject(o,"frames",e.frames);
         cJSON_AddItemToArray(list,o);
     }

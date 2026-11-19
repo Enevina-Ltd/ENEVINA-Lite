@@ -49,6 +49,12 @@ char region_currency[4]="EUR";
 char cache_area[8]="FI";      // region the RAM cache was fetched for
 char cache_currency[4]="EUR";
 uint32_t region_generation=0;
+// The first market_set_region() call after boot only ADOPTS the saved region:
+// the persisted price cache has not been loaded yet and carries its own
+// region stamp, which load_cache() checks. Erasing on that call (the old code
+// compared against the FI/EUR start-up defaults) wiped valid prices on every
+// reboot of a device configured for any other zone.
+bool region_adopted=false;
 uint8_t last_error=0;          // enevina::DayAheadError of the last attempt
 int last_http_status=0;
 int64_t last_attempt_utc=0;
@@ -343,6 +349,13 @@ bool market_set_region(const char* area,const char* currency) {
     if(!mutex) mutex=xSemaphoreCreateMutex();
     if(!mutex) return false;
     xSemaphoreTake(mutex,portMAX_DELAY);
+    if(!region_adopted) {
+        region_adopted=true;
+        std::snprintf(region_area,sizeof(region_area),"%s",area);
+        std::snprintf(region_currency,sizeof(region_currency),"%s",currency);
+        xSemaphoreGive(mutex);
+        return true;                    // boot-time adoption: nothing cached yet, nothing erased
+    }
     const bool changed=std::strcmp(region_area,area)!=0 ||
         std::strcmp(region_currency,currency)!=0;
     if(changed) {

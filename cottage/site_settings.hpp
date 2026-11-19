@@ -17,6 +17,7 @@
 #include "forecast/market_zones.hpp"
 #include "forecast/pricing.hpp"
 #include <cerrno>
+#include <cstddef>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -169,6 +170,33 @@ inline SiteSettings site_settings_from_v1(const SiteSettingsV1& old) {
     s.setup_complete=true;
     s.setup_step=9;
     return s;
+}
+
+// Layout history of the persisted SiteSettings blob (version field stays 2).
+// New members are ONLY ever appended, so every older layout is a prefix of the
+// current one. A boundary is the offset of the first member a layout added:
+// restore_site_settings() copies the largest prefix the stored blob covers and
+// leaves everything newer at its default - the owner's saved pump endpoint,
+// location, tariff and wizard state survive a firmware upgrade instead of being
+// discarded. (Without this an exact-size check silently reset the device.)
+constexpr size_t kSettingsLayoutBoundaries[]={offsetof(SiteSettings,profile),
+                                              offsetof(SiteSettings,shelly_scope)};
+// Returns false when `size` matches no known layout (corrupt, or written by a
+// NEWER firmware that this one cannot interpret): the caller keeps defaults.
+inline bool restore_site_settings(const uint8_t* bytes,size_t size,SiteSettings& out) {
+    if(!bytes||size>sizeof(SiteSettings)) return false;
+    size_t take=0;
+    if(size==sizeof(SiteSettings)) take=sizeof(SiteSettings);
+    else for(const size_t b:kSettingsLayoutBoundaries) {
+        // an older layout's size is its last member rounded up by struct padding
+        const size_t padded=(b+alignof(SiteSettings)-1)/alignof(SiteSettings)*alignof(SiteSettings);
+        if(size>=b&&size<=padded&&b>take) take=b;
+    }
+    if(take==0) return false;
+    SiteSettings s{};                       // defaults for anything newer than the blob
+    std::memcpy(&s,bytes,take);             // never beyond the last whole older member
+    out=s;
+    return true;
 }
 
 // Region that prices are fetched for, or false when the user has not finished

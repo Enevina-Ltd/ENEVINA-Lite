@@ -142,6 +142,35 @@ static void price_threshold_scales_with_profile() {
     }
 }
 
+static void wide_owner_band_never_disables_the_controller() {
+    // Codex P1 (#57): a valid 5..26 C band around a 12 C target produced
+    // preheat 7 C / coast 4.. beyond the controller's malformed-input limits,
+    // so a fresh reading returned Unavailable and the heating never ran.
+    static const double bands[][2]={{5,26},{5,0},{0,26},{5,12.5},{11.5,26},{19,23},{0,0}};
+    int checked=0;
+    for(auto prof:{OptimizationProfile::Comfort,OptimizationProfile::Balanced,OptimizationProfile::Saving})
+    for(double target=5;target<=26;target+=0.5)
+    for(const auto& b:bands) {
+        if(!valid_comfort_limits(b[0],b[1])) continue;
+        for(double indoor=3;indoor<=30;indoor+=0.5) {
+            size_t window=0;
+            BootstrapInput in=base(indoor,target,kCheapNow);
+            if(!apply_profile(in,prof,b[0],b[1],0.10,window)) continue;
+            in.price_count=window<=16?window:16;
+            CHECK(in.preheat_c<=kMaxPreheatC&&in.coast_c<=kMaxCoastC);
+            CHECK(bootstrap_price_decision(in).action!=BootstrapAction::Unavailable);
+            ++checked;
+        }
+    }
+    CHECK(checked>5000);
+    // the real case from the review, spelled out
+    size_t window=0;
+    BootstrapInput in=base(11,12,kCheapNow);
+    CHECK(apply_profile(in,OptimizationProfile::Saving,5,26,0.10,window));
+    in.price_count=window<=16?window:16;
+    CHECK(bootstrap_price_decision(in).action!=BootstrapAction::Unavailable);
+}
+
 static void malformed_input_is_refused() {
     size_t window=0;
     BootstrapInput in=base(21,21,kFlat);
@@ -187,6 +216,7 @@ int main() {
     limits_are_never_priced_away();
     no_prices_is_a_plain_thermostat();
     price_threshold_scales_with_profile();
+    wide_owner_band_never_disables_the_controller();
     malformed_input_is_refused();
     if(failures) {std::fprintf(stderr,"%d failures\n",failures);return 1;}
     std::puts("optimization_profile_tests OK");
