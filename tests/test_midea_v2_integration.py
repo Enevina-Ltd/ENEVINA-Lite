@@ -47,6 +47,20 @@ class NativeMideaV2(unittest.TestCase):
         self.assertIn('c.token_hex[0]==0 && c.key_hex[0]==0',SRV)
         self.assertIn('if(version==3)',SRV)
         self.assertIn('next.protocol=version',SRV)
+        # Test the V3 upgrade/save/rollback source invariant: the V3 v1 NVS
+        # record stays present and receives up-to-date credentials BEFORE
+        # writing config_v2, so an older A/B image can still read its key.
+        persist=SRV.split('bool persist_config(const Config& c) {',1)[1].split(
+            'const char* read_code(',1)[0]
+        self.assertIn('if(c.protocol==3)',persist)
+        self.assertIn('LegacyConfig fallback{}',persist)
+        self.assertIn('std::memcpy(fallback.token_hex,c.token_hex',persist)
+        self.assertIn('std::memcpy(fallback.key_hex,c.key_hex',persist)
+        self.assertIn('preferences.putBytes("config_v1",&fallback',persist)
+        self.assertIn('preferences.putBytes("config_v2",&c',persist)
+        self.assertLess(persist.index('preferences.putBytes("config_v1",&fallback'),
+                        persist.index('preferences.putBytes("config_v2",&c'))
+        self.assertNotIn('preferences.remove("config_v1")',persist)
 
     def test_dashboard_v2_needs_no_token_and_never_arms_control(self):
         for value in ("Midea-protokolla","V2 (ei tokenia)",
