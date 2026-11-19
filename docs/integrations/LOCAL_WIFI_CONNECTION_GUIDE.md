@@ -1,6 +1,6 @@
 # Enevina Lite — alkuperäisen valmistaja-Wi-Fin yhdistäminen (pilvetön LAN)
 
-**Tutkimusohje 17.11.2026, ei valmis firmwareominaisuus.** Enevina Lite ei vielä sisällä alla olevia Wi-Fi-ohjausadaptereita. Nämä ovat ulkoisten HA-/harrastajaprojektien dokumentoituja testipolkuja oman C++/ESP32-S3-toteutuksen kehitykseen. **Yksi Lite → yksi pumppu.** Ei HA:ta, erillistä ohjainta, relettä tai IR-lähetintä valmiin Lite-tuotteen käytössä.
+**Tutkimusohje 19.11.2026; mallikohtainen fyysinen yhteensopivuus ei ole vahvistettu.** Liten Midea V2/V3 -tilanlukusovittimet on jo toteutettu lähdekoodiin mutta ei kenttävarmennettu. Muut tässä kuvatut Wi-Fi-sovittimet ovat referenssitutkimusta, eivät Enevina Liten toimivia ajureita. Nämä ovat ulkoisten HA-/harrastajaprojektien dokumentoituja testipolkuja oman C++/ESP32-S3-toteutuksen kehitykseen. **Yksi Lite → yksi pumppu.** Ei HA:ta, erillistä ohjainta, relettä tai IR-lähetintä valmiin Lite-tuotteen käytössä.
 
 ## Yleinen yhteyspolku
 
@@ -16,7 +16,7 @@
 ### 1. Midea (kellarin pumppu on ensisijainen pilotti)
 
 - **Edellytys:** Pumpussa on Midea M-Smart -protokollaa puhuva alkuperäinen Wi-Fi-moduuli. Esim. NetHome Plus / MSmartHome / Midea Air -sovelluksen käyttäminen **ei yksin** todista tukea.
-- **Read-only testityökalun lähde:** [Tofee/midea-ac-HA-py](https://github.com/Tofee/midea-ac-HA-py) ohjeistaa `pip install msmart-ng` ja `msmart-ng discover`. Työkalu toimii PC:llä testiapuna; **ei kuulu Lite-firmwareen**.
+- **Read-only testityökalu:** `msmart-ng` voidaan asentaa testi-PC:lle, mutta **älä käytä `msmart-ng discover` -CLI-komentoa ilman pilviautentikoinnin erillistä hyväksyntää**: se voi Midea V3:lla hakea NetHome Plus -token/key-parin automaattisesti. Käytä sen sijaan [kellarin pilotin korjattua pilvetöntä löytömenettelyä](MIDEA_CELLAR_PILOT.md#vaihe-b--vain-luku-pcllä), jossa kutsutaan `Discover.discover(auto_connect=False)`. Se selvittää lähiverkon laitetyypin/protokollan ilman V3-automaattiautentikointia. Pilviavainhaku sallitaan vain käyttäjän nimenomaisella luvalla. Työkalu on vain PC:n testiapu, ei osa Liten firmwarea.
 - **Verkko:** discovery yleensä UDP 6445 (joissakin 20086), varsinainen AC LAN TCP 6444. Laite on samassa L2/WLANissa discoveryyn; staattinen IP ja reititetty unicast voidaan tutkia myöhemmin.
 - **Tunnistus:** odota tyypiksi `0xAC` ja `supported=true`. Kirjaa vain sensuroitu laitetiedon kooste. V1/V2 eivät lähteiden mukaan tarvitse pilvitokenia; V3:ssa `token` + `key` vaaditaan normaalisti Midea-pilvestä (kerran, avain voi myöhemmin vanheta).
 - **Pilvetön käyttöönotto:** V1/V2:n koko WLAN-provisionointi on erikseen testattava; V3:n **ensimmäisen token/keyn pilvetön haku on ratkaisematta**. V3 kelpaa aluksi vain L1-tutkimukseen, ei pilvettömän tuotteen L0-lupaukseen.
