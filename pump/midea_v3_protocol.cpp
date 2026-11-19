@@ -196,6 +196,120 @@ Bytes state_query(uint8_t msg) {
     frame.push_back(checksum(frame.data()+1,frame.size()-1));
     return frame;
 }
+bool valid_control_patch(const ControlPatch& patch) {
+    constexpr uint8_t all=ControlPower|ControlMode|ControlTemperature|
+                          ControlFan|ControlSwing;
+    if(!patch.changed || (patch.changed & ~all))return false;
+    if((patch.changed&ControlMode) &&
+       (patch.mode<1 || patch.mode>5))return false;
+    // Wire range aligned with valid_state() readback; actual model limits
+    // must also be verified by the explicit per-device pilot approval.
+    if(patch.changed&ControlTemperature) {
+        if(!std::isfinite(patch.setpoint_c) ||
+           patch.setpoint_c<12 || patch.setpoint_c>40 ||
+           std::fabs(patch.setpoint_c*2-
+                     std::round(patch.setpoint_c*2))>0.00001)return false;
+    }
+    if((patch.changed&ControlFan) && patch.fan>102)return false;
+    if((patch.changed&ControlSwing) &&
+       patch.swing!=0 && patch.swing!=3 &&
+       patch.swing!=12 && patch.swing!=15)return false;
+    return true;
+}
+bool set_state_command(const State& existing,const ControlPatch& patch,
+                       uint8_t msg,Bytes& frame) {
+    // This is a whole-state 0x40 command: never overwrite protection
+    // when the C0 reply did not contain its state (17-21 byte C0).
+    if(!valid_control_patch(patch) || !valid_state(existing) ||
+       !existing.freeze_protection_known)return false;
+    const bool power=(patch.changed&ControlPower)?patch.power:existing.power;
+    const uint8_t mode=(patch.changed&ControlMode)?patch.mode:existing.mode;
+    const double temp=(patch.changed&ControlTemperature)?
+                      patch.setpoint_c:existing.setpoint_c;
+    const uint8_t fan=(patch.changed&ControlFan)?patch.fan:existing.fan;
+    const uint8_t swing=(patch.changed&ControlSwing)?patch.swing:existing.swing;
+    if(mode<1 || mode>5 || fan>102 ||
+       (swing!=0 && swing!=3 && swing!=12 && swing!=15) ||
+       temp<12 || temp>40 || !std::isfinite(temp) ||
+       std::fabs(temp*2-std::round(temp*2))>0.00001)
+        return false;
+    const int integer=static_cast<int>(temp);
+    const bool half=(temp-integer)>=0.499;
+    uint8_t temperature=half?0x10:0;
+    uint8_t temperature_alt=0;
+    if(integer>=17 && integer<=30)
+        temperature|=static_cast<uint8_t>(integer-16);
+    else temperature_alt=static_cast<uint8_t>(integer-12);
+    temperature|=static_cast<uint8_t>(mode<<5);
+    // Wire format cross-checked against independently executed MIT msmart-ng.
+    Bytes body{
+        0x40,
+        static_cast<uint8_t>(0x02|(power?0x01:0)), // no unsolicited beep
+        temperature,
+        fan,
+        0x7f,0x7f,0x00,
+        static_cast<uint8_t>(0x30|swing),
+        static_cast<uint8_t>((existing.follow_me?0x80:0)|
+                             (existing.turbo?0x20:0)),
+        static_cast<uint8_t>((existing.eco?0x80:0)|
+                             (existing.purifier?0x20:0)|
+                             (existing.aux_heat?0x08:0)),
+        static_cast<uint8_t>((existing.sleep?0x01:0)|
+                             (existing.turbo?0x02:0)|
+                             (existing.fahrenheit?0x04:0)),
+        0,0,0,0,0,0,0,
+        temperature_alt,
+        existing.humidity,
+        0,
+        static_cast<uint8_t>(existing.freeze_protection?0x80:0),
+        static_cast<uint8_t>(existing.independent_aux_heat?0x08:0),0
+    };
+    if(body.size()!=24)return false;
+    body.push_back(msg);
+    body.push_back(crc8(body.data(),body.size()));
+    Bytes outgoing(10,0);
+    outgoing[0]=0xaa;
+    outgoing[1]=static_cast<uint8_t>(10+body.size());
+    outgoing[2]=0xac;
+    outgoing[9]=0x02;
+    outgoing.insert(outgoing.end(),body.begin(),body.end());
+    outgoing.push_back(checksum(outgoing.data()+1,outgoing.size()-1));
+    frame.swap(outgoing);
+    return true;
+}
+bool control_patch_observed(const State& actual,const ControlPatch& patch) {
+    if(!valid_control_patch(patch) || !valid_state(actual))return false;
+    if((patch.changed&ControlPower) && actual.power!=patch.power)return false;
+    if((patch.changed&ControlMode) && actual.mode!=patch.mode)return false;
+    if((patch.changed&ControlTemperature) &&
+       std::fabs(actual.setpoint_c-patch.setpoint_c)>0.26)return false;
+    if((patch.changed&ControlFan) && actual.fan!=patch.fan)return false;
+    if((patch.changed&ControlSwing) && actual.swing!=patch.swing)return false;
+    return true;
+}
+bool preserved_state_observed(const State& before,const State& after,
+                              const ControlPatch& patch) {
+    if(!valid_control_patch(patch) ||
+       !valid_state(before) || !valid_state(after) ||
+       !before.freeze_protection_known || !after.freeze_protection_known ||
+       before.freeze_protection!=after.freeze_protection ||
+       before.independent_aux_heat!=after.independent_aux_heat ||
+       before.aux_heat!=after.aux_heat)return false;
+    // No false success if the controller has silently reset a different
+    // basic setting while applying the requested field.
+    if(!(patch.changed&ControlPower) && before.power!=after.power)return false;
+    if(!(patch.changed&ControlMode) && before.mode!=after.mode)return false;
+    if(!(patch.changed&ControlTemperature) &&
+       std::fabs(before.setpoint_c-after.setpoint_c)>0.26)return false;
+    if(!(patch.changed&ControlFan) && before.fan!=after.fan)return false;
+    if(!(patch.changed&ControlSwing) && before.swing!=after.swing)return false;
+    if(before.eco!=after.eco || before.sleep!=after.sleep ||
+       before.purifier!=after.purifier ||
+       before.follow_me!=after.follow_me ||
+       before.turbo!=after.turbo ||
+       before.fahrenheit!=after.fahrenheit)return false;
+    return true;
+}
 bool inner_encode(uint64_t id,const uint8_t* command,size_t n,
                   const uint8_t stamp[8],Bytes& out) {
     if(!command || !stamp || !n || n>256 || id==0)return false;
@@ -301,13 +415,17 @@ bool parse_state(const uint8_t* f,size_t n,State& out) {
     if(paylen>13 && (p[13]&31))s.setpoint_c=(p[13]&31)+12+((p[2]&16)?0.5:0);
     s.fan=p[3]&0x7f; s.swing=p[7]&15;
     s.turbo=(p[8]&0x20)!=0 || (p[10]&2)!=0;
+    s.independent_aux_heat=(p[8]&0x40)!=0;
     s.follow_me=(p[8]&0x80)!=0; s.eco=(p[9]&0x10)!=0;
     s.aux_heat=(p[9]&8)!=0; s.purifier=(p[9]&0x20)!=0;
     s.sleep=(p[10]&1)!=0; s.fahrenheit=(p[10]&4)!=0;
     s.has_indoor= temp_byte(p[11],paylen>15?p[15]&15:0,s.fahrenheit,s.indoor_c);
     s.has_outdoor=temp_byte(p[12],paylen>15?p[15]>>4:0,s.fahrenheit,s.outdoor_c);
     if(paylen>19)s.humidity=p[19]&127;
-    if(paylen>21)s.freeze_protection=(p[21]&0x80)!=0;
+    if(paylen>21) {
+        s.freeze_protection_known=true;
+        s.freeze_protection=(p[21]&0x80)!=0;
+    }
     if(!valid_state(s))return false;
     out=s;
     return true;

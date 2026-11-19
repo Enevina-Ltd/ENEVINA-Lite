@@ -4,7 +4,7 @@
 // Each entry states what is ACTUALLY implemented and verified in THIS
 // repository, not what a manufacturer or a third-party project advertises.
 // Research-only rows stay unselectable. The Midea V2/V3 host-tested row is
-// selectable for **read-only status** only: CN105 physical writes stay gated.
+// selectable for experimental manual AC control; CN105 physical writes stay gated.
 // Selecting an adapter never authorizes writes: the Supervisor / armed
 // control gate and a model-specific approved test plan stay mandatory.
 #include "pump/pump_adapter.hpp"
@@ -19,6 +19,8 @@ enum class AdapterMaturity : uint8_t {
     HostTestedOnly,
     // Native ESP32 firmware read-only path and setup; no model-level field proof.
     FirmwareReadOnly,
+    // Native manual command path and readback, still no field-model proof.
+    FirmwareControlExperimental,
     // Protocol researched/documented only (Enevina level 0). Not selectable.
     DocumentedOnly
 };
@@ -72,9 +74,10 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      "not implemented","not implemented",0,0,0,"not implemented",false,
      "PR #25 GSHP_ASHP_ILP_LOCAL_PROTOCOLS.md"},
     {"midea_lan","Midea / OEM","V2/V3 Wi-Fi module, exact model unverified",
-     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareReadOnly,
+     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareControlExperimental,
      "V2/V3 state, power, mode, setpoint and optional temperatures",
-     "none implemented",0,0,0,"V3 authenticated, V2 fixed shared key; no pump-origin timestamp",false,
+     "manual 0x40 power/mode/setpoint/fan/swing with readback; field test pending",
+     0,0,0,"V3 authenticated, V2 fixed shared key; no pump-origin timestamp",true,
      "pump/midea_v3_protocol.cpp, tests/midea_v3_protocol_tests.cpp, docs/MIDEA_V3_LOCAL_WIFI.md"},
     {"gree_ewpe_lan","Gree / EWPE Smart OEM","Toyotomi Umi UTN/UTG-12CH reference (research)",
      HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::DocumentedOnly,
@@ -93,23 +96,24 @@ inline const AdapterCatalogEntry* find_adapter(const char* id) {
     return nullptr;
 }
 // The only adapter identity authorised to use the CN105 physical writer.
-// Selection of the Midea read-only adapter must NEVER grant these writes.
+// Selection of the Midea adapter must NEVER grant CN105 writes.
 inline bool adapter_allowed_cn105_physical_writes(const char* id) {
     return id && std::strcmp(id,"mitsubishi_cn105_esphome")==0;
 }
 // Only adapters implemented in THIS ESP32-S3 cottage firmware may be selected.
 inline bool adapter_selectable_in_lite_firmware(const char* id) {
     const auto* e=find_adapter(id);
-    // Midea V2/V3 is selectable for read-only LAN status, never CN105 writes.
+    // Midea V2/V3 has its own manual LAN control, never CN105 writes.
     return e && (e->maturity==AdapterMaturity::FieldPilot ||
         (std::strcmp(e->id,"midea_lan")==0 &&
-         e->maturity==AdapterMaturity::FirmwareReadOnly));
+         e->maturity==AdapterMaturity::FirmwareControlExperimental));
 }
 inline const char* adapter_maturity_name(AdapterMaturity m) {
     switch(m) {
     case AdapterMaturity::FieldPilot:return "FIELD_PILOT";
     case AdapterMaturity::HostTestedOnly:return "HOST_TESTED_ONLY";
     case AdapterMaturity::FirmwareReadOnly:return "FIRMWARE_READ_ONLY";
+    case AdapterMaturity::FirmwareControlExperimental:return "FIRMWARE_CONTROL_EXPERIMENTAL";
     case AdapterMaturity::DocumentedOnly:return "DOCUMENTED_ONLY";
     }
     return "UNKNOWN";

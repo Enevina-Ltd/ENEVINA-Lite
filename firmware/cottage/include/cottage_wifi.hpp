@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 // Phase-1 Wi-Fi commissioning for the headless ESP32-S3 (see
 // cottage/wifi_provisioning.hpp for the host-tested state machine).
 class WebServer;
@@ -9,6 +10,9 @@ class WebServer;
 void cottage_wifi_begin(WebServer& web);
 // loop(): captive DNS, state machine tick, AP open/close, NVS commit, mDNS.
 void cottage_wifi_loop();
+// Increments on every STA disconnect/lost-IP event, even if quickly restored.
+// Midea physical writes must never survive a disconnect/reconnect.
+uint32_t cottage_wifi_link_generation();
 // True when the current HTTP request arrived through the setup AP.
 bool cottage_wifi_request_via_ap(WebServer& web);
 // Phase 2 is available only through the home-network interface. No new

@@ -13,21 +13,22 @@ The experimental native C++ code in this change lives in:
 - `pump/midea_v3_protocol.{hpp,cpp}`: V3 AES-256-CBC/8370 handshake,
   authenticated encrypted frames, nested signed 5A5A AC query and state parser.
 - `firmware/cottage/include/cottage_midea.hpp` and
-  `firmware/cottage/src/cottage_midea.cpp`: ESP32-S3 TCP/6444 **read-only**
+  `firmware/cottage/src/cottage_midea.cpp`: ESP32-S3 TCP/6444 **status + experimental manual control**
   transport.
 - `firmware/cottage/src/cottage_midea_service.cpp`: NVS-backed local device
-  provisioning, read-only polling task and redacted `/api/midea/status`.
+  provisioning, serialized manual control/readback and redacted `/api/midea/status`.
 - `firmware/cottage/include/cottage_premium_dashboard.hpp`: Midea setup and
-  read-only state view; pump selection never grants CN105 write permission.
+  state view and manual control; pump selection never grants CN105 write permission.
 - `tests/midea_v3_protocol_tests.cpp`: host vectors generated against the
   independently installed msmart-ng 2026.8.1 and tamper/invalid-input cases.
 
-**State now:** native codec, read-only ESP32 V3 polling, manual browser setup
-and status display implemented in source and firmware build. The model has
-**not** been verified with a real Lite device / Midea physical pump. Midea is
-selectable for telemetry only and never enabled for physical writes; the
-existing Mitsubishi CN105 control path is unchanged except for explicit
-prevention of CN105 writes when another manufacturer is selected.
+**State now:** V2/V3 local telemetry and experimental manual control of
+power, mode, setpoint, fan and swing are implemented in firmware source.
+Each manual command is built from fresh pump status, sent only once and
+checked with an independent readback. This has passed host protocol vectors
+and firmware builds, but NOT a real Lite-to-Midea physical write test.
+Automatic electricity-price optimization is NOT connected to Midea yet,
+and Mitsubishi CN105 controls remain separate.
 
 ## Midea V2 local LAN (legacy modules)
 
@@ -35,7 +36,7 @@ This branch adds an **explicit V2** option alongside the existing V3 option
 in Settings > Midea. This is not automatic downgrade or a claim that Frezzer
 Nordic uses V2. The owner's already-tested Frezzer uses **V3 in Core**.
 
-- V2 sends the same read-only AC `0x41` status query using the
+- V2 sends the same AC `0x41` status query using the
   **direct 5A5A packet** on TCP port **6444**, with AES-128-ECB/PKCS#7 for
   the nested command, the Midea fixed-key MD5 signature, and an unencrypted
   device ID in the packet header. **No V3 8370 handshake, token or key.**
@@ -58,9 +59,13 @@ Nordic uses V2. The owner's already-tested Frezzer uses **V3 in Core**.
 - V2 is **not cryptographically authenticated per device**: the shared
   fixed key is a public protocol constant. Use only a trusted LAN; do not
   confuse a signed packet with an authenticated manufacturer endpoint.
-- **No Midea commands or optimizer integration** are added. V2 is read-only
-  until specific hardware validation, readback and a separate user-approved
-  control project.
+- Experimental manual control uses the shared Midea AC 0x40 full-state
+  command, following a fresh 0x41 status read. The command is transmitted
+  once and confirmed with a new query. A complete control packet may alter
+  native timers or undiscovered model-specific flags; this needs a physical
+  test before use on a connected home heat pump.
+- Automatic price optimizer to Midea commands is NOT yet wired. It must be
+  validated on the actual device before being declared operational.
 - There has not yet been a real Lite ↔ V2 Wi-Fi-module field test, so no
   retail/OEM model can be certified or listed as confirmed Lite-compatible.
 
@@ -91,9 +96,9 @@ published without separate verification.
 **Important distinction:** Core LAN connection and state polling have been
 physically tested. The new native **ESP32-S3 Enevina Lite V3 client** has only
 passed host vectors and firmware build/tests; it has **not yet been
-physically tested** against this Frezzer. Lite currently reads status only;
-Midea heat/setpoint writes, full optimization and IP rediscovery are not yet
-implemented. This is a high-priority first device for the Lite pilot, but it
+physically tested** against this Frezzer. Lite now contains manual command
+code, but NO proven real Lite-to-Frezzer command/readback evidence. Full
+automatic optimization and IP rediscovery remain unimplemented. This is a high-priority first device for the Lite pilot, but it
 is not yet an approved Lite-compatible retail model.
 
 ## Authentication and local behavior
@@ -147,3 +152,51 @@ copyright retained by its respective authors). No Python interpreter,
 msmart-ng runtime, Home Assistant or cloud API is linked into Lite firmware.
 Crypto uses Mbed TLS already bundled in the ESP32 framework; host tests
 use OpenSSL. See THIRD_PARTY_NOTICES.md.
+## Control references and OEM coverage (19 November 2026)
+
+- mill1000/midea-msmart (MIT) is the primary reference for V2/V3 network
+  envelopes, AC 0x40 whole-state command, 0x41 status, 0xB5 capability
+  queries and authentication:
+  https://github.com/mill1000/midea-msmart
+- wuwentao/midea_ac_lan documents many AC capabilities and OEM variants:
+  https://github.com/wuwentao/midea_ac_lan
+  No third-party code is copied without checking its license.
+- LinzN/midea-ac provides a Java implementation for independent checks:
+  https://github.com/LinzN/midea-ac
+- Torsten85/midea-local (MIT) provides TypeScript transport and codec
+  comparisons: https://github.com/Torsten85/midea-local
+- fiam/home-assistant-midea-connect investigates Bluetooth commissioning:
+  https://github.com/fiam/home-assistant-midea-connect
+  V3 per-device LAN keys may still require separate cloud-assisted pairing.
+
+The same current AC 0x40 serializer can serve devices with either Midea V2
+or V3 LAN modules, as long as their exact 0xAC model and command capability
+have been verified. Brand-only compatibility is never sufficient; Midea
+0xCC, 0xB0/0xB1 optional properties and all additional module types require
+their own implementation and testing. No blanket OEM compatibility claim.
+
+## PR #54: Midea V2/V3 manual control review fixes (19.11.2026)
+
+All seven initial Codex findings (five P1, two P2) have code-level
+corrections pending CI and re-review. No unrelated Lite features, login,
+PIN or password have been introduced.
+
+1. Explicit, per-device pilot approval: user enters exact device ID, model
+   name, and model-verified min/max setpoints. Disabled by default; not
+   persisted across reboot or new device configuration. Pending proper B5
+   capability discovery, model limits come from the tester, not guesses.
+2. Swing constants: OFF=0, VERTICAL=12, HORIZONTAL=3, BOTH=15 (msmart-ng).
+3. A full-state write is refused if the C0 frame did not contain the
+   freeze-protection field. Short frames remain readable without writes.
+4. Preserve independently controlled auxiliary heater flag in the C0
+   state decoder and control command, then verify it in independent readback.
+5. Prevent new target settings and queued old-target commands from racing:
+   atomically reserve the config update before writing NVS.
+6. Cancel queued commands on Wi-Fi disconnect/lost IP. Recheck the link
+   generation immediately before any V2/V3 control send. No blind retry.
+7. Reconcile the codec, UI, readback and pilot bounds with 12-40 C
+   and enforce the smaller verified model-specific range before SET.
+
+Tests on synthetic command vectors are not physical pump testing.
+Automatic spot price control remains disconnected from this manual Midea
+pilot. OEM-specific extra flags and native timers require field validation.

@@ -10,6 +10,7 @@
 #include <cstring>
 #include "cottage_config.hpp"
 #include "cottage_wifi.hpp"
+#include "cottage_midea_service.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage/wifi_provisioning.hpp"
 
@@ -25,15 +26,20 @@ char ap_ssid[24]="Enevina-Lite";
 char unique_host[24]="enevina-lite";
 std::atomic<uint16_t> last_reason{0};
 std::atomic<bool> got_ip{false};
+std::atomic<uint32_t> link_generation{0};
 
 void on_wifi_event(WiFiEvent_t event,WiFiEventInfo_t info) {
     if(event==ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
         last_reason.store(info.wifi_sta_disconnected.reason);
         got_ip.store(false);
+        link_generation.fetch_add(1);
+        cottage_midea_link_disconnected();
     } else if(event==ARDUINO_EVENT_WIFI_STA_GOT_IP) {
         got_ip.store(true);
     } else if(event==ARDUINO_EVENT_WIFI_STA_LOST_IP) {
         got_ip.store(false);
+        link_generation.fetch_add(1);
+        cottage_midea_link_disconnected();
     }
 }
 // SSID and password are ONE versioned NVS blob written with a single
@@ -265,6 +271,9 @@ bool cottage_wifi_require_home_lan(WebServer& web) {
     web.sendHeader("Cache-Control","no-store");
     web.send(403,"application/json","{\"error\":\"SETUP_WIFI_ONLY\"}");
     return false;
+}
+uint32_t cottage_wifi_link_generation() {
+    return link_generation.load();
 }
 void cottage_wifi_begin(WebServer& web) {
     server=&web;
