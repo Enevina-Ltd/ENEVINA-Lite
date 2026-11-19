@@ -34,6 +34,7 @@ class OTAHandshakeTests(unittest.TestCase):
             ctx.minimum_version=ssl.TLSVersion.TLSv1_2
             ctx.load_cert_chain(str(cert),str(key))
             mod.Handler.allowed_cidr=ipaddress.ip_network("127.0.0.0/8")
+            mod.Handler.allowed_clients=frozenset()
             mod.Handler.directory=root/"releases"
             server=mod.ReadOnlyTLSServer(("127.0.0.1",0),mod.Handler,ctx)
             t=threading.Thread(target=server.serve_forever,daemon=True)
@@ -54,6 +55,15 @@ class OTAHandshakeTests(unittest.TestCase):
                     payload=conn.recv(512)
                 self.assertIn(b"200 OK",payload)
                 self.assertLess(time.monotonic()-start,2.0)
+                # A separately connected Lite device must not receive a
+                # signed trial release intended for just one ESP32.
+                mod.Handler.allowed_clients=frozenset({ipaddress.ip_address("127.0.0.2")})
+                with client.wrap_socket(socket.create_connection(addr,timeout=3),
+                                        server_hostname="localhost") as conn:
+                    conn.settimeout(3)
+                    conn.sendall(b"GET /manifest.txt HTTP/1.0\r\nHost: localhost\r\n\r\n")
+                    rejected=conn.recv(512)
+                self.assertIn(b"403 Forbidden",rejected)
             finally:
                 if idle: idle.close()
                 server.shutdown()
