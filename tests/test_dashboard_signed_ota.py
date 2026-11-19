@@ -33,6 +33,9 @@ class DashboardSignedOTA(unittest.TestCase):
         self.assertIn("ota_worker_task.store(xTaskGetCurrentTaskHandle())", OTA)
         self.assertIn("xTaskNotifyGive(task)", OTA)
         self.assertIn("ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(60000))", OTA)
+        # Manual button must also wake the ten-minute post-failure wait.
+        self.assertIn("ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(10*60*1000))", OTA)
+        self.assertNotIn("vTaskDelay(pdMS_TO_TICKS(10*60*1000))", OTA)
         worker = OTA.split("void cottage_ota_worker(void*) {", 1)[1]
         self.assertIn("fetch_manifest(r)", worker)
         self.assertIn("ota::signed_version_eligible", worker)
@@ -52,7 +55,7 @@ class DashboardSignedOTA(unittest.TestCase):
         ):
             self.assertIn(key, LANG)
             self.assertNotEqual(LANG[key], key)
-        self.assertIn("window.confirm(", UI)
+        self.assertIn("window.confirm(translateFi(", UI)
         self.assertIn("'/api/ota/install'", UI)
         self.assertIn("ota_signed_pull_enabled===true", UI)
         self.assertIn("ota_dashboard_pending", UI)
