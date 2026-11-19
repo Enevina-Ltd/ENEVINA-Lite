@@ -1,0 +1,143 @@
+name: Attach alpha.2 N16R8 app-only TEST firmware
+
+# Builds the exact EXISTING release tag. Does not flash any board or publish
+# unsigned images to the signed HTTPS OTA channel.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/publish-alpha2-test-firmware.yml'
+      - 'docs/release/ALPHA2_N16R8_TEST_FIRMWARE.md'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/publish-alpha2-test-firmware.yml'
+
+permissions:
+  contents: read
+
+env:
+  TEST_TAG: v0.1.0-alpha.2
+  TEST_SHA: 95148822ec3385dbb13be2415fe04382e78c2d4b
+  TEST_ASSET: Enevina-Lite-v0.1.0-alpha.2-ESP32-S3-N16R8-app-only-TEST.bin
+
+jobs:
+  build-exact-tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout release-tag sources only
+        uses: actions/checkout@v4
+        with:
+          ref: v0.1.0-alpha.2
+          path: release-source
+          persist-credentials: false
+      - name: Verify exact source SHA and prevent private OTA settings
+        run: |
+          set -euo pipefail
+          test "$(git -C release-source rev-parse HEAD)" = "$TEST_SHA"
+          test ! -e release-source/firmware/cottage/src/cottage_ota_private.hpp
+          test ! -e release-source/firmware/cottage/include/cottage_ota_private.hpp
+          test ! -e release-source/firmware/cottage/cottage_ota_private.hpp
+          grep -Fq 'board_upload.flash_size = 16MB' release-source/firmware/cottage/platformio.ini
+          grep -Fq 'board_build.arduino.memory_type = qio_opi' release-source/firmware/cottage/platformio.ini
+          grep -Fq 'upload_protocol = custom' release-source/firmware/cottage/platformio.ini
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned build dependencies
+        run: python3 -m pip install 'platformio==6.1.19' 'PyYAML>=6,<7'
+      - name: Run tagged source hygiene and native tests
+        working-directory: release-source
+        run: |
+          python3 tools/check_release_hygiene.py
+          cmake -S . -B build-test-firmware -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-test-firmware --parallel 2
+          ctest --test-dir build-test-firmware --output-on-failure
+          python3 -m unittest discover -s tests -p 'test_wifi_onboarding_source.py' -v
+          python3 -m unittest discover -s tests -p 'test_midea_v2_integration.py' -v
+          python3 -m unittest discover -s tests -p 'test_dashboard_signed_ota.py' -v
+      - name: Build ESP32-S3 N16R8 app-only firmware
+        working-directory: release-source
+        run: python3 -m platformio run -d firmware/cottage -e esp32s3_cottage_shadow
+      - name: Validate and package app-only image
+        run: |
+          set -euo pipefail
+          source=release-source/firmware/cottage/.pio/build/esp32s3_cottage_shadow/firmware.bin
+          test -s "$source"
+          mkdir -p dist
+          cp "$source" "dist/$TEST_ASSET"
+          python3 - <<'PY'
+          import os, pathlib
+          p=pathlib.Path('dist')/os.environ['TEST_ASSET']
+          b=p.read_bytes()
+          assert len(b)>100_000 and len(b)<0x640000, 'Invalid OTA app image size'
+          assert b[0]==0xe9, 'Not an Espressif app image'
+          assert b'ENEVINA_C24_SIGNED_PULL_OTA_CAPABLE_V1' not in b, 'Not an unsigned-test image'
+          print('App-only header magic, image length and unsigned OTA marker: PASS')
+          PY
+          (cd dist && sha256sum "$TEST_ASSET" > "$TEST_ASSET.sha256")
+          cat "dist/$TEST_ASSET.sha256"
+      - name: Save build evidence as PR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha2-n16r8-unsigned-app-only-test
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  attach-to-existing-prerelease:
+    needs: build-exact-tag
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: write
+    concurrency:
+      group: enevina-alpha2-n16r8-test-asset
+      cancel-in-progress: false
+    steps:
+      - name: Checkout release documentation on main
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download tested image
+        uses: actions/download-artifact@v4
+        with:
+          name: alpha2-n16r8-unsigned-app-only-test
+          path: dist/
+      - name: Attach verified app-only test image and safety notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag_sha="$(gh api "repos/${GH_REPO}/git/ref/tags/${TEST_TAG}" --jq '.object.sha')"
+          tag_type="$(gh api "repos/${GH_REPO}/git/ref/tags/${TEST_TAG}" --jq '.object.type')"
+          test "$tag_type" = commit
+          test "$tag_sha" = "$TEST_SHA"
+          test "$(gh release view "$TEST_TAG" --json isPrerelease -q '.isPrerelease')" = true
+          test "$(gh release view "$TEST_TAG" --json isDraft -q '.isDraft')" = false
+          (cd dist && sha256sum -c "$TEST_ASSET.sha256")
+          # Refuse duplicate names; never overwrite a previously published image.
+          if gh release view "$TEST_TAG" --json assets -q '.assets[].name' | grep -Fxq "$TEST_ASSET"; then
+            echo 'Firmware asset already exists; refusing to overwrite.'
+            exit 1
+          fi
+          cp docs/release/ALPHA2_N16R8_TEST_FIRMWARE.md dist/TEST-FIRMWARE-README.md
+          gh release upload "$TEST_TAG" "dist/$TEST_ASSET" "dist/$TEST_ASSET.sha256" dist/TEST-FIRMWARE-README.md
+          # Preserve all existing release notes and append a clearly labeled update.
+          gh release view "$TEST_TAG" --json body -q '.body' > /tmp/enevina-alpha2-existing-notes.md
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/enevina-alpha2-existing-notes.md')
+          original=p.read_text()
+          marker='## Testifirmware ESP32-S3 N16R8:lle (kehittäjätesti)'
+          if marker not in original:
+              intro='**UPDATED: Test firmware is now attached as an experimental app-only .bin. It is not a complete installer or signed dashboard OTA image. See the board-specific warnings below.**\n\n'
+              appendix=Path('docs/release/ALPHA2_N16R8_TEST_FIRMWARE.md').read_text()
+              p.write_text(intro+original.rstrip()+'\n\n---\n\n'+appendix)
+          PY
+          gh release edit "$TEST_TAG" --notes-file /tmp/enevina-alpha2-existing-notes.md
+          gh release view "$TEST_TAG" --json url,tagName,isPrerelease,assets
