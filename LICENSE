@@ -1,0 +1,117 @@
+ENEVINA LITE NONCOMMERCIAL COMMUNITY LICENSE 1.0
+Copyright (c) 2026 Enevina Oy. All rights reserved except as expressly licensed below.
+
+IMPORTANT: This is a source-available, noncommercial software license. It is
+not an open-source license under the Open Source Definition.
+
+1. DEFINITIONS
+
+"Licensor" means Enevina Oy, to the extent that it owns or is authorized to
+license the relevant copyright and other rights in the Software.
+
+"Software" means Enevina Lite source code and associated software materials
+released by the Licensor under this License, including modifications of those
+materials. It excludes Third-Party Components as defined in Section 8.
+
+"Noncommercial Purpose" means personal study, research, learning, hobby use,
+noncommercial testing, and other activities not undertaken for financial gain,
+business advantage, or in connection with a paid product or service.
+
+"Commercial Activity" includes, without limitation:
+(a) selling, offering for sale, licensing for a fee, renting, or commercially
+    redistributing the Software, its source code, executable code, or firmware;
+(b) selling or supplying for consideration a physical controller, appliance,
+    circuit board, kit, or other product that includes, runs, or is supplied
+    with the Software or a modified version of it;
+(c) charging for installation, customization, support, hosting, integration,
+    or services in which the Software is a material part of what is sold;
+(d) using the Software to provide a commercial service, or incorporating it
+    into a commercial offering, whether or not the Software is separately
+    itemized or billed; and
+(e) any other use primarily intended for commercial advantage or financial
+    compensation.
+
+2. NONCOMMERCIAL LICENSE GRANT
+
+Subject to continuous compliance with this License, the Licensor grants you a
+non-exclusive, worldwide, royalty-free copyright license to access, use, run,
+study, reproduce, and modify the Software solely for Noncommercial Purposes.
+
+You may distribute source or binary copies and your modifications, but only
+without payment or other consideration, solely for Noncommercial Purposes,
+and subject to Section 3. A free copy may not be bundled into a paid product
+or service as a way to circumvent the restrictions in this License.
+
+This license grant is limited to rights the Licensor can lawfully grant. No
+ownership, trademark right, or right to commercialize is transferred.
+
+3. CONDITIONS FOR PERMITTED SHARING
+
+If you share any copy or modification under Section 2, you must:
+(a) include this complete License and all existing copyright and attribution
+    notices with the distributed Software;
+(b) identify that the copy has been modified if applicable;
+(c) not suggest Enevina Oy endorses or warrants your modified version;
+(d) give each recipient the same noncommercial License for portions owned by
+    the Licensor, without imposing inconsistent additional restrictions; and
+(e) comply independently with applicable licenses of Third-Party Components.
+
+4. PROHIBITED COMMERCIAL EXPLOITATION
+
+This License does not authorize any Commercial Activity. In particular, it
+does not authorize anyone other than the Licensor to sell, commercially
+redistribute, or manufacture for sale Enevina Lite-based controllers or
+firmware without a separate written commercial license from Enevina Oy.
+
+You must obtain that written license *before* undertaking any Commercial
+Activity. Access to public source code, submission of a pull request, or
+purchase of hardware does not itself constitute commercial permission.
+
+5. BRANDING
+
+"Enevina", "Enevina Lite", and Enevina logos and product marks are reserved
+to their respective rights holders. This License does not grant trademark
+or branding rights, except nominative uses permitted by applicable law.
+
+6. CONTRIBUTIONS
+
+Contributors retain the rights they legally own in their contributions.
+Submitting a contribution does not by itself assign its copyright to
+Enevina Oy or authorize Enevina Oy to license that contribution commercially.
+Enevina Oy may require a separate written contributor agreement before
+accepting externally authored code into a commercially licensed product.
+
+7. TERMINATION
+
+Your rights under this License terminate automatically upon breach. If you
+cease the breach and correct its effects within 30 days after receiving
+written notice of that breach for the first time, the Licensor may reinstate
+your rights in writing. Termination does not remove rights already granted
+to compliant recipients of copies distributed in accordance with this
+License.
+
+8. THIRD-PARTY COMPONENTS AND LEGAL RIGHTS
+
+Third-party libraries, frameworks, assets, fonts, and code not owned by the
+Licensor remain subject to their respective license terms. This License
+does not change, replace, or restrict those independent licenses or rights.
+Nothing in this License limits rights that cannot lawfully be restricted,
+including applicable statutory exceptions and exhaustion of rights.
+
+9. NO WARRANTY AND LIMITATION OF LIABILITY
+
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE SOFTWARE IS PROVIDED "AS IS",
+WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. TO THE EXTENT
+PERMITTED BY APPLICABLE LAW, THE LICENSOR SHALL NOT BE LIABLE FOR ANY
+INDIRECT, INCIDENTAL, CONSEQUENTIAL, SPECIAL, OR PUNITIVE DAMAGES ARISING
+FROM USE OF THE SOFTWARE.
+
+10. RESERVATION OF RIGHTS
+
+All rights not expressly granted are reserved. The Licensor may offer the
+Software under separate commercial terms. Any such commercial agreement
+must be in writing, and is independent of this public License.
+
+This License governs only Software released under it. It does not override
+previously granted rights, contracts, or applicable third-party licenses.

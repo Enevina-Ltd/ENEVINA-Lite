@@ -16,6 +16,13 @@ class LeaseLifetimeTests(unittest.TestCase):
             r"\}\s*// lease destructor releases network budget before waiting\s*"
             r"vTaskDelay\(pdMS_TO_TICKS\(12000\)\);", re.S))
         self.assertEqual(section.count("NetworkBudgetLease lease("), 1)
+        self.assertIn("ble_scan_attempts.fetch_add(1)", section)
+        self.assertIn("ble_scan_completed.fetch_add(1)", section)
+        self.assertIn("ble_scan_memory_denials.fetch_add(1)", section)
+        self.assertIn("ble_scan_busy_denials.fetch_add(1)", section)
+        self.assertIn("ble_scan_min_internal_bytes,ble_scan_min_contiguous_bytes", section)
+        self.assertIn("MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT", section)
+        self.assertIn("scan->start(4,false)", section)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+from pathlib import Path
 """Source-level C2 fail-closed review. This is NOT a hardware command proof."""
 import pathlib
 import re
@@ -10,17 +11,30 @@ class ShadowSurfaceTests(unittest.TestCase):
         cls.main = (ROOT / "firmware/cottage/src/main.cpp").read_text(encoding="utf8")
         cls.config = (ROOT / "firmware/cottage/include/cottage_config.hpp").read_text(encoding="utf8")
 
-    def test_no_actuator_command_routes(self):
-        self.assertNotRegex(self.main, r"HTTP_(?:POST|PUT|DELETE|PATCH)")
-        self.assertNotRegex(self.main, r"(?:\.POST|\.PUT|\.PATCH|\.DELETE)\s*\(")
-        self.assertNotRegex(self.main, r"rpc/(?:Switch\.Set|Switch\.Toggle|Switch\.SetConfig)")
-        self.assertNotIn("setClimate", self.main)
-        self.assertNotIn("setSetpoint", self.main)
+    def test_no_shelly_writes_and_explicit_cn105_arm_gate(self):
+        # This regression intentionally replaced the obsolete C2 rule
+        # forbidding all writes. New F08 limits a single local pump endpoint.
+        self.assertNotRegex(self.main,r"rpc/(?:Switch\\.Set|Switch\\.Toggle|Switch\\.SetConfig)")
+        self.assertNotIn("setClimate",self.main)
+        self.assertNotIn("setSetpoint",self.main)
+        self.assertIn('static std::atomic<bool> control_armed{false}',self.main)
+        self.assertIn('web.on("/api/control/arm",HTTP_POST',self.main)
+        self.assertIn('c23_authorize_local_setting(web.arg("token").c_str())',self.main)
+        self.assertIn('control_armed.store(false)',self.main)
+        self.assertIn('if(prefs.getBool("armed",false))prefs.putBool("armed",false)',self.main)
+        self.assertIn('mode.mode==CottageMode::Drying',self.main)
+        self.assertIn('valid_temperature(sample,now)',self.main)
+        self.assertIn('control_last_bridge_read_utc',self.main)
+
 
     def test_only_read_only_http_requests(self):
         self.assertIn('request.GET()', self.main)
-        self.assertIn("valid_cn105_events_url(COTTAGE_CN105_URL)", self.main)
-        self.assertIn("valid_shelly_base_url(COTTAGE_SHELLY_URL)", self.main)
+        # Phase-2 settings: same allow-list guard at use time AND at input time.
+        self.assertIn("valid_cn105_events_url(settings.cn105_url)", self.main)
+        self.assertIn("valid_shelly_base_url(settings.shelly_url)", self.main)
+        settings=(Path(__file__).resolve().parents[1]/"cottage"/"site_settings.hpp").read_text()
+        self.assertIn("valid_cn105_events_url(value)", settings)
+        self.assertIn("valid_shelly_base_url(value)", settings)
         self.assertIn('Switch.GetStatus?id=0', self.main)
         self.assertIn("HTTPC_DISABLE_FOLLOW_REDIRECTS", self.main)
 
@@ -47,7 +61,9 @@ class ShadowSurfaceTests(unittest.TestCase):
         self.assertNotIn("pump=copy",link)
         self.assertIn("copy.captured_utc=0;",self.main)
         self.assertIn("copy.received=false;",self.main)
-        self.assertIn('cJSON_AddBoolToObject(root,"cn105_source_verified",false)',self.main)
+        self.assertIn('cp.evidence.source_time_verified',self.main)
+        self.assertIn('cJSON_AddBoolToObject(root,"cn105_source_verified",verified_uart)',self.main)
+        self.assertIn('"SSE_SNAPSHOT_UART_UNVERIFIED"',self.main)
         self.assertIn('"UNVERIFIED_SOURCE"',self.main)
 
     def test_replayed_sse_snapshot_is_not_promoted_to_verified_pump_data(self):
@@ -85,7 +101,8 @@ class ShadowSurfaceTests(unittest.TestCase):
                        "market_last_fetch_utc","weather_last_fetch_utc",
                        "independent_freeze_protection_verified", "safety_reason"):
             self.assertIn(marker,self.main)
-        self.assertIn('cJSON_AddBoolToObject(root,"physical_writes",false)',self.main)
+        self.assertIn('cJSON_AddBoolToObject(root,"physical_writes",control_armed.load())',self.main)
+        self.assertIn('cJSON_AddBoolToObject(root,"control_armed",control_armed.load())',self.main)
         self.assertIn('health.independent_freeze_protection_verified=false;',self.main)
 
 if __name__=="__main__":

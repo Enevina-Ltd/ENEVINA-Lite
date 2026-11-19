@@ -14,13 +14,27 @@ class PremiumDashboardSourceTests(unittest.TestCase):
     def test_flash_backed_local_dashboard(self):
         self.assertIn("premium_dashboard_html[] PROGMEM", UI)
         self.assertIn('web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html)', MAIN)
-        self.assertIn('web.on("/diagnostics",HTTP_GET', MAIN)
+        self.assertNotIn('web.on("/diagnostics"', MAIN)
+        self.assertNotIn('static const char html[] PROGMEM', MAIN)
+        self.assertNotIn('web.send(200,"text/html; charset=utf-8",html)', MAIN)
+        self.assertIn('id="ruuvi-bind"', UI)
+        self.assertIn('id="alerts-save"', UI)
+        self.assertIn('data-theme="night"', UI)
+        self.assertIn("Europe/Helsinki", UI)
+        self.assertIn("applyAutomaticNightTheme", UI)
+        self.assertIn('id="energy-grade"', UI)
+        self.assertIn('Ei virallinen energiatodistus tai E-luku', UI)
+        self.assertIn('function ownEnergyClass(', UI)
+        self.assertIn('Syötä todellinen 12 kuukauden kulutus', UI)
+        self.assertNotIn('s.shelly_total_wh/8760',UI)
 
     def test_ui_has_no_external_assets_or_mock_sensor_numbers(self):
         self.assertNotIn("https://", UI)
         self.assertNotIn("http://", UI.replace("http://www.w3.org/2000/svg", ""))
         self.assertNotRegex(UI, r"<script\s+src=")
-        self.assertIn("VARJOTILA", UI)
+        self.assertIn("OHJAUS POIS", UI)
+        self.assertIn("control-armed" if False else "control-enable", UI)
+        self.assertIn("pilot-state-heading", UI)
         self.assertIn("Ei tuoretta mittausta", UI)
 
     def test_read_only_market_endpoint(self):
@@ -28,8 +42,13 @@ class PremiumDashboardSourceTests(unittest.TestCase):
         self.assertIn("market.clock_trusted || !market.current_price_valid", MAIN)
         self.assertIn("enevina_firmware::future_prices(points,kMaxPriceSlots)", MAIN)
         self.assertIn("MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT", MAIN)
-        self.assertIn("calculate_total_price(t,total)", MAIN)
-        self.assertIn("localtime_r(&utc,&local)", MAIN)
+        # One DST-safe price rule (audit 18.11.2026): /api/prices, /api/status,
+        # bootstrap and MPC bridge all use site_slot_total_price; no TZ-based
+        # localtime_r() tariff decisions remain in main.cpp.
+        self.assertIn("site_slot_total_price(price.start_utc,", MAIN)
+        self.assertIn("join_forecast_priced(", MAIN)
+        self.assertNotIn("localtime_r(&utc,&local)", MAIN)
+        self.assertNotIn("tariff(local.tm_hour", MAIN)
         self.assertNotRegex(
             MAIN[MAIN.index("static void prices_endpoint()"):MAIN.index("static void setup_model()")],
             r"(Switch\.Set|CN105.*write|send.*command|relay_?off|relay_?on\s*\()",

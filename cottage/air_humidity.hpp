@@ -103,10 +103,11 @@ private:
     void assign(MoistureAlertKind kind,bool active,uint64_t now);
 };
 
-enum class CottageMode : uint8_t { Cold=0,Drying=1,Hold=2 };
+enum class CottageMode : uint8_t { Cold=0,Drying=1,Hold=2,Occupied=3 };
 struct CottageModeConfig {
     CottageMode mode=CottageMode::Cold;
     double hold_target_c=12.0;
+    double occupied_target_c=21.0;
     double drying_delta_c=4.0;
 };
 enum class ModeAdvisory : uint8_t {
@@ -121,6 +122,16 @@ struct CottageModePlan {
     double target_c=0;
     ModeAdvisory advisory=ModeAdvisory::NoHeating;
 };
+// Kuivanapito may heat only once the RH-duration condition holds. After that
+// the room-temperature deadband belongs to the thermostat/price bootstrap:
+// the instantaneous advisory_heat_needed (T < target-0.5) must NOT be used as
+// an OFF command, or a 0.02 C sensor wobble toggles HEAT/OFF every cycle
+// (Codex P2, PR #28).
+inline bool drying_blocks_heat(const CottageModePlan& p) {
+    return p.mode==CottageMode::Drying &&
+        (!p.has_target || p.advisory==ModeAdvisory::MonitoringHumidity ||
+         p.advisory==ModeAdvisory::NoOutdoorTemperature);
+}
 CottageModePlan evaluate_cottage_mode(const CottageModeConfig& config,
       const AirMoisture& indoor,bool indoor_fresh,
       bool have_outdoor_temperature,double outdoor_c,

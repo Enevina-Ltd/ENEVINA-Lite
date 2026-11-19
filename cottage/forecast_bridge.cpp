@@ -3,12 +3,32 @@
 #include <cmath>
 #include <ctime>
 namespace enevina::cottage {
+namespace {
+struct TwoTariffs { const enevina::Tariff* day; const enevina::Tariff* night; bool clock_ok; };
+bool two_tariff_price(void* context,int64_t ts,double spot,double& total) {
+    auto* t=static_cast<TwoTariffs*>(context);
+    bool day=false;
+    if(!finnish_day_transfer(ts,day)) {t->clock_ok=false;return false;}
+    enevina::Tariff x=day?*t->day:*t->night;
+    x.spot_eur_per_kwh=spot;
+    return enevina::calculate_total_price(x,total);
+}
+}
 BridgeResult join_forecast_two_tariffs(int64_t now,int64_t price_fetch,int64_t weather_fetch,
     const Spot15* prices,size_t n,const enevina::OutdoorPoint* weather,size_t m,
     const enevina::Tariff& day_tariff,const enevina::Tariff& night_tariff,size_t slots) {
+    TwoTariffs context{&day_tariff,&night_tariff,true};
+    BridgeResult result=join_forecast_priced(now,price_fetch,weather_fetch,prices,n,
+        weather,m,two_tariff_price,&context,slots);
+    if(!context.clock_ok) {result=BridgeResult{};result.status=BridgeStatus::BadClock;}
+    return result;
+}
+BridgeResult join_forecast_priced(int64_t now,int64_t price_fetch,int64_t weather_fetch,
+    const Spot15* prices,size_t n,const enevina::OutdoorPoint* weather,size_t m,
+    SlotPricer pricer,void* context,size_t slots) {
     BridgeResult result;
     if(now<1700000000) {result.status=BridgeStatus::BadClock;return result;}
-    if(!prices||!weather||!n||n>210||m<2||m>64||slots<1||slots>192)
+    if(!prices||!weather||!pricer||!n||n>210||m<2||m>64||slots<1||slots>192)
         return result;
     if(price_fetch>now || price_fetch<now-36*3600) {
         result.status=BridgeStatus::StalePrices;return result;
@@ -35,14 +55,8 @@ BridgeResult join_forecast_two_tariffs(int64_t now,int64_t price_fetch,int64_t w
             }
         }
         if(!found) {result.status=BridgeStatus::Gap;return result;}
-        bool day=false;
-        if(!finnish_day_transfer(ts,day)) {
-            result.status=BridgeStatus::BadClock;return result;
-        }
-        enevina::Tariff t=day?day_tariff:night_tariff;
-        t.spot_eur_per_kwh=spot;
         double total=0;
-        if(!enevina::calculate_total_price(t,total)) {
+        if(!pricer(context,ts,spot,total) || !std::isfinite(total)) {
             result.status=BridgeStatus::BadPrice;return result;
         }
         result.periods[i].total_price_eur_per_kwh=total;

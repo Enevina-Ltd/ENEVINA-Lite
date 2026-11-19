@@ -1,13 +1,13 @@
 # Enevina Lite — valmistajan Wi-Fi-moduulin paikallinen ohjaus
 
-**Tutkimustila 17.11.2026 · ehdokkaita, EI Enevina Lite -tuotetukea.** Tavoite: yksi lämpöpumppu / ESP32-S3 N16R8 Lite; suora 2,4 GHz WLAN/LAN-yhteys pumpun **alkuperäiseen Wi-Fi-moduuliin**, ilman HA:ta, Linuxia, IR-lähetintä, valmistajan jatkuvaa pilvipalvelua tai erillistä ohjainlaitetta. Emme korvaa pumpun omaa säädintä. Tämä dokumentti koskee **vain ilmalämpöpumppujen Wi-Fi-protokollia**; Mitsubishi Electric CN105, Panasonic HeishaMon ja NIBE Modbus kuuluvat eri rajapintaluokkiin.
+**Tutkimustila 19.11.2026 · valmistajamallien yhteensopivuus on edelleen ehdokastietoa, EI Enevina Lite -tuotetukea.** Tavoite: yksi lämpöpumppu / ESP32-S3 N16R8 Lite; suora 2,4 GHz WLAN/LAN-yhteys pumpun **alkuperäiseen Wi-Fi-moduuliin**, ilman HA:ta, Linuxia, IR-lähetintä, valmistajan jatkuvaa pilvipalvelua tai erillistä ohjainlaitetta. Emme korvaa pumpun omaa säädintä. Tämä dokumentti koskee **vain ilmalämpöpumppujen Wi-Fi-protokollia**; Mitsubishi Electric CN105, Panasonic HeishaMon ja NIBE Modbus kuuluvat eri rajapintaluokkiin.
 
 ## Mitä "pilvetön" tarkoittaa
 
 - **L0**: sekä käyttöönotto (WLAN-liitos, tunnisteet/avaimet) että myöhempi ohjaus voidaan tehdä ilman valmistajan pilveä. Näytä L0 vain, jos **molemmat** vaiheet on dokumentoitu/todennettu.
 - **L1**: laitetta voidaan *ohjata paikallisesti ilman internetiä*, mutta ensiliitos, token/key, sertifikaatti tai sovelluksen laiteparitus voi vaatia internetin/pilven. **Ei vastaa vaatimusta "ilman pilveä" alusta loppuun.**
 - **L?**: paikallinen protokolla on julkaistu, mutta pilvetön käyttöönotto tai avainten elinkaari ei ole varmistettu.
-- **Enevina-taso 0** kaikissa alla olevissa riveissä: dokumentoitu ulkoinen referenssitoteutus, **ei** Enevina Liten valmista ajuria, fyysistä hyväksyntää tai kaupallista yhteensopivuuslupausta.
+- **Enevina-taso 0** tarkoittaa, ettei fyysistä mallikohtaista Lite-yhteensopivuutta ole todennettu. **Midea V2/V3 -tilanlukijat on nyt toteutettu Liten lähdekoodiin**, mutta niiden fyysinen Lite-kenttätesti, mallikohtainen hyväksyntä ja ohjauskomennot puuttuvat. Muut perheet ovat edelleen referenssitutkimusta, eivät toteutettuja Lite-ajureita.
 
 Tärkeää: yhden valmistajan tunnus, OEM-merkki, sovelluksen nimi tai Wi-Fi-mainos **ei** riitä mallin hyväksymiseen. Ratkaisevia ovat Wi-Fi-sovitin, sen laiteohjelmisto, paikallisen protokollan versio ja todellinen read-only-yhteys.
 

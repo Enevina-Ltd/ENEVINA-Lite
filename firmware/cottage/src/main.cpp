@@ -3,6 +3,9 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
+#include <Preferences.h>
+#include <nvs.h>
+#include "cottage/nvs_cache_reclaim_policy.hpp"
 #include <esp_task_wdt.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
@@ -23,6 +26,11 @@
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
 #include "cottage_secure_ota.hpp"
+#include "cottage_site_settings.hpp"
+#include "cottage_midea_service.hpp"
+#include "pump/adapter_catalog.hpp"
+#include "cottage/control_intent.hpp"
+#include "cottage_wifi.hpp"
 #include "cottage/physics.hpp"
 #include "cottage/mpc.hpp"
 #include "cottage/telemetry.hpp"
@@ -31,6 +39,11 @@
 #include "cottage/ruuvi.hpp"
 #include "cottage/url_guard.hpp"
 #include "cottage/mode_timing.hpp"
+#include "cottage/price_bootstrap.hpp"
+#include "cottage/mitsubishi_climate_command.hpp"
+#include "cottage/cn105_read_retry.hpp"
+#include "cottage/mitsubishi_control_policy.hpp"
+#include "cottage/finnish_tariff.hpp"
 #include "cottage/sse_transport.hpp"
 #include "cottage/cn105_source_proof.hpp"
 #include "../../main/market.hpp"
@@ -47,6 +60,10 @@ static SemaphoreHandle_t lock_data=nullptr;
 static std::atomic<bool> wifi_ok{false};
 static std::atomic<uint32_t> web_loop_heartbeat_ms{0};
 static CN105Telemetry pump{};
+// Legacy ESPHome /events exposes real device state as SSE, but the receipt
+// does not prove a new UART poll. Keep the last observed values separately
+// from the source-verified sample used by the optimizer/safety gate.
+static CN105Telemetry sse_observed_pump{};
 static ObservedModeDuration observed_mode_duration{};
 // Protected by lock_data. Reject MPC results computed before an SSE mode change.
 static uint32_t observed_mode_generation=0;
@@ -85,6 +102,67 @@ static TaskHandle_t task_sse=nullptr,task_shelly=nullptr;
 static TaskHandle_t task_ruuvi=nullptr,task_optimizer=nullptr;
 static TaskHandle_t task_ota=nullptr;
 static bool shelly_relay_on=false;
+// Production control is explicitly ARMED via local setting, never by OTA.
+static std::atomic<bool> control_armed{false};
+// Pump identity (CN105 URL/adapter) the current arming was given for.
+static std::atomic<uint32_t> control_armed_endpoint{0};
+// Owner decision 18.11.2026: >= 30 min between HEAT<->OFF changes. Last change
+// = last mode command sent, last change observed via bridge GET, boot or
+// arming (unknown history -> wait). millis()-based, survives NTP jumps.
+// Boot = unknown history (dwell starts at millis()==0). Shared by the web
+// task (arming) and the optimizer task, serialized by mode_history_lock.
+static MitsubishiModeHistory control_mode_history{};
+static portMUX_TYPE mode_history_lock=portMUX_INITIALIZER_UNLOCKED;
+static void control_note_observed_mode(bool heating) {
+    const uint32_t now=millis();
+    portENTER_CRITICAL(&mode_history_lock);
+    control_mode_history.observe(heating,now);
+    portEXIT_CRITICAL(&mode_history_lock);
+}
+static void control_note_mode_dispatch() {
+    const uint32_t now=millis();
+    portENTER_CRITICAL(&mode_history_lock);
+    control_mode_history.command_dispatched(now);
+    portEXIT_CRITICAL(&mode_history_lock);
+}
+static void control_reset_mode_history() {
+    const uint32_t now=millis();
+    portENTER_CRITICAL(&mode_history_lock);
+    control_mode_history.reset(now);
+    portEXIT_CRITICAL(&mode_history_lock);
+}
+static uint32_t control_ms_since_mode_change() {
+    const uint32_t now=millis();
+    portENTER_CRITICAL(&mode_history_lock);
+    const uint32_t since=control_mode_history.since_change(now);
+    portEXIT_CRITICAL(&mode_history_lock);
+    return since;
+}
+static std::atomic<int> control_gate{static_cast<int>(ControlBlock::Disabled)};
+static std::atomic<int> control_last_step{static_cast<int>(ControlStep::None)};
+static std::atomic<uint32_t> control_commands_sent{0};
+static std::atomic<uint32_t> control_commands_confirmed{0};
+static std::atomic<uint32_t> control_commands_failed{0};
+static std::atomic<int64_t> control_last_command_utc{0};
+static std::atomic<int64_t> control_last_ack_utc{0};
+static std::atomic<int64_t> control_last_bridge_read_utc{0};
+// Observe the physical CN105 command path without serial access.
+static std::atomic<int> control_post_stage{0};
+static std::atomic<int> control_post_http_code{0};
+static std::atomic<int> control_get_http_code{0};
+// Track intermittent read-timeout recovery without logging secrets or IPs.
+static std::atomic<uint32_t> cn105_get_retry_count{0};
+static std::atomic<uint32_t> cn105_get_recovered_count{0};
+static std::atomic<uint32_t> cn105_get_timeout_count{0};
+// Distinguish a temporarily busy TLS/BLE network lease from a true shortage
+// of internal RAM, without weakening the existing per-GET memory limits.
+static std::atomic<uint32_t> cn105_get_lease_denials{0};
+static std::atomic<uint32_t> cn105_get_lease_low_memory{0};
+static std::atomic<uint32_t> cn105_get_lease_busy{0};
+static std::atomic<uint32_t> cn105_get_last_free_internal{0};
+static std::atomic<uint32_t> cn105_get_last_largest_internal{0};
+
+
 static char reason_text[80]="Käynnistys";
 struct Row {
     int64_t utc=0;
@@ -311,7 +389,7 @@ static void parse_sse_state(const char* raw) {
         return;
     }
     CN105Telemetry copy;
-    xSemaphoreTake(lock_data,portMAX_DELAY);copy=pump;xSemaphoreGive(lock_data);
+    xSemaphoreTake(lock_data,portMAX_DELAY);copy=sse_observed_pump;xSemaphoreGive(lock_data);
     bool changed=false,climate_event=false;
     int64_t climate_stamp=climate_utc,compressor_stamp=compressor_utc;
     if(strcmp(key->valuestring,"climate/Mitsubishi Electric MSZ-FD25VA")==0) {
@@ -374,13 +452,22 @@ static void parse_sse_state(const char* raw) {
         // The legacy CN105 bridge exposes only SSE receipt time. Explicit
         // unverified provenance must never turn cached SSE into pump freshness.
         copy.evidence={now,0,false};
+        sse_observed_pump=copy;
+        // The existing strict source-verification gate remains closed for
+        // a legacy SSE snapshot. No synthetic UART timestamp is created.
         pump=copy;
         xSemaphoreGive(lock_data);
     }
 }
 static void sse_worker(void*) {
     for(;;) {
-        if(!wifi_ok.load() || !clock_ok() || !valid_cn105_events_url(COTTAGE_CN105_URL)) {
+        // Browser-configured URL (Phase 2); compile-time value is only the default.
+        const auto settings=site_settings_snapshot();
+        const uint32_t settings_generation=site_settings_generation();
+        if(cottage_ota_network_maintenance() || !wifi_ok.load() ||
+           !clock_ok() ||
+           std::strcmp(settings.pump_adapter,"mitsubishi_cn105_esphome")!=0 ||
+           !valid_cn105_events_url(settings.cn105_url)) {
             vTaskDelay(pdMS_TO_TICKS(1000));continue;
         }
         WiFiClient client;
@@ -392,7 +479,7 @@ static void sse_worker(void*) {
         request.addHeader("Accept-Encoding","identity");
         static const char* headers[]={"Content-Type","Transfer-Encoding"};
         request.collectHeaders(headers,2);
-        const bool began=request.begin(client,COTTAGE_CN105_URL);
+        const bool began=request.begin(client,settings.cn105_url);
         const int http_status=began?request.GET():0;
         sse_last_http_status.store(http_status);
         if(http_status==200) {
@@ -426,6 +513,8 @@ static void sse_worker(void*) {
                 },nullptr);
                 uint32_t last_activity_ms=millis();
                 while(wifi_ok.load() && client.connected() &&
+                      !cottage_ota_network_maintenance() &&
+                      settings_generation==site_settings_generation() &&
                       static_cast<uint32_t>(millis()-last_activity_ms)<180000u) {
                     if(!stream->available()) {
                         vTaskDelay(pdMS_TO_TICKS(20));continue;
@@ -466,10 +555,14 @@ static void sse_worker(void*) {
 }
 static void shelly_worker(void*) {
     char url[192];
-    snprintf(url,sizeof(url),"%s/rpc/Switch.GetStatus?id=0",COTTAGE_SHELLY_URL);
     for(;;) {
+        if(cottage_ota_network_maintenance()) {
+            vTaskDelay(pdMS_TO_TICKS(500));continue;
+        }
+        const auto settings=site_settings_snapshot();
+        snprintf(url,sizeof(url),"%s/rpc/Switch.GetStatus?id=0",settings.shelly_url);
         if(wifi_ok.load() && clock_ok() &&
-           valid_shelly_base_url(COTTAGE_SHELLY_URL)) {
+           valid_shelly_base_url(settings.shelly_url)) {
             String body;
             const uint32_t req_begin_ms=millis();
             if(get_http(url,body)) {
@@ -493,13 +586,533 @@ static void shelly_worker(void*) {
         vTaskDelay(pdMS_TO_TICKS(15000));
     }
 }
-static enevina::Tariff tariff(bool night=false) {
-    enevina::Tariff t;
-    t.margin_eur_per_kwh=COTTAGE_SPOT_MARGIN;
-    t.transfer_eur_per_kwh=night?COTTAGE_TRANSFER_NIGHT:COTTAGE_TRANSFER_DAY;
-    t.electricity_tax_eur_per_kwh=COTTAGE_ELECTRICITY_TAX;
-    t.vat_rate=COTTAGE_VAT_RATE;
-    return t;
+// ONE price rule for the MPC bridge, bootstrap, /api/status and /api/prices:
+// browser-configured site tariff evaluated at the slot START in Finnish
+// civil time (DST-safe, independent of the TZ variable).
+static bool bridge_slot_price(void*,int64_t utc,double spot,double& total) {
+    return site_slot_total_price(utc,spot,total);
+}
+// Model-free price-aware heating proposal, used only until calibrated MPC
+// exists. A 2-hour window must contain 8 contiguous verified 15-minute
+// TOTAL marginal-cost slots. This function never emits an actuator command.
+static BootstrapDecision bootstrap_preview(int64_t now,
+                                            const TemperatureSample& t) {
+    BootstrapInput input{};
+    input.indoor_fresh=valid_temperature(t,now);
+    input.indoor_c=t.indoor_c;
+    const CottageModeConfig mode=c23_mode_config();
+    // Use the actual target from the same mode physics shown in /api/status.
+    // Drying is outside-temperature+delta (can be BELOW pump's 16C setting),
+    // so the controller uses HEAT 16C only when room temperature needs it.
+    const CottageModePlan target_plan=c23_current_mode_plan();
+    if(mode.mode==CottageMode::Cold) {
+        BootstrapDecision off{};
+        off.action=BootstrapAction::Off;
+        off.reason=BootstrapReason::NoHeatingRequested;
+        return off; // Explicit user-selected "Kylmillään".
+    }
+    if(!target_plan.has_target ||
+       !std::isfinite(target_plan.target_c)) {
+        return {}; // Cannot make up a drying temperature without outside data.
+    }
+    if(mode.mode==CottageMode::Drying && drying_blocks_heat(target_plan)) {
+        // The existing humidity duration and hysteresis decide whether
+        // drying heat is permitted at all. A target alone is NOT permission
+        // to heat dry air, especially with prices unavailable. Once it is
+        // permitted, the bootstrap's room deadband (HOLD) prevents toggling.
+        BootstrapDecision no_heat{};
+        no_heat.action=BootstrapAction::Off;
+        no_heat.reason=BootstrapReason::NoHeatingRequested;
+        no_heat.requested_room_c=target_plan.target_c;
+        return no_heat;
+    }
+    input.desired_room_c=target_plan.target_c;
+    const auto market=enevina_firmware::market_status();
+    constexpr size_t N=8;
+    std::array<enevina_firmware::PricePoint,N> points{};
+    std::array<double,N> prices{};
+    const int64_t start=(now/900)*900;
+    const bool eligible=now>=1700000000 && market.clock_trusted &&
+        market.current_price_valid && market.last_fetch_utc<=now &&
+        market.last_fetch_utc>=now-36*3600 &&
+        market.valid_until_utc>=start+static_cast<int64_t>(N)*900;
+    bool valid_prices=eligible && enevina_firmware::future_prices(
+        points.data(),points.size())==N;
+    for(size_t i=0;valid_prices && i<N;++i) {
+        if(points[i].start_utc!=start+static_cast<int64_t>(i)*900) {
+            valid_prices=false;break;
+        }
+        if(!site_slot_total_price(points[i].start_utc,points[i].spot_eur_per_kwh,
+                                  prices[i])) {
+            valid_prices=false;break;
+        }
+    }
+    input.next_total_prices=prices.data();
+    input.price_count=N;
+    input.prices_contiguous_and_fresh=valid_prices;
+    input.min_price_advantage_fraction=site_settings_snapshot().min_price_advantage_fraction;
+    return bootstrap_price_decision(input);
+}
+// CN105 is a separate local ESPHome gateway. These HTTP calls are the only
+// physical write path and are permitted solely by an explicitly armed
+// pilot plus fresh independent sensor, prices and gateway telemetry.
+static String cn105_local_url(const char* suffix) {
+    const auto settings=site_settings_snapshot();
+    if(!suffix || !valid_cn105_events_url(settings.cn105_url))return {};
+    String root(settings.cn105_url);
+    root.remove(root.length()-strlen("/events"));
+    root+=suffix;
+    return root;
+}
+static bool cn105_selected() {
+    const auto settings=site_settings_snapshot();
+    return enevina::adapter_allowed_cn105_physical_writes(settings.pump_adapter);
+}
+static bool cn105_bridge_get(bool& heating,double& target) {
+    if(!cn105_selected()) return false;
+    const String url=cn105_local_url(
+        "/climate/Mitsubishi%20Electric%20MSZ-FD25VA?detail=all");
+    if(url.isEmpty() || !wifi_ok.load())return false;
+    // ESP32-S3 shares 2.4-GHz radio/internal RAM with BLE and HTTPS. The old
+    // 1.8-second HTTP response deadline intermittently returned -11 even
+    // though the CN105 ESPHome gateway stayed healthy. Retry only READS
+    // after transport timeouts, never physical POST commands.
+    for(unsigned attempt=0;attempt<cn105_read_max_attempts;++attempt) {
+        int code=0;
+        bool verified=false;
+        {
+            // Reacquire the memory/network lease for each attempt. Never hold
+            // its shared mutex while waiting between retries.
+            // BLE scans may hold the shared network mutex for up to 4 s.
+            // A 1 s GET wait repeatedly collided with them and made an
+            // otherwise healthy CN105 bridge appear INPUTS_UNVERIFIED.
+            // Keep the same 72-KiB/16-KiB memory floors; only wait longer.
+            enevina_firmware::NetworkBudgetLease lease(5000,72*1024,16*1024);
+            if(!lease.held()) {
+                control_get_http_code.store(0);
+                cn105_get_lease_denials.fetch_add(1);
+                const auto& detail=lease.diagnostic();
+                cn105_get_last_free_internal.store(detail.free_internal);
+                cn105_get_last_largest_internal.store(detail.largest_internal);
+                if(detail.failure==enevina_firmware::NetworkBudgetFailure::LowMemory)
+                    cn105_get_lease_low_memory.fetch_add(1);
+                else if(detail.failure==enevina_firmware::NetworkBudgetFailure::MutexBusy)
+                    cn105_get_lease_busy.fetch_add(1);
+                // Retry only the *read* after a transient mutex/heap failure.
+                // The physical POST path never retries automatically.
+                if(attempt+1<cn105_read_max_attempts) {
+                    cn105_get_retry_count.fetch_add(1);
+                    vTaskDelay(pdMS_TO_TICKS(cn105_read_retry_delay_ms));
+                    continue;
+                }
+                return false;
+            }
+            WiFiClient client;
+            HTTPClient req;
+            req.setConnectTimeout(cn105_read_connect_timeout_ms);
+            req.setTimeout(cn105_read_response_timeout_ms);
+            req.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+            if(!req.begin(client,url)) {
+                control_get_http_code.store(0);
+                return false;
+            }
+            req.addHeader("Cache-Control","no-cache");
+            code=req.GET();
+            control_get_http_code.store(code);
+            if(code==cn105_http_read_timeout)
+                cn105_get_timeout_count.fetch_add(1);
+            const int body_size=req.getSize();
+            if(code==200 && body_size>0 && body_size<1800) {
+                const String body=req.getString();
+                if(body.length()==static_cast<unsigned>(body_size)) {
+                    cJSON* root=cJSON_ParseWithOpts(body.c_str(),nullptr,true);
+                    if(root) {
+                        const cJSON* id=cJSON_GetObjectItemCaseSensitive(root,"id");
+                        const cJSON* mode=cJSON_GetObjectItemCaseSensitive(root,"mode");
+                        const cJSON* set=cJSON_GetObjectItemCaseSensitive(root,"target_temperature");
+                        double setpoint=0;
+                        if(cJSON_IsString(id) && cJSON_IsString(mode) &&
+                           strcmp(id->valuestring,
+                                  "climate/Mitsubishi Electric MSZ-FD25VA")==0 &&
+                           number(set,setpoint,16,26) &&
+                           mitsubishi_valid_setpoint(setpoint) &&
+                           (strcmp(mode->valuestring,"HEAT")==0 ||
+                            strcmp(mode->valuestring,"OFF")==0)) {
+                            heating=strcmp(mode->valuestring,"HEAT")==0;
+                            target=setpoint;
+                            verified=true;
+                        }
+                        cJSON_Delete(root);
+                    }
+                }
+            }
+            req.end();
+        }
+        if(verified) {
+            if(attempt>0)cn105_get_recovered_count.fetch_add(1);
+            control_last_bridge_read_utc.store(time(nullptr));
+            return true;
+        }
+        // Reject malformed/unauthorized/non-200 responses; only -11 (HTTP
+        // read timeout) and -5 (connection lost) are transient retry cases.
+        if(!cn105_should_retry_read(code,attempt) || !wifi_ok.load())
+            return false;
+        cn105_get_retry_count.fetch_add(1);
+        vTaskDelay(pdMS_TO_TICKS(cn105_read_retry_delay_ms));
+    }
+    return false;
+}
+static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
+                              uint32_t config_generation,ControlStep step,
+                              double required_target) {
+    if(!cn105_selected())return false;
+    control_post_stage.store(1);
+    control_post_http_code.store(0);
+    // A browser settings change (URL, tariff) supersedes an in-flight command
+    // exactly like a mode change does; no new gate, same cancellation points.
+    const uint32_t site_generation=site_settings_generation();
+    if(!command.valid || !control_armed.load() || !wifi_ok.load() ||
+       control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
+        control_post_stage.store(-1);return false;
+    }
+    const String url=cn105_local_url(command.path.data());
+    if(url.isEmpty()) {control_post_stage.store(-2);return false;}
+    // Never hold NetworkBudgetLease across cn105_bridge_get(): it owns its
+    // own non-recursive network mutex. Revalidate after this blocking GET.
+    const int64_t now=time(nullptr);
+    const auto current_temp=c23_temperature_sample();
+    // A direct CN105 HTTP GET is the live device check. An unrelated SSE
+    // heartbeat or a proprietary "Verified Snapshot" is not required.
+    const CottageMode current_mode=c23_mode_config().mode;
+    if(current_mode!=CottageMode::Cold &&
+       !valid_temperature(current_temp,now))return false;
+    bool bridge_heat=false;double bridge_setpoint=0;
+    if(!cn105_bridge_get(bridge_heat,bridge_setpoint)) {
+        control_post_stage.store(-3);return false;
+    }
+    control_post_stage.store(3);
+    const auto latest=bootstrap_preview(now,current_temp);
+    if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
+       (latest.action!=BootstrapAction::HeatSetpoint ||
+        std::fabs(latest.heat_setpoint_c-required_target)>0.001))return false;
+    if(step==ControlStep::SetOff && latest.action!=BootstrapAction::Off)
+        return false;
+    enevina_firmware::NetworkBudgetLease lease(1000,72*1024,16*1024);
+    if(!lease.held()) {control_post_stage.store(-4);return false;}
+    control_post_stage.store(4);
+    // Network-budget wait is another cancellation point. A user's updated
+    // settings always supersede an in-flight automatic command.
+    if(!control_armed.load() || c23_config_generation()!=config_generation ||
+       site_settings_generation()!=site_generation ||
+       !wifi_ok.load() || !clock_ok())return false;
+    const auto refreshed=bootstrap_preview(time(nullptr),c23_temperature_sample());
+    if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
+       (refreshed.action!=BootstrapAction::HeatSetpoint ||
+        std::fabs(refreshed.heat_setpoint_c-required_target)>0.001))
+        return false;
+    if(step==ControlStep::SetOff &&
+       refreshed.action!=BootstrapAction::Off)return false;
+    WiFiClient client;
+    HTTPClient req;
+    req.setConnectTimeout(1500);req.setTimeout(1800);
+    req.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+    if(!req.begin(client,url)) {control_post_stage.store(-5);return false;}
+    req.addHeader("Content-Type","application/x-www-form-urlencoded");
+    // Arduino-ESP32 HTTPClient::sendRequest only adds Content-Length when
+    // payload size > 0. ESPHome's local WebServer rejects POST without it
+    // with HTTP 411. Explicitly send zero length for command-only queries.
+    req.addHeader("Content-Length","0");
+    control_post_stage.store(5);
+    // Last cancellation point after all potentially blocking preparation.
+    if(!control_armed.load() || c23_config_generation()!=config_generation ||
+       site_settings_generation()!=site_generation) {
+        req.end();
+        return false;
+    }
+    // Codex P2 (post-merge #28): start the dwell only when a mode POST is
+    // really dispatched (after every precondition); a failed preparation
+    // must not block the next attempt for 30 min. An uncertain response or
+    // failed readback still counts: the command may have taken effect.
+    if(step==ControlStep::SetHeat || step==ControlStep::SetOff)
+        control_note_mode_dispatch();
+    const int code=req.POST("");
+    control_post_http_code.store(code);
+    control_post_stage.store(code>=200 && code<300?6:-6);
+    req.end();
+    return code>=200 && code<300;
+}
+// Called only in the existing optimizer task, no additional RTOS stack,
+// watchdog or scheduled foreground WebServer blocking.
+static bool control_current_image_sha256(uint8_t out[32]) {
+    const esp_partition_t* running=esp_ota_get_running_partition();
+    return running && esp_partition_get_sha256(running,out)==ESP_OK;
+}
+// Persistent pump authorization belongs to one image and pump identity.
+// The installed 20-KiB NVS partition can fill with disposable weather/market
+// caches.  Only an explicitly authorized /api/control/arm request may
+// recover space, and ONLY by erasing the two known re-fetchable cache keys.
+// Never erase Wi-Fi, the signed OTA journal or any previous control intent.
+static std::atomic<uint32_t> control_arm_nvs_reclaimed{0};
+static std::atomic<uint32_t> control_arm_nvs_save_failures{0};
+static std::atomic<int32_t> control_arm_nvs_last_error{0};
+static bool control_erase_disposable_cache(const char* nspace,const char* key) {
+    nvs_handle_t handle=0;
+    const esp_err_t opened=nvs_open(nspace,NVS_READWRITE,&handle);
+    if(opened!=ESP_OK) {
+        control_arm_nvs_last_error.store(opened);
+        return false;
+    }
+    const esp_err_t erased=nvs_erase_key(handle,key);
+    const esp_err_t committed=erased==ESP_OK?nvs_commit(handle):erased;
+    nvs_close(handle);
+    control_arm_nvs_last_error.store(committed);
+    if(committed==ESP_OK) {
+        control_arm_nvs_reclaimed.fetch_add(1);
+        ESP_LOGW("enevina_ctl","Reclaimed disposable NVS cache %s/%s",nspace,key);
+        return true;
+    }
+    return false;
+}
+static bool control_save_user_arm(const StoredControlIntent& record) {
+    // Unlike Preferences::putBytes, the native API exposes the precise NVS
+    // open/set/commit error. Never replace a failure with cache-erase status.
+    esp_err_t last_write_error=ESP_FAIL;
+    const auto store=[&]() {
+        nvs_handle_t handle=0;
+        esp_err_t err=nvs_open("cottage_ctl",NVS_READWRITE,&handle);
+        if(err==ESP_OK) {
+            err=nvs_set_blob(handle,"intent1",&record,sizeof(record));
+            if(err==ESP_OK)err=nvs_commit(handle);
+            nvs_close(handle);
+        }
+        last_write_error=err;
+        return err==ESP_OK;
+    };
+    if(enevina::cottage::persist_with_optional_cache_reclaim(
+            store,control_erase_disposable_cache)) {
+        control_arm_nvs_last_error.store(ESP_OK);
+        return true;
+    }
+    control_arm_nvs_last_error.store(last_write_error);
+    control_arm_nvs_save_failures.fetch_add(1);
+    return false;
+}
+// Also called from the site-settings HTTP handler BEFORE it commits a changed
+// endpoint. The current physical command is stopped first, then the previous
+// device-specific NVS authorization is durably revoked.
+bool cottage_control_revoke_saved_intent() {
+    control_armed.store(false);
+    uint8_t digest[32]{};
+    (void)control_current_image_sha256(digest); // disabled intent needs no hash
+    const auto record=control_intent_for(
+        site_settings_snapshot(),false,digest);
+    Preferences prefs;
+    if(!prefs.begin("cottage_ctl",false))return false;
+    const bool stored=
+        prefs.putBytes("intent1",&record,sizeof(record))==sizeof(record);
+    prefs.end();
+    return stored;
+}
+static void cottage_control_disarm() {
+    if(!cottage_control_revoke_saved_intent())
+        Serial.println("CONTROL_WARN: durable disarm write failed");
+}
+static void cottage_control_tick() {
+    control_gate.store(static_cast<int>(ControlBlock::Disabled));
+    // Never reuse CN105 command permissions for a Midea read-only device.
+    if(!cn105_selected()) {
+        if(control_armed.load())cottage_control_disarm();
+        return;
+    }
+    if(!control_armed.load())return;
+    // Arming is bound to the configured pump. A changed CN105 endpoint or
+    // adapter revokes it; a reboot restores only the same pump identity.
+    if(control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
+        cottage_control_disarm();
+        return;
+    }
+    if(!wifi_ok.load() || !clock_ok()) {
+        control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
+        return;
+    }
+    const CottageModeConfig mode=c23_mode_config();
+    const uint32_t config_generation=c23_config_generation();
+    const auto sample=c23_temperature_sample();
+    const int64_t now=time(nullptr);
+    const auto proposal=bootstrap_preview(now,sample);
+    // CN105 direct GET is authoritative enough for this local pilot;
+    // optional SSE callbacks do not block physical control.
+    if((mode.mode!=CottageMode::Cold &&
+        !valid_temperature(sample,now)) ||
+       proposal.action==BootstrapAction::Unavailable) {
+        control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
+        return;
+    }
+    // A HOLD proposal does not authorize any physical command. A failed
+    // *optional* bridge observation must not mislabel it as an unsafe    // heating command; still attempt a read to maintain the 30-min dwell
+    // history and avoid a stale observation gap at the next HEAT request.
+    if(proposal.action==BootstrapAction::Hold) {
+        bool observed_heat=false;double observed_setpoint=0;
+        if(cn105_bridge_get(observed_heat,observed_setpoint))
+            control_note_observed_mode(observed_heat);
+        control_gate.store(static_cast<int>(ControlBlock::NoProposal));
+        return;
+    }
+    bool current_heat=false;
+    double current_setpoint=0;
+    if(!cn105_bridge_get(current_heat,current_setpoint)) {
+        control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
+        return;
+    }
+    // Preflight GET can block: old sensor, mode and user authorization
+    // snapshots must never be carried into the physical POST.
+    if(!control_armed.load() ||
+       config_generation!=c23_config_generation() ||
+       (mode.mode!=CottageMode::Cold &&
+        !valid_temperature(c23_temperature_sample(),time(nullptr)))) {
+        control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
+        return;
+    }
+    ControlSnapshot candidate{};
+    candidate.armed=control_armed.load();
+    candidate.heating_mode=(mode.mode==CottageMode::Cold ||
+          mode.mode==CottageMode::Drying ||
+          mode.mode==CottageMode::Hold ||
+          mode.mode==CottageMode::Occupied);
+    candidate.temperature_fresh=mode.mode==CottageMode::Cold ||
+                                valid_temperature(sample,now);
+    candidate.market_fresh=proposal.action!=BootstrapAction::Unavailable;
+    candidate.cn105_link_fresh=true; // direct bridge GET above succeeded
+    candidate.bridge_get_ok=true; // separate live ESPHome GET succeeded
+    candidate.current_heat=current_heat;
+    candidate.current_setpoint_c=current_setpoint;
+    candidate.proposal=proposal;
+    control_note_observed_mode(current_heat);
+    candidate.ms_since_mode_change=control_ms_since_mode_change();
+    const auto decision=choose_mitsubishi_control(candidate);
+    control_gate.store(static_cast<int>(decision.gate));
+    if(decision.step==ControlStep::None)return;
+    MitsubishiHttpRequest request{};
+    if(decision.step==ControlStep::Setpoint)
+        request=mitsubishi_setpoint_request(decision.target_c);
+    else request=mitsubishi_mode_request(
+        decision.step==ControlStep::SetHeat?MitsubishiMode::Heat:
+                                            MitsubishiMode::Off);
+    if(!request.valid || !control_armed.load())return;
+    control_last_step.store(static_cast<int>(decision.step));
+    control_last_command_utc.store(now);
+    control_commands_sent.fetch_add(1);
+    const bool sent=cn105_bridge_post(request,config_generation,
+                                      decision.step,decision.target_c);
+    // ESPHome may acknowledge the POST before updating its REST state.
+    // Confirm only what the bridge GET reports, never claim UART proof.
+    bool confirmed=false;
+    if(sent) {
+        for(unsigned attempt=0;attempt<5 && control_armed.load();++attempt) {
+            vTaskDelay(pdMS_TO_TICKS(600));
+            bool read_heating=false;
+            double read_setpoint=0;
+            if(!cn105_bridge_get(read_heating,read_setpoint))continue;
+            control_note_observed_mode(read_heating);
+            confirmed=decision.step==ControlStep::Setpoint ?
+                std::fabs(read_setpoint-decision.target_c)<=0.001 :
+                decision.step==ControlStep::SetHeat ? read_heating :
+                !read_heating;
+            if(confirmed)break;
+        }
+    }
+    if(confirmed) {
+        control_post_stage.store(8);
+        control_commands_confirmed.fetch_add(1);
+        control_last_ack_utc.store(time(nullptr));
+    } else {
+        if(control_post_stage.load()==6)control_post_stage.store(-8);
+        control_commands_failed.fetch_add(1);
+    }
+}
+static void cottage_control_registration() {
+    // User's previously chosen automation survives a same-image restart.
+    // A new OTA image (including pending validation) does NOT inherit it.
+    // The pump identity AND the full running firmware image must match.
+    control_armed.store(false);
+    uint8_t running_image_sha256[32]{};
+    const bool valid_image=control_current_image_sha256(
+        running_image_sha256);
+    const esp_partition_t* running=esp_ota_get_running_partition();
+    esp_ota_img_states_t image_state=ESP_OTA_IMG_UNDEFINED;
+    const bool pending_ota=running &&
+        esp_ota_get_state_partition(running,&image_state)==ESP_OK &&
+        image_state==ESP_OTA_IMG_PENDING_VERIFY;
+    const bool activating_ota=pending_ota ||
+        cottage_ota_confirmation_pending();
+
+    Preferences prefs;
+    bool restore=false;
+    bool must_revoke=false;
+    if(prefs.begin("cottage_ctl",true)) {
+        StoredControlIntent saved{};
+        const size_t stored_size=prefs.getBytesLength("intent1");
+        if(stored_size==sizeof(saved) &&
+           prefs.getBytes("intent1",&saved,sizeof(saved))==sizeof(saved)) {
+            restore=cn105_selected() && valid_image && !activating_ota &&
+                control_intent_restorable(saved,site_settings_snapshot(),
+                                          running_image_sha256);
+            must_revoke=saved.enabled!=0 && !restore;
+        } else if(stored_size!=0) {
+            // An older / incompatible authorization is never inherited.
+            must_revoke=true;
+        }
+        prefs.end();
+    }
+    control_armed_endpoint.store(site_settings_endpoint_generation());
+    control_reset_mode_history();
+    if(must_revoke && !cottage_control_revoke_saved_intent())
+        Serial.println("CONTROL_WARN: stale authorization revoke failed");
+    control_armed.store(restore && !must_revoke);
+    web.on("/api/control/arm",HTTP_POST,[]() {
+        if(!web.hasArg("token") ||
+           !c23_authorize_local_setting(web.arg("token").c_str())) {
+            web.send(403,"application/json","{\"saved\":false}");
+            return;
+        }
+        if(!web.hasArg("enabled") ||
+           (web.arg("enabled")!="true"&&web.arg("enabled")!="false")) {
+            web.send(400,"application/json","{\"saved\":false}");
+            return;
+        }
+        const bool requested=web.arg("enabled")=="true";
+        if(requested && !cn105_selected()) {
+            web.send(409,"application/json",
+                "{\"saved\":false,\"error\":\"ADAPTER_READ_ONLY\"}");
+            return;
+        }
+        uint8_t digest[32]{};
+        // Never grant authorization when firmware identity cannot be read,
+        // or when a new OTA image still awaits confirmation.
+        const esp_partition_t* running=esp_ota_get_running_partition();
+        esp_ota_img_states_t image_state=ESP_OTA_IMG_UNDEFINED;
+        const bool pending_ota=running &&
+            esp_ota_get_state_partition(running,&image_state)==ESP_OK &&
+            image_state==ESP_OTA_IMG_PENDING_VERIFY;
+        const bool allowed=requested ?
+            control_current_image_sha256(digest) &&
+            !pending_ota && !cottage_ota_confirmation_pending() : true;
+        const auto record=control_intent_for(
+            site_settings_snapshot(),requested && allowed,digest);
+        // Exact pump/adapter AND signed/USB image identity together.
+        // Reclaim only re-fetchable forecast/price caches on an explicitly
+        // authorized user request when durable NVS authorization cannot fit.
+        const bool stored=allowed && control_save_user_arm(record);
+        if(stored) {
+            control_armed_endpoint.store(site_settings_endpoint_generation());
+            // Arming starts the dwell window: mode history while disarmed
+            // is unknown (manual remote changes are not observed).
+            control_reset_mode_history();
+            control_armed.store(requested);
+        }
+        web.send(stored?200:500,"application/json",
+            stored?"{\"saved\":true}":"{\"saved\":false}");
+    });
 }
 // Use 64-bit monotonic ESP timer for an actual deadline (not post-hoc wall time).
 static uint64_t cottage_now_ms(void*) {
@@ -540,11 +1153,11 @@ static void optimizer_worker(void*) {
             // unfinished quarter-hour. Only optimize near the UTC boundary.
             const bool near_slot_start=(now%900<=60);
             if(near_slot_start && pc&&wc) {
-                *bridge=join_forecast_two_tariffs(now,ms.last_fetch_utc,ws.fetched_utc,
-                    aligned,pc,weather,wc,tariff(false),tariff(true),192);
+                *bridge=join_forecast_priced(now,ms.last_fetch_utc,ws.fetched_utc,
+                    aligned,pc,weather,wc,bridge_slot_price,nullptr,192);
                 if(bridge->status!=BridgeStatus::Ready)
-                    *bridge=join_forecast_two_tariffs(now,ms.last_fetch_utc,ws.fetched_utc,
-                        aligned,pc,weather,wc,tariff(false),tariff(true),96);
+                    *bridge=join_forecast_priced(now,ms.last_fetch_utc,ws.fetched_utc,
+                        aligned,pc,weather,wc,bridge_slot_price,nullptr,96);
             }
             xSemaphoreTake(lock_data,portMAX_DELAY);
             if(near_slot_start) bridge_status=bridge->status;
@@ -643,6 +1256,7 @@ static void optimizer_worker(void*) {
                     sizeof(reason_text));
             xSemaphoreGive(lock_data);
         }
+        cottage_control_tick();
         // Recompute on quarter-hour boundary, retries every minute when offline.
         const time_t t=time(nullptr);
         int sleep_s=clock_ok()?static_cast<int>(900-(t%900)):60;
@@ -650,261 +1264,9 @@ static void optimizer_worker(void*) {
         vTaskDelay(pdMS_TO_TICKS(std::max(5,sleep_s)*1000));
     }
 }
-static const char html[] PROGMEM=R"HTML(<!doctype html><html lang="fi"><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Enevina Lite – Pihamökki</title>
-<style>body{font:16px system-ui;color:#193b33;background:#f6f8f6;margin:0;padding:18px}
-main{max-width:980px;margin:auto}.notice{background:#fff0d9;padding:12px;border:2px solid #9d6b11}
-section{background:white;padding:16px;border-radius:12px;margin:15px 0}
-dl{display:grid;grid-template-columns:1fr auto;gap:10px}dt,dd{margin:0}
-small{color:#64746d}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:7px;text-align:left}
-</style><main><h1>Enevina Lite – Pihamökki</h1>
-<p class="notice"><strong>VARJOTILA – EI OHJAA LÄMPÖPUMPPUA</strong></p>
-<section><h2>Tila ja mittaukset</h2><dl id="metrics"></dl><p id="reason"></p>
-<small>Pumpun oma lämpötila ei korvaa riippumatonta jäätymissuoja-anturia.
-CN105-yhteyden uptime ei tee vanhoista pumpun mittauksista tuoreita.
-Synteettinen lämpömalli ei ole kalibrointi eikä säästötodiste.</small></section>
-<section><h2>Laskettu aikataulu</h2><p id="result">Ei laskelmaa</p>
-<table><thead><tr><th>Aika</th><th>Ehdotus</th><th>Ennuste °C</th><th>kWh</th><th>€</th></tr></thead>
-<tbody id="rows"></tbody></table>
-<small>Laskelmat synteettisellä mallilla eivät osoita todellisia säästöjä.</small></section>
-<script>async function refresh(){try{
-const s=await (await fetch('/api/status',{cache:'no-store'})).json();
-const shown=[['CN105',s.cn105],['Pumppu',s.pump_mode],['Pumpun sisälämpö °C',s.pump_indoor_c],
-['Riippumaton anturi °C',s.independent_c],['Kompressori Hz',s.compressor_hz],
-['Shelly mökin kokonaisteho W',s.shelly_w],['Shellyn rele päällä',s.shelly_relay_on],['Spot €/kWh',s.spot],
-['Sääennuste °C',s.weather_c],['Kokonaishinnan arvio €/kWh',s.total_price],
-['MPC tila',s.mpc_status],['MPC aika ms',s.mpc_ms],['Pahin aika ms',s.mpc_worst_ms],
-['Laskettu UTC',s.optimized_utc],['Vapaa RAM B',s.free_heap],
-['Vapaa PSRAM B',s.free_psram],['Pinon vapaa alaraja B',s.stack_free_bytes],
-['SSE-yhteys aktiivinen',s.sse_connected],['SSE HTTP',s.sse_http_status],
-['SSE-yhdistämisiä',s.sse_connections],['SSE-katkoja',s.sse_disconnects],
-['Pumpun lämpötilatapahtumia',s.sse_climate_events],
-['Kompressoritaajuustapahtumia',s.sse_compressor_events],
-['CN105-yhteyden heartbeat-lukuja',s.sse_link_events],
-['CN105-SSE lämpöviesti vastaanotettu UTC (ei pumpun lähdeaika)',s.cn105_climate_utc?new Date(s.cn105_climate_utc*1000).toISOString():'Ei mittausta'],
-['CN105-SSE kompressoriviesti vastaanotettu UTC (ei lähdeaika)',s.cn105_compressor_utc?new Date(s.cn105_compressor_utc*1000).toISOString():'Ei mittausta'],
-['CN105-yhteyden uptime s',s.cn105_link_uptime_s],
-['Shelly lukuja OK/virhe',s.shelly_reads_ok+'/'+s.shelly_reads_bad],
-['Shelly viimeisin vaste ms',s.shelly_rtt_ms],
-['Shelly viimeisin UTC',s.shelly_last_read_utc?new Date(s.shelly_last_read_utc*1000).toISOString():'Ei mittausta'],
-['Nord Pool jaksoja',s.market_slots],['Nord Pool päivitetty UTC',s.market_last_fetch_utc?new Date(s.market_last_fetch_utc*1000).toISOString():'Ei mittausta'],
-['FMI pisteitä',s.weather_points],['FMI päivitetty UTC',s.weather_last_fetch_utc?new Date(s.weather_last_fetch_utc*1000).toISOString():'Ei mittausta'],
-['Supervisor tila/syy',s.safety_mode+'/'+s.safety_reason],
-['Lämpömalli kalibroitu',s.model_calibrated],
-['Riippumaton pakkassuoja',s.independent_freeze_protection_verified]];
-document.querySelector('#metrics').replaceChildren(...shown.flatMap(([k,v])=>{
-let dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=k;dd.textContent=v??'Ei mittausta';return[dt,dd]}));
-document.querySelector('#reason').textContent=s.reason;
-const p=await (await fetch('/api/plan',{cache:'no-store'})).json();
-document.querySelector('#result').textContent=p.valid?
-'Kustannus '+p.cost_eur.toFixed(3)+' €; min '+p.minimum_c.toFixed(2)+' °C; '+p.count+' varttia':
-'Ei hyväksyttyä aikataulua';
-document.querySelector('#rows').replaceChildren(...(p.slots||[]).slice(0,192).map(x=>{
-let tr=document.createElement('tr');
-for(let v of [new Date(x.utc*1000).toLocaleString('fi-FI',{timeZone:'Europe/Helsinki'}),
-x.heat?'HEAT 16 °C':'OFF',x.indoor_c.toFixed(2),x.kwh.toFixed(3),x.eur.toFixed(3)])
-{let td=document.createElement('td');td.textContent=v;tr.append(td)}return tr}));
-}catch(e){document.querySelector('#reason').textContent='Selain ei saa mittauksia'}}
-refresh();setInterval(refresh,15000);</script>
-<section id="air-panel">
-<h2>Pihamökki – sisäilma ja kuivanapito</h2>
-<p class="notice"><strong>VAIN VARJOTILA</strong> – tila tai tavoite ei ohjaa Mitsubishiä.
-+16 °C on pumpun normaali alin lämmitysasetus. Rakenteen kosteus- tai
-jäätymisturvallisuutta ei voi vahvistaa pelkällä huoneilman anturilla.</p>
-<dl id="air-metrics"><dt>RuuviTag</dt><dd>Ei mittausta</dd></dl>
-<h3>Toimintatila – vain laskenta</h3>
-<form id="air-config">
-<label for="air-mode">Toimintatila</label>
-<select id="air-mode"><option value="0">Kylmillään</option>
-<option value="1">Kuivanapito</option><option value="2">Ylläpitolämpö</option></select>
-<label for="air-hold">Ylläpitolämmön tavoite °C</label>
-<input id="air-hold" type="number" step="0.5" min="5" max="24" value="12">
-<label for="air-delta">Kuivanapidon ulkolämpötilaero °C (kokeellinen)</label>
-<input id="air-delta" type="number" step="0.5" min="3" max="5" value="4">
-<button type="submit">Tallenna laskennallinen tila</button>
-</form>
-<p id="air-mode-status">Ei laskennallista ohjausta</p>
-<h3>RuuviTagin tunnistus ja sitominen</h3>
-<p>Anturin tunnistetta ei valita automaattisesti. Varmista fyysisesti,
-että tunniste on juuri pihamökin anturista. Sitominen tallentuu
-vain tähän laitteeseen; muut anturit hylätään.</p>
-<form id="air-bond"><label for="air-role">Anturi</label>
-<select id="air-role"><option value="indoor">Mökin sisäilma</option>
-<option value="outdoor">Vapaaehtoinen ulkoilma</option></select>
-<label for="air-mac">Ruuvi RAWv2 MAC (XX:XX:XX:XX:XX:XX) tai "none"</label>
-<input id="air-mac" type="text" maxlength="17" autocomplete="off" placeholder="XX:XX:XX:XX:XX:XX">
-<button type="submit">Sido anturi varjotilaan</button></form>
-<p id="air-settings-status"></p>
-<h3>Kosteuden seuranta ja hälytykset</h3>
-<form id="air-thresholds">
-<label for="air-rh70">Pitkän RH-seurannan raja % (6 tuntia)</label>
-<input type="number" min="55" max="80" step="1" id="air-rh70" value="70">
-<label for="air-rh80">Korkean RH:n tarkistushälytys % (24 tuntia)</label>
-<input type="number" min="75" max="95" step="1" id="air-rh80" value="80">
-<label for="air-battery">Paristojännitteen varoitusraja V</label>
-<input type="number" min="2.0" max="3.2" step="0.05" id="air-battery" value="2.5">
-<button type="submit">Tallenna varoitusrajat</button></form>
-<ul id="air-alerts"><li>Ei mittausta</li></ul>
-<small>70 % / 80 % RH ovat suuntaa-antavia pitkäaikaisseurannan rajoja,
-eivät yleispäteviä rakenteen home- tai kondensaatiorajoja.
-Lämmittäminen ei korvaa ilmanvaihtoa.</small>
-<h3>Mittaus- ja tapahtumahistoria</h3>
-<div style="overflow-x:auto"><table><thead><tr><th>Aika</th><th>°C</th>
-<th>RH %</th><th>Kaste °C</th><th>g/m³</th></tr></thead>
-<tbody id="air-history"></tbody></table></div>
-<ul id="air-events"></ul>
-</section>
-<style>
-#air-panel form{display:grid;gap:9px;max-width:430px;margin:12px 0 24px}
-#air-panel input,#air-panel select,#air-panel button{
- font:inherit;min-height:42px;padding:7px;border-radius:7px;border:1px solid #7c948b}
-#air-panel button{background:#e7f3ea;cursor:pointer}
-#air-panel ul{padding-left:23px}
-</style>
-<script>
-let c23token='',c23initialized=false,c23lastHistory=0;
-const fmt2=v=>typeof v==='number' && Number.isFinite(v)?v.toFixed(2):'Ei mittausta';
-const airNames=['Pitkä RH >70 %','RH >80 % pitkään plusasteissa',
-'RuuviTag ei ole tuore','RuuviTag-paristo heikko','Sisäilma pakkasen puolella'];
-const modes=['Kylmillään','Kuivanapito','Ylläpitolämpö'];
-const notes=['Ei lämmitystä','Anturi puuttuu tai ei tuore','RH:n pitkäaikaisseurantaa',
-'Mahdollinen kuivanapidon tarve','Laskennallinen lämmitystarve',
-'Alle 16 °C ei toteudu pumpun suoralla asetuksella',
-'Ulkolämpötila puuttuu; kuivanapidon tavoite ei kelpaa'];
-async function airPost(url,fields){
- const body=new URLSearchParams({...fields,token:c23token});
- const result=await fetch(url,{method:'POST',
- headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
- if(!result.ok)throw Error('Virhe '+result.status);
- return result.json();
-}
-document.getElementById('air-config').addEventListener('submit',async e=>{
- e.preventDefault();
- try{
- await airPost('/api/air/config',{
- mode:document.getElementById('air-mode').value,
- hold:document.getElementById('air-hold').value,
- delta:document.getElementById('air-delta').value});
- document.getElementById('air-settings-status').textContent='Laskennallinen tila tallennettu. Ei laiteohjausta.';
- }catch(err){document.getElementById('air-settings-status').textContent=err.message;}
-});
-document.getElementById('air-thresholds').addEventListener('submit',async e=>{
- e.preventDefault();
- try{
- await airPost('/api/air/thresholds',{
- rh70:document.getElementById('air-rh70').value,
- rh80:document.getElementById('air-rh80').value,
- battery:document.getElementById('air-battery').value});
- document.getElementById('air-settings-status').textContent='Seurantakynnykset tallennettu, ei ohjausta.';
- }catch(err){document.getElementById('air-settings-status').textContent=err.message;}
-});
-document.getElementById('air-bond').addEventListener('submit',async e=>{
- e.preventDefault();
- try{
- await airPost('/api/air/bind',{
- which:document.getElementById('air-role').value,
- mac:document.getElementById('air-mac').value.trim()});
- document.getElementById('air-settings-status').textContent='Anturisidonta tallennettu; odotetaan tuoretta mittausta.';
- }catch(err){document.getElementById('air-settings-status').textContent=err.message;}
-});
-async function airRefresh(){
- try{
- const s=await (await fetch('/api/status',{cache:'no-store'})).json();
- const a=s.air;if(!a)return;
- c23token=a.config_token||'';
- if(!c23initialized){
- document.getElementById('air-mode').value=String(a.mode);
- document.getElementById('air-hold').value=a.hold_target_c;
- document.getElementById('air-delta').value=a.drying_delta_c;
- document.getElementById('air-rh70').value=a.warning_rh70;
- document.getElementById('air-rh80').value=a.warning_rh80;
- document.getElementById('air-battery').value=a.warning_battery_v;
- c23initialized=true;
- }
- const rows=[
- ['Tila (laskennallinen)',modes[a.mode]||'Tuntematon'],
- ['Sidottu RuuviTag',a.bound_mac||'Ei sidottua anturia'],
- ['Läheltä löytynyt RuuviTag',a.discovered_mac||'Ei havaintoa'],
- ['Anturi tuore',a.sensor_fresh],
- ['Viimeisen mittauksen ikä s',fmt2(a.age_s)],
- ['Lämpötila °C',fmt2(a.temperature_c)],['RH %',fmt2(a.rh_pct)],
- ['Kastepiste °C',fmt2(a.dewpoint_c)],
- ['Absoluuttinen kosteus g/m³',fmt2(a.absolute_gm3)],
- ['Vesihöyryn osapaine Pa',fmt2(a.vapour_pressure_pa)],
- ['Ilmanpaine Pa',fmt2(a.pressure_pa)],
- ['Paristojännite V',fmt2(a.battery_v)],
- ['BLE-signaali dBm',fmt2(a.rssi_dbm)],
- ['Ulkolämpötila °C',fmt2(a.outside_temperature_c)],
- ['Ulkolämpötila lähde',a.outside_temp_source==='FMI_FORECAST'?'FMI:n ennuste':
- a.outside_temp_source==='RUUVI_RAWV2'?'Erillinen RuuviTag':'Puuttuu'],
- ['Ulkoanturi RH %',fmt2(a.outside_rh_pct)],
- ['Sisä–ulko °C',fmt2(a.inside_outside_c)],
- ['Sisä–ulko kosteus g/m³',fmt2(a.drying_potential_gm3)],
- ['Mahdollinen tuuletuksen kuivauspotentiaali',a.outside_sensor_fresh?
-   (a.possible_ventilation_drying?'Suuntaa-antavasti kyllä':'Ei osoitettua potentiaalia'):'Ulko-RH puuttuu'],
- ['RH:n 6 h muutos, prosenttiyksikköä',fmt2(a.rh_6h_change_pct)],
- ['Absoluuttisen kosteuden 6 h muutos g/m³',fmt2(a.absolute_6h_change_gm3)],
- ['RH yli 70 % yhtäjaksoisesti h',fmt2(a.rh70_duration_h)],
- ['RH yli 80 % yhtäjaksoisesti h',fmt2(a.rh80_duration_h)],
- ['Hyväksytyt/duplikaatit/hylätyt',a.sample_count+'/'+a.duplicate_count+'/'+a.rejected_count],
- ['Tuntihistorian pisteet',a.history_hours],['NVS-tallennukset',a.nvs_checkpoints],
- ['Alhaisen heapin takia väliin jääneet BLE-skannaukset',a.low_heap_scan_skips]];
- document.getElementById('air-metrics').replaceChildren(...rows.flatMap(([key,val])=>{
- let dt=document.createElement('dt'),dd=document.createElement('dd');
- dt.textContent=key;dd.textContent=val===null||val===undefined?'Ei mittausta':String(val);
- return [dt,dd]}));
- const target=a.target_available?fmt2(a.target_c)+' °C':'Ei kelvollista tavoitetta';
- document.getElementById('air-mode-status').textContent=
- 'Laskettu tavoite: '+target+'. '+(notes[a.advisory]||'')+
- '. Lämmitystarvearvio: '+(a.advisory_heat_needed?'kyllä':'ei')+
- '. Todellinen pumpun tila: '+(s.pump_mode||'ei tietoa')+
- '. '+(a.target_below_16?'Tavoite alle +16 °C ei ole suora Mitsubishi-asetus. ':'')+
- 'Vain varjotila; fyysisiä ohjauksia ei ole.';
- const alerts=document.getElementById('air-alerts');
- alerts.replaceChildren();
- for(const item of a.alerts||[]){
- if(!item.active)continue;
- const li=document.createElement('li');
- li.textContent=(airNames[item.kind]||'Hälytys')+(item.ack?' (kuitattu)':' (aktiivinen) ');
- if(!item.ack){
- const button=document.createElement('button');button.textContent='Kuittaa';
- button.addEventListener('click',async()=>{
- try{await airPost('/api/air/ack',{alert:String(item.kind)});airRefresh();}
- catch(err){document.getElementById('air-settings-status').textContent=err.message;}});
- li.appendChild(button);}
- alerts.appendChild(li);
- }
- if(!alerts.children.length){const li=document.createElement('li');
- li.textContent='Ei aktiivisia hälytyksiä; tämä ei todista rakenteen turvallisuutta.';
- alerts.appendChild(li);}
- const log=document.getElementById('air-events');
- log.replaceChildren(...(a.events||[]).slice(0,8).map(item=>{
- const li=document.createElement('li');
- li.textContent=(item.ts_utc?new Date(item.ts_utc*1000).toLocaleString('fi-FI'):'Aika ei synkronoitu')+
- ' · tapahtumatyyppi '+item.kind+' / '+item.code;
- return li;}));
- if(Date.now()-c23lastHistory>60000){
- c23lastHistory=Date.now();
- const h=await(await fetch('/api/air/history',{cache:'no-store'})).json();
- const tbody=document.getElementById('air-history');tbody.replaceChildren();
- for(const entry of (h.hours||[]).slice(-48)){
- const tr=document.createElement('tr');
- const hour=entry.clock_valid?
- new Date(entry.hour*3600000).toLocaleString('fi-FI'):
- 'Käynnistyksen tunti '+(entry.hour-2147483648);
- for(const value of [hour,fmt2(entry.temp),fmt2(entry.rh),fmt2(entry.dew),fmt2(entry.abs)]){
- const td=document.createElement('td');td.textContent=value;tr.appendChild(td);}
- tbody.appendChild(tr);}
- }
- }catch(err){
- document.getElementById('air-settings-status').textContent='Sisäilman tilaa ei saada: '+err.message;
- }
-}
-airRefresh();setInterval(airRefresh,15000);
-</script></main></html>)HTML";
 static void status_endpoint() {
     CN105Telemetry cp;ShellyTelemetry st;TemperatureSample te;
+    CN105Telemetry observed; // SSE-only values, never source-verified
     BridgeStatus bs;MpcResult plan;Decision current_safety;
     int64_t optimized=0,climate_time=0,compressor_time=0,link_time=0;
     double link_uptime_s=0;
@@ -912,7 +1274,8 @@ static void status_endpoint() {
     char reason[80];
     uint32_t ms,worst,heap,psram,stack;
     xSemaphoreTake(lock_data,portMAX_DELAY);
-    cp=pump;st=consumption;/* C2.3 temperature read outside lock */bs=bridge_status;
+    cp=pump;observed=sse_observed_pump;
+    st=consumption;/* C2.3 temperature read outside lock */bs=bridge_status;
     relay_on=shelly_relay_on;
     current_safety=safety;
     climate_time=climate_utc;
@@ -929,22 +1292,126 @@ static void status_endpoint() {
     const auto price=enevina_firmware::market_status();
     const auto weather=enevina_firmware::weather_status();
     double total=0;
-    struct tm local{};
-    time_t ts=static_cast<time_t>(now);
-    localtime_r(&ts,&local);
-    enevina::Tariff t=tariff(local.tm_hour<7||local.tm_hour>=22);
-    t.spot_eur_per_kwh=price.current_spot_eur_per_kwh;
     const bool valid_total=price.current_price_valid &&
-        enevina::calculate_total_price(t,total);
+        site_slot_total_price((now/900)*900,price.current_spot_eur_per_kwh,total);
+    const BootstrapDecision bootstrap=bootstrap_preview(now,te);
     cJSON* root=cJSON_CreateObject();
-    cJSON_AddStringToObject(root,"mode","VARJOTILA_EI_KOMENTOJA");
-    cJSON_AddBoolToObject(root,"physical_writes",false);
+    cJSON_AddStringToObject(root,"mode",control_armed.load()?
+        "CN105_AUTOMAATIO_KAYTOSSA":"VARJOTILA_EI_KOMENTOJA");
+    cJSON_AddBoolToObject(root,"physical_writes",control_armed.load());
+    cJSON_AddBoolToObject(root,"control_armed",control_armed.load());
+    cJSON_AddNumberToObject(root,"control_arm_nvs_reclaimed",
+                            control_arm_nvs_reclaimed.load());
+    cJSON_AddNumberToObject(root,"control_arm_nvs_save_failures",
+                            control_arm_nvs_save_failures.load());
+    cJSON_AddNumberToObject(root,"control_arm_nvs_last_error",
+                            control_arm_nvs_last_error.load());
+    cJSON_AddStringToObject(root,"control_gate",
+        control_gate_name(static_cast<ControlBlock>(control_gate.load())));
+    cJSON_AddStringToObject(root,"control_last_step",
+        control_step_name(static_cast<ControlStep>(control_last_step.load())));
+    cJSON_AddNumberToObject(root,"control_commands_sent",control_commands_sent.load());
+    cJSON_AddNumberToObject(root,"control_commands_confirmed",control_commands_confirmed.load());
+    cJSON_AddNumberToObject(root,"control_commands_failed",control_commands_failed.load());
+    cJSON_AddNumberToObject(root,"control_post_stage",control_post_stage.load());
+    cJSON_AddNumberToObject(root,"control_post_http_code",control_post_http_code.load());
+    cJSON_AddNumberToObject(root,"control_get_http_code",control_get_http_code.load());
+    cJSON_AddNumberToObject(root,"cn105_get_retry_count",cn105_get_retry_count.load());
+    cJSON_AddNumberToObject(root,"cn105_get_recovered_count",cn105_get_recovered_count.load());
+    cJSON_AddNumberToObject(root,"cn105_get_timeout_count",cn105_get_timeout_count.load());
+    cJSON_AddNumberToObject(root,"cn105_get_lease_denials",
+                            cn105_get_lease_denials.load());
+    cJSON_AddNumberToObject(root,"cn105_get_lease_low_memory",
+                            cn105_get_lease_low_memory.load());
+    cJSON_AddNumberToObject(root,"cn105_get_lease_busy",
+                            cn105_get_lease_busy.load());
+    cJSON_AddNumberToObject(root,"cn105_get_last_free_internal",
+                            cn105_get_last_free_internal.load());
+    cJSON_AddNumberToObject(root,"cn105_get_last_largest_internal",
+                            cn105_get_last_largest_internal.load());
+    cJSON_AddNumberToObject(root,"control_last_command_utc",
+                            static_cast<double>(control_last_command_utc.load()));
+    cJSON_AddNumberToObject(root,"control_last_ack_utc",
+                            static_cast<double>(control_last_ack_utc.load()));
+    cJSON_AddNumberToObject(root,"control_last_bridge_read_utc",
+                            static_cast<double>(control_last_bridge_read_utc.load()));
+    cJSON_AddStringToObject(root,"bootstrap_action",
+                             bootstrap_action_name(bootstrap.action));
+    cJSON_AddStringToObject(root,"bootstrap_reason",
+                             bootstrap_reason_name(bootstrap.reason));
+    cJSON_AddBoolToObject(root,"bootstrap_executable",false);
+    if(bootstrap.requested_room_c>0)
+        cJSON_AddNumberToObject(root,"bootstrap_room_target_c",
+                                bootstrap.requested_room_c);
+    else cJSON_AddNullToObject(root,"bootstrap_room_target_c");
+    // Transport path can be inspected before F08 activation. This is a
+    // string preview only; no network POST exists in the Lite runtime.
+    if(bootstrap.action==BootstrapAction::HeatSetpoint) {
+        cJSON_AddNumberToObject(root,"bootstrap_heat_setpoint_c",
+                                bootstrap.heat_setpoint_c);
+        const auto request=mitsubishi_setpoint_request(
+            bootstrap.heat_setpoint_c);
+        if(request.valid)
+            cJSON_AddStringToObject(root,"bootstrap_mitsubishi_command_preview",
+                                    request.path.data());
+        else cJSON_AddNullToObject(root,"bootstrap_mitsubishi_command_preview");
+    } else {
+        cJSON_AddNullToObject(root,"bootstrap_heat_setpoint_c");
+        cJSON_AddNullToObject(root,"bootstrap_mitsubishi_command_preview");
+    }
+    cJSON_AddBoolToObject(root,"bootstrap_price_data_valid",
+                             bootstrap.price_data_valid);
+    if(bootstrap.price_data_valid) {
+        cJSON_AddNumberToObject(root,"bootstrap_total_now",
+                                bootstrap.current_total_eur_per_kwh);
+        cJSON_AddNumberToObject(root,"bootstrap_median_2h",
+                                bootstrap.compared_median_eur_per_kwh);
+    } else {
+        cJSON_AddNullToObject(root,"bootstrap_total_now");
+        cJSON_AddNullToObject(root,"bootstrap_median_2h");
+    }
     const auto pump_quality=enevina::assess_measurement(cp.evidence,now,180);
-    cJSON_AddBoolToObject(root,"cn105",valid_cn105(cp,now));
-    // Distinguish network message receipt from a proven pump-side read.
-    // The present bridge has NO verified UART-read source contract.
-    cJSON_AddBoolToObject(root,"cn105_source_verified",false);
-    cJSON_AddStringToObject(root,"cn105_measurement_quality","UNVERIFIED_SOURCE");
+    const bool verified_uart=valid_cn105(cp,now) &&
+        cp.evidence.source_time_verified;
+    const bool observed_climate=climate_time>0 && now>=climate_time;
+    const bool observed_compressor=compressor_time>0 && now>=compressor_time;
+    const bool sse_online=sse_stream_active.load();
+    cJSON_AddBoolToObject(root,"cn105",verified_uart);
+    // An ESPHome /events snapshot is useful *observed* telemetry. Its
+    // receive timestamp is NOT a proof of a new UART pump poll.
+    cJSON_AddBoolToObject(root,"cn105_source_verified",verified_uart);
+    cJSON_AddStringToObject(root,"cn105_measurement_quality",verified_uart?
+        enevina::quality_name(pump_quality):observed_climate?
+        "SSE_SNAPSHOT_UART_UNVERIFIED":"UNVERIFIED_SOURCE");
+    cJSON_AddBoolToObject(root,"cn105_sse_climate_received",observed_climate);
+    cJSON_AddBoolToObject(root,"cn105_sse_compressor_received",observed_compressor);
+    cJSON_AddBoolToObject(root,"cn105_sse_climate_recent",
+        observed_climate && sse_online && now-climate_time<=180);
+    cJSON_AddBoolToObject(root,"cn105_sse_compressor_recent",
+        observed_compressor && sse_online && now-compressor_time<=180);
+    if(observed_climate) {
+        cJSON_AddNumberToObject(root,"cn105_sse_climate_age_s",
+                                static_cast<double>(now-climate_time));
+        cJSON_AddNumberToObject(root,"cn105_sse_indoor_c",observed.indoor_c);
+        cJSON_AddNumberToObject(root,"cn105_sse_setpoint_c",observed.setpoint_c);
+        cJSON_AddStringToObject(root,"cn105_sse_mode",
+            observed.mode==ObservedPumpMode::Heat?"HEAT":
+            observed.mode==ObservedPumpMode::Off?"OFF":"OTHER");
+    } else {
+        cJSON_AddNullToObject(root,"cn105_sse_climate_age_s");
+        cJSON_AddNullToObject(root,"cn105_sse_indoor_c");
+        cJSON_AddNullToObject(root,"cn105_sse_setpoint_c");
+        cJSON_AddNullToObject(root,"cn105_sse_mode");
+    }
+    if(observed_compressor) {
+        cJSON_AddNumberToObject(root,"cn105_sse_compressor_age_s",
+                                static_cast<double>(now-compressor_time));
+        cJSON_AddNumberToObject(root,"cn105_sse_compressor_hz",
+                                observed.compressor_hz);
+    } else {
+        cJSON_AddNullToObject(root,"cn105_sse_compressor_age_s");
+        cJSON_AddNullToObject(root,"cn105_sse_compressor_hz");
+    }
     cJSON_AddStringToObject(root,"pump_source_quality",
                             enevina::quality_name(pump_quality));
     cJSON_AddBoolToObject(root,"pump_source_time_verified",
@@ -1032,6 +1499,17 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"ota_signed_good_version",cottage_ota_good_version());
     cJSON_AddNumberToObject(root,"ota_signed_candidate",cottage_ota_last_candidate());
     cJSON_AddNumberToObject(root,"ota_signed_status",cottage_ota_status());
+    cJSON_AddBoolToObject(root,"ota_network_maintenance",
+                           cottage_ota_network_maintenance());
+    cJSON_AddNumberToObject(root,"ota_downloaded_bytes",
+                            cottage_ota_downloaded_bytes());
+    cJSON_AddNumberToObject(root,"ota_chunk_count",
+                            cottage_ota_chunk_count());
+    cJSON_AddNumberToObject(root,"ota_idle_yields",
+                            cottage_ota_idle_yields());
+    cJSON_AddNumberToObject(root,"ota_last_check_utc",cottage_ota_last_check_utc());
+    cJSON_AddBoolToObject(root,"ota_dashboard_pending",
+                          cottage_ota_dashboard_request_pending());
     cJSON_AddNumberToObject(root,"free_internal_heap",
                             heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(root,"min_free_internal_heap",
@@ -1096,6 +1574,58 @@ static void plan_endpoint() {
     web.sendContent("]}");
     web.sendContent("");
 }
+// Read-only hourly Finnish Meteorological Institute temperature forecast.
+// Uses the same mutex-protected, validated cache as the optimizer; does not
+// issue a new HTTPS request, infer missing data or alter heating controls.
+static void weather_forecast_endpoint() {
+    const auto weather=enevina_firmware::weather_status();
+    constexpr size_t max_forecast_points=64;
+    constexpr size_t max_emitted_points=48;
+    auto* points=static_cast<enevina::OutdoorPoint*>(
+        heap_caps_malloc(sizeof(enevina::OutdoorPoint)*max_forecast_points,
+                         MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    if(!points) {
+        web.sendHeader("Cache-Control","no-store");
+        web.send(503,"application/json; charset=utf-8",
+                 "{\"valid\":false,\"slots\":[]}");
+        return;
+    }
+    const int64_t now=time(nullptr);
+    const size_t count=weather.available?
+        enevina_firmware::future_weather(points,max_forecast_points):0;
+    size_t available=0;
+    for(size_t i=0;i<count;++i) {
+        const auto& point=points[i];
+        if(point.timestamp_utc>=now && point.timestamp_utc<=now+48*3600 &&
+           std::isfinite(point.temperature_c) && point.temperature_c>=-60 &&
+           point.temperature_c<=60 && ++available>=max_emitted_points)break;
+    }
+    web.sendHeader("Cache-Control","no-store");
+    web.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    web.send(200,"application/json; charset=utf-8","");
+    char line[180];
+    snprintf(line,sizeof(line),
+        "{\"valid\":%s,\"source\":\"MET Norway Locationforecast 2.0\",\"fetched_utc\":%lld,\"slots\":[",
+        available?"true":"false",static_cast<long long>(available?weather.fetched_utc:0));
+    web.sendContent(line);
+    size_t emitted=0;
+    for(size_t i=0;i<count && emitted<max_emitted_points;++i) {
+        const auto& point=points[i];
+        if(point.timestamp_utc<now || point.timestamp_utc>now+48*3600 ||
+           !std::isfinite(point.temperature_c) ||
+           point.temperature_c < -60 || point.temperature_c > 60)
+            continue;
+        snprintf(line,sizeof(line),
+             "%s{\"utc\":%lld,\"temperature_c\":%.3f}",
+             emitted++?",":"",static_cast<long long>(point.timestamp_utc),
+             point.temperature_c);
+        web.sendContent(line);
+        if(i%12==11) delay(1);
+    }
+    web.sendContent("]}");
+    web.sendContent("");
+    heap_caps_free(points);
+}
 // C2.5: Small, read-only 15-minute price feed for the local premium dashboard.
 // Do not manufacture price points when the clock or market data is stale.
 static void prices_endpoint() {
@@ -1125,14 +1655,9 @@ static void prices_endpoint() {
     for(size_t i=0;i<count;++i) {
         const auto& price=points[i];
         if(!std::isfinite(price.spot_eur_per_kwh)) continue;
-        const time_t utc=static_cast<time_t>(price.start_utc);
-        struct tm local{};
-        localtime_r(&utc,&local); // Finland local day/night tariff, including DST
-        enevina::Tariff t=tariff(local.tm_hour<7||local.tm_hour>=22);
-        t.spot_eur_per_kwh=price.spot_eur_per_kwh;
         double total=0;
-        const bool has_total=enevina::calculate_total_price(t,total) &&
-                             std::isfinite(total);
+        const bool has_total=site_slot_total_price(price.start_utc,
+            price.spot_eur_per_kwh,total) && std::isfinite(total);
         char total_buf[36];
         if(has_total) snprintf(total_buf,sizeof(total_buf),"%.8f",total);
         else strlcpy(total_buf,"null",sizeof(total_buf));
@@ -1189,17 +1714,23 @@ void setup() {
     hooks.free_fn=json_free_psram;
     cJSON_InitHooks(&hooks); // Once, before any reader/task starts.
     setup_model();
+    site_settings_initialize(); // NVS site settings before any reader starts
+    cottage_midea_service_initialize(); // separate Midea V3 NVS, no CN105 changes
     c23_initialize(); // NVS mode + persistent explicit Ruuvi bonding
     cottage_ota_initialize(); // Persist successful signed release + reject failed candidate
-    // Avoid device contact without explicit local configuration.
-    WiFi.mode(WIFI_STA);
-    WiFi.setAutoReconnect(true);
-    if(strlen(COTTAGE_WIFI_SSID)) WiFi.begin(COTTAGE_WIFI_SSID,COTTAGE_WIFI_PASSWORD);
+    // Phase 1 commissioning: stored home Wi-Fi (NVS, else the compile-time
+    // default) or the per-device setup AP. No pump/device contact here.
+    cottage_wifi_begin(web);
     setenv("TZ","EET-2EEST,M3.5.0/3,M10.5.0/4",1);
     tzset();
     configTime(0,0,"pool.ntp.org","time.google.com");
     web.on("/",HTTP_GET,[](){
         web.sendHeader("Cache-Control","no-store");
+        if(cottage_wifi_request_via_ap(web)) {
+            // Setup network: phase 1 shows ONLY the Wi-Fi page.
+            web.send_P(200,"text/html; charset=utf-8",cottage_wifi_setup_html);
+            return;
+        }
         web.sendHeader("X-Content-Type-Options","nosniff");
         web.sendHeader("Content-Security-Policy",
             "default-src 'self'; connect-src 'self'; img-src 'self' data:; "
@@ -1207,16 +1738,44 @@ void setup() {
             "frame-ancestors 'none'; base-uri 'none'");
         web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html);
     });
-    // Preserve the original full diagnostics page unchanged.
-    web.on("/diagnostics",HTTP_GET,[](){
-        web.sendHeader("Cache-Control","no-store");
-        web.send(200,"text/html; charset=utf-8",html);
-    });
     web.on("/api/status",HTTP_GET,status_endpoint);
+    web.on("/api/ota/install",HTTP_POST,[](){
+        // Reuse the existing local settings authorisation and reject open
+        // provisioning-AP requests. No new accounts, passwords or PINs.
+        if(WiFi.status()!=WL_CONNECTED || cottage_wifi_request_via_ap(web) ||
+           !web.hasArg("token") ||
+           !c23_authorize_local_setting(web.arg("token").c_str())) {
+            web.send(403,"application/json",
+                     "{\"queued\":false,\"error\":\"TOKEN\"}");
+            return;
+        }
+        if(!cottage_ota_configured() || cottage_ota_confirmation_pending() ||
+           cottage_ota_network_maintenance() ||
+           !cottage_ota_request_immediate()) {
+            web.send(409,"application/json",
+                     "{\"queued\":false,\"error\":\"NOT_READY\"}");
+            return;
+        }
+        web.sendHeader("Cache-Control","no-store");
+        web.send(202,"application/json","{\"queued\":true}");
+    });
     web.on("/api/plan",HTTP_GET,plan_endpoint);
     web.on("/api/prices",HTTP_GET,prices_endpoint);
-    c23_register_routes(web); // mode/config persistence, NO actuator writes
-    web.onNotFound([](){web.send(404,"text/plain","Ei löydy");});
+    web.on("/api/weather",HTTP_GET,weather_forecast_endpoint);
+    c23_register_routes(web);
+    site_settings_register_routes(web);
+    cottage_midea_service_register_routes(web);
+    cottage_control_registration(); // restore prior explicit choice only
+    web.onNotFound([](){
+        if(cottage_wifi_request_via_ap(web)) {
+            // Captive portal: any unknown host/path on the setup AP -> /setup.
+            web.sendHeader("Location",String("http://")+
+                WiFi.softAPIP().toString()+"/setup");
+            web.send(302,"text/plain","");
+            return;
+        }
+        web.send(404,"text/plain","Ei löydy");
+    });
     web.begin();
     boot_ui_started=true;
     boot_validation_started_ms=millis();
@@ -1228,10 +1787,12 @@ void setup() {
     if(!c23_ble_initialized())
         Serial.println("C24_WARN: BLE initialization not confirmed");
     enevina_firmware::start_market_reader();
-    enevina_firmware::start_weather_reader();
+    enevina_firmware::start_weather_reader(site_settings_snapshot().fmi_latlon);
     xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",8192,nullptr,2,&task_sse,0);
+    xTaskCreatePinnedToCore(cottage_midea_service_worker,"cottage_midea",
+                            10240,nullptr,1,nullptr,0);
     xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,&task_shelly,0);
-    // BLE already running. No physical actuator command is ever sent.
+    // BLE already running. CN105 writes are gated by explicit local arming.
     xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
     if(cottage_ota_configured() &&
         xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota",
@@ -1239,12 +1800,13 @@ void setup() {
         task_ota=nullptr;
         Serial.println("C24_OTA_ERROR: signed OTA task creation failed");
     }
-    Serial.println("ENEVINA LITE C2 SHADOW: NO ACTUATOR PATH");
+    Serial.println("ENEVINA LITE: CN105 controller, persisted local choice");
 }
 void loop() {
     wifi_ok.store(WiFi.status()==WL_CONNECTED);
     web_loop_heartbeat_ms.store(millis());
     web.handleClient();
+    cottage_wifi_loop();
     verify_new_ota_boot();
     c23_tick(); // local BLE/mode/alarm history works with wifi=0
     // Serial evidence is useful during fully isolated cold-boot tests.

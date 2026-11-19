@@ -1,5 +1,6 @@
 #include "cottage/ruuvi_v5.hpp"
 #include "cottage/air_humidity.hpp"
+#include "cottage/price_bootstrap.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -221,6 +222,30 @@ int main() {
     auto held=evaluate_cottage_mode(cfg,hysteresis_air,true,true,8,7ULL*3600000);
     assert(held.advisory_heat_needed);
     assert(held.advisory==ModeAdvisory::UnsupportedBelow16);
+    // Codex P2 (PR #28): once the RH-duration condition holds, drying no
+    // longer blocks heat; the bootstrap's +-0.5 C deadband then holds the
+    // current mode instead of toggling on a 0.02 C wobble.
+    assert(drying_blocks_heat(dry)==false && drying_blocks_heat(held)==false);
+    {
+        auto near_target=calculate_air_moisture(11.51,75);
+        auto plan=evaluate_cottage_mode(cfg,near_target,true,true,8,7ULL*3600000);
+        assert(!plan.advisory_heat_needed && !drying_blocks_heat(plan));
+        BootstrapInput in{};
+        in.indoor_fresh=true;in.desired_room_c=plan.target_c;
+        const double seq[]={11.49,11.51,11.49,11.51};
+        BootstrapAction last=BootstrapAction::Unavailable;
+        unsigned toggles=0;bool heating=false;
+        for(double t:seq) {
+            in.indoor_c=t;
+            const auto d=bootstrap_price_decision(in);
+            bool next=heating;
+            if(d.action==BootstrapAction::HeatSetpoint) next=true;
+            else if(d.action==BootstrapAction::Off) next=false;
+            if(last!=BootstrapAction::Unavailable && next!=heating) ++toggles;
+            heating=next;last=d.action;
+        }
+        assert(toggles==0 && heating);
+    }
     auto clear_air=calculate_air_moisture(10,64);
     auto cleared=evaluate_cottage_mode(cfg,clear_air,true,true,8,0);
     assert(!cleared.advisory_heat_needed);
@@ -235,7 +260,30 @@ int main() {
     cfg.hold_target_c=18;
     hold=evaluate_cottage_mode(cfg,wet,true,true,0,0);
     assert(!hold.direct_setpoint_below_mitsubishi_min);
-    assert(!hold.physical_writes_allowed); // still shadow even when possible
+    assert(!hold.physical_writes_allowed); // advisory evaluator is still pure
 
-    std::puts("PASS official RAWv2, bonding, duplicate/stale, dewpoint, history, alarms and all 3 shadow modes");
+    // Living mode owns a separate room target; switching modes must not
+    // overwrite the existing maintenance target.
+    cfg.hold_target_c=12;
+    cfg.mode=CottageMode::Occupied;
+    cfg.occupied_target_c=21.0;
+    auto lived=evaluate_cottage_mode(cfg,wet,true,true,0,0);
+    assert(lived.mode==CottageMode::Occupied &&
+           lived.has_target && near(lived.target_c,21.0) &&
+           lived.advisory_heat_needed && !lived.direct_setpoint_below_mitsubishi_min);
+    assert(cfg.hold_target_c==12.0);
+    cfg.occupied_target_c=26.0;
+    lived=evaluate_cottage_mode(cfg,wet,true,false,0,0);
+    assert(lived.has_target && near(lived.target_c,26.0));
+    cfg.occupied_target_c=15.5;
+    lived=evaluate_cottage_mode(cfg,wet,true,true,0,0);
+    assert(!lived.has_target);
+    cfg.occupied_target_c=21.0;
+    lived=evaluate_cottage_mode(cfg,wet,false,true,0,0);
+    assert(!lived.has_target && !lived.advisory_heat_needed);
+    cfg.mode=CottageMode::Hold;
+    hold=evaluate_cottage_mode(cfg,wet,true,true,0,0);
+    assert(hold.has_target && near(hold.target_c,12));
+
+    std::puts("PASS official RAWv2, bonding, duplicate/stale, dewpoint, history, alarms and all 4 cottage modes");
 }

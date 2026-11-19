@@ -1,5 +1,24 @@
 # AGENTS.md — Enevina Lite
 
+## PYSYVÄ TUOTEPÄÄTÖS: JULKINEN JA LÄHDEKOODILTAAN AVOIMESTI NÄHTÄVÄ ENEVINA LITE (18.11.2026)
+
+**Enevina Lite on Enevina Oy:n julkinen, avoimesti luettavalla lähdekoodilla kehitettävä tuote.** Repository `https://github.com/Enevina-Ltd/ENEVINA-Lite` on julkinen. Kehitys, dokumentaatio, katselmointi ja yhteisöosallistuminen suunnitellaan tästä lähtien julkisen projektin vaatimusten mukaan; kyse ei ole salaisesta vain sisäiseen käyttöön tarkoitetusta kokeilusta. **Tämä päätös koskee kaikkia tämän repositoryn kehitysagentteja.**
+
+**Kielikohtainen yritysnimi (käyttäjän päätös 18.11.2026):** Käytä kaikessa englanninkielisessä tuotteen esittelyssä, README-tekstissä, sponsoriprofiilissa, asiakasviestinnässä ja markkinoinnissa nimeä **Enevina Ltd**. Käytä suomeksi nimeä **Enevina Oy**. Virallisissa oikeudellisissa yhteyksissä, tekijänoikeusilmoituksissa, yhtiön rekisteröinti-, pankki-, vero- ja sopimusasiakirjoissa käytetään **rekisteröityä oikeushenkilön nimeä Enevina Oy** (tarvittaessa englanniksi ”Enevina Ltd (registered in Finland as Enevina Oy)”). Älä muuta `LICENSE`-tiedoston lisenssinantajaa tai väitä Enevina Ltd:tä erilliseksi rekisteröidyksi yhtiöksi ilman varmennusta.
+
+**Lisenssin täsmällinen merkitys:** tällä hetkellä lähdekoodi on **source-available / noncommercial**, ei Open Source Initiativen määritelmän mukaisesti avoimen lähdekoodin lisenssillä julkaistu. Voimassa oleva `LICENSE` sallii ei-kaupallisen käytön ja jakamisen ehtojensa mukaisesti, mutta ohjelmiston, firmwaren tai niitä sisältävien ohjainten kaupallinen myynti edellyttää Enevina Oy:n erillistä kirjallista lupaa. Agentti ei saa väittää lisenssiä MIT-, Apache-, GPL- tai OSI-avoimeksi eikä poistaa kaupallisen käytön rajoituksia ilman käyttäjän nimenomaista lisenssipäätöstä. Kolmannen osapuolen kirjastot säilyttävät omat ehtonsa; katso `THIRD_PARTY_NOTICES.md`.
+
+**Julkisen tuotekehityksen pakolliset toimintatavat:**
+
+1. **Julkinen sisältö on oletus.** Jokainen commit, PR, issue, keskustelu, loki, kuva, testi, julkaisu ja Git-historia voidaan lukea myös ulkopuolelta. Älä julkaise salasanoja, avaimia, tokeneita, kotiverkon tunnisteita, tarkkoja yksityisen testikohteen tietoja, yksilöiviä MAC-osoitteita tai raakoja laitelokeja. Testaa julkaisukelpoisuus ennen pushia ja huomioi, että tiedoston poistaminen uudesta commitista ei puhdista historiaa.
+2. **Esittele yleinen tuote, älä yksittäistä asennuskohdetta.** Julkinen README, GitHub About, dashboard, kuvamateriaali ja dokumentaation yleiset osiot kuvaavat monimerkkistä yhden lämpöpumpun paikallista ohjainta. Kenttätestien tunnistetiedot eivät kuulu esittelyyn; vanhoja yksityisiä mitta- tai rakennustietoja ei palauteta julkisiin tiedostoihin.
+3. **Kansainvälinen löydettävyys.** Pidä README:n suomen- ja englanninkielinen perusesittely, `docs/GETTING_STARTED.md`, `docs/COMPATIBILITY.md` ja GitHubin julkiset linkit käyttökelpoisina. Kuvaile ominaisuuksien todellinen tila (valmis / host-testattu / kokeellinen / suunniteltu). GitHub Discussions on yleisiin kysymyksiin ja Issues toistettaviin virheisiin.
+4. **Todisteet ennen markkinointiväitteitä.** Älä väitä valmiita valmistajaintegraatioita, fyysistä turvallisuutta, tuotanto- tai CE-valmiutta, kentällä todistettuja säästöjä tai toimivaa OTA-päivitystä ilman vastaavaa mitattua näyttöä. Älä esitä generoituja dashboard-malleja oikeina kuvakaappauksina. Merkitse simulaatiot simulaatioiksi ja yksilöi todellinen laiteversio, kun se on turvallista julkaista.
+5. **Yhteisö ja omistusoikeudet.** Ota vastaan virheraportteja ja ehdotuksia, mutta älä yhdistä kolmannen osapuolen koodia, grafiikkaa, dataa tai firmwarea ilman oikeuksien ja lisenssien tarkistamista. Noudata `CONTRIBUTING.md`-ohjetta sekä Enevina Oy:n kaupallista lisensointia varten tarvittavaa erillistä oikeussopimusta.
+6. **Julkaisut ja turvallisuus.** Käytä kehitysvaiheessa alpha-/pre-release-merkintöjä, kun valmista asennettavaa firmwarea ei ole todennettu. GitHubin lähdekoodin julkisuus **ei** ole lupa flashata tai ohjata oikeaa lämpöpumppua eikä syrjäytä tämän tiedoston PR-, laiteturva- ja testausportteja. Älä muuta yksityisten tietojen puhdistamiseksi julkaistujen tagien tai haarojen historiaa force-pushilla ilman erillistä hyväksyntää ja palautussuunnitelmaa.
+
+---
+
 ## PAKOLLINEN GITHUB-PR-KATSELMOINTI (17.11.2026 alkaen)
 
 **Järjestys on aina oma katselmointi → omat korjaukset ja testit → Codex-katselmointi → Codex-havaintojen korjaukset ja tarvittaessa uusi Codex-katselmointi → lopullinen hyväksyntä → merge.** Älä muuta tätä järjestystä oikoteillä.
@@ -31,7 +50,7 @@
 ### Ensisijainen toimivuusjono F01–F09
 
 1. **F01:** ESP32:n käynnistyminen, Wi-Fi, paikallinen UI ja HTTP/API luotettavasti.
-2. **F02:** Mökin RuuviTagin BLE-lämpötila, kosteus ja tiedon todellinen tuoreus.
+2. **F02:** Kohteen RuuviTagin BLE-lämpötila, kosteus ja tiedon todellinen tuoreus.
 3. **F03:** Mitsubishin CN105:n todellinen mittaustieto ja lähdekohtainen tuoreus; SSE-heartbeat ei riitä näytöksi.
 4. **F04:** Shellyn sähkönkulutuksen luku ja oikea mittauskohde. Älä ohjaa pumpun sähkösyöttöä Shellyn releellä.
 5. **F05:** Nord Poolin 15 minuutin hinta, FMI-sää, aikaleimat, yksiköt ja katkojen käsittely.
@@ -42,7 +61,7 @@
 
 **Toimivuus ensin, tuotantoportit sitten.** [Kaupallistamisen työlista L01–L25](docs/product/COMMERCIAL_V1_BACKLOG.md) ja G0–G5 ovat kaupallisen julkaisemisen työjono, eivät kielto toteuttaa tai testata ominaisuuksia nyt. L01 tarkoittaa toiminnallisen baseline-version todennusta, ei ohjauskoodin poistamista. L09 tarkoittaa offline-/NVS-ongelmien korjaamista ilman uusia watchdogeja.
 
-**Fyysinen turvallisuus säilyy:** mock-, simulaatio- ja testipenkkikokeet ovat sallittuja, mutta pihamökissä olevaa ESP32-korttia ei flashata tai resetoida ilman erillistä lupaa eikä oikealle pumpulle lähetetä uusia käskyjä ilman laitekohtaista hyväksyttyä testaussuunnitelmaa. Core-koneen uusi ESP32-S3 N16R8 on regressiotestilaite, ei automaattisesti lupa pyyhkiä sen NVS:ää tai bootloaderia. Älä muuta Home Assistantia, Shelly-relettä tai muuta tuotantoa.
+**Fyysinen turvallisuus säilyy:** mock-, simulaatio- ja testipenkkikokeet ovat sallittuja, mutta kenttätestiin asennettua ESP32-korttia ei flashata tai resetoida ilman erillistä lupaa eikä oikealle pumpulle lähetetä uusia käskyjä ilman laitekohtaista hyväksyttyä testaussuunnitelmaa. Core-koneen uusi ESP32-S3 N16R8 on regressiotestilaite, ei automaattisesti lupa pyyhkiä sen NVS:ää tai bootloaderia. Älä muuta Home Assistantia, Shelly-relettä tai muuta tuotantoa.
 
 **Työskentely:** lue nykyinen main ja pinotut PR #5–#7, tarkista mitä on jo tehty, korjaa todellinen ongelma pienellä muutoksella, testaa, kirjaa commit/testinäyttö ja jatka. Älä kehitä tarpeettomia uusia sääntökerroksia tai merkitse simulaatiota fyysiseksi testiksi. Jo toimivat OTA-/turvarajat ja salaisuuksien suojaus säilyvät.
 
@@ -58,7 +77,7 @@
 - **Ei tekoälyä.** Älä lisää koneoppimista, neuroverkkoja, LLM:iä, AI-palveluita, mallien koulutusta tai AI-riippuvuuksia. Deterministinen rakennus- ja lämpöpumppufysiikan laskenta sekä matemaattinen optimointi ovat sallittuja.
 - **Ei Linuxia, Raspberry Pi -vaatimusta, Dockeria, tietokantaa tai Home Assistant -riippuvuutta laitteeseen.** Myös internetin katkettua laitteen on kyettävä toimimaan turvallisesti paikallisesti.
 - Alustava laitevalinta: **ESP32-S3 N16R8** (16 Mt Flash, 8 Mt PSRAM), **2,4 GHz Wi-Fi ensimmäisessä Mitsubishi-pilotissa**, Ethernet muissa laiteversioissa tarvittaessa. C++ ja ESP-IDF; laitekokoonpano on varmistettava.
-- **Ensimmäinen todellinen pilotti: Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA, ilma–ilmapumppu**, ks. [pihamökin Mitsubishi-pilotti](docs/cottage-mitsubishi-fd25va.md). Panasonic/HeishaMon, NIBE/Modbus ja muut dokumentoidut paikalliset protokollat ovat erillisiä mallikohtaisesti todennettavia adapteriperheitä; älä oleta niiden valmiutta. CN105 on tarkistettava todellisesta pumpusta ennen komentoja.
+- **Ensimmäinen mallikohtainen integraatiotesti: Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA, ilma–ilmapumppu**, ks. [testikohteen Mitsubishi-pilotti](docs/cottage-mitsubishi-fd25va.md). Panasonic/HeishaMon, NIBE/Modbus ja muut dokumentoidut paikalliset protokollat ovat erillisiä mallikohtaisesti todennettavia adapteriperheitä; älä oleta niiden valmiutta. CN105 on tarkistettava todellisesta pumpusta ennen komentoja.
 - Erottele Lite Enevina Coresta, Enevina Adaptive Intelligencestä, Finance-koneen tehtävistä sekä olemassa olevista tuotantojärjestelmistä. Älä muuta niiden repositoryja tai tuotantokonfiguraatioita.
 
 Jos ehdotus rikkoo näitä rajoja, älä toteuta sitä. Kerro ristiriita ja ehdota rajaukseen sopiva ratkaisu.
@@ -153,7 +172,7 @@ Tee ensin vain tarvittavat hakemistot ja rajapinnat. Koodi, mittayksiköt, versi
 
 ## 9. Historiallinen ensimmäinen toteutustehtävä (ei kaupallisen V1:n nykyinen työjärjestys)
 
-Uusi ensisijainen kehitystehtävä on [pihamökin Mitsubishi Electric FD25VA -pilotti](docs/cottage-mitsubishi-fd25va.md): rakenna PC:llä ajettava, puhdas C++-malli ilma–ilmapumpun 16 °C HEAT / OFF -jaksojen 15 minuutin ennakointiin, turvallisuusrajoihin ja riippumattomaan referenssivertailuun. Hydronisen lämpöpumpun G0:n tulokset säilytetään erillään. Ensimmäisessä vaiheessa **ei kirjoituksia todelliseen pumppuun**, ei AI:ta eikä tarpeetonta käyttöliittymä- tai pilvirakennetta.
+Uusi ensisijainen kehitystehtävä on [testikohteen Mitsubishi Electric FD25VA -pilotti](docs/cottage-mitsubishi-fd25va.md): rakenna PC:llä ajettava, puhdas C++-malli ilma–ilmapumpun 16 °C HEAT / OFF -jaksojen 15 minuutin ennakointiin, turvallisuusrajoihin ja riippumattomaan referenssivertailuun. Hydronisen lämpöpumpun G0:n tulokset säilytetään erillään. Ensimmäisessä vaiheessa **ei kirjoituksia todelliseen pumppuun**, ei AI:ta eikä tarpeetonta käyttöliittymä- tai pilvirakennetta.
 
 Päämittari: *todennettavasti alhaisemmat lämmityksen kokonaiskustannukset ilman mukavuus-, hygienia- tai turvallisuusrajojen rikkomista.*
 
@@ -172,12 +191,12 @@ Priorisoi ohjausreitit: (1) valmistajan dokumentoitu digitaalinen ohjaus, (2) va
 - **Varmista pumpun muun toiminnan riippuvuus anturista:** lämmityskausi-/kesätila, lisälämmitys, sulatus, jäätymisenesto, hälytykset ja käyttövesiprioriteetti. Jos jotakin turvallisuuden kannalta kriittistä riippuvuutta ei voi rajata pois, älä ota huijausta käyttöön.
 
 
-## 11. Pihamökin Mitsubishi Electric — ensisijainen kohde 16.11.2026
+## 11. Mitsubishi Electric — mallikohtainen integraatiotesti 16.11.2026
 
 Tämä on **ensimmäinen todellinen kenttäpilotti**, joka korvaa aikaisemman Panasonic-pilotin. Ensisijainen toteutusjärjestys on **F01–F09: kokonaisuus ensin toimivaksi**, sitten kaupallisen julkaisun L01–L14-portit. Täsmävaatimukset, lähtötilan vahvistukset ja C0–C3-portit: [docs/cottage-mitsubishi-fd25va.md](docs/cottage-mitsubishi-fd25va.md).
 
 - Vain **yksi** Mitsubishi Electric **MSZ-FD25VA + MUZ-FD25VA** (ilma–ilmapumppu). Ei käyttövesivaraajaa, menoveden säätöä tai shunttia.
-- Pumpun alin lämmityspyynti **16 °C**. Mökin ylläpitotavoite **5 °C** ja ennakoiva turvamarginaali **8 °C**: ohjaus sallittujen lämmitys-/OFF-komentojen kautta, ei 5 °C:n asetusarvona. 5 °C:n suojaa ei saa väittää taatuksi ilman riippumatonta jäätymissuojausta.
+- Pumpun alin lämmityspyynti **16 °C**. Kohteen ylläpitotavoite **5 °C** ja ennakoiva turvamarginaali **8 °C**: ohjaus sallittujen lämmitys-/OFF-komentojen kautta, ei 5 °C:n asetusarvona. 5 °C:n suojaa ei saa väittää taatuksi ilman riippumatonta jäätymissuojausta.
 - **Shelly Plus 1PM mittaa vain sähkönkulutusta.** Sen releellä ei koskaan katkaista lämpöpumpun syöttöä.
 - Ensisijainen yhteys ESP32-S3:n paikallinen **Wi-Fi + CN105**, joka on validoitava mallikohtaisesti; alkuperäinen huoltomanuaali ei yksiselitteisesti näytä CN105:tä ja valmistajan yhteensopivuusluettelo vain tukee sen mahdollisuutta.
 - Optimointi: **15 min aika-askel, 24–48 h**, mutta älä kytke kompressoria päälle/pois jokaisella aika-askeleella. Minimi käynti-/seisonta-ajat, hystereesi, mittauksen tuoreus, pumpun tilakuittaukset ja turvamarginaali ovat ensisijaisia.

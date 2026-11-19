@@ -82,7 +82,7 @@ Referenssit: [Tofee/midea-ac-HA-py](https://github.com/Tofee/midea-ac-HA-py) (`m
 
 ## Vaihe C — pilvestä riippumattomuuden koe
 
-**Vasta kun B onnistuu ja verkkokytkennät tunnetaan.** Reitittimen testisäännöllä estetään **vain pumpun pääsy valmistajan internet-palvelimiin**, ei sen IP-yhteyttä Liten/testi-PC:n kanssa. Älä irrota pumpun sähköä tai WLANia. Tee uusi paikallinen read-only-autentikointi ja tilakysely WAN-eston jälkeen **vain Coren jo paikallisesti tallennetuilla V3-tunnisteilla** tai muilla hyväksytyillä ennakkoon tallennetuilla avaimilla, ei `msmart-ng discover` -autoyhteydellä. Pelkkä pumpun WAN-esto ei estä testi-PC:n pilviyhteyttä; pilvettömyyden todentamiseksi estä myös testi-PC:n valmistajapilvikutsut;  tarkista myöhemminkin että tilatietojen *sisältö/todellinen lähde* päivittyy, ei vain yhteyden heartbeat.
+**Vasta kun B onnistuu ja verkkokytkennät tunnetaan.** Reitittimen testisäännöllä estetään **vain pumpun pääsy valmistajan internet-palvelimiin**, ei sen IP-yhteyttä Liten/testi-PC:n kanssa. Älä irrota pumpun sähköä tai WLANia. Tee uusi paikallinen read-only-autentikointi ja tilakysely WAN-eston jälkeen **vain Coren jo paikallisesti tallennetuilla V3-tunnisteilla** tai muilla hyväksytyillä ennakkoon tallennetuilla avaimilla, ei `msmart-ng discover` -autoyhteydellä. Pelkkä pumpun WAN-esto ei estä testi-PC:n pilviyhteyttä; pilvettömyyden todentamiseksi estä myös testi-PC:n valmistajapilvikutsut; tarkista myöhemminkin että tilatietojen *sisältö/todellinen lähde* päivittyy, ei vain yhteyden heartbeat.
 
 - **PASS ajonaikainen LAN:** uusi mitattu tilaluku ja uudelleenyhteys ilman internetiä.
 - **PASS L0:** tämän lisäksi todennettu ensiliitos sekä kaikki tarvitut avaimet **ilman valmistajan pilveä**.

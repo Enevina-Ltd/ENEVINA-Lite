@@ -213,12 +213,16 @@ CottageModePlan evaluate_cottage_mode(const CottageModeConfig& cfg,
             return p; // never heat on a single high RH sample.
         }
         p.advisory=ModeAdvisory::DryingSuggested;
-    } else if(cfg.mode==CottageMode::Hold) {
-        if(!std::isfinite(cfg.hold_target_c)||
-           cfg.hold_target_c<5||cfg.hold_target_c>24) {
+    } else if(cfg.mode==CottageMode::Hold ||
+              cfg.mode==CottageMode::Occupied) {
+        const double target=cfg.mode==CottageMode::Occupied?
+            cfg.occupied_target_c:cfg.hold_target_c;
+        const double min_target=cfg.mode==CottageMode::Occupied?16.0:5.0;
+        const double max_target=cfg.mode==CottageMode::Occupied?26.0:24.0;
+        if(!std::isfinite(target)||target<min_target||target>max_target) {
             p.advisory=ModeAdvisory::SensorUnavailable;return p;
         }
-        p.target_c=cfg.hold_target_c;p.has_target=true;
+        p.target_c=target;p.has_target=true;
         p.advisory=ModeAdvisory::BelowTemperatureTarget;
     } else {
         p.advisory=ModeAdvisory::NoHeating;

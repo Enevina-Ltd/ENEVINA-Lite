@@ -28,6 +28,7 @@ RuuviBinding indoor_binding,outdoor_binding;
 AirHistory history;
 MoistureMonitor alarm_engine;
 CottageModeConfig config{};
+uint32_t config_generation=0;
 AdvisoryLimits warning_limits{};
 AirMoisture indoor_air{},outdoor_air{};
 RuuviV5 last_indoor{},last_outdoor{},discovered{};
@@ -44,6 +45,14 @@ bool indoor_binding_persisted=true;
 bool history_origin_clean=true;
 uint32_t samples_ok=0,samples_rejected=0,samples_duplicate=0,stores=0;
 uint32_t low_heap_skips=0;
+// Cross-task status counters are atomic; never hold the Ruuvi callback lock
+// while sampling heap or when acquiring the shared network memory mutex.
+std::atomic<uint32_t> ble_scan_attempts{0};
+std::atomic<uint32_t> ble_scan_completed{0};
+std::atomic<uint32_t> ble_scan_memory_denials{0};
+std::atomic<uint32_t> ble_scan_busy_denials{0};
+std::atomic<uint32_t> ble_scan_last_free_internal{0};
+std::atomic<uint32_t> ble_scan_last_largest_internal{0};
 std::atomic<bool> ble_initialized{false};
 char csrf_token[24]={};
 struct AirEvent {
@@ -182,6 +191,7 @@ bool save_config() {
     bool saved=true;
     saved &= p.putUChar("mode",static_cast<uint8_t>(cfg.mode))>0;
     saved &= p.putFloat("target",static_cast<float>(cfg.hold_target_c))>0;
+    saved &= p.putFloat("occupied",static_cast<float>(cfg.occupied_target_c))>0;
     saved &= p.putFloat("dryadd",static_cast<float>(cfg.drying_delta_c))>0;
     saved &= p.putFloat("rh70",static_cast<float>(limits.monitor_rh))>0;
     saved &= p.putFloat("rh80",static_cast<float>(limits.review_rh))>0;
@@ -251,11 +261,14 @@ void c23_initialize() {
     if(prefs.begin("cottage_air",true)) {
         config_loaded=true;
         const uint8_t m=prefs.getUChar("mode",0);
-        if(m<=2)config.mode=static_cast<CottageMode>(m);
+        if(m<=3)config.mode=static_cast<CottageMode>(m);
         const double target=prefs.getFloat("target",12.0f);
         const double dryadd=prefs.getFloat("dryadd",4.0f);
         if(std::isfinite(target)&&target>=5&&target<=24)
             config.hold_target_c=target;
+        const double occupied=prefs.getFloat("occupied",21.0f);
+        if(std::isfinite(occupied)&&occupied>=16&&occupied<=26)
+            config.occupied_target_c=occupied;
         if(std::isfinite(dryadd)&&dryadd>=3&&dryadd<=5)
             config.drying_delta_c=dryadd;
         const double rh70=prefs.getFloat("rh70",70.0f);
@@ -337,17 +350,30 @@ void c23_ble_worker(void*) {
     scan->setActiveScan(false);
     ble_initialized.store(true);
     for(;;) {
+        const auto internal_free=static_cast<uint32_t>(heap_caps_get_free_size(
+            MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+        const auto largest_free=static_cast<uint32_t>(
+            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+        ble_scan_last_free_internal.store(internal_free);
+        ble_scan_last_largest_internal.store(largest_free);
+        const bool heap_ok=internal_memory_admissible(
+            internal_free,largest_free,
+            ble_scan_min_internal_bytes,ble_scan_min_contiguous_bytes);
         {
             // The network-memory lock is needed only during BLE scanning.
             // Release it BEFORE the 12-second sleep so TLS and OTA can run.
             enevina_firmware::NetworkBudgetLease lease(0,
                 ble_scan_min_internal_bytes,ble_scan_min_contiguous_bytes);
             if(lease.held()) {
+                ble_scan_attempts.fetch_add(1);
                 scan->start(4,false);
                 enevina_firmware::network_budget_sample();
                 scan->clearResults();
+                ble_scan_completed.fetch_add(1);
             } else {
                 low_heap_skips++;
+                if(heap_ok)ble_scan_busy_denials.fetch_add(1);
+                else ble_scan_memory_denials.fetch_add(1);
             }
         } // lease destructor releases network budget before waiting
         vTaskDelay(pdMS_TO_TICKS(12000));
@@ -377,6 +403,43 @@ TemperatureSample c23_temperature_sample() {
     unlock();
     return out;
 }
+const char* c23_config_token() { return csrf_token; }
+bool c23_authorize_local_setting(const char* submitted_token) {
+    return guard && submitted_token && strlen(submitted_token)==strlen(csrf_token) &&
+           strcmp(submitted_token,csrf_token)==0;
+}
+// Same mode target and outside-FMI/Ruuvi inputs as /api/status.
+CottageModePlan c23_current_mode_plan() {
+    if(!guard)return CottageModePlan{};
+    const auto weather=enevina_firmware::weather_status();
+    const int64_t now_utc=utc_valid_now();
+    const bool forecast_ok=now_utc && weather.available &&
+      weather.fetched_utc>0 && now_utc>=weather.fetched_utc &&
+      now_utc-weather.fetched_utc<=6*3600 &&
+      weather.next_utc>=now_utc && weather.next_utc<=now_utc+3600 &&
+      std::isfinite(weather.next_temperature_c);
+    lock();
+    const uint64_t ms=uptime_ms();
+    const bool fresh=has_indoor&&indoor_binding.valid(ms);
+    const bool outside_fresh=has_outdoor&&outdoor_binding.valid(ms);
+    const bool outside_ok=outside_fresh||forecast_ok;
+    const double outside_c=outside_fresh?outdoor_air.temperature_c:
+                            weather.next_temperature_c;
+    const CottageModePlan plan=evaluate_cottage_mode(
+        config,indoor_air,fresh,outside_ok,outside_c,
+        alarm_engine.high70_duration_ms(ms));
+    unlock();
+    return plan;
+}
+uint32_t c23_config_generation() {
+    if(!guard)return 0;
+    lock();const uint32_t g=config_generation;unlock();return g;
+}
+CottageModeConfig c23_mode_config() {
+    if(!guard) return CottageModeConfig{};
+    lock();const auto snapshot=config;unlock();
+    return snapshot;
+}
 void c23_append_status(cJSON* root) {
     // Use an actual outdoor RuuviTag when bound; otherwise FMI is
     // explicitly only a forecast for a thermal offset, NEVER an RH source.
@@ -404,6 +467,7 @@ void c23_append_status(cJSON* root) {
         have_out_t,exterior_c,alarm_engine.high70_duration_ms(ms));
     cJSON_AddNumberToObject(air,"mode",static_cast<int>(config.mode));
     cJSON_AddNumberToObject(air,"hold_target_c",config.hold_target_c);
+    cJSON_AddNumberToObject(air,"occupied_target_c",config.occupied_target_c);
     cJSON_AddNumberToObject(air,"drying_delta_c",config.drying_delta_c);
     cJSON_AddNumberToObject(air,"warning_rh70",warning_limits.monitor_rh);
     cJSON_AddNumberToObject(air,"warning_rh80",warning_limits.review_rh);
@@ -432,6 +496,16 @@ void c23_append_status(cJSON* root) {
     json_number_or_null(air,"absolute_6h_change_gm3",trend_ready,abs_trend);
     cJSON_AddNumberToObject(air,"nvs_checkpoints",stores);
     cJSON_AddNumberToObject(air,"low_heap_scan_skips",low_heap_skips);
+    cJSON_AddNumberToObject(air,"ble_scan_attempts",ble_scan_attempts.load());
+    cJSON_AddNumberToObject(air,"ble_scan_completed",ble_scan_completed.load());
+    cJSON_AddNumberToObject(air,"ble_scan_memory_denials",
+                            ble_scan_memory_denials.load());
+    cJSON_AddNumberToObject(air,"ble_scan_busy_denials",
+                            ble_scan_busy_denials.load());
+    cJSON_AddNumberToObject(air,"ble_scan_last_free_internal",
+                            ble_scan_last_free_internal.load());
+    cJSON_AddNumberToObject(air,"ble_scan_last_largest_internal",
+                            ble_scan_last_largest_internal.load());
     cJSON_AddBoolToObject(air,"sensor_discovered",have_discovered);
     // Local web only; the saved MAC and full sensor ID are not printed
     // to UART logs, external APIs or GitHub.
@@ -533,18 +607,31 @@ void c23_register_routes(WebServer& web) {
             web.send(400,"text/plain","Missing mode values");return;
         }
         const String mode_s=web.arg("mode");
-        double hold=0,delta=0;
-        if(mode_s!="0"&&mode_s!="1"&&mode_s!="2") {
+        double hold=0,delta=0,occupied=0;
+        if(mode_s!="0"&&mode_s!="1"&&mode_s!="2"&&mode_s!="3") {
             web.send(400,"text/plain","Invalid mode");return;
         }
         if(!parse_float(web.arg("hold"),hold)||hold<5||hold>24 ||
            !parse_float(web.arg("delta"),delta)||delta<3||delta>5) {
             web.send(400,"text/plain","Invalid target");return;
         }
+        // Existing clients may omit the newly introduced occupied value:
+        // preserve the currently stored value instead of resetting it.
+        if(web.hasArg("occupied")) {
+            if(!parse_float(web.arg("occupied"),occupied) ||
+               occupied<16||occupied>26 ||
+               std::fabs(occupied*2.0-std::round(occupied*2.0))>1e-7) {
+                web.send(400,"text/plain","Invalid occupied target");return;
+            }
+        } else {
+            lock();occupied=config.occupied_target_c;unlock();
+        }
         lock();
         config.mode=static_cast<CottageMode>(mode_s.toInt());
         config.hold_target_c=hold;
+        config.occupied_target_c=occupied;
         config.drying_delta_c=delta;
+        ++config_generation; // invalidates any in-flight command preparation
         log_event(3,static_cast<uint8_t>(config.mode));
         unlock();
         const bool saved=save_config();

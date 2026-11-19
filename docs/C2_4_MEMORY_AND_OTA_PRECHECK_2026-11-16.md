@@ -2,7 +2,7 @@
 
 ## Status
 
-**Osittainen toteutus. Ei C2.4-laitehyväksyntää eikä lupaa siirtää korttia pihamökkiin.**
+**Osittainen toteutus. Ei C2.4-laitehyväksyntää eikä lupaa siirtää korttia testikohteeseen.**
 PR #7 perustuu PR #6:n HEAD-committiin `dd46ccb`; PR #5 ja PR #6 pidetään luonnoksina.
 Käytetty vain erillistä ESP32-S3 N16R8 -testikorttia sisätiloissa. Mitsubishi CN105 -sillan firmwarea, Mitsubishin ohjausta, Shellyn relettä, Home Assistantia tai Enevina Corea ei muutettu.
 
@@ -72,7 +72,7 @@ Yhteyden heartbeat eteni 55:stä 140:een, mutta ilmastointitapahtumien ja kompre
 
 ## Julkaisupäätös
 
-**PR #7 pysyy draftina. PR #5, #6 ja #7 eivät yhdisty mainiin.** Kortti pysyy sisällä. Ei automaattista C3-ohjausta, ei alle 16 asteen Mitsubishin HEAT/OFF-pulssitusta, eikä mitään CN105:n tai Shellyn fyysistä kirjoitusta. OTA:n tuotantohyväksyntä, koko 24 h vakausnäyttö, CN105-lähdemittauksen tuoreus ja erillinen pihamökin pakkassuoja ovat avoimia.
+**PR #7 pysyy draftina. PR #5, #6 ja #7 eivät yhdisty mainiin.** Kortti pysyy sisällä. Ei automaattista C3-ohjausta, ei alle 16 asteen Mitsubishin HEAT/OFF-pulssitusta, eikä mitään CN105:n tai Shellyn fyysistä kirjoitusta. OTA:n tuotantohyväksyntä, koko 24 h vakausnäyttö, CN105-lähdemittauksen tuoreus ja erillinen testikohteen pakkassuoja ovat avoimia.
 
 ## Uusimman muistidiagnostiikan toinen USB-flash ja jälkitesti
 

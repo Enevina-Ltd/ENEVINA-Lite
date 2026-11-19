@@ -77,6 +77,23 @@ OptimizeResult forward_exact(const Parameters& p, State initial,
         static_cast<float>(initial.tank_kwh)},0,0,255}};
     std::vector<Node> best(grid_size);
     std::vector<float> rank(grid_size);
+    // Value of one stored thermal kWh when two states share a bin: the mean
+    // marginal electricity cost (total price / COP at the low space supply)
+    // over the REMAINING horizon. The former fixed 0.05 EUR/kWh undervalued
+    // stored heat at high prices / low COP and merged away the warmer states
+    // the optimum needs (G0 radiator gap 4.81 % -> 1.25 % at 96 slots, worst
+    // case 4.81 % -> 2.42 %; docs/OPTIMIZATION_AUDIT_20261118.md). Only the
+    // within-bin tie-break changes; every plan is still verified by replay.
+    std::array<float,max_periods> stored_value{};
+    {
+        double suffix=0;
+        for(size_t t=count;t-- > 0;) {
+            const size_t remaining=count-1-t;
+            stored_value[t]=remaining ? static_cast<float>(suffix/remaining) : 0.0f;
+            suffix+=std::max(0.0,periods[t].total_price_eur_per_kwh)/
+                cop(p,periods[t].outdoor_c,p.space_supply_low_c);
+        }
+    }
     for (size_t t=0;t<count;++t) {
         std::fill(rank.begin(),rank.end(),infinity);
         for (auto& node:best) node.choice=255;
@@ -133,7 +150,7 @@ OptimizeResult forward_exact(const Parameters& p, State initial,
                     room_capacity+next_state.tank_kwh-minimum_tank;
                 // No future demand remains at the terminal layer: prefer
                 // the genuinely cheapest feasible candidate in each bin.
-                const float score=(t+1==count) ? cost : cost-0.05f*stored;
+                const float score=(t+1==count) ? cost : cost-stored_value[t]*stored;
                 if (score < rank[k]) {
                     rank[k]=score;
                     best[k]={next_state,cost,static_cast<uint16_t>(i),a};

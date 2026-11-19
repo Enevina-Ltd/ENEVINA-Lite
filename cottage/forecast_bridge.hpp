@@ -31,4 +31,12 @@ BridgeResult join_forecast_two_tariffs(int64_t now_utc,int64_t price_fetch_utc,
     const enevina::OutdoorPoint* weather,size_t weather_count,
     const enevina::Tariff& day_tariff,const enevina::Tariff& night_tariff,
     size_t slots);
+// Generic form: `pricer` returns the TOTAL EUR/kWh for the slot starting at
+// `utc` (e.g. site_total_price). Used by the firmware so the MPC bridge, the
+// price bootstrap and the dashboard share ONE price rule.
+using SlotPricer=bool(*)(void* context,int64_t utc,double spot_eur_per_kwh,double& total);
+BridgeResult join_forecast_priced(int64_t now_utc,int64_t price_fetch_utc,
+    int64_t weather_fetch_utc,const Spot15* spot,size_t spot_count,
+    const enevina::OutdoorPoint* weather,size_t weather_count,
+    SlotPricer pricer,void* context,size_t slots);
 } // namespace enevina::cottage
