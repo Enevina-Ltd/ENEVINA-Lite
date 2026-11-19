@@ -69,6 +69,15 @@ class DashboardTranslations(unittest.TestCase):
         self.assertIn("read-only",security)
         self.assertIn("V3 tunnisteet tallennetaan laitteen paikalliseen NVS-muistiin. Niitä ei palauteta selaimeen. DHCP-IP:n automaattinen tunnistus ja pumpun ohjaus eivät sisälly tähän lukuversioon.",STRINGS)
 
+    def test_midea_test_diagnostics_are_translated(self):
+        for key in ("Testaa yhteys nyt", "Ei vielä testattu.",
+                    "V3-tunnistautuminen epäonnistui: tarkista token ja key.",
+                    "Yhteystesti käynnistetty. Pumppua ei ohjata."):
+            self.assertIn(key,STRINGS)
+            self.assertNotEqual(key,STRINGS[key])
+        self.assertIn("'/api/midea/test'",SRC)
+        self.assertIn("mideaReadErrors",SRC)
+
     def test_language_never_writes_to_device(self):
         control=SRC.split("function setDashboardLanguage(language){",1)[1].split(
             "document.querySelectorAll('[data-lang]')",1)[0]
