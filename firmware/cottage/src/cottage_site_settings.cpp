@@ -19,6 +19,7 @@
 #include "../../main/market.hpp"
 #include "forecast/market_zones.hpp"
 #include "cottage_geocode.hpp"
+#include "cottage_shelly_discovery.hpp"
 
 using enevina::cottage::SiteSettings;
 using enevina::cottage::SettingError;
@@ -136,6 +137,7 @@ void send_settings(WebServer& web) {
     cJSON_AddNumberToObject(root,"min_price_advantage_percent",s.min_price_advantage_fraction*100);
     cJSON_AddStringToObject(root,"cn105_url",s.cn105_url);
     cJSON_AddStringToObject(root,"shelly_url",s.shelly_url);
+    cJSON_AddStringToObject(root,"shelly_scope",enevina::cottage::shelly_scope_name(s.shelly_scope));
     cJSON_AddStringToObject(root,"fmi_latlon",s.fmi_latlon);
     cJSON_AddStringToObject(root,"fmi_latlon_note","applied immediately after save");
     cJSON_AddStringToObject(root,"pump_adapter",s.pump_adapter);
@@ -318,7 +320,45 @@ static void send_geocode(WebServer& web) {
     web.send(st==GeocodeState::Pending?202:200,"application/json; charset=utf-8",body);
     cJSON_free(body);
 }
+// Shelly discovery: the worker task scans; this handler starts/polls only.
+static void send_shelly_scan(WebServer& web) {
+    using namespace enevina_firmware;
+    auto snap=std::unique_ptr<ShellyScanSnapshot>(new(std::nothrow) ShellyScanSnapshot);
+    if(!snap) {web.send(503,"application/json","{\"state\":\"failed\"}");return;}
+    const ShellyScanState st=shelly_scan(*snap);
+    cJSON* root=cJSON_CreateObject();
+    cJSON* list=root?cJSON_AddArrayToObject(root,"devices"):nullptr;
+    if(!list) {cJSON_Delete(root);web.send(503,"application/json","{}");return;}
+    static const char* const names[]={"idle","pending","done","failed"};
+    cJSON_AddStringToObject(root,"state",names[static_cast<int>(st)&3]);
+    cJSON_AddBoolToObject(root,"cooldown",snap->busy_cooldown);
+    cJSON_AddNumberToObject(root,"age_s",snap->age_ms/1000);
+    for(size_t i=0;st==ShellyScanState::Done && i<snap->count;++i) {
+        const auto& f=snap->items[i];
+        cJSON* o=cJSON_CreateObject();
+        if(!o) break;
+        cJSON_AddStringToObject(o,"host",f.host);
+        cJSON_AddStringToObject(o,"url",f.url);
+        cJSON_AddStringToObject(o,"id",f.info.id);
+        cJSON_AddStringToObject(o,"model",f.info.model);
+        cJSON_AddStringToObject(o,"app",f.info.app);
+        cJSON_AddNumberToObject(o,"generation",f.info.generation);
+        cJSON_AddStringToObject(o,"support",enevina::cottage::shelly_support_name(f.info.support));
+        if(f.has_power) cJSON_AddNumberToObject(o,"power_w",f.watts);
+        else cJSON_AddNullToObject(o,"power_w");
+        cJSON_AddItemToArray(list,o);
+    }
+    char* body=cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if(!body) {web.send(503,"application/json","{}");return;}
+    web.sendHeader("Cache-Control","no-store");
+    web.send(st==ShellyScanState::Pending?202:200,"application/json; charset=utf-8",body);
+    cJSON_free(body);
+}
 void site_settings_register_routes(WebServer& web) {
+    web.on("/api/shelly/discover",HTTP_GET,[&web]() {
+        if(cottage_wifi_require_home_lan(web))send_shelly_scan(web);
+    });
     web.on("/api/geocode",HTTP_GET,[&web]() {
         if(cottage_wifi_require_home_lan(web))send_geocode(web);
     });

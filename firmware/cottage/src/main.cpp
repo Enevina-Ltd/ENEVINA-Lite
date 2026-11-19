@@ -1379,6 +1379,7 @@ static void status_endpoint() {
     {   // The profile that shaped the decision above (never authorizes a write).
         const SiteSettings profile_site=site_settings_snapshot();
         cJSON_AddStringToObject(root,"optimization_profile",profile_name(profile_site.profile));
+        cJSON_AddStringToObject(root,"shelly_scope",shelly_scope_name(profile_site.shelly_scope));
         if(profile_site.comfort_min_c>0)
             cJSON_AddNumberToObject(root,"comfort_min_c",profile_site.comfort_min_c);
         else cJSON_AddNullToObject(root,"comfort_min_c");

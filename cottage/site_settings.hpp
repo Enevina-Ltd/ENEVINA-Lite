@@ -11,6 +11,7 @@
 // the selected country (EU summer-time rule) at the 15-minute slot START.
 #include "cottage/finnish_tariff.hpp"
 #include "cottage/optimization_profile.hpp"
+#include "cottage/shelly_discovery.hpp"
 #include "cottage/url_guard.hpp"
 #include "forecast/eu_time.hpp"
 #include "forecast/market_zones.hpp"
@@ -134,6 +135,9 @@ struct SiteSettings {
     OptimizationProfile profile=OptimizationProfile::Balanced;
     double comfort_min_c=0;
     double comfort_max_c=0;
+    // What the consumption meter measures. Unknown until the owner confirms;
+    // only HeatPump may feed the pump COP/consumption model.
+    ShellyScope shelly_scope=ShellyScope::Unknown;
 };
 
 // Byte layout of the shipped v1 settings blob (Finland-only, before regional
@@ -193,7 +197,7 @@ inline bool valid_site_region(const SiteSettings& s);
 inline bool valid_site_settings(const SiteSettings& s) {
     if(!valid_site_region(s)) return false;
     const enevina::MarketCountry* c=enevina::find_market_country(s.country);
-    return static_cast<uint8_t>(s.profile)<=2 &&
+    return static_cast<uint8_t>(s.profile)<=2 && static_cast<uint8_t>(s.shelly_scope)<=2 &&
         valid_comfort_limits(s.comfort_min_c,s.comfort_max_c) &&
         valid_site_tariff(s.tariff,currency_limit_scale(c ? c->currency : "EUR"));
 }
@@ -363,6 +367,8 @@ inline SettingError apply_site_setting(SiteSettings& s,const char* key,const cha
     }
     if(!std::strcmp(key,"shelly_url")) {
         if(*value && !valid_shelly_base_url(value)) return SettingError::BadUrl;
+        // A different meter has not been confirmed to measure the pump.
+        if(std::strcmp(s.shelly_url,value)!=0) s.shelly_scope=ShellyScope::Unknown;
         return detail::copy_text(s.shelly_url,sizeof(s.shelly_url),value)?
             SettingError::Ok:SettingError::TooLong;
     }
@@ -432,6 +438,9 @@ inline SettingError apply_site_setting(SiteSettings& s,const char* key,const cha
         else if(std::strcmp(value,"false")) return SettingError::BadChoice;
         (key[0]=='t'?s.tariff_confirmed:s.setup_complete)=v;
         return SettingError::Ok;
+    }
+    if(!std::strcmp(key,"shelly_scope")) {
+        return parse_shelly_scope(value,s.shelly_scope)?SettingError::Ok:SettingError::BadChoice;
     }
     if(!std::strcmp(key,"optimization_profile")) {
         return parse_profile(value,s.profile)?SettingError::Ok:SettingError::BadChoice;

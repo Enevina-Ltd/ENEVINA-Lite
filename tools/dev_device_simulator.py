@@ -62,7 +62,16 @@ STATE = {
                "tariff_confirmed": False, "setup_complete": False, "setup_step": 0},
 }
 GEO_STATE = {"q": None, "since": 0.0}
+# Sensors: values are the official Ruuvi Data Format 5 test vector (24.3 C) with
+# different MACs/RSSI. The 3rd one stopped advertising (stale) to show that case.
+SENSORS = {"CB:B8:33:4C:88:01": {"rssi": -48, "age0": 4, "live": True, "t": 21.4, "rh": 45.2, "v": 2.98},
+           "CB:B8:33:4C:88:02": {"rssi": -71, "age0": 20, "live": True, "t": 4.9, "rh": 81.0, "v": 3.01},
+           "CB:B8:33:4C:88:03": {"rssi": -85, "age0": 640, "live": False, "t": 19.0, "rh": 50.0, "v": 2.6}}
+SENSOR_NAMES = {}
+BOUND = {"indoor": None, "outdoor": None}
+SHELLY = {"calls": 0, "since": 0.0}
 AIR = {"mode": 3, "hold_target_c": 12.0, "occupied_target_c": 21.0, "drying_delta_c": 4.0}
+STATE["shelly_scope"] = "unknown"
 STATE["optimization"] = {"profile": "balanced", "comfort_min_c": None, "comfort_max_c": None}
 
 
@@ -136,7 +145,15 @@ def apply_form(form):
                 new["optimization"][k] = x
         elif k == "components_include_vat":
             new["tariff"][k] = v == "true"
-        elif k in ("cn105_url", "shelly_url", "fmi_latlon", "pump_adapter"):
+        elif k == "shelly_url":
+            if new["shelly_url"] != v:
+                new["shelly_scope"] = "unknown"
+            new[k] = v
+        elif k == "shelly_scope":
+            if v not in ("unknown", "heat_pump", "whole_house"):
+                return None, "BAD_CHOICE", k
+            new[k] = v
+        elif k in ("cn105_url", "fmi_latlon", "pump_adapter"):
             new[k] = v
         else:
             return None, "UNKNOWN_KEY", k
@@ -220,6 +237,35 @@ class H(BaseHTTPRequestHandler):
             if now - GEO_STATE["since"] < 0.6:
                 return self.send(202, {"state": "pending", "results": []})
             return self.send(200, geocode(term, q.get("country", [""])[0]))
+        if u.path == "/api/air/sensors":
+            out = []
+            for mac, v in SENSORS.items():
+                role = "indoor" if BOUND["indoor"] == mac else "outdoor" if BOUND["outdoor"] == mac else ""
+                out.append({"mac": mac, "name": SENSOR_NAMES.get(mac, ""), "role": role, "temperature_c": v["t"],
+                            "humidity_pct": v["rh"], "battery_v": v["v"], "rssi_dbm": v["rssi"],
+                            "age_s": v["age0"], "live": v["live"], "frames": 5})
+            out.sort(key=lambda x: -x["rssi_dbm"])
+            bound = {"indoor": BOUND["indoor"], "outdoor": BOUND["outdoor"]}
+            for r in ("indoor", "outdoor"):
+                if BOUND[r]:
+                    bound[r + "_name"] = SENSOR_NAMES.get(BOUND[r], "")
+            return self.send(200, {"sensors": out, "bound": bound, "ble_ready": True, "scan_attempts": 9,
+                                   "scan_completed": 9, "scan_memory_denials": 0, "scan_busy_denials": 0})
+        if u.path == "/api/shelly/discover":
+            now = time.time()
+            if now - SHELLY["since"] > 30:
+                SHELLY.update(since=now)
+                return self.send(202, {"state": "pending", "devices": []})
+            if now - SHELLY["since"] < 1.5:
+                return self.send(202, {"state": "pending", "devices": []})
+            # Documented Shelly formats (Gen2 supported, Gen2 with password, Gen1) - not device recordings.
+            return self.send(200, {"state": "done", "cooldown": False, "age_s": 0, "devices": [
+                {"host": "shellyplus1pm-a8032abe7d94", "url": "http://192.168.1.30", "id": "shellyplus1pm-a8032abe7d94",
+                 "model": "SNSW-001P16EU", "app": "Plus1PM", "generation": 2, "support": "SUPPORTED", "power_w": 412.7},
+                {"host": "shellyplus1pm-bbbbbbbbbbbb", "url": "http://192.168.1.31", "id": "shellyplus1pm-bbbbbbbbbbbb",
+                 "model": "SNSW-001P16EU", "app": "Plus1PM", "generation": 2, "support": "AUTH_REQUIRED", "power_w": None},
+                {"host": "shelly1pm-a4cf12f4d2b1", "url": "http://192.168.1.32", "id": "SHSW-PM", "model": "",
+                 "app": "", "generation": 1, "support": "GEN1_NOT_SUPPORTED", "power_w": None}]})
         if u.path == "/api/prices":
             return self.send(200, {"valid": False, "slots": []})
         return self.send(404, {"error": "not in simulator"})
@@ -228,6 +274,25 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         n = int(self.headers.get("Content-Length", "0"))
         form = {k: v[0] for k, v in parse_qs(self.rfile.read(n).decode("utf-8")).items()}
+        if u.path == "/api/air/bind":
+            if form.pop("token", "") != "sim-token":
+                return self.send(403, {"saved": False})
+            role, mac = form.get("which"), form.get("mac")
+            if role not in BOUND or (mac != "none" and mac not in SENSORS):
+                return self.send(400, {"saved": False})
+            BOUND[role] = None if mac == "none" else mac
+            return self.send(200, {"saved": True, "physical_writes": False})
+        if u.path == "/api/air/sensor-name":
+            if form.pop("token", "") != "sim-token":
+                return self.send(403, {"saved": False})
+            name = form.get("name", "")
+            if any(c in name for c in "<>\"&'") or len(name.encode()) > 23:
+                return self.send(400, {"saved": False, "error": "BAD_NAME"})
+            if name:
+                SENSOR_NAMES[form.get("mac", "")] = name
+            else:
+                SENSOR_NAMES.pop(form.get("mac", ""), None)
+            return self.send(200, {"saved": True})
         if u.path == "/api/air/config":
             if form.pop("token", "") != "sim-token":
                 return self.send(403, {"saved": False})

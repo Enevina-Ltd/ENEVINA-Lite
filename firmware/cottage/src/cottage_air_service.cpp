@@ -19,6 +19,7 @@
 #include "cottage/memory_policy.hpp"
 #include <atomic>
 #include "cottage/ruuvi_v5.hpp"
+#include "cottage/ruuvi_registry.hpp"
 #include "cottage/air_humidity.hpp"
 #include "../../main/weather.hpp"
 
@@ -33,6 +34,10 @@ uint32_t config_generation=0;
 AdvisoryLimits warning_limits{};
 AirMoisture indoor_air{},outdoor_air{};
 RuuviV5 last_indoor{},last_outdoor{},discovered{};
+// All nearby RuuviTags (for the setup list) and the owner's names for them.
+// Guarded by `guard`, like the bindings.
+RuuviRegistry sensor_registry;
+SensorNames sensor_names;
 int64_t indoor_utc=0,outdoor_utc=0;
 uint64_t indoor_mono_ms=0,outdoor_mono_ms=0;
 uint64_t last_store_ms=0,last_tick_ms=0;
@@ -127,6 +132,7 @@ public:
         lock();
         discovered=parsed;have_discovered=true;
         const uint64_t ms=uptime_ms();
+        sensor_registry.observe(parsed,ms);
         if(indoor_binding.bound() &&
            parsed.mac==indoor_binding.mac()) {
             accept_indoor(parsed,ms);
@@ -240,6 +246,91 @@ bool parse_float(const String& input,double& result) {
     result=strtod(s.c_str(),&end);
     return end!=s.c_str()&&*end=='\0'&&std::isfinite(result);
 }
+constexpr char kNamesNs[]="enevina_names";
+constexpr char kNamesKey[]="v1";
+// Names are labels only. A failed save leaves RAM and NVS consistent: the
+// caller restores the previous table.
+bool save_sensor_names(const SensorNames& names) {
+    Preferences p;
+    if(!p.begin(kNamesNs,false)) return false;
+    const auto& table=names.entries();
+    const size_t written=p.putBytes(kNamesKey,table.data(),sizeof(table));
+    p.end();
+    return written==sizeof(table);
+}
+void load_sensor_names() {
+    Preferences p;
+    if(!p.begin(kNamesNs,true)) return;
+    std::array<SensorNameEntry,kSensorNameSlots> raw{};
+    if(p.getBytesLength(kNamesKey)==sizeof(raw) &&
+       p.getBytes(kNamesKey,raw.data(),sizeof(raw))==sizeof(raw)) {
+        SensorNames loaded;
+        if(loaded.load(raw)) sensor_names=loaded;   // corrupt blob -> no names, never junk
+    }
+    p.end();
+}
+void send_sensors(WebServer& web) {
+    RuuviSeen seen[kRuuviRegistrySlots];
+    std::array<uint8_t,6> indoor{},outdoor{};
+    bool has_in=false,has_out=false;
+    size_t count=0;
+    String names[kRuuviRegistrySlots];
+    String bound_in,bound_out,bound_in_name,bound_out_name;
+    const uint64_t now=uptime_ms();
+    lock();
+    count=sensor_registry.snapshot(now,seen,kRuuviRegistrySlots);
+    has_in=indoor_binding.bound();has_out=outdoor_binding.bound();
+    if(has_in) {indoor=indoor_binding.mac();bound_in=mac_string(indoor);}
+    if(has_out) {outdoor=outdoor_binding.mac();bound_out=mac_string(outdoor);}
+    for(size_t i=0;i<count;++i) {
+        const char* n=sensor_names.get(seen[i].latest.mac);
+        if(n) names[i]=n;
+    }
+    if(has_in) {const char* n=sensor_names.get(indoor);if(n) bound_in_name=n;}
+    if(has_out) {const char* n=sensor_names.get(outdoor);if(n) bound_out_name=n;}
+    unlock();
+    cJSON* root=cJSON_CreateObject();
+    cJSON* list=root?cJSON_AddArrayToObject(root,"sensors"):nullptr;
+    if(!list) {cJSON_Delete(root);web.send(503,"application/json","{}");return;}
+    cJSON_AddNumberToObject(root,"scan_attempts",ble_scan_attempts.load());
+    cJSON_AddNumberToObject(root,"scan_completed",ble_scan_completed.load());
+    cJSON_AddNumberToObject(root,"scan_memory_denials",ble_scan_memory_denials.load());
+    cJSON_AddNumberToObject(root,"scan_busy_denials",ble_scan_busy_denials.load());
+    cJSON_AddBoolToObject(root,"ble_ready",c23_ble_initialized());
+    cJSON* bound=cJSON_AddObjectToObject(root,"bound");
+    if(bound) {
+        if(has_in) {cJSON_AddStringToObject(bound,"indoor",bound_in.c_str());
+            cJSON_AddStringToObject(bound,"indoor_name",bound_in_name.c_str());}
+        else cJSON_AddNullToObject(bound,"indoor");
+        if(has_out) {cJSON_AddStringToObject(bound,"outdoor",bound_out.c_str());
+            cJSON_AddStringToObject(bound,"outdoor_name",bound_out_name.c_str());}
+        else cJSON_AddNullToObject(bound,"outdoor");
+    }
+    for(size_t i=0;i<count;++i) {
+        cJSON* o=cJSON_CreateObject();
+        if(!o) break;
+        const auto& e=seen[i];
+        const uint64_t age_ms=now>=e.last_ms?now-e.last_ms:0;
+        cJSON_AddStringToObject(o,"mac",mac_string(e.latest.mac).c_str());
+        cJSON_AddStringToObject(o,"name",names[i].c_str());
+        const char* role=(has_in&&e.latest.mac==indoor)?"indoor":(has_out&&e.latest.mac==outdoor)?"outdoor":"";
+        cJSON_AddStringToObject(o,"role",role);
+        cJSON_AddNumberToObject(o,"temperature_c",e.latest.temperature_c);
+        cJSON_AddNumberToObject(o,"humidity_pct",e.latest.relative_humidity_pct);
+        cJSON_AddNumberToObject(o,"battery_v",e.latest.battery_v);
+        cJSON_AddNumberToObject(o,"rssi_dbm",e.latest.rssi_dbm);
+        cJSON_AddNumberToObject(o,"age_s",static_cast<double>(age_ms/1000));
+        cJSON_AddBoolToObject(o,"live",age_ms<=kRuuviFreshMs);
+        cJSON_AddNumberToObject(o,"frames",e.frames);
+        cJSON_AddItemToArray(list,o);
+    }
+    char* body=cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if(!body) {web.send(503,"application/json","{}");return;}
+    web.sendHeader("Cache-Control","no-store");
+    web.send(200,"application/json; charset=utf-8",body);
+    cJSON_free(body);
+}
 bool check_token(WebServer& web) {
     return web.hasArg("token") && web.arg("token")==csrf_token;
 }
@@ -251,6 +342,7 @@ void json_number_or_null(cJSON* o,const char* key,bool ok,double v) {
 
 void c23_initialize() {
     guard=xSemaphoreCreateMutex();
+    load_sensor_names();
     if(!guard)return;
     snprintf(csrf_token,sizeof(csrf_token),"%08lX%08lX",
              static_cast<unsigned long>(esp_random()),
@@ -665,6 +757,31 @@ void c23_register_routes(WebServer& web) {
         web.send(saved?200:500,"application/json",
                  saved?"{\"saved\":true,\"physical_writes\":false}":
                        "{\"saved\":false,\"physical_writes\":false}");
+    });
+    web.on("/api/air/sensors",HTTP_GET,[&web](){
+        if(cottage_wifi_require_home_lan(web)) send_sensors(web);
+    });
+    web.on("/api/air/sensor-name",HTTP_POST,[&web](){
+        if(!cottage_wifi_require_home_lan(web))return;
+        if(!check_token(web)) {web.send(403,"text/plain","Token invalid");return;}
+        std::array<uint8_t,6> mac{};
+        if(!parse_ruuvi_mac(web.arg("mac").c_str(),mac)) {
+            web.send(400,"application/json","{\"saved\":false,\"error\":\"BAD_MAC\"}");return;
+        }
+        const String name=web.arg("name");
+        lock();
+        const SensorNames previous=sensor_names;
+        const NameResult r=sensor_names.set(mac,name.c_str());
+        if(r==NameResult::BadName||r==NameResult::TableFull||r==NameResult::BadMac) {
+            unlock();
+            web.send(400,"application/json",r==NameResult::TableFull?
+                "{\"saved\":false,\"error\":\"TABLE_FULL\"}":"{\"saved\":false,\"error\":\"BAD_NAME\"}");
+            return;
+        }
+        const bool saved=save_sensor_names(sensor_names);
+        if(!saved) sensor_names=previous;     // RAM never runs ahead of flash
+        unlock();
+        web.send(saved?200:500,"application/json",saved?"{\"saved\":true}":"{\"saved\":false,\"error\":\"NVS\"}");
     });
     web.on("/api/air/bind",HTTP_POST,[&web](){
         if(!cottage_wifi_require_home_lan(web))return;

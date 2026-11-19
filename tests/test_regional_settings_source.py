@@ -70,5 +70,26 @@ class ProfileWiring(unittest.TestCase):
         self.assertNotIn("control_armed.store(true)", (ROOT / "firmware/cottage/include/cottage_premium_dashboard.hpp").read_text(encoding="utf-8"))
 
 
+class DiscoveryWiring(unittest.TestCase):
+    AIR = (ROOT / "firmware/cottage/src/cottage_air_service.cpp").read_text(encoding="utf-8")
+    SHELLY = (ROOT / "firmware/cottage/src/cottage_shelly_discovery.cpp").read_text(encoding="utf-8")
+    SITE = (ROOT / "firmware/cottage/src/cottage_site_settings.cpp").read_text(encoding="utf-8")
+
+    def test_ble_callback_feeds_registry_and_names_never_run_ahead_of_flash(self):
+        self.assertIn("sensor_registry.observe(parsed,ms)", self.AIR)
+        self.assertIn("if(!saved) sensor_names=previous;", self.AIR)
+        self.assertIn("loaded.load(raw)", self.AIR)          # corrupt blob -> no names
+
+    def test_shelly_scan_is_read_only_bounded_and_off_the_web_loop(self):
+        self.assertIn("xTaskCreate(worker_main", self.SHELLY)
+        self.assertIn("shelly_lan_base_url(octets", self.SHELLY)
+        self.assertIn("parse_shelly_info(body", self.SHELLY)
+        self.assertIn("size>0 && static_cast<size_t>(size)<cap", self.SHELLY)   # Content-Length bound
+        for forbidden in ("Switch.Set", "Switch.Toggle", "Relay", "http.POST", "http.PUT"):
+            self.assertNotIn(forbidden, self.SHELLY)
+        self.assertNotIn("HTTPClient", self.SITE)               # handler only polls the worker
+        self.assertIn("shelly_scan(*snap)", self.SITE)
+
+
 if __name__ == "__main__":
     unittest.main()

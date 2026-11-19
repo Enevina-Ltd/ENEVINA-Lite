@@ -326,6 +326,27 @@ static void profile_and_comfort_limits() {
     assert(m.profile==OptimizationProfile::Balanced&&m.comfort_min_c==0&&m.comfort_max_c==0);
 }
 
+
+static void shelly_scope_setting() {
+    SiteSettings s{};
+    assert(s.shelly_scope==ShellyScope::Unknown);
+    assert(apply_site_setting(s,"shelly_url","http://192.168.1.30")==SettingError::Ok);
+    assert(apply_site_setting(s,"shelly_scope","heat_pump")==SettingError::Ok&&s.shelly_scope==ShellyScope::HeatPump);
+    assert(apply_site_setting(s,"shelly_scope","pump")==SettingError::BadChoice);
+    // Saving the same address keeps the confirmation ...
+    assert(apply_site_setting(s,"shelly_url","http://192.168.1.30")==SettingError::Ok);
+    assert(s.shelly_scope==ShellyScope::HeatPump);
+    // ... a different meter is unconfirmed until the owner says so again.
+    assert(apply_site_setting(s,"shelly_url","http://192.168.1.31")==SettingError::Ok);
+    assert(s.shelly_scope==ShellyScope::Unknown);
+    assert(apply_site_setting(s,"shelly_scope","whole_house")==SettingError::Ok);
+    assert(apply_site_setting(s,"shelly_url","")==SettingError::Ok&&s.shelly_scope==ShellyScope::Unknown);
+    s.shelly_scope=static_cast<ShellyScope>(9);
+    assert(!valid_site_settings(s));
+    SiteSettingsV1 old{};
+    assert(site_settings_from_v1(old).shelly_scope==ShellyScope::Unknown);
+}
+
 int main() {
     total_price_rules();
     seasonal_and_dst();
@@ -334,6 +355,7 @@ int main() {
     regional_setup();
     v1_migration();
     profile_and_comfort_limits();
+    shelly_scope_setting();
     batch_is_order_independent();
     transfer_schedule_uses_country_time();
     std::puts("site_settings_tests OK");
