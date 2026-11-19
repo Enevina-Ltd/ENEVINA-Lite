@@ -12,6 +12,7 @@ class NvsSiteRecovery(unittest.TestCase):
         self.assertIn('nvs_commit(handle)==ESP_OK',SITE)
         self.assertIn('{"enevina_weather","weather_v2"}',POLICY)
         self.assertIn('{"enevina_market","price_v2"}',POLICY)
+        self.assertIn('{"enevina_market","price_reg_v2"}',POLICY)
     def test_never_touch_critical_nvs_keys(self):
         for key in ('"cred1"','"good"','"bad"','"pending"','"txv2"','"intent1"','"hourly_v1"'):
             self.assertNotIn(key,POLICY)
