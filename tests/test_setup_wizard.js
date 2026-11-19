@@ -8,7 +8,7 @@ assert(m,'wizard script block missing');
 const src=m[1];
 
 // Every Finnish literal with non-ASCII letters must have an English entry.
-const dict=JSON.parse(header.split('const UI_EN=Object.freeze(')[1].split(');\nconst UI_EN_FRAGMENTS')[0]);
+const dict=JSON.parse(header.split('const UI_EN=Object.freeze(')[1].split(/\);\r?\nconst UI_EN_FRAGMENTS/)[0]);
 const literals=[...src.matchAll(/WT\('([^']*)'\)/g)].map(x=>x[1]);
 assert(literals.length>80,'expected the wizard literals to be found');
 const allowedUntranslated=new Set(['Wi-Fi']);
