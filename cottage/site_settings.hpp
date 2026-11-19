@@ -199,6 +199,23 @@ inline bool restore_site_settings(const uint8_t* bytes,size_t size,SiteSettings&
     return true;
 }
 
+// Fingerprint the exact rollback-readable v2 record, including its header
+// and padding. A v3 candidate saves this fingerprint alongside its settings.
+// If rollback firmware later edits v2, the next upgraded boot must prefer
+// those newer owner edits to an older v3 candidate. Missing v2 is signature 0.
+inline uint64_t site_v2_signature(const uint8_t* bytes,size_t n) {
+    if(!bytes||n==0)return 0;
+    uint64_t h=UINT64_C(14695981039346656037);
+    for(size_t i=0;i<n;++i) {
+        h^=bytes[i];
+        h*=UINT64_C(1099511628211);
+    }
+    return h?h:1;
+}
+inline bool site_rollback_v2_modified(uint64_t v3_baseline,const uint8_t* v2,size_t n) {
+    return n>0 && site_v2_signature(v2,n)!=v3_baseline;
+}
+
 // Region that prices are fetched for, or false when the user has not finished
 // choosing one (unsupported country, or multi-zone country without a zone).
 inline bool site_market_region(const SiteSettings& s,const char*& nordpool_area,

@@ -395,7 +395,21 @@ static void older_layout_is_restored_not_reset() {
     assert(!restore_site_settings(nullptr,sizeof(buf),out));
 }
 
+static void rollback_edit_overrides_stale_v3() {
+    // Simulate: v3 candidate saves the unchanged old v2 snapshot, then
+    // rollback firmware edits v2 and the new candidate boots again.
+    uint8_t v2[80]{};
+    v2[0]=0x45;v2[1]=0x53;v2[2]=0x54;v2[3]=0x31;
+    const uint64_t candidate_baseline=site_v2_signature(v2,sizeof(v2));
+    assert(candidate_baseline!=0);
+    assert(!site_rollback_v2_modified(candidate_baseline,v2,sizeof(v2)));
+    v2[36]^=0x5a; // changed owner's endpoint/tariff/location payload
+    assert(site_rollback_v2_modified(candidate_baseline,v2,sizeof(v2)));
+    assert(!site_rollback_v2_modified(candidate_baseline,nullptr,0));
+    assert(site_rollback_v2_modified(0,v2,sizeof(v2)));
+}
 int main() {
+    rollback_edit_overrides_stale_v3();
     older_layout_is_restored_not_reset();
     total_price_rules();
     seasonal_and_dst();
