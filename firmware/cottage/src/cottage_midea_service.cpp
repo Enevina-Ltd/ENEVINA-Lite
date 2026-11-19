@@ -15,6 +15,7 @@
 #include "cottage_secure_ota.hpp"
 #include "cottage_wifi.hpp"
 #include "cottage_network_budget.hpp"
+#include "pump/midea_config_migration.hpp"
 
 namespace {
 // Keep the exact V3 legacy NVS layout readable after upgrading older Lite
@@ -84,35 +85,55 @@ bool valid_config(const Config& c) {
     return enevina::midea::decode_credentials(
         c.device_id,c.token_hex,c.key_hex,credentials);
 }
+bool read_legacy_v3(Preferences& preferences,Config& out) {
+    LegacyConfig older{};
+    const bool legacy=preferences.getBytesLength("config_v1")==sizeof(older) &&
+        preferences.getBytes("config_v1",&older,sizeof(older))==sizeof(older) &&
+        older.magic==legacy_magic && older.version==1 &&
+        older.size==sizeof(older) &&
+        memchr(older.host,0,sizeof(older.host)) &&
+        memchr(older.device_id,0,sizeof(older.device_id)) &&
+        memchr(older.token_hex,0,sizeof(older.token_hex)) &&
+        memchr(older.key_hex,0,sizeof(older.key_hex));
+    if(!legacy)return false;
+    Config migrated{};
+    std::memcpy(migrated.host,older.host,sizeof(older.host));
+    std::memcpy(migrated.device_id,older.device_id,sizeof(older.device_id));
+    std::memcpy(migrated.token_hex,older.token_hex,sizeof(older.token_hex));
+    std::memcpy(migrated.key_hex,older.key_hex,sizeof(older.key_hex));
+    migrated.protocol=3;
+    if(!valid_config(migrated))return false;
+    out=migrated;
+    return true;
+}
 bool load_config(Config& dest) {
     Preferences preferences;
     if(!preferences.begin("midea_v3",true))return false;
-    // If the new key exists but is damaged, don't fall back to a stale
-    // legacy V3 config after the user intentionally switched to V2.
+    // A corrupt new key must never resurrect an intentionally retired V3
+    // configuration. Only consider legacy data when v2 is either absent,
+    // or valid AND explicitly set to protocol 3.
     bool ok=false;
     if(preferences.isKey("config_v2")) {
         ok=preferences.getBytesLength("config_v2")==sizeof(dest) &&
            preferences.getBytes("config_v2",&dest,sizeof(dest))==sizeof(dest) &&
            valid_config(dest);
-    } else {
-        LegacyConfig older{};
-        const bool legacy=preferences.getBytesLength("config_v1")==sizeof(older) &&
-            preferences.getBytes("config_v1",&older,sizeof(older))==sizeof(older) &&
-            older.magic==legacy_magic && older.version==1 &&
-            older.size==sizeof(older) &&
-            memchr(older.host,0,sizeof(older.host)) &&
-            memchr(older.device_id,0,sizeof(older.device_id)) &&
-            memchr(older.token_hex,0,sizeof(older.token_hex)) &&
-            memchr(older.key_hex,0,sizeof(older.key_hex));
-        if(legacy) {
-            Config migrated{};
-            std::memcpy(migrated.host,older.host,sizeof(older.host));
-            std::memcpy(migrated.device_id,older.device_id,sizeof(older.device_id));
-            std::memcpy(migrated.token_hex,older.token_hex,sizeof(older.token_hex));
-            std::memcpy(migrated.key_hex,older.key_hex,sizeof(older.key_hex));
-            migrated.protocol=3;
-            if(valid_config(migrated)) {dest=migrated;ok=true;}
+        if(ok && dest.protocol==3) {
+            Config rollback_settings{};
+            const bool valid_legacy=read_legacy_v3(preferences,rollback_settings);
+            // The old V3 image writes config_v1 only. After an OTA rollback,
+            // later edits on that image must take precedence on re-upgrade.
+            // If V2 was explicitly selected, this path is never entered.
+            const enevina::midea::V3SettingsView current{
+                dest.host,dest.device_id,dest.token_hex,dest.key_hex};
+            const enevina::midea::V3SettingsView older{
+                rollback_settings.host,rollback_settings.device_id,
+                rollback_settings.token_hex,rollback_settings.key_hex};
+            if(enevina::midea::rollback_v3_settings_changed(
+                    dest.protocol,valid_legacy,current,older))
+                dest=rollback_settings;
         }
+    } else {
+        ok=read_legacy_v3(preferences,dest);
     }
     preferences.end();
     return ok;
