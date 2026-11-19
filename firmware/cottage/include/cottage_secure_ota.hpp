@@ -5,6 +5,12 @@
 bool cottage_ota_configured();
 void cottage_ota_initialize();
 void cottage_ota_worker(void*);
+// Ask the existing signed-HTTPS OTA worker to check/apply the staged release
+// immediately (same manifest signature, TLS, SHA256, A/B and rollback gates).
+// Returns false if the signed channel or worker is not available.
+bool cottage_ota_request_immediate();
+bool cottage_ota_dashboard_request_pending();
+uint32_t cottage_ota_last_check_utc();
 bool cottage_ota_confirmation_pending();
 // True only after durable good-version and pending-transaction cleanup.
 bool cottage_ota_confirm_boot();

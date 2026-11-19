@@ -1452,6 +1452,9 @@ static void status_endpoint() {
                             cottage_ota_chunk_count());
     cJSON_AddNumberToObject(root,"ota_idle_yields",
                             cottage_ota_idle_yields());
+    cJSON_AddNumberToObject(root,"ota_last_check_utc",cottage_ota_last_check_utc());
+    cJSON_AddBoolToObject(root,"ota_dashboard_pending",
+                          cottage_ota_dashboard_request_pending());
     cJSON_AddNumberToObject(root,"free_internal_heap",
                             heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(root,"min_free_internal_heap",
@@ -1681,6 +1684,26 @@ void setup() {
         web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html);
     });
     web.on("/api/status",HTTP_GET,status_endpoint);
+    web.on("/api/ota/install",HTTP_POST,[](){
+        // Reuse the existing local settings authorisation and reject open
+        // provisioning-AP requests. No new accounts, passwords or PINs.
+        if(WiFi.status()!=WL_CONNECTED || cottage_wifi_request_via_ap(web) ||
+           !web.hasArg("token") ||
+           !c23_authorize_local_setting(web.arg("token").c_str())) {
+            web.send(403,"application/json",
+                     "{\"queued\":false,\"error\":\"TOKEN\"}");
+            return;
+        }
+        if(!cottage_ota_configured() || cottage_ota_confirmation_pending() ||
+           cottage_ota_network_maintenance() ||
+           !cottage_ota_request_immediate()) {
+            web.send(409,"application/json",
+                     "{\"queued\":false,\"error\":\"NOT_READY\"}");
+            return;
+        }
+        web.sendHeader("Cache-Control","no-store");
+        web.send(202,"application/json","{\"queued\":true}");
+    });
     web.on("/api/plan",HTTP_GET,plan_endpoint);
     web.on("/api/prices",HTTP_GET,prices_endpoint);
     web.on("/api/weather",HTTP_GET,weather_forecast_endpoint);
