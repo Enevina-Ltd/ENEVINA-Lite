@@ -66,7 +66,7 @@ ReadStatus read_device(const char* host,const Credential& creds,State& reading) 
         return ReadStatus::InvalidAddress;
     if(!creds.device_id)return ReadStatus::InvalidCredentials;
     uint8_t stamp[8]{};
-    if(!now_stamp(stamp))return ReadStatus::ProtocolFailed;
+    if(!now_stamp(stamp))return ReadStatus::TimeNotReady;
     WiFiClient tcp;
     tcp.setTimeout(read_timeout_ms);
     if(!tcp.connect(ip,port,1100))return ReadStatus::ConnectionFailed;
