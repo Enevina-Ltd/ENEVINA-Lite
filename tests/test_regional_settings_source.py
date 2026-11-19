@@ -114,5 +114,34 @@ class TimelineWiring(unittest.TestCase):
         self.assertNotIn("cJSON_Create", body)
 
 
+class HistoryWiring(unittest.TestCase):
+    HIST = (ROOT / "firmware/cottage/src/cottage_history.cpp").read_text(encoding="utf-8")
+    MAIN = (ROOT / "firmware/cottage/src/main.cpp").read_text(encoding="utf-8")
+
+    def test_flash_use_is_bounded_and_isolated(self):
+        self.assertIn('LittleFS.begin(false,"/lfs",5,"spiffs")', self.HIST)
+        self.assertIn('LittleFS.begin(true,"/lfs",5,"spiffs")', self.HIST)   # only after the plain mount failed
+        self.assertLess(self.HIST.index('LittleFS.begin(false'), self.HIST.index('LittleFS.begin(true'))
+        self.assertIn("kFlushIntervalMs=60UL*60*1000", self.HIST)
+        for forbidden in ("Preferences", "nvs_", "esp_ota", "nvs_flash_erase", "esp_partition_erase"):
+            self.assertNotIn(forbidden, self.HIST)
+        self.assertIn('LittleFS.rename(tmp_,path_)', self.HIST)               # atomic replace
+        self.assertIn("MALLOC_CAP_SPIRAM", self.HIST)                          # ring in PSRAM, fail closed
+        self.assertIn("feature disabled", self.HIST)
+
+    def test_collector_records_only_fresh_values_and_flags_forecasts(self):
+        body = self.MAIN.split("static enevina::cottage::HistoryInputs history_collect()")[1].split("static void history_worker")[0]
+        self.assertIn("valid_temperature(te,now)", body)
+        self.assertIn("valid_shelly(st,now)", body)
+        self.assertIn("in.outdoor_is_forecast=true", body)
+        self.assertIn("in.outdoor_is_forecast=false", body)
+        self.assertIn("sse_fresh", body)
+        self.assertIn("in.clock_trusted=clock_ok()", body)
+
+    def test_worker_is_separate_low_priority_and_not_in_health_gate(self):
+        self.assertIn('xTaskCreatePinnedToCore(history_worker,"cottage_hist",8192,nullptr,1,nullptr,0)', self.MAIN)
+        self.assertIn("enevina_firmware::history_initialize();", self.MAIN)
+
+
 if __name__ == "__main__":
     unittest.main()

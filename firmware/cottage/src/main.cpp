@@ -41,6 +41,7 @@
 #include "cottage/mode_timing.hpp"
 #include "cottage/price_bootstrap.hpp"
 #include "cottage/plan_timeline.hpp"
+#include "cottage_history.hpp"
 #include "cottage/mitsubishi_climate_command.hpp"
 #include "cottage/cn105_read_retry.hpp"
 #include "cottage/mitsubishi_control_policy.hpp"
@@ -1656,6 +1657,60 @@ static void weather_forecast_endpoint() {
 // Plan timeline: price classes over the published horizon with the SAME
 // classification and profile call as the live controller. No predicted indoor
 // temperature or cost is produced (no calibrated building model exists).
+// Gathers one history sample from live state: only fresh, validated values;
+// everything else stays missing. The outdoor value is the measured outdoor
+// sensor when there is one, otherwise the weather FORECAST, flagged as such.
+static enevina::cottage::HistoryInputs history_collect() {
+    using enevina::cottage::HistoryInputs;
+    HistoryInputs in;
+    const int64_t now=time(nullptr);
+    in.clock_trusted=clock_ok();in.utc=now;
+    in.wifi_ok=wifi_ok.load();
+    CN105Telemetry cp,observed;ShellyTelemetry st;
+    int64_t climate_time=0;
+    xSemaphoreTake(lock_data,portMAX_DELAY);
+    cp=pump;observed=sse_observed_pump;st=consumption;climate_time=climate_utc;
+    xSemaphoreGive(lock_data);
+    const TemperatureSample te=c23_temperature_sample();
+    in.indoor_valid=valid_temperature(te,now);
+    in.indoor_c=te.indoor_c;
+    in.sensor_online=in.indoor_valid;
+    double rh=0,outdoor=0;bool rh_ok=false,outdoor_ok=false;
+    c23_history_air(rh,rh_ok,outdoor,outdoor_ok);
+    in.rh_valid=rh_ok;in.rh_pct=rh;
+    if(outdoor_ok) {in.outdoor_valid=true;in.outdoor_c=outdoor;in.outdoor_is_forecast=false;}
+    else {
+        const auto ws=enevina_firmware::weather_status();
+        if(ws.available && ws.next_utc>0 && ws.next_utc-now<7200 && now-ws.next_utc<7200) {
+            in.outdoor_valid=true;in.outdoor_c=ws.next_temperature_c;in.outdoor_is_forecast=true;
+        }
+    }
+    const bool sse_fresh=observed.received && climate_time>0 && now>=climate_time && now-climate_time<=180;
+    in.pump_online=valid_cn105(cp,now) || sse_fresh;
+    in.setpoint_valid=sse_fresh;in.setpoint_c=observed.setpoint_c;
+    in.power_valid=valid_shelly(st,now);in.power_w=st.watts;
+    const auto market=enevina_firmware::market_status();
+    in.prices_ok=market.current_price_valid;
+    double total=0;
+    if(market.current_price_valid && site_slot_total_price((now/900)*900,market.current_spot_eur_per_kwh,total)) {
+        in.price_valid=true;in.price_per_kwh=total;
+    }
+    const BootstrapDecision d=bootstrap_preview(now,te);
+    in.action=d.action==BootstrapAction::Off?1:d.action==BootstrapAction::HeatSetpoint?2:
+              d.action==BootstrapAction::Hold?3:0;
+    in.armed=control_armed.load();
+    in.commands_sent=control_commands_sent.load();
+    in.commands_confirmed=control_commands_confirmed.load();
+    in.commands_failed=control_commands_failed.load();
+    in.reset_reason=boot_reset_reason_code;
+    return in;
+}
+static void history_worker(void*) {
+    for(;;) {
+        enevina_firmware::history_observe(history_collect());
+        vTaskDelay(pdMS_TO_TICKS(15000));
+    }
+}
 static void timeline_endpoint() {
     const auto market=enevina_firmware::market_status();
     web.sendHeader("Cache-Control","no-store");
@@ -1854,6 +1909,9 @@ void setup() {
     web.on("/api/plan",HTTP_GET,[](){
         if(cottage_wifi_require_home_lan(web))plan_endpoint();
     });
+    web.on("/api/history",HTTP_GET,[](){
+        if(cottage_wifi_require_home_lan(web))enevina_firmware::history_http(web);
+    });
     web.on("/api/timeline",HTTP_GET,[](){
         if(cottage_wifi_require_home_lan(web))timeline_endpoint();
     });
@@ -1885,12 +1943,14 @@ void setup() {
         delay(20);
     if(!c23_ble_initialized())
         Serial.println("C24_WARN: BLE initialization not confirmed");
+    enevina_firmware::history_initialize();   // PSRAM ring + dedicated history partition
     enevina_firmware::start_market_reader();
     enevina_firmware::start_weather_reader(site_settings_snapshot().fmi_latlon);
     xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",8192,nullptr,2,&task_sse,0);
     xTaskCreatePinnedToCore(cottage_midea_service_worker,"cottage_midea",
                             10240,nullptr,1,nullptr,0);
     xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,&task_shelly,0);
+    xTaskCreatePinnedToCore(history_worker,"cottage_hist",8192,nullptr,1,nullptr,0);
     // BLE already running. CN105 writes are gated by explicit local arming.
     xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
     if(cottage_ota_configured() &&

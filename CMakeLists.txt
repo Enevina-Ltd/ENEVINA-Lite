@@ -365,3 +365,14 @@ add_test(NAME plan_timeline_tests COMMAND plan_timeline_tests)
 add_executable(plan_timeline_cli tools/plan_timeline_cli.cpp)
 target_include_directories(plan_timeline_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(plan_timeline_cli PRIVATE enevina_cottage enevina_core)
+
+# History ring, recorder, queries and flash persistence (torn writes, wear bounds).
+add_executable(history_tests tests/history_tests.cpp)
+target_include_directories(history_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(history_tests PRIVATE enevina_core)
+add_test(NAME history_tests COMMAND history_tests)
+
+# Real recorder -> store -> file -> reload -> query pipeline on recorded prices (UI simulator).
+add_executable(history_cli tools/history_cli.cpp)
+target_include_directories(history_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(history_cli PRIVATE enevina_cottage enevina_core)

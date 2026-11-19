@@ -496,6 +496,19 @@ TemperatureSample c23_temperature_sample() {
     unlock();
     return out;
 }
+void c23_history_air(double& rh_pct,bool& rh_ok,double& outdoor_c,bool& outdoor_ok) {
+    rh_ok=outdoor_ok=false;
+    if(!guard)return;
+    lock();
+    const uint64_t ms=uptime_ms();
+    if(has_indoor && indoor_binding.valid(ms) && indoor_air.valid) {
+        rh_pct=indoor_air.rh_pct;rh_ok=true;
+    }
+    if(has_outdoor && outdoor_binding.valid(ms) && outdoor_air.valid) {
+        outdoor_c=outdoor_air.temperature_c;outdoor_ok=true;
+    }
+    unlock();
+}
 const char* c23_config_token() { return csrf_token; }
 bool c23_authorize_local_setting(const char* submitted_token) {
     return guard && submitted_token && strlen(submitted_token)==strlen(csrf_token) &&
