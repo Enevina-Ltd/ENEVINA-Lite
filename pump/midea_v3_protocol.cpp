@@ -265,7 +265,7 @@ bool encrypted_response(const uint8_t* p,size_t n,
     return true;
 }
 bool parse_state(const uint8_t* f,size_t n,State& out) {
-    if(!f || n<10+19+2 || n>256 || f[0]!=0xaa || f[2]!=0xac ||
+    if(!f || n<10+17+2 || n>256 || f[0]!=0xaa || f[2]!=0xac ||
        static_cast<size_t>(f[1])+1!=n || f[10]!=0xc0 ||
        checksum(f+1,n-2)!=f[n-1])return false;
     const size_t paylen=n-12; // payload content excluding CRC and frame checksum
