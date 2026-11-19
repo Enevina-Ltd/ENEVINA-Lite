@@ -46,6 +46,29 @@ class DashboardTranslations(unittest.TestCase):
         }
         for fi,en in expected.items():
             self.assertEqual(STRINGS[fi],en)
+    def test_midea_provisioning_security_and_dynamic_messages_are_translated(self):
+        expected={
+          "Midea · paikallinen V3 Wi-Fi -yhteys":
+              "Midea · local V3 Wi-Fi connection",
+          "V3 token (128 heksamerkkiä)":
+              "V3 token (128 hex characters)",
+          "V3 key (64 heksamerkkiä)":
+              "V3 key (64 hex characters)",
+          "Midea V3 on tässä versiossa vain tilanluku. Ohjaus ei ole käytössä.":
+              "Midea V3 is read-only in this version. Control is not available.",
+          "Midea-yhteys tallennettu. Ensimmäinen luku tapahtuu verkossa.":
+              "Midea connection saved. The first status poll will take place over the network.",
+          "Tarkista device ID, V3 token (128) ja key (64 heksamerkkiä).":
+              "Check device ID, V3 token (128) and key (64 hex characters).",
+        }
+        for fi,en in expected.items():
+            self.assertEqual(STRINGS.get(fi),en)
+        security=STRINGS["V3-luku tapahtuu suoraan lämpöpumpun alkuperäisestä Wi-Fi-moduulista ilman Home Assistantia tai jatkuvaa pilviyhteyttä. Tämä on vain tilan lukukokeilu: automaattisia lämpötilakomentoja ei lähetetä. Yhdistä vain omassa luotetussa lähiverkossa; kehitysvaiheen HTTP-asetussivu ei salaa tunnisteiden siirtoa."]
+        self.assertIn("trusted local network",security)
+        self.assertIn("does not encrypt the credentials",security)
+        self.assertIn("read-only",security)
+        self.assertIn("V3 tunnisteet tallennetaan laitteen paikalliseen NVS-muistiin. Niitä ei palauteta selaimeen. DHCP-IP:n automaattinen tunnistus ja pumpun ohjaus eivät sisälly tähän lukuversioon.",STRINGS)
+
     def test_language_never_writes_to_device(self):
         control=SRC.split("function setDashboardLanguage(language){",1)[1].split(
             "document.querySelectorAll('[data-lang]')",1)[0]
