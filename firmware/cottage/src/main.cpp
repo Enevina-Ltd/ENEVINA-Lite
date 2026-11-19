@@ -26,6 +26,7 @@
 #include "cottage_secure_ota.hpp"
 #include "cottage_site_settings.hpp"
 #include "cottage_midea_service.hpp"
+#include "pump/adapter_catalog.hpp"
 #include "cottage/control_intent.hpp"
 #include "cottage_wifi.hpp"
 #include "cottage/physics.hpp"
@@ -896,8 +897,8 @@ static void cottage_control_tick() {
         return;
     }
     // A HOLD proposal does not authorize any physical command. A failed
-    // *optional* bridge observation must not mislabel it as an unsafe
-    // heating command; still attempt a read to maintain the 30-min dwell    // history and avoid a stale observation gap at the next HEAT request.
+    // *optional* bridge observation must not mislabel it as an unsafe    // heating command; still attempt a read to maintain the 30-min dwell
+    // history and avoid a stale observation gap at the next HEAT request.
     if(proposal.action==BootstrapAction::Hold) {
         bool observed_heat=false;double observed_setpoint=0;
         if(cn105_bridge_get(observed_heat,observed_setpoint))
