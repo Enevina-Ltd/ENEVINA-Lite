@@ -26,6 +26,7 @@ class FrezzerPairing(unittest.TestCase):
             got = pairing.core_midea_config(p)
             self.assertEqual(got["host"], "192.168.3.40")
             self.assertEqual(got["device_id"], "123456")
+            self.assertEqual(got["protocol"], "3")
             self.assertEqual(len(got["v3_token"]), 128)
             p.write_text(p.read_text().replace("6444", "1234"))
             with self.assertRaises(ValueError):
@@ -33,7 +34,8 @@ class FrezzerPairing(unittest.TestCase):
 
     def test_no_pump_commands_and_no_secret_output(self):
         cfg = {"host": "192.168.3.40", "device_id": "123456",
-               "v3_token": "a" * 128, "v3_key": "b" * 64}
+               "v3_token": "a" * 128, "v3_key": "b" * 64,
+               "protocol": "2"}  # Explicit V3 helper must override this.
         calls = []
         def fake_request(host, method, path, fields=None):
             calls.append((host, method, path, fields))
@@ -49,6 +51,7 @@ class FrezzerPairing(unittest.TestCase):
         self.assertEqual([c[2] for c in calls],
                          ["/api/midea/status", "/api/status", "/api/midea/config"])
         self.assertEqual(calls[2][3]["v3_token"], "a" * 128)
+        self.assertEqual(calls[2][3]["protocol"], "3")
         self.assertNotIn("a" * 128, output.getvalue())
         self.assertNotIn("test-local-only", output.getvalue())
         self.assertNotIn("192.168.3.40", output.getvalue())
