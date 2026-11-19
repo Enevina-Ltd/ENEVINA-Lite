@@ -122,17 +122,38 @@ bool decode_hex(const char* hex,uint8_t* dst,size_t count) {
     }
     return true;
 }
-bool decode_credentials(const char* id,const char* token_hex,const char* key_hex,Credential& out) {
-    if(!id || !*id || !token_hex || !key_hex || *id=='-' || *id=='+')return false;
+bool decode_device_id(const char* id,uint64_t& out) {
+    if(!id || !*id || *id=='-' || *id=='+')return false;
     for(const char* p=id;*p;++p)if(*p<'0'||*p>'9')return false;
     errno=0; char* end=nullptr;
-    unsigned long long value=std::strtoull(id,&end,10);
+    const unsigned long long value=std::strtoull(id,&end,10);
     if(errno || !end || *end || value==0)return false;
+    out=static_cast<uint64_t>(value);
+    return true;
+}
+bool decode_credentials(const char* id,const char* token_hex,const char* key_hex,Credential& out) {
+    if(!token_hex || !key_hex)return false;
     Credential next{};
-    next.device_id=static_cast<uint64_t>(value);
+    if(!decode_device_id(id,next.device_id))return false;
     if(!decode_hex(token_hex,next.token.data(),next.token.size()) ||
        !decode_hex(key_hex,next.key.data(),next.key.size()))return false;
     out=next;
+    return true;
+}
+bool v2_packet_size(const uint8_t* header,size_t n,size_t& total) {
+    if(!header || n<6 || header[0]!=0x5a || header[1]!=0x5a ||
+       header[2]!=0x01 || header[3]!=0x11)return false;
+    const size_t length=static_cast<size_t>(header[4]) |
+                        (static_cast<size_t>(header[5])<<8);
+    if(length<72 || length>max_packet || (length-56)%16!=0)return false;
+    total=length;
+    return true;
+}
+bool v2_packet_matches_device(const uint8_t* p,size_t n,uint64_t id) {
+    size_t length=0;
+    if(!id || !p || !v2_packet_size(p,n,length) || n!=length)return false;
+    for(size_t i=0;i<8;++i)
+        if(p[20+i]!=static_cast<uint8_t>(id>>(8*i)))return false;
     return true;
 }
 bool packet_size(const uint8_t* header,size_t n,size_t& total) {
