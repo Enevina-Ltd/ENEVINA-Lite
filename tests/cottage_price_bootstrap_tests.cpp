@@ -16,6 +16,16 @@ int main() {
     assert(no_prices.reason==BootstrapReason::ThermostatWithoutPrices);
     assert(!no_prices.price_data_valid);
     assert(near(no_prices.heat_setpoint_c,16.5)); // default target is 16C
+    // Swedish/Norwegian amounts are in major local currency units/kWh.
+    // They must not be rejected using the old EUR-only [-1,10] guard.
+    const double sek_prices[]={-1.5,-1.2,1.2,1.3,1.4,1.5,1.6,1.7};
+    BootstrapInput sek{};
+    sek.indoor_fresh=true;sek.indoor_c=12;sek.desired_room_c=13;
+    sek.next_total_prices=sek_prices;sek.price_count=8;sek.prices_contiguous_and_fresh=true;
+    sek.price_limit_scale=12;sek.min_price_advantage_eur_per_kwh=0.06;
+    assert(bootstrap_price_decision(sek).price_data_valid);
+    sek.price_limit_scale=1;
+    assert(!bootstrap_price_decision(sek).price_data_valid);
     in.next_total_prices=cheap;in.price_count=8;
     in.prices_contiguous_and_fresh=true;in.desired_room_c=18.0;
     auto d=bootstrap_price_decision(in);
