@@ -26,6 +26,7 @@ Enevina Lite is a source-available project by **Enevina Ltd** (registered in Fin
 | 15-min electricity prices | Acquisition, caching and pricing logic in source | Accuracy for every electricity contract |
 | FMI weather forecast | Local forecast integration and 48-hour display development | Calibrated use in production MPC control |
 | RuuviTag and Shelly | Adapter/parser and integration work, selected device tests | Universal sensor compatibility or pump-only power measurement |
+| Midea V3 LAN | Native C++ crypto/protocol and experimental ESP32 read-only transport, [details](docs/MIDEA_V3_LOCAL_WIFI.md) | Not connected to device settings or control; no Lite field test |
 | Mitsubishi CN105 | First model-specific experimental integration | Certified or universally safe control of Mitsubishi models |
 | Thermal model + MPC | Host simulation, independent MILP comparisons and benchmark reports | Verified real-world cost savings; MPC as the active calibrated control loop |
 | Signed OTA / recovery | Implementation and targeted regression/device tests | A universally approved end-user firmware update |
