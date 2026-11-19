@@ -61,6 +61,9 @@ uint8_t last_error=0;          // enevina::DayAheadError of the last attempt
 int last_http_status=0;
 int64_t last_attempt_utc=0;
 constexpr char region_key[]="price_region";
+// A rollback firmware reads price_v2 unconditionally as FI/EUR. Never place
+// SE/NO/DK/PLN or any other foreign market into that legacy NVS key.
+constexpr char regional_cache_key[]="price_reg_v2";
 
 bool valid_prices(const PriceCache& candidate) {
     if(candidate.version!=cache_version || candidate.count==0 || candidate.count>max_slots)
@@ -103,16 +106,27 @@ void load_cache() {
         return;
     }
     auto* saved=new(std::nothrow) PriceCache;
-    bool migrate_legacy=false;
+    bool migrate_legacy=false, migrate_early_region=false;
+    const bool legacy_fi=std::strcmp(stamp,"FI/EUR")==0;
     if(saved) {
         auto compact=std::unique_ptr<CompactPriceCache>(
             new(std::nothrow) CompactPriceCache);
         size_t size=sizeof(CompactPriceCache);
+        const char* cache_blob_key=legacy_fi?"price_v2":regional_cache_key;
         bool ok=compact &&
-            nvs_get_blob(handle,"price_v2",compact.get(),&size)==ESP_OK &&
+            nvs_get_blob(handle,cache_blob_key,compact.get(),&size)==ESP_OK &&
             size==sizeof(*compact) &&
             unpack_price_cache(*compact,*saved) && valid_prices(*saved);
-        if(!ok) {
+        if(!ok && !legacy_fi && compact) {
+            // Migrate an early unshipped regional build that used price_v2;
+            // stamp must match this selected area and currency (checked above).
+            size=sizeof(*compact);
+            ok=nvs_get_blob(handle,"price_v2",compact.get(),&size)==ESP_OK &&
+                size==sizeof(*compact) &&
+                unpack_price_cache(*compact,*saved) && valid_prices(*saved);
+            migrate_early_region=ok;
+        }
+        if(!ok && legacy_fi) {
             size=sizeof(*saved);
             ok=nvs_get_blob(handle,"price_v1",saved,&size)==ESP_OK &&
                 size==sizeof(*saved) && valid_prices(*saved);
@@ -131,6 +145,7 @@ void load_cache() {
     // Move the verified in-memory legacy price cache without discarding other
     // NVS namespaces (Wi-Fi, OTA, sensors and user settings).
     if(migrate_legacy) save_cache(cache,"FI/EUR");
+    if(migrate_early_region) save_cache(cache,stamp);
 }
 
 void save_cache(const PriceCache& value,const char* stamp) {
@@ -158,7 +173,22 @@ void save_cache(const PriceCache& value,const char* stamp) {
         nvs_close(handle);
         return;
     }
-    if(nvs_set_blob(handle,"price_v2",compact.get(),sizeof(*compact))==ESP_OK) {
+    const bool legacy_fi=std::strcmp(stamp,"FI/EUR")==0;
+    const char* cache_blob_key=legacy_fi?"price_v2":regional_cache_key;
+    // Reclaim the incompatible legacy key BEFORE storing foreign prices:
+    // power-loss during migration may lose a replaceable cache, but cannot
+    // leave a rollback firmware reading foreign prices as FI/EUR.
+    const char* obsolete_key=legacy_fi?regional_cache_key:"price_v2";
+    const esp_err_t obsolete=nvs_erase_key(handle,obsolete_key);
+    if(obsolete!=ESP_OK && obsolete!=ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(tag,"NVS obsolete price removal failed: %d",obsolete);
+        nvs_close(handle);return;
+    }
+    if(obsolete==ESP_OK && nvs_commit(handle)!=ESP_OK) {
+        ESP_LOGW(tag,"NVS obsolete price removal commit failed");
+        nvs_close(handle);return;
+    }
+    if(nvs_set_blob(handle,cache_blob_key,compact.get(),sizeof(*compact))==ESP_OK) {
         // Region stamp AFTER the blob: a power loss between the two leaves a
         // blob whose stamp is missing/old, which load_cache() rejects unless
         // it is the legacy Finland/EUR cache.
@@ -379,6 +409,7 @@ bool market_set_region(const char* area,const char* currency) {
         nvs_handle_t handle;
         if(nvs_open("enevina_market",NVS_READWRITE,&handle)==ESP_OK) {
             nvs_erase_key(handle,"price_v2");
+            nvs_erase_key(handle,regional_cache_key);
             nvs_erase_key(handle,"price_v1");
             nvs_erase_key(handle,region_key);
             nvs_commit(handle);
