@@ -50,13 +50,13 @@ void inspect(const char* host,const IPAddress& ip,ShellyScanSnapshot& out) {
     for(size_t i=0;i<out.count;++i)
         if(!std::strcmp(out.items[i].url,f.url)) return;          // already listed (two services)
     std::snprintf(f.host,sizeof(f.host),"%s",host);
-    char path[48];
+    char path[64];
     static char body[kBodyMax];   // single worker task: one shared scratch buffer
-    std::snprintf(path,sizeof(path),"%s/shelly",f.url);
+    if(!shelly_read_url(f.url,"/shelly",path,sizeof(path)))return;
     if(!fetch(path,body,sizeof(body))) return;                      // not answering like a Shelly
     if(!parse_shelly_info(body,std::strlen(body),f.info)) return;   // some other web server
     if(f.info.support==ShellySupport::Supported) {
-        std::snprintf(path,sizeof(path),"%s/rpc/Switch.GetStatus?id=0",f.url);
+        if(!shelly_read_url(f.url,"/rpc/Switch.GetStatus?id=0",path,sizeof(path)))return;
         double w=0;
         if(fetch(path,body,sizeof(body)) && parse_shelly_power(body,std::strlen(body),w)) {
             f.has_power=true;f.watts=w;

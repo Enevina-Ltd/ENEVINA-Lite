@@ -78,6 +78,20 @@ static void host_and_url_rules() {
     CHECK(!shelly_lan_base_url(lan,url,10));                      // buffer too small
 }
 
+static void full_length_rpc_url_is_not_truncated() {
+    char path[64]{};
+    const uint8_t ip[4]={192,168,255,254};
+    char base[32]{};
+    CHECK(shelly_lan_base_url(ip,base,sizeof(base)));
+    CHECK(shelly_read_url(base,"/shelly",path,sizeof(path)));
+    CHECK(!std::strcmp(path,"http://192.168.255.254/shelly"));
+    CHECK(shelly_read_url(base,"/rpc/Switch.GetStatus?id=0",path,sizeof(path)));
+    CHECK(!std::strcmp(path,"http://192.168.255.254/rpc/Switch.GetStatus?id=0"));
+    char too_short[48]{};
+    CHECK(!shelly_read_url(base,"/rpc/Switch.GetStatus?id=0",too_short,sizeof(too_short)));
+    CHECK(!shelly_read_url(nullptr,"/shelly",path,sizeof(path)));
+    CHECK(!shelly_read_url(base,"/shelly",nullptr,sizeof(path)));
+}
 static void scope_gates_the_pump_model() {
     ShellyScope s{};
     CHECK(parse_shelly_scope("heat_pump",s)&&s==ShellyScope::HeatPump);
@@ -95,6 +109,7 @@ int main() {
     rejects_things_that_are_not_shelly();
     power_reading();
     host_and_url_rules();
+    full_length_rpc_url_is_not_truncated();
     scope_gates_the_pump_model();
     if(failures) {std::fprintf(stderr,"%d failures\n",failures);return 1;}
     std::puts("shelly_discovery_tests OK");
