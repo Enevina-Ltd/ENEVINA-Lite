@@ -40,9 +40,36 @@ enum HistoryFlags : uint16_t {
     kControlArmed=1<<3,       // automatic control was armed in this slot
     kPumpOnline=1<<4,
     kWifiOk=1<<5,
-    kPowerScopeMask=0xC0      // bits 6-7: what the power meter measured in this slot
+    kPowerScopeMask=0xC0,     // bits 6-7: metered target
+    kPriceCurrencyMask=0x0700,// bits 8-10: immutable observation currency (0=old/unknown)
+    kPowerCoverageMask=0x7800,// bits 11-14: verified whole minutes out of 15
+    kOutdoorMixed=0x8000      // both forecast and measured outdoors in this slot
 };
 constexpr unsigned kPowerScopeShift=6;
+constexpr unsigned kPriceCurrencyShift=8;
+constexpr unsigned kPowerCoverageShift=11;
+// Keep the 20-byte persisted record and its CRC/format fully backward-readable.
+// Unannotated legacy records have UNKNOWN currency and ZERO verified coverage:
+// no earlier sample may be retroactively treated as a full 15-minute reading.
+inline uint8_t history_currency_id(const char* currency) {
+    if(!currency)return 0;
+    if(!std::strcmp(currency,"EUR"))return 1;
+    if(!std::strcmp(currency,"SEK"))return 2;
+    if(!std::strcmp(currency,"NOK"))return 3;
+    if(!std::strcmp(currency,"DKK"))return 4;
+    if(!std::strcmp(currency,"PLN"))return 5;
+    return 0;
+}
+inline const char* history_currency_name(unsigned code) {
+    switch(code) {
+    case 1:return "EUR";case 2:return "SEK";case 3:return "NOK";
+    case 4:return "DKK";case 5:return "PLN";case 7:return "mixed";
+    default:return "unknown";
+    }
+}
+inline uint8_t history_power_coverage_minutes(uint16_t flags) {
+    return static_cast<uint8_t>((flags&kPowerCoverageMask)>>kPowerCoverageShift);
+}
 // 0 unknown (owner has not confirmed), 1 heat pump only, 2 whole house. The scope
 // is stored WITH each record: a later change of meter or of the owner's answer
 // must never relabel readings that were taken under another one.
@@ -157,7 +184,8 @@ struct HistoryInputs {
     bool outdoor_valid=false;  double outdoor_c=0;  bool outdoor_is_forecast=false;
     bool setpoint_valid=false; double setpoint_c=0;
     bool power_valid=false;    double power_w=0;  uint8_t power_scope=0;
-    bool price_valid=false;    double price_per_kwh=0;
+    int64_t power_sample_utc=0; // Shelly capture time, not the 15-second history poll
+    bool price_valid=false;    double price_per_kwh=0; uint8_t price_currency=0;
     uint8_t action=0;          // 0 unknown, 1 off, 2 heat, 3 hold
     bool armed=false;
     uint32_t commands_sent=0,commands_confirmed=0,commands_failed=0;   // monotone counters
@@ -213,8 +241,17 @@ private:
     uint32_t acc_slot_=0;
     Sum indoor_,rh_,outdoor_,power_,price_;
     bool have_setpoint_=false;double setpoint_=0;
-    uint8_t action_=0;bool armed_=false,outdoor_forecast_=false,pump_online_=false,wifi_ok_=false;
+    uint8_t action_=0;bool armed_=false,outdoor_forecast_=false,outdoor_measured_=false;
+    bool pump_online_=false,wifi_ok_=false;
     uint8_t power_scope_=0;bool power_scope_set_=false,power_mixed_=false;
+    uint8_t price_currency_=0;bool price_currency_seen_=false,price_mixed_=false;
+    // Trapezoid integral ONLY between two consecutive, valid samples. A
+    // single 1000 W report at 14:50 never claims 0.25 kWh for that slot.
+    double verified_watt_seconds_=0,last_power_w_=0;
+    uint32_t verified_power_seconds_=0;
+    int64_t last_power_sample_utc_=0;
+    uint8_t last_power_scope_=0;
+    bool last_power_valid_=false;
     uint32_t samples_=0;
     bool booted_=false,counters_known_=false;
     uint32_t sent_=0,confirmed_=0,failed_=0;
@@ -231,8 +268,11 @@ private:
     void reset(uint32_t slot) {
         acc_slot_=slot;indoor_=rh_=outdoor_=power_=price_=Sum{};
         have_setpoint_=false;action_=0;armed_=false;outdoor_forecast_=false;
-        pump_online_=false;wifi_ok_=false;samples_=0;
+        outdoor_measured_=false;pump_online_=false;wifi_ok_=false;samples_=0;
         power_scope_=0;power_scope_set_=false;power_mixed_=false;
+        price_currency_=0;price_currency_seen_=false;price_mixed_=false;
+        verified_watt_seconds_=0;verified_power_seconds_=0;
+        last_power_w_=0;last_power_sample_utc_=0;last_power_scope_=0;last_power_valid_=false;
     }
     void add(const HistoryInputs& in) {
         ++samples_;
@@ -242,18 +282,43 @@ private:
             // Any forecast-derived sample makes the slot's average a forecast value:
             // the later measured sample must not clear the flag (it is an average
             // of both, so presenting it as a measurement would be false).
-            outdoor_.add(in.outdoor_c);outdoor_forecast_=outdoor_forecast_||in.outdoor_is_forecast;
+            outdoor_.add(in.outdoor_c);
+            if(in.outdoor_is_forecast) outdoor_forecast_=true;
+            else outdoor_measured_=true;
         }
         if(in.setpoint_valid&&std::isfinite(in.setpoint_c)&&in.setpoint_c>=0&&in.setpoint_c<=40) {
             have_setpoint_=true;setpoint_=in.setpoint_c;                  // last value of the slot
         }
-        if(in.power_valid&&std::isfinite(in.power_w)&&in.power_w>=0&&in.power_w<65000) {
+        const int64_t capture=in.power_sample_utc>0?in.power_sample_utc:in.utc;
+        if(in.power_valid && capture>0 && capture<=in.utc &&
+           capture/kHistoryStepS==acc_slot_ &&
+           std::isfinite(in.power_w) && in.power_w>=0 && in.power_w<65000) {
             const uint8_t scope=in.power_scope<=2?in.power_scope:0;
-            if(!power_scope_set_) {power_scope_=scope;power_scope_set_=true;}
-            else if(power_scope_!=scope) power_mixed_=true;          // meter changed inside the slot
-            power_.add(in.power_w);
+            // Re-reading the SAME Shelly capture from RAM is not another
+            // physical observation, even if the HTTP history loop ran again.
+            if(!last_power_valid_ || capture>last_power_sample_utc_) {
+                if(!power_scope_set_) {power_scope_=scope;power_scope_set_=true;}
+                else if(power_scope_!=scope) power_mixed_=true;
+                if(last_power_valid_ && last_power_scope_==scope &&
+                   capture-last_power_sample_utc_<=180) {
+                    const uint32_t seconds=static_cast<uint32_t>(capture-last_power_sample_utc_);
+                    verified_watt_seconds_+=(last_power_w_+in.power_w)*0.5*seconds;
+                    verified_power_seconds_+=seconds;
+                }
+                last_power_valid_=true;last_power_w_=in.power_w;
+                last_power_scope_=scope;last_power_sample_utc_=capture;
+                power_.add(in.power_w);
+            }
+        } else {
+            // Never bridge a stale Shelly reading into a different slot.
+            last_power_valid_=false;
         }
-        if(in.price_valid&&std::isfinite(in.price_per_kwh)&&std::fabs(in.price_per_kwh)<20000) price_.add(in.price_per_kwh);
+        if(in.price_valid&&std::isfinite(in.price_per_kwh)&&std::fabs(in.price_per_kwh)<20000) {
+            const uint8_t code=in.price_currency<=5?in.price_currency:0;
+            if(!price_currency_seen_) {price_currency_=code;price_currency_seen_=true;}
+            else if(price_currency_!=code) price_mixed_=true;
+            price_.add(in.price_per_kwh);
+        }
         if(in.action<=3) action_=in.action;
         armed_=armed_||in.armed;
         pump_online_=pump_online_||in.pump_online;
@@ -270,12 +335,22 @@ private:
         // Two different measurement targets in one slot cannot be averaged into one
         // honest number: the power stays missing for that slot.
         if(power_.any()&&!power_mixed_) {
-            r.power_w=static_cast<uint16_t>(std::min(65000.0,std::lround(power_.avg())*1.0));
+            const double verified_average=verified_power_seconds_?
+                verified_watt_seconds_/verified_power_seconds_:power_.avg();
+            r.power_w=static_cast<uint16_t>(std::min(65000.0,std::lround(verified_average)*1.0));
         }
-        if(price_.any()) r.price_e5=static_cast<int32_t>(std::lround(price_.avg()*1e5));
+        if(price_.any()&&!price_mixed_)
+            r.price_e5=static_cast<int32_t>(std::lround(price_.avg()*1e5));
         r.flags=static_cast<uint16_t>(action_&kActionMask)|(outdoor_forecast_?kOutdoorIsForecast:0)|
+                (outdoor_forecast_&&outdoor_measured_?kOutdoorMixed:0)|
                 (armed_?kControlArmed:0)|(pump_online_?kPumpOnline:0)|(wifi_ok_?kWifiOk:0);
-        if(r.power_w!=kMissingU16) r.flags|=static_cast<uint16_t>(power_scope_<<kPowerScopeShift);
+        if(r.power_w!=kMissingU16) {
+            r.flags|=static_cast<uint16_t>(power_scope_<<kPowerScopeShift);
+            const unsigned verified_minutes=std::min<uint32_t>(15,verified_power_seconds_/60);
+            r.flags|=static_cast<uint16_t>(verified_minutes<<kPowerCoverageShift);
+        }
+        if(r.price_e5!=kMissingI32)
+            r.flags|=static_cast<uint16_t>(price_currency_<<kPriceCurrencyShift);
         return store.put(r);
     }
     void track_source(const HistoryInputs& in,HistorySource src,bool ok,EventLog& events) {
