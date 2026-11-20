@@ -815,7 +815,8 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     control_post_stage.store(4);
     // Network-budget wait is another cancellation point. A user's updated
     // settings always supersede an in-flight automatic command.
-    if(!control_armed.load() || c23_config_generation()!=config_generation ||
+    if(!control_armed.load() || !c23_config_storage_verified() ||
+       c23_config_generation()!=config_generation ||
        site_settings_generation()!=site_generation ||
        !wifi_ok.load() || !clock_ok())return false;
     const auto refreshed=bootstrap_preview(time(nullptr),c23_temperature_sample());
@@ -837,7 +838,8 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     req.addHeader("Content-Length","0");
     control_post_stage.store(5);
     // Last cancellation point after all potentially blocking preparation.
-    if(!control_armed.load() || c23_config_generation()!=config_generation ||
+    if(!control_armed.load() || !c23_config_storage_verified() ||
+       c23_config_generation()!=config_generation ||
        site_settings_generation()!=site_generation) {
         req.end();
         return false;
@@ -944,7 +946,7 @@ static void cottage_control_tick() {
         cottage_control_disarm();
         return;
     }
-    if(!wifi_ok.load() || !clock_ok()) {
+    if(!wifi_ok.load() || !clock_ok() || !c23_config_storage_verified()) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
     }
@@ -1831,6 +1833,10 @@ static void timeline_endpoint() {
         return;
     }
     const BootstrapDecision decision=bootstrap_preview(now,c23_temperature_sample());
+    // A drying target may be valid yet humidity conditions prohibit heating.
+    // Preserve the target for display but suppress heating guidance separately.
+    meta.heating_permitted=has_target &&
+        !(mode.mode==CottageMode::Drying && drying_blocks_heat(plan));
     meta.currency=market.currency;meta.area=market.area;
     meta.decision_action=bootstrap_action_name(decision.action);
     meta.decision_reason=bootstrap_reason_name(decision.reason);

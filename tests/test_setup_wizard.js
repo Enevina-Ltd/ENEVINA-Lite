@@ -199,32 +199,98 @@ console.log('devices step helpers ok');
   ctx.airPostLocal=async()=>{events.push('air');};
   ctx.reloadStatus=async()=>{events.push('reload');};
   ctx.wzPost=async()=>{throw Error('NVS');};
+  ctx.fetchJSON=async()=>{events.push('site-readback');return {
+    optimization:{profile:'balanced',comfort_min_c:10,comfort_max_c:14},
+    region:{setup_step:5}};};
   await assert.rejects(A.wzSaveComfort(false),/NVS/);
-  assert.deepEqual(events,[],'site-write failure must not change target');
+  assert.deepEqual(events,['site-readback'],'verified failed site write must not change target');
+  events.length=0;
+  // A site POST may commit all comfort bounds before its HTTP response fails.
+  // Reconcile with an isolated GET and still write the matching air target.
+  ctx.wzPost=async()=>{events.push('site-post');throw Error('HTTP dropped');};
+  ctx.fetchJSON=async()=>{events.push('site-readback');return {
+    optimization:{profile:'saving',comfort_min_c:9,comfort_max_c:16},
+    region:{setup_step:6}};};
+  await A.wzSaveComfort(false);
+  assert.deepEqual(events,['site-post','site-readback','air','reload'],
+    'committed site with lost reply must finish the air target write');
+  // No GET or a third state is not proof that the site write failed:
+  // never apply the second half, nor falsely report the old persisted site.
+  events.length=0;
+  ctx.fetchJSON=async()=>{events.push('site-readback');throw Error('network');};
+  await assert.rejects(A.wzSaveComfort(false),/site status unverified/);
+  assert.deepEqual(events,['site-post','site-readback']);
+  assert.equal(ctx.state.site.optimization.profile,'saving',
+    'lost-response recovery must update the local cached durable profile');
+  // Revisit Comfort via Back and save a second target. If its air write
+  // fails, compensation must restore the FIRST recovered save's limits,
+  // not the stale pre-first-save band.
+  events.length=0;
+  ctx.state.status.air.hold_target_c=13; // first air save is now durable
+  A.WZ.comfort.target='14';
+  ctx.wzPost=async f=>{events.push({...f});};
+  ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:ctx.state.status.air};};
+  await assert.rejects(A.wzSaveComfort(false),/AIR_NVS/);
+  assert.equal(events.at(-1).optimization_profile,'saving');
+  assert.equal(events.at(-1).comfort_min_c,'9');
+  assert.equal(events.at(-1).comfort_max_c,'16');
+  // Restore the initial state for independent tests below.
+  ctx.state.site={optimization:{profile:'balanced',comfort_min_c:10,comfort_max_c:14},
+    region:{setup_step:5}};
+  ctx.state.status.air.hold_target_c=12;
+  A.WZ.comfort.target='13';
+  events.length=0;
+  ctx.airPostLocal=async()=>{events.push('air');};
   ctx.wzPost=async f=>{events.push({...f});};
   await A.wzSaveComfort(false);
   assert.equal(events[0].optimization_profile,'saving');
   assert.deepEqual(events.slice(1),['air','reload']);
   events.length=0;
   ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:ctx.state.status.air};};
   await assert.rejects(A.wzSaveComfort(false),/AIR_NVS/);
   assert.equal(events.length,4,'site write + mode error + readback + restore site');
-  assert.equal(events[2],'reload');
+  assert.equal(events[2],'readback');
   assert.equal(events[3].optimization_profile,'balanced');
   assert.equal(events[3].comfort_min_c,'10');
   assert.equal(events[3].comfort_max_c,'14');
   // Ambiguous HTTP response: committed target is visible on status readback.
   // Undo would pair a new target with the OLD limits (fresh Codex P2 #57).
   events.length=0;
-  ctx.reloadStatus=async()=>{events.push('reload');ctx.state.status.air.hold_target_c=13;};
+  // Simulate stale shared state (a periodic status request superseded another).
+  // Only the isolated fresh API result may prove a new durable target.
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:{...ctx.state.status.air,hold_target_c:13}};};
+  ctx.reloadStatus=async()=>{events.push('reload');};
   await A.wzSaveComfort(false);
-  assert.deepEqual(events.slice(1),['air','reload']);
+  assert.deepEqual(events.slice(1),['air','readback']);
   assert.equal(events.length,3,'do not compensate a confirmed successful target save');
+  assert.equal(ctx.state.status.air.hold_target_c,13,
+    'confirmed air POST must refresh local status after lost HTTP reply');
+  // Back -> Comfort with the earlier target must not be considered unchanged:
+  // durable air target is 13, not the pre-recovery cached 12.
+  events.length=0;
+  A.WZ.comfort.target='12';
+  ctx.airPostLocal=async()=>{events.push('air');};
+  await A.wzSaveComfort(false);
+  assert(events.includes('air'),'back navigation must issue the necessary target POST');
+  // Reset for separate negative response / partial NVS tests below.
+  A.WZ.comfort.target='13';
+  ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
   // If Wi-Fi is lost and readback is impossible, don't blindly undo either.
   events.length=0;
   ctx.state.status.air.hold_target_c=12;
-  ctx.reloadStatus=async()=>{events.push('reload');ctx.state.status=null;};
+  ctx.fetchJSON=async()=>{events.push('readback');throw Error('WiFi lost');};
   await assert.rejects(A.wzSaveComfort(false),/unverified/);
   assert.equal(events.length,3,'unknown air outcome cannot trigger rollback');
+  // The API can return the old RAM target after a partial NVS commit.
+  // It must NOT be mistaken for a durable rollback and must NOT trigger
+  // compensating site writes that would corrupt the new limits.
+  events.length=0;
+  ctx.state.status={air:{mode:2,hold_target_c:12,occupied_target_c:21,drying_delta_c:3,
+    config_storage_verified:false}};
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:ctx.state.status.air};};
+  await assert.rejects(A.wzSaveComfort(false),/unverified/);
+  assert.equal(events.length,3,'unverified NVS rollback must not undo site settings');
   console.log('wizard rollback-order and ambiguous-response tests OK');
 })().catch(e=>{console.error(e);process.exitCode=1;});

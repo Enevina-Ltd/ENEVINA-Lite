@@ -18,6 +18,7 @@ bool c23_indoor_bound();
 CottageModeConfig c23_mode_config();
 CottageModePlan c23_current_mode_plan();
 uint32_t c23_config_generation();
+bool c23_config_storage_verified();
 bool c23_authorize_local_setting(const char* submitted_token);
 // Existing per-boot local CSRF token (also published in /api/status).
 const char* c23_config_token();
