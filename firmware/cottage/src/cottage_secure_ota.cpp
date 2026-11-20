@@ -44,8 +44,10 @@ constexpr const char* magic="ENEVINA_C24_OTA_V1\nmodel=esp32s3-n16r8\n";
 constexpr uint32_t max_image_size=0x640000u;
 std::atomic<uint32_t> last_good{0}, last_candidate{0};
 std::atomic<uint32_t> last_history_upgrade{0},last_history_ack{0};
+std::atomic<uint32_t> last_history_version{0},last_history_utc{0};
 constexpr char kHistoryUpgradeKey[]="hist_upg";
 constexpr char kHistoryAckKey[]="hist_done";
+constexpr char kHistoryLastKey[]="hist_last";
 std::atomic<int> last_status{0}; // 0 idle; 1 disabled; 2 transient; 3 refused; 4 rejected; 5 downloading; 6 rebooting
 std::atomic<bool> pause_readers{false};
 std::atomic<uint32_t> ota_written_bytes{0};
@@ -350,7 +352,18 @@ void cottage_ota_initialize() {
     // signed-OTA good version must already have been durably confirmed.
     const uint32_t marker=p.getUInt(kHistoryUpgradeKey,0);
     last_history_upgrade.store(marker>0 && marker==good?marker:0);
-    last_history_ack.store(p.getUInt(kHistoryAckKey,0));
+    enevina::cottage::OtaHistoryLast summary{};
+    const bool has_summary=p.getBytesLength(kHistoryLastKey)==sizeof(summary) &&
+        p.getBytes(kHistoryLastKey,&summary,sizeof(summary))==sizeof(summary) &&
+        enevina::cottage::valid_ota_history_last(summary) && summary.version<=good;
+    last_history_version.store(0);
+    last_history_utc.store(has_summary?summary.utc:0);
+    last_history_version.store(has_summary?summary.version:0);
+    const uint32_t old_ack=p.getUInt(kHistoryAckKey,0);
+    // A durable summary also proves the history event was already written:
+    // survive a power cut between this blob and the legacy hist_done key.
+    last_history_ack.store(has_summary && summary.version==good?
+        summary.version:old_ack);
     const uint32_t legacy=p.getUInt("pending",0);
     ota::Transaction tx{};
     bool has_tx=read_transaction(p,tx);
@@ -469,21 +482,50 @@ uint32_t cottage_ota_recorded_upgrade_version(){
     return enevina::cottage::ota_pending_history_upgrade(
         last_good.load(),last_history_upgrade.load(),last_history_ack.load());
 }
-bool cottage_ota_acknowledge_history_upgrade(uint32_t version) {
-    if(version==0 || cottage_ota_recorded_upgrade_version()!=version)
-        return false;
+bool cottage_ota_acknowledge_history_upgrade(uint32_t version,uint32_t event_utc) {
+    if(version==0 || event_utc<1500000000)return false;
     Preferences p;
     if(!p.begin("c24_ota",false))return false;
-    // Never acknowledge another firmware version or a volatile-only marker.
+    // Only a durably confirmed signed version may enter the last-update card.
     const bool matching=p.getUInt("good",0)==version &&
         p.getUInt(kHistoryUpgradeKey,0)==version;
-    const bool acknowledged=matching &&
-        p.putUInt(kHistoryAckKey,version)==sizeof(uint32_t) &&
-        p.getUInt(kHistoryAckKey,0)==version;
+    if(!matching){p.end();return false;}
+    enevina::cottage::OtaHistoryLast existing{};
+    const bool prior=p.getBytesLength(kHistoryLastKey)==sizeof(existing) &&
+        p.getBytes(kHistoryLastKey,&existing,sizeof(existing))==sizeof(existing) &&
+        enevina::cottage::valid_ota_history_last(existing);
+    // Retain the FIRST confirmed UTC time for the same version across reboots.
+    const auto wanted=prior && existing.version==version?existing:
+        enevina::cottage::make_ota_history_last(version,event_utc);
+    const bool wrote=(prior && existing.version==version) ||
+        p.putBytes(kHistoryLastKey,&wanted,sizeof(wanted))==sizeof(wanted);
+    enevina::cottage::OtaHistoryLast readback{};
+    const bool verified=wrote &&
+        p.getBytesLength(kHistoryLastKey)==sizeof(readback) &&
+        p.getBytes(kHistoryLastKey,&readback,sizeof(readback))==sizeof(readback) &&
+        enevina::cottage::valid_ota_history_last(readback) &&
+        readback.version==wanted.version && readback.utc==wanted.utc;
+    if(verified && p.getUInt(kHistoryAckKey,0)!=version)
+        p.putUInt(kHistoryAckKey,version); // compatibility; summary is the ack
     p.end();
-    if(acknowledged)last_history_ack.store(version);
-    return acknowledged;
+    if(verified) {
+        // A reader must never pair the new version with the old UTC.
+        last_history_version.store(0);
+        last_history_utc.store(wanted.utc);
+        last_history_version.store(wanted.version);
+        last_history_ack.store(version);
+    }
+    return verified;
 }
+bool cottage_ota_last_successful_update(uint32_t& utc,uint32_t& version) {
+    const uint32_t v=last_history_version.load(),t=last_history_utc.load();
+    if(v==0 || v!=last_history_version.load())return false;
+    const auto summary=enevina::cottage::make_ota_history_last(v,t);
+    if(!enevina::cottage::valid_ota_history_last(summary) ||
+       v>last_good.load())return false;
+    utc=t;version=v;return true;
+}
+
 uint32_t cottage_ota_last_candidate(){return last_candidate.load();}
 int cottage_ota_status(){return last_status.load();}
 bool cottage_ota_network_maintenance(){return pause_readers.load();}

@@ -132,3 +132,19 @@ The acknowledgement has no effect on the signed image verification, safety
 gates, pump controls, OTA rollback eligibility or the result of OTA boot
 confirmation. Failed NVS acknowledgement remains pending for retry; a
 physical fault injection is still required to confirm every cut point.
+
+
+### Last successful signed OTA survives the history event ring
+
+The last confirmed signed update is persisted as a sealed single NVS record
+(c24_ota/hist_last): original verified version and trusted UTC timestamp.
+It is written ONLY after the matching UpdateConfirmed event has been
+successfully flushed to LittleFS or is found in an already persisted event
+file after reboot. The last-update card reads this record first, not only
+the 128-entry rolling event list, so later command events cannot erase
+knowledge of the last confirmed update. hist_done remains for backwards
+compatibility; a sealed hist_last also counts as the history acknowledgement
+if a power cut happened between the two NVS writes. A corrupt or mismatched
+summary is rejected. Existing installations that already lost their event
+before this summary existed retain an unknown timestamp rather than
+fabricating one.

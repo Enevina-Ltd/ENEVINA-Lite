@@ -36,11 +36,19 @@ class ConfirmedOtaHistoryAndNoHeat(unittest.TestCase):
         self.assertIn('ota_pending_history_upgrade(',POLICY)
         self.assertIn('cottage_ota_acknowledge_history_upgrade',OTA)
         self.assertIn('p.putUInt(kHistoryAckKey,version)',OTA)
-        self.assertIn('p.getUInt(kHistoryAckKey,0)==version',OTA)
-        self.assertIn('last_history_ack.store(p.getUInt(kHistoryAckKey,0))',OTA)
+        self.assertIn('kHistoryLastKey',OTA)
+        self.assertIn('last_history_ack.store(has_summary && summary.version==good?',OTA)
         flush=HISTORY_FW.split('const bool ok=persistence->flush(*store,events)',1)[1]
-        self.assertLess(flush.index('if(ok)'),flush.index('cottage_ota_acknowledge_history_upgrade(pending_ota)'))
-        self.assertIn('cottage_ota_acknowledge_history_upgrade(pending_ota)',HISTORY_FW)
+        self.assertLess(flush.index('if(ok)'),flush.index('cottage_ota_acknowledge_history_upgrade(pending_ota,e.utc)'))
+        self.assertIn('cottage_ota_acknowledge_history_upgrade(pending_ota,e.utc)',HISTORY_FW)
+    def test_last_confirmed_update_is_persisted_outside_history_ring(self):
+        self.assertIn('struct OtaHistoryLast',POLICY)
+        self.assertIn('valid_ota_history_last',POLICY)
+        self.assertIn('p.putBytes(kHistoryLastKey,&wanted,sizeof(wanted))',OTA)
+        self.assertIn('p.getBytes(kHistoryLastKey,&readback,sizeof(readback))',OTA)
+        self.assertIn('cottage_ota_last_successful_update(when,version)',MAIN)
+        self.assertIn('last_history_version.store(wanted.version)',OTA)
+        self.assertIn('last_history_utc.store(wanted.utc)',OTA)
     def test_no_heat_fallback_agrees_with_actual_action(self):
         self.assertIn("no_heating_requested=actual.action==BootstrapAction::Off",MAIN)
         self.assertIn("actual.reason==BootstrapReason::NoHeatingRequested",MAIN)

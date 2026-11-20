@@ -141,7 +141,7 @@ void history_initialize() {
             const HistoryEvent& e=events.newest(i);
             if(e.kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed) &&
                e.arg==pending_ota) {
-                cottage_ota_acknowledge_history_upgrade(pending_ota);
+                cottage_ota_acknowledge_history_upgrade(pending_ota,e.utc);
                 break;
             }
         }
@@ -180,7 +180,7 @@ void history_observe(const HistoryInputs& inputs) {
                     const HistoryEvent& e=events.newest(i);
                     if(e.kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed) &&
                        e.arg==pending_ota) {
-                        cottage_ota_acknowledge_history_upgrade(pending_ota);
+                        cottage_ota_acknowledge_history_upgrade(pending_ota,e.utc);
                         break;
                     }
                 }

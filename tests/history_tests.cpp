@@ -561,6 +561,30 @@ static void update_confirmation_events() {
     CHECK(out.find("\"k\":7")!=std::string::npos&&out.find("\"a\":20261119")!=std::string::npos);
 }
 
+static void ota_update_summary_survives_rotating_history() {
+    using enevina::cottage::make_ota_history_last;
+    using enevina::cottage::valid_ota_history_last;
+    const auto summary=make_ota_history_last(20261119,T0+900);
+    CHECK(valid_ota_history_last(summary));
+    auto invalid=summary;invalid.utc=0;
+    CHECK(!valid_ota_history_last(invalid));
+    invalid=summary;invalid.version=0;
+    CHECK(!valid_ota_history_last(invalid));
+    invalid=summary;invalid.seal^=1;
+    CHECK(!valid_ota_history_last(invalid));
+    EventLog events;
+    events.put({static_cast<uint32_t>(summary.utc),
+      static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed),0,0,summary.version});
+    for(size_t i=0;i<kEventSlots+25;++i)
+        events.put({static_cast<uint32_t>(summary.utc+i+1),
+             static_cast<uint8_t>(HistoryEventKind::Boot),0,0,0});
+    bool found=false;
+    for(size_t i=0;i<events.count();++i)
+        found|=events.newest(i).kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed);
+    CHECK(!found);
+    CHECK(valid_ota_history_last(summary)&&summary.version==20261119&&
+          summary.utc==T0+900); // independent of evictions and reboots
+}
 static void ota_history_ack_survives_event_ring_eviction() {
     using enevina::cottage::ota_pending_history_upgrade;
     CHECK(ota_pending_history_upgrade(20261119,20261119,0)==20261119);
@@ -801,6 +825,7 @@ int main() {
     bounded_file_growth_and_compaction();
     update_before_clock_sync();
     update_confirmation_events();
+    ota_update_summary_survives_rotating_history();
     ota_history_ack_survives_event_ring_eviction();
     ota_confirmed_before_first_history_sample_is_recorded();
     if(failures) {std::fprintf(stderr,"%d failures\n",failures);return 1;}

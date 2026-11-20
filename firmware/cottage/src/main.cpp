@@ -1539,7 +1539,8 @@ static void status_endpoint() {
     cJSON_AddBoolToObject(root,"ota_signed_pull_enabled",cottage_ota_configured());
     {   // last SUCCESSFUL update, from the persisted event log (absent = unknown)
         uint32_t when=0,version=0;
-        if(enevina_firmware::history_last_event(
+        if(cottage_ota_last_successful_update(when,version) ||
+           enevina_firmware::history_last_event(
                static_cast<uint8_t>(enevina::cottage::HistoryEventKind::UpdateConfirmed),when,version)) {
             cJSON_AddNumberToObject(root,"ota_last_update_utc",when);
             cJSON_AddNumberToObject(root,"ota_last_update_version",version);
