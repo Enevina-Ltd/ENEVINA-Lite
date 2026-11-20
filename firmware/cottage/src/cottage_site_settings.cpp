@@ -3,6 +3,8 @@
 #include <Preferences.h>
 #include <nvs.h>
 #include <esp_log.h>
+#include <esp_ota_ops.h>
+#include "cottage/site_rollback_policy.hpp"
 #include "cottage/nvs_cache_reclaim_policy.hpp"
 #include <WebServer.h>
 #include <cJSON.h>
@@ -160,7 +162,14 @@ bool persist(const SiteSettings& s) {
             return false;
         }
         const size_t written=p.putBytes("v4",&blob,sizeof(blob));
-        if(written==sizeof(blob) && !cottage_ota_confirmation_pending()) {
+        const esp_partition_t* running=esp_ota_get_running_partition();
+        esp_ota_img_states_t state=ESP_OTA_IMG_UNDEFINED;
+        const bool image_valid=running &&
+            esp_ota_get_state_partition(running,&state)==ESP_OK &&
+            state==ESP_OTA_IMG_VALID;
+        if(written==sizeof(blob) &&
+           enevina::cottage::site_old_keys_reclaimable(
+               image_valid,cottage_ota_confirmation_pending())) {
             // Reclamation is allowed only AFTER OTA confirmation, when the
             // earlier firmware cannot be restored by the OTA rollback path.
             if(p.isKey("v3")) p.remove("v3");

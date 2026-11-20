@@ -1,5 +1,6 @@
 #include "cottage/site_settings.hpp"
 #include "cottage/comfort_transaction.hpp"
+#include "cottage/site_rollback_policy.hpp"
 #include "pump/adapter_catalog.hpp"
 #include <cassert>
 #include <cmath>
@@ -529,6 +530,17 @@ static void comfort_journal_power_loss_matrix() {
     tx.phase=uint8_t(ComfortPhase::Prepared);
     assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
 }
+static void old_ota_settings_require_real_image_confirmation() {
+    // PREPARED / PENDING_VERIFY boots run c23_initialize before the OTA
+    // transaction service sets confirmation_pending. The early value false
+    // must not delete the previous firmware's NVS records.
+    assert(!site_old_keys_reclaimable(false,false));
+    assert(!site_old_keys_reclaimable(false,true));
+    // Even a VALID IDF image must preserve the old keys until OTA journal
+    // confirmation (a valid image alone is not the full signed-OTA proof).
+    assert(!site_old_keys_reclaimable(true,true));
+    assert(site_old_keys_reclaimable(true,false));
+}
 static void hard_comfort_limits_never_silently_disappear() {
     assert(comfort_limits_fit_target(19,23,21));
     assert(!comfort_limits_fit_target(19,23,12));
@@ -557,6 +569,7 @@ static void hard_comfort_limits_never_silently_disappear() {
 int main() {
     comfort_transaction_survives_site_air_split();
     hard_comfort_limits_never_silently_disappear();
+    old_ota_settings_require_real_image_confirmation();
     comfort_journal_power_loss_matrix();
     v3_provenance_after_rollback_then_v4_upgrade();
     nvs_snapshot_failure_does_not_commit_an_unknown_baseline();

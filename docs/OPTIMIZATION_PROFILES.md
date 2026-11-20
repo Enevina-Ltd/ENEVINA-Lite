@@ -121,3 +121,15 @@ restarts are introduced. Site v4 layout remains unchanged; journal version 2.
 Host tests cover phase transitions, target-only unchanged-site ambiguity,
 hard lower/upper limits, retries, and source ordering. Real power-cut
 injection against ESP32-S3 NVS is a separate release criterion.
+
+
+### OTA probation and migration records
+
+On an OTA first boot, site/air crash recovery can save the site settings
+BEFORE the signed OTA service has loaded its transaction. A missing 'pending'
+flag is not proof of confirmation: old site v1/v2/v3 (and v4 in subsequent
+images) are reclaimable only when the running ESP-IDF image state is
+ESP_OTA_IMG_VALID **and** no signed OTA confirmation is pending. Unknown,
+pending-verify and failed state reads leave old records in place. Host and
+source tests enforce this non-destructive ordering; a real hardware
+power-cut and A/B rollback test remains a release criterion.
