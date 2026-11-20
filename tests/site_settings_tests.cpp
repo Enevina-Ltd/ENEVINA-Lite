@@ -465,7 +465,56 @@ static void nvs_snapshot_failure_does_not_commit_an_unknown_baseline() {
     assert(signature==0); // true absence is allowed
 }
 
+
+static void v4_to_v5_preserves_previous_settings_and_rollback() {
+    SiteSettings owner{};
+    std::strcpy(owner.cn105_url,"http://192.168.1.77/events");
+    std::strcpy(owner.shelly_url,"http://192.168.1.53");
+    std::strcpy(owner.fmi_latlon,"61.4638,24.0760");
+    std::strcpy(owner.country,"SE");std::strcpy(owner.price_zone,"SE3");
+    owner.profile=OptimizationProfile::Saving;
+    owner.comfort_min_c=12;owner.comfort_max_c=23;
+    owner.shelly_scope=ShellyScope::HeatPump; // field did not exist in v4
+    owner.tariff.margin_eur_per_kwh=0.039;
+    constexpr size_t legacy_size=
+        (offsetof(SiteSettings,shelly_scope)+alignof(SiteSettings)-1)/
+            alignof(SiteSettings)*alignof(SiteSettings);
+    static_assert(legacy_size<sizeof(SiteSettings),"v4 must be older layout");
+    constexpr size_t disk_size=8+legacy_size+2*sizeof(uint64_t);
+    uint8_t old_v4[disk_size]{};
+    const uint32_t magic=0x45535431;
+    const uint16_t version=4,payload=static_cast<uint16_t>(legacy_size);
+    std::memcpy(old_v4,&magic,4);std::memcpy(old_v4+4,&version,2);
+    std::memcpy(old_v4+6,&payload,2);
+    std::memcpy(old_v4+8,&owner,legacy_size);
+    uint8_t old_v2[32]{};uint8_t old_v3[64]{};
+    const uint64_t b2=site_v2_signature(old_v2,sizeof(old_v2));
+    const uint64_t b3=site_v2_signature(old_v3,sizeof(old_v3));
+    std::memcpy(old_v4+8+legacy_size,&b2,8);
+    std::memcpy(old_v4+8+legacy_size+8,&b3,8);
+    SiteSettings restored{};uint64_t got2=0,got3=0;
+    assert(site_restore_v4_record(old_v4,sizeof(old_v4),restored,got2,got3));
+    assert(std::strcmp(restored.cn105_url,owner.cn105_url)==0);
+    assert(std::strcmp(restored.shelly_url,owner.shelly_url)==0);
+    assert(std::strcmp(restored.fmi_latlon,owner.fmi_latlon)==0);
+    assert(std::strcmp(restored.country,"SE")==0 && std::strcmp(restored.price_zone,"SE3")==0);
+    assert(restored.profile==OptimizationProfile::Saving && near(restored.comfort_min_c,12));
+    assert(near(restored.comfort_max_c,23) && near(restored.tariff.margin_eur_per_kwh,0.039));
+    assert(restored.shelly_scope==ShellyScope::Unknown); // explicit re-confirmation, no inherited pump claim
+    assert(got2==b2 && got3==b3);
+    const uint64_t snapshot_v4=site_v2_signature(old_v4,sizeof(old_v4));
+    assert(!site_rollback_v2_modified(snapshot_v4,old_v4,sizeof(old_v4)));
+    // v5 saves during probation; after rollback v4 firmware edits the prior
+    // v4 key. New v5 must prefer those changed owner settings.
+    old_v4[8+offsetof(SiteSettings,cn105_url)+8]^=1;
+    assert(site_rollback_v2_modified(snapshot_v4,old_v4,sizeof(old_v4)));
+    assert(!site_restore_v4_record(old_v4,sizeof(old_v4)-16,restored,got2,got3));
+    old_v4[4]=9; // invalid version cannot replace v5
+    assert(!site_restore_v4_record(old_v4,sizeof(old_v4),restored,got2,got3));
+}
+
 int main() {
+    v4_to_v5_preserves_previous_settings_and_rollback();
     v3_provenance_after_rollback_then_v4_upgrade();
     nvs_snapshot_failure_does_not_commit_an_unknown_baseline();
     rollback_edit_overrides_stale_v3();

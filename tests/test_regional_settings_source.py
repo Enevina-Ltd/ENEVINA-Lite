@@ -58,24 +58,25 @@ class RegionalWiring(unittest.TestCase):
         self.assertNotIn("++region_generation", first)
         self.assertNotIn("cache=PriceCache{}", first)
 
-    def test_settings_v4_preserves_both_rollback_v2_and_v3(self):
-        self.assertIn('p.putBytes("v4",&blob,sizeof(blob))', SITE)
-        self.assertIn('p.remove("v1")', SITE)
-        self.assertIn('!cottage_ota_confirmation_pending()', SITE)
-        self.assertLess(SITE.index('p.putBytes("v4"'), SITE.index('p.remove("v1")'))
+    def test_settings_v5_preserves_v4_and_older_rollback_keys(self):
+        self.assertIn('constexpr uint16_t kVersion=5;',SITE)
+        self.assertIn('p.putBytes("v5",&blob,sizeof(blob))', SITE)
+        self.assertIn('p.getBytesLength("v4")',SITE)
+        self.assertIn('site_restore_v4_record(',SITE)
+        self.assertIn('!cottage_ota_confirmation_pending()',SITE)
+        self.assertLess(SITE.index('p.putBytes("v5"'),SITE.index('p.remove("v1")'))
+        self.assertIn('if(p.isKey("v4")) p.remove("v4")',SITE)
         self.assertIn('if(p.isKey("v3")) p.remove("v3")',SITE)
         self.assertIn('if(p.isKey("v2")) p.remove("v2")',SITE)
-        self.assertIn('version==3',SITE)
-        self.assertIn('version==2',SITE)
-        self.assertIn('!rollback_key_signature(p,"v2",blob.rollback_v2_signature)',SITE)
-        self.assertIn('!rollback_key_signature(p,"v3",blob.rollback_v3_signature)',SITE)
+        for key in ("v2","v3","v4"):
+            self.assertIn('!rollback_key_signature(p,"'+key+'",blob.rollback_'+key+'_signature)',SITE)
+            self.assertLess(SITE.index('rollback_key_signature(p,"'+key+'",blob.rollback_'+key+'_signature)'), SITE.index('p.putBytes("v5"'))
         self.assertIn('snapshot_read_failed=true;',SITE)
         self.assertIn('return !snapshot_read_failed && erase_disposable_cache',SITE)
         self.assertIn('site_v3_prefer_rollback_v2(',SITE)
         self.assertIn('site_rollback_v2_modified(',SITE)
-        self.assertLess(SITE.index('rollback_key_signature(p,"v3",blob.rollback_v3_signature)'), SITE.index('p.putBytes("v4"'))
-        self.assertIn("site_settings_from_v1(old.settings)", SITE)
-        self.assertIn("apply_site_settings_batch", SITE)
+        self.assertIn("site_settings_from_v1(old.settings)",SITE)
+        self.assertIn("apply_site_settings_batch",SITE)
 
     def test_unconfirmed_contract_cannot_drive_price_optimization(self):
         tariff=(ROOT / "cottage/site_settings.hpp").read_text()

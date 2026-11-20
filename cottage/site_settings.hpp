@@ -247,6 +247,30 @@ inline bool site_v3_prefer_rollback_v2(const uint8_t* v3,size_t v3_len,
     return site_rollback_v2_modified(baseline,v2,v2_len);
 }
 
+// Restore the predecessor v4 record without treating its saved 480-byte
+// layout as the newer v5 488-byte struct. The v4 CRC-free envelope carries
+// exact magic/version/length plus the old v2/v3 rollback fingerprints.
+inline bool site_restore_v4_record(const uint8_t* raw,size_t n,SiteSettings& out,
+                                   uint64_t& baseline_v2,uint64_t& baseline_v3) {
+    constexpr size_t header=8;
+    baseline_v2=baseline_v3=0;
+    if(!raw||n<header) return false;
+    uint32_t magic=0;uint16_t version=0,settings_bytes=0;
+    std::memcpy(&magic,raw,sizeof(magic));
+    std::memcpy(&version,raw+4,sizeof(version));
+    std::memcpy(&settings_bytes,raw+6,sizeof(settings_bytes));
+    if(magic!=0x45535431U || version!=4 || settings_bytes==0 ||
+       settings_bytes>sizeof(SiteSettings) ||
+       static_cast<size_t>(settings_bytes)>n-header ||
+       n-header-settings_bytes<2*sizeof(uint64_t)) return false;
+    SiteSettings restored{};
+    if(!restore_site_settings(raw+header,settings_bytes,restored))return false;
+    std::memcpy(&baseline_v2,raw+header+settings_bytes,sizeof(baseline_v2));
+    std::memcpy(&baseline_v3,raw+header+settings_bytes+sizeof(uint64_t),sizeof(baseline_v3));
+    out=restored;
+    return true;
+}
+
 // Region that prices are fetched for, or false when the user has not finished
 // choosing one (unsupported country, or multi-zone country without a zone).
 inline bool site_market_region(const SiteSettings& s,const char*& nordpool_area,
