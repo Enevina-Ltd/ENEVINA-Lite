@@ -25,6 +25,10 @@ class AirPartialNvsRecovery(unittest.TestCase):
         self.assertIn('cJSON_AddBoolToObject(air,"config_storage_verified",config_storage_verified);', SRC)
         self.assertIn('observed.config_storage_verified===false',UI)
         self.assertIn('(target status unverified)',UI)
+        wizard=UI.split('async function wzSaveComfort(skip){',1)[1].split('function wzStepDevices(',1)[0]
+        self.assertIn("confirmedStatus=await fetchJSON('/api/status')",wizard)
+        self.assertIn('const observed=confirmedStatus&&confirmedStatus.air;',wizard)
+        self.assertNotIn('const observed=state.status&&state.status.air;',wizard)
 
 if __name__=="__main__":
     unittest.main()
