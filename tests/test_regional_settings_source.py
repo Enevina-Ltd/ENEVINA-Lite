@@ -242,7 +242,7 @@ class HistoryWiring(unittest.TestCase):
         self.assertIn(".span6{grid-column:span 6}", dash)
 
     def test_worker_is_separate_low_priority_and_not_in_health_gate(self):
-        self.assertIn('xTaskCreatePinnedToCore(history_worker,"cottage_hist",8192,nullptr,1,nullptr,0)', self.MAIN)
+        self.assertIn('xTaskCreatePinnedToCore(history_worker,"cottage_hist",6144,nullptr,1,&task_history,0)', self.MAIN)
         self.assertIn("enevina_firmware::history_initialize();", self.MAIN)
 
 

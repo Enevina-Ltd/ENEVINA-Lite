@@ -108,6 +108,7 @@ static std::atomic<uint32_t> cn105_source_proof_good{0};
 static TaskHandle_t task_sse=nullptr,task_shelly=nullptr;
 static TaskHandle_t task_ruuvi=nullptr,task_optimizer=nullptr;
 static TaskHandle_t task_ota=nullptr;
+static TaskHandle_t task_history=nullptr,task_midea=nullptr;
 static bool shelly_relay_on=false;
 // Production control is explicitly ARMED via local setting, never by OTA.
 static std::atomic<bool> control_armed{false};
@@ -2008,6 +2009,16 @@ static void status_endpoint() {
                             task_ruuvi?uxTaskGetStackHighWaterMark(task_ruuvi):0);
     cJSON_AddNumberToObject(root,"optimizer_stack_free",
                             task_optimizer?uxTaskGetStackHighWaterMark(task_optimizer):0);
+    cJSON_AddNumberToObject(root,"history_stack_free",
+                            task_history?uxTaskGetStackHighWaterMark(task_history):0);
+    cJSON_AddNumberToObject(root,"ota_stack_free",
+                            task_ota?uxTaskGetStackHighWaterMark(task_ota):0);
+    cJSON_AddNumberToObject(root,"midea_stack_free",
+                            task_midea?uxTaskGetStackHighWaterMark(task_midea):0);
+    cJSON_AddNumberToObject(root,"weather_stack_free",
+                            enevina_firmware::weather_reader_stack_free());
+    cJSON_AddNumberToObject(root,"market_stack_free",
+                            enevina_firmware::market_reader_stack_free());
     // This handler runs in the Arduino loop task (8 KiB stack): its own
     // high-water mark covers /api/status and /api/mpc serialization.
     cJSON_AddNumberToObject(root,"loop_stack_free",uxTaskGetStackHighWaterMark(nullptr));
@@ -2687,7 +2698,7 @@ void setup() {
     boot_validation_started_ms=millis();
     enableLoopWDT(); // Arduino ESP32 loop-task hardware watchdog.
     // Initialize BLE before starting memory-heavy HTTPS workers.
-    xTaskCreatePinnedToCore(c23_ble_worker,"cottage_ruuvi",10240,nullptr,1,&task_ruuvi,0);
+    xTaskCreatePinnedToCore(c23_ble_worker,"cottage_ruuvi",6144,nullptr,1,&task_ruuvi,0);
     for(int i=0;i<150 && !c23_ble_initialized();++i)
         delay(20);
     if(!c23_ble_initialized())
@@ -2696,15 +2707,15 @@ void setup() {
     enevina_firmware::start_market_reader();
     enevina_firmware::start_weather_reader(site_settings_snapshot().fmi_latlon);
     xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",8192,nullptr,2,&task_sse,0);
-    xTaskCreatePinnedToCore(cottage_midea_service_worker,"cottage_midea",
-                            10240,nullptr,1,nullptr,0);
-    xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",6144,nullptr,2,&task_shelly,0);
-    xTaskCreatePinnedToCore(history_worker,"cottage_hist",8192,nullptr,1,nullptr,0);
+    // Lazily start the Midea polling task after a Midea is actually selected.
+    // A CN105 controller must not reserve a second pump driver's stack.
+    xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",5120,nullptr,2,&task_shelly,0);
+    xTaskCreatePinnedToCore(history_worker,"cottage_hist",6144,nullptr,1,&task_history,0);
     // BLE already running. CN105 writes are gated by explicit local arming.
     xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
     if(cottage_ota_configured() &&
         xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota",
-                                16384,nullptr,1,&task_ota,1)!=pdPASS) {
+                                10240,nullptr,1,&task_ota,1)!=pdPASS) {
         task_ota=nullptr;
         Serial.println("C24_OTA_ERROR: signed OTA task creation failed");
     }
@@ -2715,6 +2726,16 @@ void loop() {
     web_loop_heartbeat_ms.store(millis());
     web.handleClient();
     cottage_wifi_loop();
+    // This is a once-per-selection task creation, not a polling/watchdog.
+    // A saved Midea enrollment must also start after switching adapters in UI.
+    static uint32_t last_midea_check_ms=0;
+    if(!task_midea && static_cast<uint32_t>(millis()-last_midea_check_ms)>=2000) {
+        last_midea_check_ms=millis();
+        if(cottage_midea_service_needs_worker() &&
+           xTaskCreatePinnedToCore(cottage_midea_service_worker,"cottage_midea",
+                                   10240,nullptr,1,&task_midea,0)!=pdPASS)
+            Serial.println("MIDEA_WORKER: insufficient memory");
+    }
     verify_new_ota_boot();
     c23_tick(); // local BLE/mode/alarm history works with wifi=0
     // Serial evidence is useful during fully isolated cold-boot tests.

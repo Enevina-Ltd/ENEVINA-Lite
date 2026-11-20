@@ -309,6 +309,17 @@ void poll_weather(void*) {
 }
 }
 
+uint32_t weather_reader_stack_free() {
+    return weather_task?uxTaskGetStackHighWaterMark(weather_task):0;
+}
+bool ensure_weather_reader() {
+    if(weather_task)return true;
+    if(xTaskCreate(poll_weather,"weather_read",7168,nullptr,3,
+                   &weather_task)==pdPASS)return true;
+    ESP_LOGE(tag,"weather task creation failed");
+    return false;
+}
+
 void start_weather_reader(const char* configured_latlon) {
     const char* initial=configured_latlon?
         configured_latlon:CONFIG_ENEVINA_FMI_LATLON;
@@ -316,11 +327,10 @@ void start_weather_reader(const char* configured_latlon) {
     if(configured)current_location=normalized_location(latitude,longitude);
     mutex=xSemaphoreCreateMutex();
     if(!mutex) { ESP_LOGE(tag,"weather mutex allocation failed"); return; }
-    // Run even with an empty site location: a user can set their site later
-    // from the browser without factory reset or firmware rebuild.
-    if(xTaskCreate(poll_weather,"weather_read",8192,nullptr,3,
-                   &weather_task)!=pdPASS)
-        ESP_LOGE(tag,"weather task creation failed");
+    // Preserve the public setup workflow without paying for an idle 8 KiB
+    // TLS worker on devices whose owner has not selected a weather location.
+    // weather_update_location() starts it when the site is configured.
+    if(configured)ensure_weather_reader();
 }
 bool weather_update_location(const char* selected) {
     const bool enabled=selected && *selected;
@@ -341,6 +351,9 @@ bool weather_update_location(const char* selected) {
         last_saved_utc=0;
     }
     xSemaphoreGive(mutex);
+    // Settings already persist before this function is called; retry on any
+    // subsequent location update if allocation temporarily fails.
+    if(enabled && !ensure_weather_reader())return false;
     if(changed && weather_task)xTaskNotifyGive(weather_task);
     return true;
 }
