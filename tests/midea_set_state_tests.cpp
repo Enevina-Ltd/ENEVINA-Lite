@@ -71,7 +71,14 @@ int main() {
     assert(!set_state_command(s,patch,7,frame));
     patch.setpoint_c=22;
     s.freeze_protection_known=false;
-    assert(!set_state_command(s,patch,8,frame)); // 17..21 byte C0
+    s.freeze_protection=false; // msmart-ng fallback for a short C0
+    assert(set_state_command(s,patch,8,frame)); // short C0 is actionable
+    assert(frame[31]==0); // unknown freeze => unset, never random data
+    State short_after=s;
+    short_after.setpoint_c=patch.setpoint_c;
+    assert(preserved_state_observed(s,short_after,patch));
+    short_after.aux_heat=!short_after.aux_heat;
+    assert(!preserved_state_observed(s,short_after,patch));
     s.freeze_protection_known=true;
     s.freeze_protection=true;
     s.independent_aux_heat=true;

@@ -723,6 +723,7 @@ void cottage_midea_service_worker(void*) {
             enevina::midea::ReadStatus::ResourceBusy;
         enevina::midea::State sample{};
         bool attempted=false;
+        bool deferred_for_budget=false;
         // A momentary Wi-Fi disconnection must NEVER lead to a delayed
         // command firing later when the connection returns.
         const auto now=static_cast<int64_t>(time(nullptr));
@@ -734,7 +735,13 @@ void cottage_midea_service_worker(void*) {
            (!action || (approved &&
              expected_link==cottage_wifi_link_generation()))) {
             // Independent worker, shared RAM budget, no HTTP callback writes.
-            enevina_firmware::NetworkBudgetLease lease(300,60*1024,16*1024);
+            // A user-submitted command must not silently vanish because
+            // BLE/weather TLS held the shared mutex for 300 ms. Give it a
+            // short turn, then retry only while the SAME requested action
+            // remains fresh, connected, and explicitly approved.
+            enevina_firmware::NetworkBudgetLease lease(
+                action?2500u:300u,60*1024,16*1024);
+            if(!lease.held() && action)deferred_for_budget=true;
             if(lease.held()) {
                 attempted=true;
                 polling.store(true);
@@ -765,12 +772,33 @@ void cottage_midea_service_worker(void*) {
         }
         xSemaphoreTake(mutex,portMAX_DELAY);
         if(action) {
+            // Resource admission failures happen BEFORE any device write.
+            // Requeue the same command for a bounded retry; do not invent
+            // a new authorization, reset its 15 s TTL, or retry a write
+            // whose result is uncertain.
+            const int64_t at=static_cast<int64_t>(time(nullptr));
+            const int64_t issued=control_queued_utc.load();
+            const bool repeat=deferred_for_budget &&
+                before==revision.load() && !config_updating &&
+                pilot.enabled && pilot.config_revision==before &&
+                pilot.protocol==cfg.protocol &&
+                !std::strcmp(pilot.device_id,cfg.device_id) &&
+                is_midea_selected() && WiFi.status()==WL_CONNECTED &&
+                !cottage_ota_network_maintenance() &&
+                expected_link==cottage_wifi_link_generation() &&
+                issued>0 && at>=issued && at-issued<14;
+            if(repeat) {
+                pending_patch=patch;
+                control_pending.store(true);
+                // Preserve original queued UTC and WiFi generation.
+            }
             control_result.store(static_cast<int>(result));
             if(result==enevina::midea::ReadStatus::Ok &&
                before==revision.load() && is_midea_selected()) {
                 control_success.store(time(nullptr));
             }
             control_busy=false;
+            deferred_for_budget=repeat;
         }
         if(connected && selected && ready && within_window &&
            before==revision.load()) {
@@ -785,7 +813,8 @@ void cottage_midea_service_worker(void*) {
         xSemaphoreGive(mutex);
         // A user action or settings change wakes the worker immediately.
         // Normal read polling remains every 30 seconds.
-        ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(30000));
+        ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(
+            deferred_for_budget?500u:30000u));
     }
 }
 

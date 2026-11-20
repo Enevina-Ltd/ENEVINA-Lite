@@ -218,10 +218,12 @@ bool valid_control_patch(const ControlPatch& patch) {
 }
 bool set_state_command(const State& existing,const ControlPatch& patch,
                        uint8_t msg,Bytes& frame) {
-    // This is a whole-state 0x40 command: never overwrite protection
-    // when the C0 reply did not contain its state (17-21 byte C0).
-    if(!valid_control_patch(patch) || !valid_state(existing) ||
-       !existing.freeze_protection_known)return false;
+    // A short C0 response does not expose the freeze-protection flag.
+    // Follow the established msmart-ng compatibility behavior for this
+    // missing field (false), rather than disabling all Midea controls.
+    // For known flags, preserve the true value. A separate authenticated
+    // readback still confirms observable unchanged settings.
+    if(!valid_control_patch(patch) || !valid_state(existing))return false;
     const bool power=(patch.changed&ControlPower)?patch.power:existing.power;
     const uint8_t mode=(patch.changed&ControlMode)?patch.mode:existing.mode;
     const double temp=(patch.changed&ControlTemperature)?
@@ -291,8 +293,8 @@ bool preserved_state_observed(const State& before,const State& after,
                               const ControlPatch& patch) {
     if(!valid_control_patch(patch) ||
        !valid_state(before) || !valid_state(after) ||
-       !before.freeze_protection_known || !after.freeze_protection_known ||
-       before.freeze_protection!=after.freeze_protection ||
+       (before.freeze_protection_known && after.freeze_protection_known &&
+        before.freeze_protection!=after.freeze_protection) ||
        before.independent_aux_heat!=after.independent_aux_heat ||
        before.aux_heat!=after.aux_heat)return false;
     // No false success if the controller has silently reset a different

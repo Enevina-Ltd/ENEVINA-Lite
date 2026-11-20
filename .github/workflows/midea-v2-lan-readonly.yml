@@ -12,6 +12,9 @@ on:
       - 'tests/midea_lan_discovery_tests.cpp'
       - 'tests/test_midea_discovery_source.py'
       - 'tests/test_midea_v3_live_read_source.py'
+      - 'tests/test_midea_short_c0_control_source.py'
+      - 'tests/midea_set_state_tests.cpp'
+      - 'tests/test_midea_manual_control_source.py'
       - 'pump/adapter_catalog.hpp'
       - 'firmware/cottage/**'
       - 'tests/midea_v2_protocol_tests.cpp'
@@ -37,6 +40,8 @@ jobs:
         run: |
           python -m unittest discover -s tests -p 'test_midea_v2_integration.py' -v
           python -m unittest discover -s tests -p 'test_midea_v3_live_read_source.py' -v
+          python -m unittest discover -s tests -p 'test_midea_short_c0_control_source.py' -v
+          python -m unittest discover -s tests -p 'test_midea_manual_control_source.py' -v
           python -m unittest discover -s tests -p 'test_midea_discovery_source.py' -v
           g++ -std=c++17 -O2 -Wall -Wextra -Werror -I. tests/midea_lan_discovery_tests.cpp -o /tmp/midea-lan-discovery-tests
           /tmp/midea-lan-discovery-tests

@@ -281,6 +281,8 @@ ReadStatus write_device(const char* host,const Credential& creds,
     if(!handshake_response(packet.data(),packet.size(),creds,session)) {
         tcp.stop();return ReadStatus::AuthenticationFailed;
     }
+    // V3 device needs the same post-auth stabilization for writes as reads.
+    vTaskDelay(pdMS_TO_TICKS(1100));
     uint8_t padding[15]{};
     esp_fill_random(padding,sizeof(padding));
     Bytes request;

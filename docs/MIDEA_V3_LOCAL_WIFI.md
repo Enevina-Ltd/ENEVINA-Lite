@@ -43,6 +43,26 @@ not connect to a manufacturer service or issue a pump state/write command.
 - No automatic Midea control or background DHCP re-enrollment is enabled.
   A later IP change can be handled through this manual discovery again.
 
+## Short C0 state compatibility for manual setpoint changes
+
+Some Midea V3 OEM models report a shorter C0 status which omits the
+optional freeze-protection bit. Previously the Lite controller rejected
+**all** control attempts even when power, mode and setpoint were fresh.
+The controller now follows the established msmart-ng compatibility choice:
+an omitted freeze-protection bit is represented as false in a full-state
+0x40 write. A known true bit is still preserved. This is a deliberate
+trade-off: when a device omits the bit, its actual hidden state cannot be
+proven unchanged. For this reason the release should clearly document the
+fallback rather than claiming preservation of an unknown setting.
+
+The existing owner-invoked device pilot, fresh authenticated state, short
+write queue and authenticated readback remain in place. If the shared LAN
+resource mutex is briefly occupied, the manually queued command retries
+within its original 15-second validity window, using the original Wi-Fi
+generation and approval. An uncertain physical write is **never** retried.
+A Midea write is
+**not** activated by merely selecting or discovering a device.
+
 ## Verified Lite-to-Midea V3 local telemetry (20 November 2026)
 
 On the Core machine's connected ESP32-S3 N16R8 test board, **Enevina Lite
