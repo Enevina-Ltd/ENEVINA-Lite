@@ -718,8 +718,7 @@ static PumpView pump_view(const CN105Telemetry& cp,int64_t now,unsigned verified
 // ONE proposal for the physical control path: a calibrated, current MPC
 // plan's first decision, otherwise the price controller, which itself falls
 // back to a thermostat without prices. Never authorises a write by itself.
-static BootstrapDecision active_control_proposal(int64_t now,const TemperatureSample& t,
-                                                 ArbiterOutput* detail=nullptr) {
+static ArbiterInput build_arbiter_input(int64_t now,const TemperatureSample& t) {
     ArbiterInput in{};
     in.now_utc=now;
     in.temperature_fresh=valid_temperature(t,now);
@@ -742,7 +741,11 @@ static BootstrapDecision active_control_proposal(int64_t now,const TemperatureSa
     in.own_transition_confirmed=in.plan.has_plan &&
         mpc_confirmed_slot_utc.load()==in.plan.first_utc &&
         mpc_confirmed_heat.load()==(in.plan.first_heat?1:0);
-    const ArbiterOutput out=arbitrate(in);
+    return in;
+}
+static BootstrapDecision active_control_proposal(int64_t now,const TemperatureSample& t,
+                                                 ArbiterOutput* detail=nullptr) {
+    const ArbiterOutput out=arbitrate(build_arbiter_input(now,t));
     if(detail) *detail=out;
     return out.proposal;
 }
@@ -1252,6 +1255,9 @@ static uint32_t identifier_identity() {
     mix(s.pump_adapter,sizeof(s.pump_adapter));
     mix(s.cn105_url,sizeof(s.cn105_url));
     mix(s.fmi_latlon,sizeof(s.fmi_latlon));
+    // The model describes the room the bound indoor sensor measures.
+    const uint32_t sensor=c23_indoor_binding_id();
+    for(int i=0;i<4;++i) {h^=(sensor>>(8*i))&0xFFu;h*=16777619u;}
     return h;
 }
 static std::atomic<bool> identifier_reset_requested{false};
@@ -1329,6 +1335,7 @@ struct LearningSlot {
     bool indoor_ok=false;double indoor_c=0;
     bool outdoor_ok=false;double outdoor_c=0;
     uint32_t commands_sent=0;
+    uint32_t config_generation=0;
     bool energy_ok=false;double total_wh=0;int64_t energy_utc=0;
 };
 static void optimizer_worker(void*) {
@@ -1401,7 +1408,8 @@ static void optimizer_worker(void*) {
             last_boundary=slot_start;
             const PumpView view=pump_view(cp,now,observed_mode_minutes);
             // (1) Close the previous slot: one identification observation.
-            if(slot.open && slot.utc==slot_start-900) {
+            if(slot.open && slot.utc==slot_start-900 &&
+               slot.config_generation==c23_config_generation()) {
                 SlotObservation o{};
                 o.slot_utc=slot.utc;
                 o.indoor_valid=slot.indoor_ok && valid_temperature(ts,now);
@@ -1551,6 +1559,7 @@ static void optimizer_worker(void*) {
             slot.indoor_ok=valid_temperature(ts,now);slot.indoor_c=ts.indoor_c;
             slot.outdoor_ok=ws.available && weather_at(weather,wc,slot_start+450,slot.outdoor_c);
             slot.commands_sent=control_commands_sent.load();
+            slot.config_generation=c23_config_generation();
             xSemaphoreTake(lock_data,portMAX_DELAY);
             meter=consumption;
             xSemaphoreGive(lock_data);
@@ -1885,14 +1894,20 @@ static void plan_endpoint() {
     std::unique_ptr<Row[]> rows(new(std::nothrow) Row[max_horizon_slots]);
     if(rows) std::copy(plan_rows.begin(),plan_rows.end(),rows.get());
     xSemaphoreGive(lock_data);
+    const int64_t current_utc=time(nullptr);
+    // The same predicate the controller uses: a plan invalidated by a mode
+    // change (Cold, drying block), a rebound sensor, new settings or an
+    // external pump change is never shown as valid (Codex P2, PR #63).
+    const MpcFallback validity=plan_validity(
+        build_arbiter_input(current_utc,c23_temperature_sample()));
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.sendHeader("Cache-Control","no-store");
     web.send(200,"application/json; charset=utf-8","");
     char buf[220];
-    const int64_t current_utc=time(nullptr);
     // Only the CURRENT slot's plan from a calibrated model is ever shown:
     // a plan from an earlier slot is stale and never displayed as valid.
     const bool ok=rows && calibrated && record.has_plan && p.status==MpcStatus::Ok &&
+        validity==MpcFallback::None &&
         n>0 && n<=192 && current_utc>=record.first_utc && current_utc<record.first_utc+900;
     char cost_text[32];
     if(ok && energy && std::isfinite(cost)) snprintf(cost_text,sizeof(cost_text),"%.8f",cost);
@@ -1922,8 +1937,9 @@ static void json_number_or_null(char* out,size_t n,double v,const char* f,bool o
 }
 static void mpc_endpoint() {
     const int64_t now=time(nullptr);
-    ArbiterOutput arb{};
-    (void)active_control_proposal(now,c23_temperature_sample(),&arb);
+    const ArbiterInput arb_in=build_arbiter_input(now,c23_temperature_sample());
+    const ArbiterOutput arb=arbitrate(arb_in);
+    const MpcFallback validity=plan_validity(arb_in);
     struct PsramFree {void operator()(void* p) const {heap_caps_free(p);}};
     std::unique_ptr<PlanRow,PsramFree> rows_mem(static_cast<PlanRow*>(heap_caps_malloc(
         sizeof(PlanRow)*max_horizon_slots,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)));
@@ -1959,7 +1975,7 @@ static void mpc_endpoint() {
     const int64_t current_slot=(now/900)*900;
     // Never display a plan from an earlier slot or from an uncalibrated model.
     const bool plan_ok=cal.state==CalibrationState::Calibrated && plan.has_plan &&
-        plan.first_utc==current_slot && row_count>0;
+        validity==MpcFallback::None && plan.first_utc==current_slot && row_count>0;
     const bool energy_ok=plan_ok && energy;
     const bool confirmed=plan_ok && arb.source==ProposalSource::Mpc &&
         mpc_confirmed_slot_utc.load()==current_slot &&
@@ -2038,14 +2054,15 @@ static void mpc_endpoint() {
     json_number_or_null(b,sizeof(b),cost,"%.4f",energy_ok);
     snprintf(buf,sizeof(buf),
         "\"plan\":{\"valid\":%s,\"computed_utc\":%lld,\"first_utc\":%lld,\"first_heat\":%s,"
-        "\"planning_fallback\":\"%s\",\"bridge_status\":\"%s\",\"horizon_slots\":%u,"
+        "\"planning_fallback\":\"%s\",\"plan_block\":\"%s\",\"bridge_status\":\"%s\",\"horizon_slots\":%u,"
         "\"horizon_limit\":\"%s\",\"price_slots\":%u,\"weather_slots\":%u,"
         "\"target_c\":%.2f,\"lower_c\":%.2f,\"upper_c\":%.2f,\"energy_valid\":%s,"
         "\"energy_kwh\":%s,\"cost\":%s,\"currency\":\"%s\",\"solve_ms\":%u,"
         "\"solve_worst_ms\":%u,\"solves\":%u,\"solver_failures\":%u,\"slots\":[",
         plan_ok?"true":"false",static_cast<long long>(plan.computed_utc),
         static_cast<long long>(plan.first_utc),plan_ok&&plan.first_heat?"true":"false",
-        mpc_fallback_name(plan.planning_fallback),bridge_status_name(bs),
+        mpc_fallback_name(plan.planning_fallback),mpc_fallback_name(validity),
+        bridge_status_name(bs),
         static_cast<unsigned>(hs),horizon_limit_name(hl),static_cast<unsigned>(hp),
         static_cast<unsigned>(hw),plan.target_c,plan.band.lower_c,plan.band.upper_c,
         energy_ok?"true":"false",a,b,market.currency,solve_ms,worst,solves,failures);

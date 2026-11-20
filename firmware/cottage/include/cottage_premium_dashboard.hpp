@@ -1698,7 +1698,7 @@ function render(){
     g3.append(box(t('energy'),p.energy_valid?f(p.energy_kwh,2)+' kWh · '+f(p.cost,2)+' '+(p.currency||''):'—',p.energy_valid?null:t('energyno')));
   } else {
     g3.append(box(t('plan'),'—',t('noplan')));
-    g3.append(box(t('updated'),p.computed_utc?day(p.computed_utc):'—',WHY[lang()][p.planning_fallback]||null));
+    g3.append(box(t('updated'),p.computed_utc?day(p.computed_utc):'—',WHY[lang()][p.plan_block]||WHY[lang()][p.planning_fallback]||null));
   }
   const meter=d.meter||{};
   g3.append(box(t('meter'),num(meter.watts)===null?'—':f(meter.watts,0)+' W',meter.scope==='HEAT_PUMP_ONLY'?t('scopeP'):t('scopeU')));

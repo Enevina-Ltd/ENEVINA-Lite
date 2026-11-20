@@ -80,10 +80,29 @@ class MpcControlWiring(unittest.TestCase):
         self.assertNotIn("cn105_bridge_get", WORKER)
         self.assertIn("o.heat_valid=view.known && view.minutes>=14 &&", WORKER)
         self.assertIn("o.heat_requested=view.heat;", WORKER)
-        arb = MAIN.split("static BootstrapDecision active_control_proposal(", 1)[1].split("\n}\n", 1)[0]
+        arb = MAIN.split("static ArbiterInput build_arbiter_input(", 1)[1].split("\n}\n", 1)[0]
         self.assertIn("const PumpView view=pump_view(cp,now,minutes);", arb)
         self.assertIn("mpc_confirmed_slot_utc.load()==in.plan.first_utc", arb)
         self.assertNotIn("bridge_observed", MAIN)
+
+    def test_model_bound_to_indoor_sensor_and_plan_display_uses_controller_validity(self):
+        # Codex P2 #1 (PR #63): the learned model describes the room the bound
+        # RuuviTag measures; re-binding resets learning and revokes plans.
+        ident = MAIN.split("static uint32_t identifier_identity() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("c23_indoor_binding_id()", ident)
+        air = (ROOT / "firmware/cottage/src/cottage_air_service.cpp").read_text(encoding="utf-8")
+        bind = air.split("if(binding_changed) {", 1)[1].split("log_event(4", 1)[0]
+        self.assertIn("++config_generation;", bind)
+        self.assertIn("uint32_t c23_indoor_binding_id() {", air)
+        self.assertIn("slot.config_generation==c23_config_generation()", WORKER)
+        self.assertIn("slot.config_generation=c23_config_generation();", WORKER)
+        # Codex P2 #2: /api/plan and /api/mpc use the controller's validity.
+        plan = MAIN.split("static void plan_endpoint() {", 1)[1].split("static void json_number_or_null", 1)[0]
+        self.assertIn("plan_validity(", plan)
+        self.assertIn("validity==MpcFallback::None", plan)
+        mpc = MAIN.split("static void mpc_endpoint() {", 1)[1].split("static void weather_forecast_endpoint()", 1)[0]
+        self.assertIn("plan_validity(arb_in)", mpc)
+        self.assertIn("validity==MpcFallback::None", mpc)
 
     def test_meter_scope_rule_on_main(self):
         self.assertIn("static bool shelly_meter_pump_only() {return false;}", MAIN)

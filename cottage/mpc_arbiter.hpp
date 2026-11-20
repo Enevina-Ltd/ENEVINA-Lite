@@ -85,6 +85,46 @@ inline MpcFallback fallback_for_status(MpcStatus s) {
     return MpcFallback::SolverFailed;
 }
 
+// Is the stored plan still valid for the CURRENT mode, inputs and pump?
+// (structural validity; a room outside the band is judged separately in
+// arbitrate()). The dashboard uses this too, so a plan the controller has
+// invalidated is never shown as valid (Codex P2, PR #63).
+inline MpcFallback plan_validity(const ArbiterInput& in) {
+    // "Cold" and a drying mode that does not permit heat both yield
+    // NoHeatingRequested in the existing controller.
+    if(in.bootstrap.reason==BootstrapReason::NoHeatingRequested &&
+       in.bootstrap.action==BootstrapAction::Off)
+        return MpcFallback::NoHeatingMode;
+    const MpcPlanRecord& p=in.plan;
+    if(!p.has_plan) return p.planning_fallback==MpcFallback::None?
+        MpcFallback::SolverFailed:p.planning_fallback;
+    if(p.status!=MpcStatus::Ok || p.count==0) return fallback_for_status(p.status);
+    // Never use a stale plan: only inside the slot it was computed for.
+    if(in.now_utc<p.first_utc || in.now_utc>=p.first_utc+900 ||
+       p.computed_utc>in.now_utc || p.computed_utc<p.first_utc)
+        return MpcFallback::PlanStale;
+    if(p.config_generation!=in.config_generation ||
+       p.settings_generation!=in.settings_generation)
+        return MpcFallback::PlanInputsChanged;
+    if(!in.pump_state_known) return MpcFallback::PumpStateUnknown;
+    // The pump-mode generation also advances when the plan's OWN decision
+    // is executed. Accept that single expected transition only when the
+    // readback confirmed it in this slot and the verified pump now shows it;
+    // any other generation change (external switch, source gap) re-plans.
+    const bool own_transition=p.first_heat!=p.initial_heat &&
+        in.own_transition_confirmed && in.pump_heat==p.first_heat;
+    if(p.mode_generation!=in.mode_generation && !own_transition)
+        return MpcFallback::PlanInputsChanged;
+    if(!(in.bootstrap.requested_room_c>0) ||
+       std::fabs(in.bootstrap.requested_room_c-p.target_c)>0.01)
+        return MpcFallback::PlanInputsChanged;
+    // A pump state other than the planned start state or the plan's own
+    // first decision means an external change (remote, manual): re-plan.
+    if(in.pump_heat!=p.initial_heat && in.pump_heat!=p.first_heat)
+        return MpcFallback::PlanInputsChanged;
+    return MpcFallback::None;
+}
+
 inline ArbiterOutput arbitrate(const ArbiterInput& in) {
     ArbiterOutput out{};
     out.proposal=in.bootstrap;
@@ -102,41 +142,14 @@ inline ArbiterOutput arbitrate(const ArbiterInput& in) {
         return fallback(in.calibration==CalibrationState::Validating?
             MpcFallback::ModelValidating:MpcFallback::ModelLearning);
     }
-    // The bootstrap already encodes the user's mode: "cold" and a drying
-    // mode that does not permit heat both yield NoHeatingRequested.
     if(in.bootstrap.reason==BootstrapReason::NoHeatingRequested &&
        in.bootstrap.action==BootstrapAction::Off)
         return fallback(MpcFallback::NoHeatingMode);
     if(!in.temperature_fresh || !std::isfinite(in.indoor_c))
         return fallback(MpcFallback::TemperatureStale);
+    const MpcFallback invalid=plan_validity(in);
+    if(invalid!=MpcFallback::None) return fallback(invalid);
     const MpcPlanRecord& p=in.plan;
-    if(!p.has_plan) return fallback(p.planning_fallback==MpcFallback::None?
-        MpcFallback::SolverFailed:p.planning_fallback);
-    if(p.status!=MpcStatus::Ok || p.count==0) return fallback(fallback_for_status(p.status));
-    // Never use a stale plan: only inside the slot it was computed for.
-    if(in.now_utc<p.first_utc || in.now_utc>=p.first_utc+900 ||
-       p.computed_utc>in.now_utc || p.computed_utc<p.first_utc)
-        return fallback(MpcFallback::PlanStale);
-    if(p.config_generation!=in.config_generation ||
-       p.settings_generation!=in.settings_generation)
-        return fallback(MpcFallback::PlanInputsChanged);
-    if(!in.pump_state_known) return fallback(MpcFallback::PumpStateUnknown);
-    // The pump-mode generation also advances when the plan's OWN decision
-    // is executed. Accept that single expected transition only when the
-    // readback confirmed it in this slot and the verified pump now shows it;
-    // any other generation change (external switch, source gap) re-plans
-    // (Codex P2, PR #63).
-    const bool own_transition=p.first_heat!=p.initial_heat &&
-        in.own_transition_confirmed && in.pump_heat==p.first_heat;
-    if(p.mode_generation!=in.mode_generation && !own_transition)
-        return fallback(MpcFallback::PlanInputsChanged);
-    if(!(in.bootstrap.requested_room_c>0) ||
-       std::fabs(in.bootstrap.requested_room_c-p.target_c)>0.01)
-        return fallback(MpcFallback::PlanInputsChanged);
-    // A pump state other than the planned start state or the plan's own
-    // first decision means an external change (remote, manual): re-plan.
-    if(in.pump_heat!=p.initial_heat && in.pump_heat!=p.first_heat)
-        return fallback(MpcFallback::PlanInputsChanged);
     // Measured room outside the band the plan protects: the plan's model is
     // wrong right now; the existing controller (which heats below its own
     // lower edge and stops above its upper edge) takes over this slot.

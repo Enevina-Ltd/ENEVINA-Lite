@@ -115,8 +115,14 @@ oppii passiivisesti. Tilaa voi seurata `/api/mpc`-rajapinnasta ja MPC-kortista.
 Malli tallennetaan NVS:ään (`cottage_mdl/rls1`, noin 1,3 KiB, CRC, versio)
 enintään 6 tunnin välein ja vain, jos NVS:ssä on runsaasti vapaata tilaa.
 Wi-Fi-, OTA- ja aktivointitietueita ei siis voida syrjäyttää. Malli on
-sidottu pumpun sovittimeen, CN105-osoitteeseen ja sääpaikkaan, ja muutos
-aloittaa oppimisen alusta. `POST /api/model/reset` (sama asetustoken kuin
+sidottu pumpun sovittimeen, CN105-osoitteeseen, sääpaikkaan ja sidottuun
+sisäanturiin (RuuviTagin MAC), ja muutos aloittaa oppimisen alusta. Anturin
+vaihto kasvattaa myös konfiguraatiogeneraatiota, joten voimassa oleva
+suunnitelma ja kesken oleva opetusvartti hylätään (Codex P2, PR #63).
+Käyttöliittymä näyttää suunnitelman voimassa olevana vain, jos ohjain
+itsekin pitäisi sitä voimassa (`plan_validity()`): esim. Kylmä-tila,
+vaihtunut tavoite tai asetus tai ulkoinen pumpun muutos tekee siitä
+kelvottoman heti, ei vasta seuraavalla varttirajalla. `POST /api/model/reset` (sama asetustoken kuin
 muissa asetuksissa) nollaa mallin.
 
 ## 4. Ennuste, hinnat ja liukuva horisontti

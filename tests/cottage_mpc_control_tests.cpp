@@ -178,6 +178,24 @@ void test_arbiter_order_and_fallbacks() {
         CHECK(arbitrate(in).fallback==MpcFallback::PlanInputsChanged); }
     {   auto in=base_input();in.settings_generation=2;
         CHECK(arbitrate(in).fallback==MpcFallback::PlanInputsChanged); }
+    // Codex P2 #2 (PR #63): the dashboard shares the controller's plan
+    // validity, so a plan the controller rejects is never displayed valid.
+    {   auto in=base_input();
+        CHECK(plan_validity(in)==MpcFallback::None);
+        in.bootstrap.action=BootstrapAction::Off;           // user selected Cold
+        in.bootstrap.reason=BootstrapReason::NoHeatingRequested;
+        CHECK(plan_validity(in)==MpcFallback::NoHeatingMode);
+        auto st=base_input();st.now_utc=now0+900;
+        CHECK(plan_validity(st)==MpcFallback::PlanStale);
+        auto rebound=base_input();rebound.config_generation=1;  // sensor re-bound
+        CHECK(plan_validity(rebound)==MpcFallback::PlanInputsChanged);
+        auto other=base_input();other.bootstrap.requested_room_c=21.0;
+        CHECK(plan_validity(other)==MpcFallback::PlanInputsChanged);
+        auto none=base_input();none.pump_state_known=false;
+        CHECK(plan_validity(none)==MpcFallback::PumpStateUnknown);
+        // arbitrate() and plan_validity() agree whenever the plan is the reason.
+        CHECK(arbitrate(rebound).fallback==plan_validity(rebound));
+        CHECK(arbitrate(st).fallback==plan_validity(st)); }
     // Codex P1 (PR #63): no verified pump-origin state -> no MPC decision.
     {   auto in=base_input();in.pump_state_known=false;
         CHECK(arbitrate(in).fallback==MpcFallback::PumpStateUnknown);
