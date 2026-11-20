@@ -631,6 +631,10 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     // The owner's profile and comfort limits come from the site settings.
     // Inconsistent values yield no decision, never a guessed one.
     const SiteSettings site=site_settings_snapshot();
+    // Old/migrated NVS or a disrupted two-key transaction might carry a
+    // claimed hard bound on the wrong side of the active mode target.
+    // Refuse a physical proposal instead of silently dropping that bound.
+    if(!mode_comfort_limits_fit(site,mode))return {};
     size_t window=8;
     if(!apply_profile(input,site.profile,site.comfort_min_c,site.comfort_max_c,
                       site.min_price_advantage_fraction,window))
