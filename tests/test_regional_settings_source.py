@@ -174,6 +174,17 @@ class TimelineWiring(unittest.TestCase):
         self.assertGreaterEqual(body.count("MALLOC_CAP_SPIRAM"), 4)
         self.assertNotIn("cJSON_Create", body)
 
+    def test_drying_heat_permission_and_action_are_proposals_not_live_pump_state(self):
+        timeline = self.MAIN.split("static void timeline_endpoint()")[1].split("static void prices_endpoint()")[0]
+        self.assertIn("meta.heating_permitted=has_target", timeline)
+        self.assertIn("drying_blocks_heat(plan)", timeline)
+        self.assertIn("bootstrap_preview(now,c23_temperature_sample())", timeline)
+        self.assertIn('heating_permitted', self.TL)
+        dashboard = (ROOT / "firmware/cottage/include/cottage_premium_dashboard.hpp").read_text(encoding="utf-8")
+        self.assertIn('heating_permitted===false', dashboard)
+        self.assertIn("Ehdotus: lämmitys", dashboard)
+        self.assertIn("Ehdotus: lämmitys pois", dashboard)
+
 
 if __name__ == "__main__":
     unittest.main()

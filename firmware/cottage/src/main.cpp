@@ -1711,6 +1711,10 @@ static void timeline_endpoint() {
         return;
     }
     const BootstrapDecision decision=bootstrap_preview(now,c23_temperature_sample());
+    // A drying target may be valid yet humidity conditions prohibit heating.
+    // Preserve the target for display but suppress heating guidance separately.
+    meta.heating_permitted=has_target &&
+        !(mode.mode==CottageMode::Drying && drying_blocks_heat(plan));
     meta.currency=market.currency;meta.area=market.area;
     meta.decision_action=bootstrap_action_name(decision.action);
     meta.decision_reason=bootstrap_reason_name(decision.reason);

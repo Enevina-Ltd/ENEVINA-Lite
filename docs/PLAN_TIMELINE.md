@@ -61,3 +61,21 @@ to +1.0 C."* In Finnish and English.
 * Indoor-temperature and cost projections remain open until the building model is
   calibrated (`OPTIMIZATION_AUDIT_20261118.md`, L22).
 * Past prices and measured indoor history are not drawn on this chart.
+
+## Ohjausrajoitusten ja tilan oikea tulkinta
+
+Aikajanan nykyinen toiminto on **ohjausehdotus** (`Ehdotus: lämmitys`,
+`Ehdotus: lämmitys pois` tai `Ehdotus: nykyinen tila pidetään`).
+Se ei kerro pumpun todellista toimintatilaa eikä väitä, että komento olisi
+lähetetty. Fyysinen ohjaus edellyttää aina sen omia käyttöönotto- ja
+turvaedellytyksiä.
+
+Kuivanapidon laskettu lämpötilatavoite säilytetään historiassa ja
+käyttöliittymässä myös silloin, kun kosteusmittauksen ehdot **eivät
+salli lämmitystä**. `heating_permitted:false` siirtyy
+`/api/timeline`-vastaukseen suoraan saman
+`drying_blocks_heat(plan)`-ehdon perusteella kuin ohjauksessa;
+aikajana ei silloin ehdota hintaikkunan mukaista lämmitystä.
+Kylmillään-tilan puuttuvaa lämpötilatavoitetta käsitellään edelleen
+omana tapauksena. Nämä ovat lähdekoodi- ja host-testattuja ehtoja,
+eivät fyysisen pumpun todennuksia.
