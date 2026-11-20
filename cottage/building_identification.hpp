@@ -164,6 +164,10 @@ public:
 
     BuildingIdentifier() { reset(); }
     void reset();
+    // Forget ONLY the electric model (the thermal model describes the building
+    // and stays): called when the confirmed heat-pump-only meter changes or the
+    // confirmation is withdrawn, so another meter's readings never blend in.
+    void reset_electric();
     // Optional prior (e.g. a deliberately wrong guess in tests). Weight is the
     // inverse prior covariance scale: small = weak prior. Never marks the
     // model calibrated; only data + walk-forward validation can.

@@ -201,6 +201,20 @@ void test_meter_scope_rule() {
         const double e_model=advance(p,State{10,true,120},d,true).electric_kwh;
         const double e_true=advance(sim.truth,State{10,true,120},d,true).electric_kwh;
         CHECK(rel(e_model,e_true)<0.10);
+        // The confirmed meter changes (or the confirmation is withdrawn):
+        // only the electric model restarts, the building model stays.
+        const double tau_before=r.model.tau_h;
+        const uint32_t samples_before=r.samples;
+        id.reset_electric();
+        const auto q=id.report(sim.utc);
+        CHECK(q.model.electric_samples==0 && !q.model.electric_trusted && !q.model.absolute_bounds);
+        CHECK(std::fabs(q.model.tau_h-tau_before)<1e-9 && q.samples==samples_before);
+        CHECK(q.state==CalibrationState::Calibrated);
+        CHECK(id.build_parameters(sim.utc,band,true,1.0,p,kwh)==ModelBuildError::None);
+        CHECK(!kwh);                       // no trusted electric model -> normalised units
+        // It learns the new meter from scratch.
+        for(int i=0;i<12*96;++i) id.add(sim.step());
+        CHECK(id.report(sim.utc).model.electric_trusted);
     }
 }
 

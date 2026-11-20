@@ -209,6 +209,10 @@ static std::atomic<int> mpc_confirmed_heat{-1};
 // it is shown as measured consumption but never used for COP or the MPC's
 // energy model.
 static bool shelly_meter_pump_only() {return false;}
+// Identity of the confirmed heat-pump-only meter (0 = none). When it changes
+// or the confirmation is withdrawn the electric model restarts, so another
+// meter's readings never blend into it. Constant on main (no confirmation).
+static uint32_t shelly_meter_identity() {return 0;}
 // The owner's HARD comfort limits (0 = unset). Main has no such setting yet:
 // the stacked optimisation-profile PR adds SiteSettings::comfort_min_c /
 // comfort_max_c and maps them here. The MPC band, the plan and its validity
@@ -1411,6 +1415,7 @@ static void optimizer_worker(void*) {
     const bool restored=id && epoch_known &&
         identifier_load(*id,model_store_identity(identity,model_epoch));
     bool reset_unpersisted=false,reset_by_owner=false;
+    uint32_t electric_meter_id=0;
     uint32_t last_reset_retry_ms=0;
     if(id) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
@@ -1462,6 +1467,13 @@ static void optimizer_worker(void*) {
                 reset_unpersisted=persist_model_reset(model_store,model_epoch)!=
                     ModelResetResult::Persisted;
                 if(reset_by_owner) identifier_reset_state.store(reset_unpersisted?3:2);
+            }
+        }
+        if(id) {
+            const uint32_t meter_id=shelly_meter_pump_only()?shelly_meter_identity():0;
+            if(meter_id!=electric_meter_id) {
+                electric_meter_id=meter_id;
+                id->reset_electric();
             }
         }
         if(wifi_ok.load() && clock_ok() && prices && weather && aligned && hz && rows &&

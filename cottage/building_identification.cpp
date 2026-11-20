@@ -146,6 +146,12 @@ void BuildingIdentifier::reset() {
     rls_init(electric_,nullptr,prior_p);
 }
 
+void BuildingIdentifier::reset_electric() {
+    rls_init(electric_,nullptr,prior_p);
+    elec_err_sq_=0;elec_sq_=0;elec_on_=0;
+    revision_++;
+}
+
 void BuildingIdentifier::set_prior(double tau_h,double lift_k,double weight) {
     if(!id_finite(tau_h) || tau_h<=0.5 || !id_finite(lift_k) || !id_finite(weight) || weight<=0)
         return;

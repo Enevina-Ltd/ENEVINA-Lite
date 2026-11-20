@@ -145,6 +145,9 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("static bool shelly_meter_pump_only() {return false;}", MAIN)
         self.assertIn("o.meter_pump_only=shelly_meter_pump_only();", WORKER)
         self.assertIn("pi.meter_pump_only=shelly_meter_pump_only();", WORKER)
+        # Another meter's readings never blend into the electric model.
+        self.assertIn("const uint32_t meter_id=shelly_meter_pump_only()?shelly_meter_identity():0;", WORKER)
+        self.assertIn("id->reset_electric();", WORKER)
 
     def test_learning_is_read_only_and_persisted_hourly(self):
         self.assertIn('nvs_open("cottage_mdl",NVS_READWRITE,&handle)', MAIN)
