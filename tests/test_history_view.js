@@ -7,7 +7,7 @@ const m=/<script id="history-script">([\s\S]*?)<\/script>/.exec(header);
 assert(m,'history script block missing');
 const src=m[1];
 
-const dict=JSON.parse(header.split('const UI_EN=Object.freeze(')[1].split(');\nconst UI_EN_FRAGMENTS')[0]);
+const dict=JSON.parse(header.split('const UI_EN=Object.freeze(')[1].split(/\);\r?\nconst UI_EN_FRAGMENTS/)[0]);
 const literals=[...src.matchAll(/HT\('([^']*)'\)/g)].map(x=>x[1]);
 assert(literals.length>15);
 assert.deepEqual(literals.filter(l=>!(l in dict)&&l!=='Wi-Fi'),[],'missing English translations');
