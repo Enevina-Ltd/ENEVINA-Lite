@@ -169,7 +169,8 @@ bool persist(const SiteSettings& s) {
             state==ESP_OTA_IMG_VALID;
         if(written==sizeof(blob) &&
            enevina::cottage::site_old_keys_reclaimable(
-               image_valid,cottage_ota_confirmation_pending())) {
+               image_valid,cottage_ota_runtime_ready(),
+               cottage_ota_confirmation_pending())) {
             // Reclamation is allowed only AFTER OTA confirmation, when the
             // earlier firmware cannot be restored by the OTA rollback path.
             if(p.isKey("v3")) p.remove("v3");
