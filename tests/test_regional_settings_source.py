@@ -196,5 +196,55 @@ class TimelineWiring(unittest.TestCase):
         self.assertIn("Ehdotus: lämmitys pois", dashboard)
 
 
+class HistoryWiring(unittest.TestCase):
+    HIST = (ROOT / "firmware/cottage/src/cottage_history.cpp").read_text(encoding="utf-8")
+    MAIN = (ROOT / "firmware/cottage/src/main.cpp").read_text(encoding="utf-8")
+
+    def test_flash_use_is_bounded_and_isolated(self):
+        self.assertIn('LittleFS.begin(false,"/lfs",5,"spiffs")', self.HIST)
+        self.assertIn('LittleFS.begin(true,"/lfs",5,"spiffs")', self.HIST)   # only after the plain mount failed
+        self.assertLess(self.HIST.index('LittleFS.begin(false'), self.HIST.index('LittleFS.begin(true'))
+        self.assertIn("kFlushIntervalMs=60UL*60*1000", self.HIST)
+        for forbidden in ("Preferences", "nvs_", "esp_ota", "nvs_flash_erase", "esp_partition_erase"):
+            self.assertNotIn(forbidden, self.HIST)
+        self.assertIn('LittleFS.rename(tmp_,path_)', self.HIST)               # atomic replace
+        self.assertIn("MALLOC_CAP_SPIRAM", self.HIST)                          # ring in PSRAM, fail closed
+        self.assertIn("feature disabled", self.HIST)
+
+    def test_collector_records_only_fresh_values_and_flags_forecasts(self):
+        body = self.MAIN.split("static enevina::cottage::HistoryInputs history_collect()")[1].split("static void history_worker")[0]
+        self.assertIn("valid_temperature(te,now)", body)
+        self.assertIn("valid_shelly(st,now)", body)
+        self.assertIn("in.outdoor_is_forecast=true", body)
+        self.assertIn("in.outdoor_is_forecast=false", body)
+        self.assertIn("sse_fresh", body)
+        self.assertIn("in.clock_trusted=clock_ok()", body)
+        # The history proposal must agree with the physical command's
+        # arbitration (MPC > price > thermostat), not show fallback prices
+        # when an active MPC plan chose the opposite action.
+        self.assertIn("const BootstrapDecision d=active_control_proposal(now,te);", body)
+        self.assertNotIn("bootstrap_preview(now,te)", body)
+        self.assertIn("d.action==BootstrapAction::HeatSetpoint?2", body)
+
+    def test_setpoint_comes_from_the_verified_snapshot_and_scope_is_recorded(self):
+        # Codex P2/P1 (#60): sse_observed_pump is never marked received, so the
+        # setpoint history was always empty; and the meter scope must be stored
+        # with each reading, not looked up from today's setting.
+        body = self.MAIN.split("static enevina::cottage::HistoryInputs history_collect()")[1].split("static void history_worker")[0]
+        self.assertIn("in.setpoint_valid=valid_cn105(cp,now);in.setpoint_c=cp.setpoint_c;", body)
+        self.assertNotIn("in.setpoint_valid=sse_fresh", body)
+        self.assertIn("in.power_scope=", body)
+
+    def test_dashboard_defines_the_six_column_card(self):
+        # Codex P2 (#60): only the mobile rule had .span6, so the two history cards
+        # took one grid column each on tablet/desktop.
+        dash = (ROOT / "firmware/cottage/include/cottage_premium_dashboard.hpp").read_text(encoding="utf-8")
+        self.assertIn(".span6{grid-column:span 6}", dash)
+
+    def test_worker_is_separate_low_priority_and_not_in_health_gate(self):
+        self.assertIn('xTaskCreatePinnedToCore(history_worker,"cottage_hist",8192,nullptr,1,nullptr,0)', self.MAIN)
+        self.assertIn("enevina_firmware::history_initialize();", self.MAIN)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -64,7 +64,8 @@ STATE = {
                "tariff_confirmed": False, "setup_complete": False, "setup_step": 0},
 }
 GEO_STATE = {"q": None, "since": 0.0}
-TIMELINE = {"cli": None, "start": 300}     # set by --timeline-cli; start = index into the FI week
+TIMELINE = {"cli": None, "start": 300}
+HISTORY = {"cli": None}     # set by --timeline-cli; start = index into the FI week
 # Sensors: values are the official Ruuvi Data Format 5 test vector (24.3 C) with
 # different MACs/RSSI. The 3rd one stopped advertising (stale) to show that case.
 SENSORS = {"CB:B8:33:4C:88:01": {"rssi": -48, "age0": 4, "live": True, "t": 21.4, "rh": 45.2, "v": 2.98},
@@ -280,6 +281,15 @@ class H(BaseHTTPRequestHandler):
                                   str(opt["comfort_min_c"] or 0), str(opt["comfort_max_c"] or 0), "0.06", "EUR", "FI",
                                   str(target - 0.3 if target > 0 else 21)], capture_output=True, text=True, timeout=10)
             return self.send(200, out.stdout.strip().encode("utf-8"))
+        if u.path == "/api/history":
+            rng = q.get("range", ["24h"])[0]
+            if not HISTORY["cli"] or rng not in ("24h", "7d", "30d"):
+                return self.send(200, {"valid": False, "points": [], "events": []})
+            scratch = ROOT / "build" / "histdir"
+            scratch.mkdir(parents=True, exist_ok=True)
+            csv = ROOT / "tests/data/prices/FI_EUR_2026-11-12_to_18.csv"
+            out = subprocess.run([HISTORY["cli"], str(csv), rng, str(scratch)], capture_output=True, text=True, timeout=30)
+            return self.send(200, out.stdout.strip().encode("utf-8"))
         if u.path == "/api/weather":
             # Synthetic outdoor series aligned with the recorded price slice (harness data, not a forecast).
             rows = [r.split(",") for r in (ROOT / "tests/data/prices/FI_EUR_2026-11-12_to_18.csv").read_text().splitlines()[1:]]
@@ -334,9 +344,11 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--configured", action="store_true", help="start with setup already complete")
+    ap.add_argument("--history-cli", help="path to history_cli(.exe) built from tools/history_cli.cpp")
     ap.add_argument("--timeline-cli", help="path to plan_timeline_cli(.exe) built from tools/plan_timeline_cli.cpp")
     a = ap.parse_args()
     TIMELINE["cli"] = a.timeline_cli
+    HISTORY["cli"] = a.history_cli
     if a.configured:
         STATE["region"].update(setup_complete=True, setup_step=9)
     print(f"simulator on http://127.0.0.1:{a.port}/ ({len(COUNTRIES)} countries)", flush=True)
