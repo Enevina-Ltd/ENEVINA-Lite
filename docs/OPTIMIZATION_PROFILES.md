@@ -151,7 +151,10 @@ On an OTA first boot, site/air crash recovery can save the site settings
 BEFORE the signed OTA service has loaded its transaction. A missing 'pending'
 flag is not proof of confirmation: old site v1/v2/v3 (and v4 in subsequent
 images) are reclaimable only when the running ESP-IDF image state is
-ESP_OTA_IMG_VALID **and** no signed OTA confirmation is pending. Unknown,
-pending-verify and failed state reads leave old records in place. Host and
+ESP_OTA_IMG_VALID, the signed OTA transaction service has successfully
+initialized and checked its NVS record, **and** no signed OTA confirmation is
+pending. A VALID image by itself is insufficient because an unexpected reset
+can occur between IDF validation and the signed OTA journal commit. Unknown,
+pending-verify, uninitialized OTA and failed state reads keep old records. Host and
 source tests enforce this non-destructive ordering; a real hardware
 power-cut and A/B rollback test remains a release criterion.

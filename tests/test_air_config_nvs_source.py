@@ -34,6 +34,8 @@ class AirPartialNvsRecovery(unittest.TestCase):
         self.assertIn('esp_ota_get_state_partition(running,&state)==ESP_OK',site)
         self.assertIn('state==ESP_OTA_IMG_VALID',site)
         self.assertIn('site_old_keys_reclaimable(',site)
+        self.assertIn('cottage_ota_runtime_ready()',site)
+        self.assertIn('ota_storage_ready.store(last_status.load()!=3)',(ROOT / 'firmware/cottage/src/cottage_secure_ota.cpp').read_text(encoding='utf-8'))
         self.assertNotIn('written==sizeof(blob) && !cottage_ota_confirmation_pending()',site)
         self.assertIn('const bool site_saved=persist(next) && site_persisted_matches(next)',site)
         self.assertIn('comfort_limits_fit_target(',site)

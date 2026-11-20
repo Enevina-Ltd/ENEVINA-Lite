@@ -12,6 +12,9 @@ bool cottage_ota_request_immediate();
 bool cottage_ota_dashboard_request_pending();
 uint32_t cottage_ota_last_check_utc();
 bool cottage_ota_confirmation_pending();
+// True only after the persisted OTA transaction has been successfully checked.
+// False while site/air early boot recovery is running, even on a VALID image.
+bool cottage_ota_runtime_ready();
 // True only after durable good-version and pending-transaction cleanup.
 bool cottage_ota_confirm_boot();
 uint32_t cottage_ota_good_version();

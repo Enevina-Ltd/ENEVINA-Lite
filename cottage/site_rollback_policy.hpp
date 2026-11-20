@@ -4,7 +4,9 @@
 // is NOT proof that the running firmware was confirmed by ESP-IDF.
 namespace enevina::cottage {
 inline bool site_old_keys_reclaimable(bool running_image_valid,
+                                      bool ota_service_initialized,
                                       bool ota_confirmation_pending) {
-    return running_image_valid && !ota_confirmation_pending;
+    return running_image_valid && ota_service_initialized &&
+           !ota_confirmation_pending;
 }
 }
