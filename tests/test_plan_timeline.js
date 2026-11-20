@@ -73,6 +73,12 @@ for(const meta of [{target_c:null,preheat_c:2,coast_c:2},{preheat_c:2,coast_c:2}
     assert(!/lämmitetään|lämmitys sallittu|termostaatti|ei lämmitetä|lämmitys pidetään/.test(t),t);
   }
 assert(A.tlControlText('unknown',{target_c:null}).includes('ei ole riittävästi'));
+// A valid Drying target is NOT permission to heat until humidity allows it.
+for(const cls of ['cheap','neutral','expensive']){
+  const text=A.tlControlText(cls,{target_c:14,preheat_c:2,coast_c:2,heating_permitted:false});
+  assert(text.includes('kosteusehto estää lämmitysehdotuksen'),text);
+  assert(!text.includes('termostaatti')&&!text.includes('lämmitys sallittu'));
+}
 assert(A.tlSegmentText({class:'cheap',start:1794999600,end:1795003200,avg_total:0.1,avg_median:0.2},{target_c:null},v=>String(v),(a,b)=>'x').includes('ei ohjata lämmitystä'));
 
 // Codex P2 (#59): the outdoor line breaks at forecast gaps
@@ -92,8 +98,8 @@ assert(A.tlSegmentText({class:'cheap',start:1794999600,end:1795003200,avg_total:
 }
 
 // "now" line uses real reasons, setpoint only when heating
-assert.equal(A.tlNowText({action:'HEAT_SETPOINT',setpoint_c:22.5,reason:'LOW_COST_WINDOW'}),'Lämmitys päällä 22,5 °C — sähkö on nyt edullista');
-assert.equal(A.tlNowText({action:'OFF',setpoint_c:null,reason:'HIGH_COST_WINDOW'}),'Lämmitys pois — sähkö on nyt kallista');
+assert.equal(A.tlNowText({action:'HEAT_SETPOINT',setpoint_c:22.5,reason:'LOW_COST_WINDOW'}),'Ehdotus: lämmitys 22,5 °C — sähkö on nyt edullista');
+assert.equal(A.tlNowText({action:'OFF',setpoint_c:null,reason:'HIGH_COST_WINDOW'}),'Ehdotus: lämmitys pois — sähkö on nyt kallista');
 assert.equal(A.tlNowText({action:'WAT',reason:'???'}),'Ei päätöstä — syy ei tiedossa');
 assert.equal(A.tlNowText(null),'Ei päätöstä');
 

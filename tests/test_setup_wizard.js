@@ -220,7 +220,28 @@ console.log('devices step helpers ok');
   ctx.fetchJSON=async()=>{events.push('site-readback');throw Error('network');};
   await assert.rejects(A.wzSaveComfort(false),/site status unverified/);
   assert.deepEqual(events,['site-post','site-readback']);
+  assert.equal(ctx.state.site.optimization.profile,'saving',
+    'lost-response recovery must update the local cached durable profile');
+  // Revisit Comfort via Back and save a second target. If its air write
+  // fails, compensation must restore the FIRST recovered save's limits,
+  // not the stale pre-first-save band.
   events.length=0;
+  ctx.state.status.air.hold_target_c=13; // first air save is now durable
+  A.WZ.comfort.target='14';
+  ctx.wzPost=async f=>{events.push({...f});};
+  ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:ctx.state.status.air};};
+  await assert.rejects(A.wzSaveComfort(false),/AIR_NVS/);
+  assert.equal(events.at(-1).optimization_profile,'saving');
+  assert.equal(events.at(-1).comfort_min_c,'9');
+  assert.equal(events.at(-1).comfort_max_c,'16');
+  // Restore the initial state for independent tests below.
+  ctx.state.site={optimization:{profile:'balanced',comfort_min_c:10,comfort_max_c:14},
+    region:{setup_step:5}};
+  ctx.state.status.air.hold_target_c=12;
+  A.WZ.comfort.target='13';
+  events.length=0;
+  ctx.airPostLocal=async()=>{events.push('air');};
   ctx.wzPost=async f=>{events.push({...f});};
   await A.wzSaveComfort(false);
   assert.equal(events[0].optimization_profile,'saving');
@@ -244,6 +265,18 @@ console.log('devices step helpers ok');
   await A.wzSaveComfort(false);
   assert.deepEqual(events.slice(1),['air','readback']);
   assert.equal(events.length,3,'do not compensate a confirmed successful target save');
+  assert.equal(ctx.state.status.air.hold_target_c,13,
+    'confirmed air POST must refresh local status after lost HTTP reply');
+  // Back -> Comfort with the earlier target must not be considered unchanged:
+  // durable air target is 13, not the pre-recovery cached 12.
+  events.length=0;
+  A.WZ.comfort.target='12';
+  ctx.airPostLocal=async()=>{events.push('air');};
+  await A.wzSaveComfort(false);
+  assert(events.includes('air'),'back navigation must issue the necessary target POST');
+  // Reset for separate negative response / partial NVS tests below.
+  A.WZ.comfort.target='13';
+  ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
   // If Wi-Fi is lost and readback is impossible, don't blindly undo either.
   events.length=0;
   ctx.state.status.air.hold_target_c=12;

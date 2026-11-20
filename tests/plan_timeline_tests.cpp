@@ -154,6 +154,14 @@ static void json_is_valid_and_honest() {
     CHECK(v.value());v.ws();CHECK(v.cur==v.end);                       // strictly valid JSON
     CHECK(j.find("nan")==std::string::npos&&j.find("inf")==std::string::npos);
     CHECK(j.find("\"valid\":true")!=std::string::npos&&j.find("\"profile\":\"saving\"")!=std::string::npos);
+    CHECK(j.find("\"heating_permitted\":true")!=std::string::npos);
+    // Drying humidity may prohibit heating despite a valid calculated target.
+    // The target remains available for display, but heat permission is false.
+    meta.heating_permitted=false;
+    const std::string drying=json_of(meta,t);
+    CHECK(drying.find("\"heating_permitted\":false")!=std::string::npos);
+    CHECK(drying.find("\"target_c\":21.0")!=std::string::npos);
+    meta.heating_permitted=true;
     CHECK(j.find("\"currency\":\"SEK\"")!=std::string::npos&&j.find("\"setpoint_c\":22.5")!=std::string::npos);
     // there is NO predicted indoor temperature or cost in the document
     for(const char* forbidden:{"indoor","predicted","cost","savings"}) CHECK(j.find(forbidden)==std::string::npos);
