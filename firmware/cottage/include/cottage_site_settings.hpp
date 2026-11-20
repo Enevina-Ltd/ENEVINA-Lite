@@ -22,5 +22,9 @@ bool site_comfort_transaction_pending();
 bool site_comfort_transaction_read(enevina::cottage::ComfortTxn& out);
 bool site_comfort_transaction_abandon();
 bool site_comfort_transaction_finish(const enevina::cottage::CottageModeConfig& config);
+// The site write itself is not a commit proof; durably mark it after readback.
+bool site_comfort_transaction_mark_site_committed();
+// Only call with a physically validated, NVS-verified air mode image.
+bool site_comfort_transaction_abort_verified(const enevina::cottage::CottageModeConfig& proven_air);
 // TOTAL EUR/kWh for one slot using the CURRENT settings (single price rule).
 bool site_slot_total_price(int64_t slot_start_utc,double spot_eur_per_kwh,double& total);

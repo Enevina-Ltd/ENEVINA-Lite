@@ -123,6 +123,28 @@ bool prepare_comfort_transaction(const enevina::cottage::ComfortTxn& tx) {
     p.end();
     return ok;
 }
+// NVS putBytes is one key, but two independent keys cannot be atomically
+// committed. An explicit phase transition prevents target-only false replay:
+/// PREPARED -> site record persisted/read back -> SITE_COMMITTED -> air.
+bool mark_comfort_site_committed() {
+    if(!comfort_pending.load())return false;
+    Preferences p;
+    if(!p.begin("site",false))return false;
+    enevina::cottage::ComfortTxn tx{};
+    const bool read=p.getBytesLength(kComfortKey)==sizeof(tx) &&
+        p.getBytes(kComfortKey,&tx,sizeof(tx))==sizeof(tx) &&
+        enevina::cottage::valid_comfort_txn(tx);
+    if(!read) {p.end();return false;}
+    tx.phase=static_cast<uint8_t>(enevina::cottage::ComfortPhase::SiteCommitted);
+    const size_t wrote=p.putBytes(kComfortKey,&tx,sizeof(tx));
+    enevina::cottage::ComfortTxn check{};
+    const bool ok=wrote==sizeof(tx) &&
+        p.getBytesLength(kComfortKey)==sizeof(check) &&
+        p.getBytes(kComfortKey,&check,sizeof(check))==sizeof(check) &&
+        std::memcmp(&check,&tx,sizeof(tx))==0;
+    p.end();
+    return ok;
+}
 bool persist(const SiteSettings& s) {
     Stored blob{};
     blob.settings=s;
@@ -160,6 +182,21 @@ bool persist(const SiteSettings& s) {
         write_site,[&](const char* nspace,const char* key) {
             return !snapshot_read_failed && erase_disposable_cache(nspace,key);
         });
+}
+bool site_persisted_matches(const SiteSettings& s) {
+    Preferences p;
+    if(!p.begin("site",true))return false;
+    Stored record{};
+    // The next stacked PR migrates site v4->v5. Verify whichever site
+    // record version this build actually persists.
+    const char* key=kVersion>=5?"v5":"v4";
+    const bool valid=p.getBytesLength(key)==sizeof(record) &&
+        p.getBytes(key,&record,sizeof(record))==sizeof(record) &&
+        record.magic==kMagic && record.version==kVersion &&
+        record.size==sizeof(SiteSettings) &&
+        std::memcmp(&record.settings,&s,sizeof(s))==0;
+    p.end();
+    return valid;
 }
 const char* kind_name(enevina::cottage::TransferKind k) {
     switch(k) {
@@ -404,6 +441,33 @@ bool site_comfort_transaction_abandon() {
     if(ok)comfort_pending.store(false);
     return ok;
 }
+bool site_comfort_transaction_mark_site_committed() {
+    return mark_comfort_site_committed();
+}
+bool site_comfort_transaction_abort_verified(
+    const enevina::cottage::CottageModeConfig& proven_air) {
+    if(!comfort_pending.load())return true;
+    enevina::cottage::ComfortTxn tx{};
+    if(!site_comfort_transaction_read(tx))return false;
+    SiteSettings old=site_settings_snapshot();
+    old.profile=static_cast<enevina::cottage::OptimizationProfile>(tx.previous_profile);
+    old.comfort_min_c=tx.previous_min_c;
+    old.comfort_max_c=tx.previous_max_c;
+    old.setup_step=tx.previous_setup_step;
+    // A later explicit owner mode change is preserved only if the restored
+    // hard limits fit it; an unknown/conflicting state must not be unblocked.
+    if(!enevina::cottage::mode_comfort_limits_fit(old,proven_air))
+        return false;
+    if(!site_persisted_matches(old)) {
+        if(!persist(old) || !site_persisted_matches(old))return false;
+    }
+    xSemaphoreTake(guard,portMAX_DELAY);
+    current=old;
+    loaded_from_nvs=true;
+    xSemaphoreGive(guard);
+    generation.fetch_add(1);
+    return site_comfort_transaction_abandon();
+}
 bool site_comfort_transaction_finish(const enevina::cottage::CottageModeConfig& cfg) {
     if(!comfort_pending.load())return true;
     enevina::cottage::ComfortTxn tx{};
@@ -599,6 +663,19 @@ void site_settings_register_routes(WebServer& web) {
                              web.hasArg("comfort_txn_target");
         enevina::cottage::ComfortTxn comfort_tx{};
         if(wants_txn) {
+            // The journal retains only mode/profile/bounds/setup-step.
+            // Do not mix unrelated site edits into a transaction that can
+            // intentionally roll those fields back after a power failure.
+            for(int i=0;i<web.args();++i) {
+                const String key=web.argName(i);
+                if(key=="token"||key=="plain"||key=="comfort_txn_mode"||
+                   key=="comfort_txn_target"||key=="setup_step"||
+                   key=="optimization_profile"||key=="comfort_min_c"||
+                   key=="comfort_max_c")continue;
+                web.send(400,"application/json",
+                         "{\"saved\":false,\"error\":\"COMFORT_FIELDS\"}");
+                return;
+            }
             const String mode_s=web.arg("comfort_txn_mode");
             const String target_s=web.arg("comfort_txn_target");
             if((mode_s!="2"&&mode_s!="3")||target_s.length()>20 ||
@@ -611,6 +688,9 @@ void site_settings_register_routes(WebServer& web) {
             comfort_tx.mode=static_cast<uint8_t>(mode_s.toInt());
             comfort_tx.profile=static_cast<uint8_t>(next.profile);
             comfort_tx.target=static_cast<float>(t);
+            const auto existing_air=enevina::cottage::c23_mode_config();
+            comfort_tx.previous_target=comfort_tx.mode==3?
+                existing_air.occupied_target_c:existing_air.hold_target_c;
             comfort_tx.min_c=static_cast<float>(next.comfort_min_c);
             comfort_tx.max_c=static_cast<float>(next.comfort_max_c);
             const auto air=enevina::cottage::c23_mode_config();
@@ -621,9 +701,64 @@ void site_settings_register_routes(WebServer& web) {
             }
         }
         const SiteSettings previous=site_settings_snapshot();
+        const enevina::cottage::CottageModeConfig air=enevina::cottage::c23_mode_config();
+        const double prospective_target=wants_txn?comfort_tx.target:
+            air.mode==enevina::cottage::CottageMode::Occupied?
+                air.occupied_target_c:air.hold_target_c;
+        // Enforce what the UI labels HARD lower/upper comfort limits.
+        // Never accept a band that the runtime would silently discard.
+        if((air.mode==enevina::cottage::CottageMode::Hold ||
+            air.mode==enevina::cottage::CottageMode::Occupied) &&
+           !enevina::cottage::comfort_limits_fit_target(
+                next.comfort_min_c,next.comfort_max_c,prospective_target)) {
+            web.send(409,"application/json",
+                     "{\"saved\":false,\"error\":\"COMFORT_TARGET_CONFLICT\"}");
+            return;
+        }
+        if(site_comfort_transaction_pending()) {
+            enevina::cottage::ComfortTxn pending{};
+            if(!site_comfort_transaction_read(pending)) {
+                web.send(503,"application/json",
+                         "{\"saved\":false,\"error\":\"COMFORT_JOURNAL_UNVERIFIED\"}");
+                return;
+            }
+            const bool same=wants_txn &&
+                pending.phase==static_cast<uint8_t>(enevina::cottage::ComfortPhase::SiteCommitted) &&
+                pending.mode==comfort_tx.mode &&
+                std::fabs(pending.target-comfort_tx.target)<0.001 &&
+                pending.profile==comfort_tx.profile &&
+                std::fabs(pending.min_c-comfort_tx.min_c)<0.001 &&
+                std::fabs(pending.max_c-comfort_tx.max_c)<0.001 &&
+                enevina::cottage::comfort_site_matches(pending,previous);
+            if(same) {
+                // A lost response or failed air POST is retried idempotently.
+                web.send(200,"application/json","{\"saved\":true,\"retry\":true}");
+                return;
+            }
+            // A non-Comfort settings POST must never accidentally reapply
+            // the in-flight site's comfort band after we roll it back:
+            // only an explicit owner compensation payload may cancel it.
+            const bool explicit_old_band=!wants_txn &&
+                web.hasArg("optimization_profile") &&
+                web.hasArg("comfort_min_c") && web.hasArg("comfort_max_c") &&
+                enevina::cottage::comfort_old_site_matches(pending,next);
+            if(!wants_txn && !explicit_old_band) {
+                web.send(409,"application/json",
+                         "{\"saved\":false,\"error\":\"COMFORT_RECOVERY_REQUIRED\"}");
+                return;
+            }
+            if(!enevina::cottage::c23_mode_config_is_durable(air) ||
+               !enevina::cottage::comfort_old_mode_matches(pending,air) ||
+               !site_comfort_transaction_abort_verified(air)) {
+                web.send(409,"application/json",
+                         "{\"saved\":false,\"error\":\"COMFORT_RECOVERY_REQUIRED\"}");
+                return;
+            }
+        }
+        const SiteSettings effective_previous=site_settings_snapshot();
         const bool endpoint_changed=
-            strcmp(previous.cn105_url,next.cn105_url)!=0 ||
-            strcmp(previous.pump_adapter,next.pump_adapter)!=0;
+            strcmp(effective_previous.cn105_url,next.cn105_url)!=0 ||
+            strcmp(effective_previous.pump_adapter,next.pump_adapter)!=0;
         // Durable revocation MUST precede new site commit. Otherwise an
         // immediate reset could reinstate the old pump permission when the
         // user later selects the previous URL again.
@@ -634,13 +769,33 @@ void site_settings_register_routes(WebServer& web) {
         }
         // Durable journal must be written before the new site band or a reset
         // between site+air POSTs could boot with contradictory target/limits.
+        if(wants_txn) {
+            comfort_tx.previous_profile=static_cast<uint8_t>(effective_previous.profile);
+            comfort_tx.previous_setup_step=effective_previous.setup_step;
+            comfort_tx.previous_min_c=effective_previous.comfort_min_c;
+            comfort_tx.previous_max_c=effective_previous.comfort_max_c;
+            comfort_tx.previous_target=comfort_tx.mode==3?
+                air.occupied_target_c:air.hold_target_c;
+        }
         if(wants_txn && !prepare_comfort_transaction(comfort_tx)) {
             web.send(503,"application/json","{\"saved\":false,\"error\":\"COMFORT_NVS\"}");
             return;
         }
         // Durable first: RAM changes only after NVS accepted the full blob.
-        if(!persist(next)) {
+        const bool site_saved=persist(next) && site_persisted_matches(next);
+        if(!site_saved) {
+            // No air change has been attempted. Recommit the previous site
+            // and clear the marker ONLY after NVS verifies the old image.
+            if(wants_txn && enevina::cottage::c23_mode_config_is_durable(air))
+                site_comfort_transaction_abort_verified(air);
             web.send(500,"application/json","{\"saved\":false,\"error\":\"NVS\"}");
+            return;
+        }
+        if(wants_txn && !site_comfort_transaction_mark_site_committed()) {
+            if(enevina::cottage::c23_mode_config_is_durable(air))
+                site_comfort_transaction_abort_verified(air);
+            web.send(503,"application/json",
+                     "{\"saved\":false,\"error\":\"COMFORT_NVS\"}");
             return;
         }
         xSemaphoreTake(guard,portMAX_DELAY);
