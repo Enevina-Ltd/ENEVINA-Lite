@@ -1,4 +1,5 @@
 #include "cottage/site_settings.hpp"
+#include "cottage/comfort_transaction.hpp"
 #include "pump/adapter_catalog.hpp"
 #include <cassert>
 #include <cmath>
@@ -438,7 +439,34 @@ static void nvs_snapshot_failure_does_not_commit_an_unknown_baseline() {
     assert(signature==0); // true absence is allowed
 }
 
+// Crash-recovery journal phase invariants, independent of the device NVS.
+static void comfort_transaction_survives_site_air_split() {
+    ComfortTxn tx{};
+    tx.mode=2;tx.profile=static_cast<uint8_t>(OptimizationProfile::Saving);
+    tx.target=20;tx.min_c=19;tx.max_c=23;
+    assert(valid_comfort_txn(tx));
+    SiteSettings before{},after{};
+    before.setup_step=5;after.setup_step=6;
+    after.profile=OptimizationProfile::Saving;
+    after.comfort_min_c=19;after.comfort_max_c=23;
+    CottageModeConfig air{};
+    air.mode=CottageMode::Hold;air.hold_target_c=12;
+    // Crash just after intent: no site change -> never modify air.
+    assert(!comfort_site_matches(tx,before));
+    // Crash after site commit: outstanding record MUST restore desired air.
+    assert(comfort_site_matches(tx,after));
+    assert(!comfort_mode_matches(tx,air));
+    comfort_apply_target(tx,air);
+    assert(comfort_mode_matches(tx,air));
+    // Reboot after both commits: idempotent completion, no extra change.
+    const double prior=air.hold_target_c;
+    comfort_apply_target(tx,air);
+    assert(air.hold_target_c==prior);
+    // Corrupt marker or wrong mode never initiates recovery.
+    tx.magic=0;assert(!valid_comfort_txn(tx));
+}
 int main() {
+    comfort_transaction_survives_site_air_split();
     v3_provenance_after_rollback_then_v4_upgrade();
     nvs_snapshot_failure_does_not_commit_an_unknown_baseline();
     rollback_edit_overrides_stale_v3();

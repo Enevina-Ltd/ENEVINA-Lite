@@ -91,3 +91,20 @@ Reading it honestly:
 * The wizard never arms automatic control; there is no "use automatic optimization"
   toggle by design.
 * No field data; no thermal-model calibration.
+
+## Comfort wizard: power-loss recovery for site and air NVS (v4)
+
+When Comfort changes optimization limits and the Hold/Occupied target, the first
+site POST writes one durable, versioned site/comfort_txn intent before writing
+the new site profile and bounds. /api/air/config removes the intent only
+after verifying the target and site data. The firmware retains the existing
+v4 settings layout, with no new passwords or pump commands.
+
+After a reset before site commit, the old site and target remain authoritative
+and the intent is discarded. After site commit but before air commit,
+c23_initialize resumes the target write and verifies all four mode NVS keys
+before removing the marker. The case after both commits is idempotent.
+Unreadable journals, mismatched modes and failed NVS recovery fail closed
+to block physical commands rather than using inconsistent settings.
+Host tests cover transaction states, wizard parameters and firmware ordering.
+Physical NVS reset/fault injection remains a separate release criterion.
