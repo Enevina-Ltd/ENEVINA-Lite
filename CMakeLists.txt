@@ -16,7 +16,7 @@ if(WIN32)
 endif()
 
 # Mitsubishi FD25VA: independent air-to-air engine. Read-only/no device writers.
-add_library(enevina_cottage cottage/physics.cpp cottage/mpc.cpp cottage/telemetry.cpp cottage/supervisor.cpp cottage/forecast_bridge.cpp cottage/ruuvi.cpp cottage/url_guard.cpp cottage/ruuvi_v5.cpp cottage/air_humidity.cpp)
+add_library(enevina_cottage cottage/physics.cpp cottage/mpc.cpp cottage/telemetry.cpp cottage/supervisor.cpp cottage/forecast_bridge.cpp cottage/ruuvi.cpp cottage/url_guard.cpp cottage/ruuvi_v5.cpp cottage/air_humidity.cpp cottage/building_identification.cpp cottage/mpc_planner.cpp)
 target_include_directories(enevina_cottage PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(enevina_cottage PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(cottage_tests tests/cottage_tests.cpp)
@@ -327,3 +327,26 @@ target_link_libraries(geocode_tests PRIVATE enevina_core)
 target_compile_definitions(geocode_tests PRIVATE
     ENEVINA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 add_test(NAME geocode_tests COMMAND geocode_tests)
+
+# Live MPC chain: automatic building identification (RLS + walk-forward
+# validation), receding-horizon bridge, MPC -> price -> thermostat arbiter,
+# and the closed-loop comparison harness (SIMULATION, host only).
+foreach(t cottage_identification_tests cottage_mpc_control_tests cottage_closed_loop_tests cottage_model_persistence_tests)
+  add_executable(${t} tests/${t}.cpp)
+  target_link_libraries(${t} PRIVATE enevina_cottage enevina_core)
+  if(MSVC)
+    target_compile_options(${t} PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(${t} PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME ${t} COMMAND ${t})
+endforeach()
+add_executable(cottage_closed_loop_cli tools/cottage_closed_loop_cli.cpp)
+target_link_libraries(cottage_closed_loop_cli PRIVATE enevina_cottage enevina_core)
+add_executable(cottage_mpc_resource_bench tools/cottage_mpc_resource_bench.cpp)
+target_link_libraries(cottage_mpc_resource_bench PRIVATE enevina_cottage enevina_core)
+# The bench counts heap use by replacing global operator new. A MinGW
+# libstdc++ DLL keeps its own allocator, so link the runtime statically.
+if(MINGW)
+  target_link_options(cottage_mpc_resource_bench PRIVATE -static)
+endif()

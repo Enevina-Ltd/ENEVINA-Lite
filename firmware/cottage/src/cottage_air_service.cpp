@@ -436,6 +436,20 @@ uint32_t c23_config_generation() {
     if(!guard)return 0;
     lock();const uint32_t g=config_generation;unlock();return g;
 }
+// Identity of the bound indoor RuuviTag (FNV-1a of its MAC); 0 = none bound.
+// The learned building model describes the room THIS sensor measures.
+uint32_t c23_indoor_binding_id() {
+    if(!guard)return 0;
+    lock();
+    uint32_t h=0;
+    if(indoor_binding.bound()) {
+        h=2166136261u;
+        for(const uint8_t b:indoor_binding.mac()) {h^=b;h*=16777619u;}
+        if(h==0)h=1;
+    }
+    unlock();
+    return h;
+}
 CottageModeConfig c23_mode_config() {
     if(!guard) return CottageModeConfig{};
     lock();const auto snapshot=config;unlock();
@@ -707,6 +721,9 @@ void c23_register_routes(WebServer& web) {
                 if(unbind) indoor_binding.unbind();
                 else indoor_binding.bind(mac);
                 has_indoor=false;indoor_utc=0;indoor_air={};
+                // A different indoor sensor invalidates every plan and any
+                // in-flight command preparation built from the old room.
+                ++config_generation;
                 alarm_engine=MoistureMonitor(warning_limits);
                 history=AirHistory{}; // never mix two sensors in one series
                 history_changed=false;

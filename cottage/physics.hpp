@@ -27,6 +27,9 @@ struct Parameters {
     unsigned min_heat_minutes = 60;
     unsigned min_off_minutes = 60;
     double currency_limit_scale = 1.0; // price-unit plausibility: site currency / EUR scale
+    // Thermal energy released into the room in the first OFF slot after HEAT
+    // (fan run-on / hot coil). Identified from measurements; 0 = not modelled.
+    double stop_afterheat_kwh = 0;
 };
 struct State {
     double indoor_c = 0;
