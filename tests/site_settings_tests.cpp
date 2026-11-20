@@ -610,12 +610,15 @@ static void old_ota_settings_require_real_image_confirmation() {
     // PREPARED / PENDING_VERIFY boots run c23_initialize before the OTA
     // transaction service sets confirmation_pending. The early value false
     // must not delete the previous firmware's NVS records.
-    assert(!site_old_keys_reclaimable(false,false));
-    assert(!site_old_keys_reclaimable(false,true));
-    // Even a VALID IDF image must preserve the old keys until OTA journal
-    // confirmation (a valid image alone is not the full signed-OTA proof).
-    assert(!site_old_keys_reclaimable(true,true));
-    assert(site_old_keys_reclaimable(true,false));
+    assert(!site_old_keys_reclaimable(false,false,false));
+    assert(!site_old_keys_reclaimable(false,true,false));
+    // A bootloader VALID state alone is not enough before the OTA transaction
+    // service has read its signed journal. This closes the VALID-then-crash
+    // window between IDF confirmation and durable signed OTA confirmation.
+    assert(!site_old_keys_reclaimable(true,false,false));
+    assert(!site_old_keys_reclaimable(true,false,true));
+    assert(!site_old_keys_reclaimable(true,true,true));
+    assert(site_old_keys_reclaimable(true,true,false));
 }
 static void hard_comfort_limits_never_silently_disappear() {
     assert(comfort_limits_fit_target(19,23,21));
