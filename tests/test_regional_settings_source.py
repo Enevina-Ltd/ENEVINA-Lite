@@ -61,32 +61,30 @@ class RegionalWiring(unittest.TestCase):
         self.assertNotIn("++region_generation", first)
         self.assertNotIn("cache=PriceCache{}", first)
 
-    def test_settings_v4_preserves_both_rollback_v2_and_v3(self):
-        self.assertIn('p.putBytes("v4",&blob,sizeof(blob))', SITE)
-        self.assertIn('p.remove("v1")', SITE)
-        # Negation now belongs to the shared predicate. Check both the
-        # call site and the fail-closed policy instead of requiring the old
-        # literal expression in the firmware source (Codex P2 #57).
-        reclaim_call = SITE.split("site_old_keys_reclaimable(", 1)[1][:160]
-        self.assertIn("image_valid", reclaim_call)
-        self.assertIn("cottage_ota_runtime_ready()", reclaim_call)
-        self.assertIn("cottage_ota_confirmation_pending()", reclaim_call)
-        self.assertIn("running_image_valid && ota_service_initialized &&", ROLLBACK_POLICY)
-        self.assertIn("!ota_confirmation_pending", ROLLBACK_POLICY)
-        self.assertLess(SITE.index('p.putBytes("v4"'), SITE.index('p.remove("v1")'))
+    def test_settings_v5_preserves_v4_and_older_rollback_keys(self):
+        self.assertIn('constexpr uint16_t kVersion=5;',SITE)
+        self.assertIn('p.putBytes("v5",&blob,sizeof(blob))', SITE)
+        self.assertIn('p.getBytesLength("v4")',SITE)
+        self.assertIn('site_restore_v4_record(',SITE)
+        self.assertIn('site_old_keys_reclaimable(',SITE)
+        self.assertIn('state==ESP_OTA_IMG_VALID',SITE)
+        self.assertIn('cottage_ota_confirmation_pending()',SITE)
+        self.assertIn('cottage_ota_runtime_ready()',SITE)
+        self.assertIn('running_image_valid && ota_service_initialized &&',ROLLBACK_POLICY)
+        self.assertIn('!ota_confirmation_pending',ROLLBACK_POLICY)
+        self.assertLess(SITE.index('p.putBytes("v5"'),SITE.index('p.remove("v1")'))
+        self.assertIn('if(p.isKey("v4")) p.remove("v4")',SITE)
         self.assertIn('if(p.isKey("v3")) p.remove("v3")',SITE)
         self.assertIn('if(p.isKey("v2")) p.remove("v2")',SITE)
-        self.assertIn('version==3',SITE)
-        self.assertIn('version==2',SITE)
-        self.assertIn('!rollback_key_signature(p,"v2",blob.rollback_v2_signature)',SITE)
-        self.assertIn('!rollback_key_signature(p,"v3",blob.rollback_v3_signature)',SITE)
+        for key in ("v2","v3","v4"):
+            self.assertIn('!rollback_key_signature(p,"'+key+'",blob.rollback_'+key+'_signature)',SITE)
+            self.assertLess(SITE.index('rollback_key_signature(p,"'+key+'",blob.rollback_'+key+'_signature)'), SITE.index('p.putBytes("v5"'))
         self.assertIn('snapshot_read_failed=true;',SITE)
         self.assertIn('return !snapshot_read_failed && erase_disposable_cache',SITE)
         self.assertIn('site_v3_prefer_rollback_v2(',SITE)
         self.assertIn('site_rollback_v2_modified(',SITE)
-        self.assertLess(SITE.index('rollback_key_signature(p,"v3",blob.rollback_v3_signature)'), SITE.index('p.putBytes("v4"'))
-        self.assertIn("site_settings_from_v1(old.settings)", SITE)
-        self.assertIn("apply_site_settings_batch", SITE)
+        self.assertIn("site_settings_from_v1(old.settings)",SITE)
+        self.assertIn("apply_site_settings_batch",SITE)
 
     def test_unconfirmed_contract_cannot_drive_price_optimization(self):
         tariff=(ROOT / "cottage/site_settings.hpp").read_text()
@@ -126,6 +124,40 @@ class ProfileWiring(unittest.TestCase):
     def test_profile_is_visible_in_status_and_never_arms_control(self):
         self.assertIn('"optimization_profile"', self.MAIN)
         self.assertNotIn("control_armed.store(true)", (ROOT / "firmware/cottage/include/cottage_premium_dashboard.hpp").read_text(encoding="utf-8"))
+
+
+class DiscoveryWiring(unittest.TestCase):
+    AIR = (ROOT / "firmware/cottage/src/cottage_air_service.cpp").read_text(encoding="utf-8")
+    SHELLY = (ROOT / "firmware/cottage/src/cottage_shelly_discovery.cpp").read_text(encoding="utf-8")
+    SITE = (ROOT / "firmware/cottage/src/cottage_site_settings.cpp").read_text(encoding="utf-8")
+
+    def test_finished_scan_results_are_kept_from_completion_not_start(self):
+        # Codex P2 (#58): a scan slower than 8 s was "old" on the first poll after
+        # it finished, so it was discarded and restarted in a loop.
+        body = self.SHELLY.split("ShellyScanState shelly_scan(")[1]
+        self.assertIn("shared.state==ShellyScanState::Done?finished_ms:started_ms", body)
+        self.assertNotIn("now-started_ms<8000", body)
+
+    def test_sensor_list_freshness_follows_accepted_measurements(self):
+        # Codex P2 (#58): replayed frames refreshed the age and made a sensor "live".
+        self.assertIn("e.has_measurement&&age_ms<=kRuuviFreshMs", self.AIR)
+        self.assertIn("now-e.measured_ms", self.AIR)
+        self.assertIn('"heard_age_s"', self.AIR)
+
+    def test_ble_callback_feeds_registry_and_names_never_run_ahead_of_flash(self):
+        self.assertIn("sensor_registry.observe(parsed,ms)", self.AIR)
+        self.assertIn("if(!saved) sensor_names=previous;", self.AIR)
+        self.assertIn("loaded.load(raw)", self.AIR)          # corrupt blob -> no names
+
+    def test_shelly_scan_is_read_only_bounded_and_off_the_web_loop(self):
+        self.assertIn("xTaskCreate(worker_main", self.SHELLY)
+        self.assertIn("shelly_lan_base_url(octets", self.SHELLY)
+        self.assertIn("parse_shelly_info(body", self.SHELLY)
+        self.assertIn("size>0 && static_cast<size_t>(size)<cap", self.SHELLY)   # Content-Length bound
+        for forbidden in ("Switch.Set", "Switch.Toggle", "Relay", "http.POST", "http.PUT"):
+            self.assertNotIn(forbidden, self.SHELLY)
+        self.assertNotIn("HTTPClient", self.SITE)               # handler only polls the worker
+        self.assertIn("shelly_scan(*snap)", self.SITE)
 
 
 if __name__ == "__main__":

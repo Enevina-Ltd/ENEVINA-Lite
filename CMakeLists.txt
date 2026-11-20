@@ -341,6 +341,18 @@ add_executable(profile_benchmark tools/profile_benchmark.cpp)
 target_include_directories(profile_benchmark PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(profile_benchmark PRIVATE enevina_cottage enevina_core)
 
+# RuuviTag discovery list and owner-given sensor names.
+add_executable(ruuvi_registry_tests tests/ruuvi_registry_tests.cpp)
+target_include_directories(ruuvi_registry_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ruuvi_registry_tests PRIVATE enevina_cottage enevina_core)
+add_test(NAME ruuvi_registry_tests COMMAND ruuvi_registry_tests)
+
+# Shelly discovery classification (published API format, not device recordings).
+add_executable(shelly_discovery_tests tests/shelly_discovery_tests.cpp)
+target_include_directories(shelly_discovery_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(shelly_discovery_tests PRIVATE enevina_core)
+add_test(NAME shelly_discovery_tests COMMAND shelly_discovery_tests)
+
 # Live MPC chain: automatic building identification (RLS + walk-forward
 # validation), receding-horizon bridge, MPC -> price -> thermostat arbiter,
 # and the closed-loop comparison harness (SIMULATION, host only).

@@ -23,7 +23,7 @@ assert.deepEqual(missing,[],'missing English translations');
 
 const ctx={document:{},state:{},uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,WZ};',ctx);
+vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,WZ};',ctx);
 const A=ctx.api;
 
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
@@ -59,7 +59,7 @@ assert.equal(A.wzStartStep({region:{setup_step:9}}),A.WZ_STEPS-1);
 assert.equal(A.wzStartStep({}),0);assert.equal(A.wzStartStep(null),0);
 
 // summary: honest per-item state from live data
-const good={site:{fmi_latlon:'61.4638,24.0760',pump_adapter:'mitsubishi_cn105_esphome',
+const good={site:{fmi_latlon:'61.4638,24.0760',pump_adapter:'mitsubishi_cn105_esphome',shelly_scope:'heat_pump',
     region:{city:'Kangasala',price_region_resolved:true,nordpool_area:'FI',currency:'EUR',tariff_confirmed:true}},
   status:{spot:0.05,price_error:0,cn105_source_verified:true,air:{sensor_fresh:true},shelly_w:300},
   weather:{valid:true},plan:{valid:true}};
@@ -132,6 +132,61 @@ console.log('manual-location summary ok');
 // The three profile descriptions never promise a saving figure.
 for(const p of A.WZ_PROFILES)assert(!/%|€|EUR/.test(p.text),p.id);
 console.log('comfort step helpers ok');
+
+// ---- devices step: sensors and meter ---------------------------------------
+{
+  assert.equal(A.wzAgeText(3),'3 s');assert.equal(A.wzAgeText(125),'2 min');assert.equal(A.wzAgeText(7300),'2 h');
+  for(const bad of [NaN,-1,undefined,null,Infinity])assert.equal(A.wzAgeText(bad),'—');
+  assert.equal(A.wzSensorLine({temperature_c:21.43,humidity_pct:45.4,battery_v:2.987,rssi_dbm:-62}),'21,4 °C · 45 % · 2,99 V · -62 dBm');
+  assert.equal(A.wzSensorLine({}),'— · — · — · —');
+  assert.equal(A.wzSensorState({live:true}),'live');
+  assert.equal(A.wzSensorState({live:false}),'stale');assert.equal(A.wzSensorState({}),'stale');   // unknown is never "live"
+  assert.equal(A.wzSignalText(-60),'Hyvä signaali');assert.equal(A.wzSignalText(-75),'Kohtalainen signaali');
+  assert.equal(A.wzSignalText(-90),'Heikko signaali');assert.equal(A.wzSignalText(NaN),'Signaali tuntematon');
+  // replacing a bound INDOOR sensor needs confirmation; first binding / outdoor / same MAC do not
+  const some={bound:{indoor:'AA:AA:AA:AA:AA:01',outdoor:null}};
+  assert(A.wzBindNeedsConfirm(some,'indoor','AA:AA:AA:AA:AA:02'));
+  assert(!A.wzBindNeedsConfirm(some,'indoor','AA:AA:AA:AA:AA:01'));
+  assert(!A.wzBindNeedsConfirm(some,'outdoor','AA:AA:AA:AA:AA:02'));
+  assert(!A.wzBindNeedsConfirm({bound:{indoor:null}},'indoor','AA:AA:AA:AA:AA:02'));
+  assert(!A.wzBindNeedsConfirm(null,'indoor','AA:AA:AA:AA:AA:02'));
+  // Shelly rows explain why a device cannot be used; they never read as supported
+  assert.equal(A.wzShellyText({support:'SUPPORTED',app:'Plus1PM',power_w:412.7}),'Plus1PM · 413 W');
+  assert(A.wzShellyText({support:'SUPPORTED',app:'Plus1PM',power_w:null}).includes('teholukemaa'));
+  assert(A.wzShellyText({support:'AUTH_REQUIRED',id:'shellyplus1pm-x'}).includes('salasana'));
+  assert(A.wzShellyText({support:'GEN1_NOT_SUPPORTED',id:'SHSW-PM'}).includes('Gen1'));
+  assert(A.wzShellyText({support:'whatever',id:'x'}).includes('Ei tunnistettu'));
+  // meter fields: URL before scope, scope only with a URL, unchanged values are not resent
+  const none={shelly_url:'',shelly_scope:'unknown'};
+  assert.deepEqual({...A.wzDevicesFields({shelly:'',scope:'heat_pump'},none)},{setup_step:'7'});
+  let f=A.wzDevicesFields({shelly:' http://192.168.1.30 ',scope:'heat_pump'},none);
+  assert.deepEqual(Object.keys(f),['setup_step','shelly_url','shelly_scope']);
+  assert.equal(f.shelly_url,'http://192.168.1.30');assert.equal(f.shelly_scope,'heat_pump');
+  const have={shelly_url:'http://192.168.1.30',shelly_scope:'heat_pump'};
+  assert.deepEqual({...A.wzDevicesFields({shelly:'http://192.168.1.30',scope:'heat_pump'},have)},{setup_step:'7'});
+  f=A.wzDevicesFields({shelly:'http://192.168.1.30',scope:'whole_house'},have);
+  assert.equal(f.shelly_scope,'whole_house');assert(!('shelly_url' in f));
+  assert.equal(A.wzDevicesFields({shelly:'http://192.168.1.31',scope:'bogus'},have).shelly_scope,'unknown');   // bad scope -> unknown
+  assert.deepEqual({...A.wzDevicesFields({shelly:'',scope:'heat_pump'},have)},{setup_step:'7',shelly_url:''}); // clearing the meter
+  // A newly chosen meter must not inherit a prior pump-only confirmation.
+  const draft=vm.runInContext('WZ',ctx);
+  draft.shelly=have.shelly_url;draft.shellyScope='heat_pump';
+  draft.shellyScopeFor=have.shelly_url;draft.shellyScopeInitialized=true;
+  A.wzSetShellyAddress('http://192.168.1.31');
+  assert.equal(draft.shellyScope,'unknown');
+  assert.equal(A.wzDevicesFields({shelly:draft.shelly,scope:draft.shellyScope},have).shelly_scope,'unknown');
+  draft.shellyScope='heat_pump'; // user explicitly confirms the replacement
+  A.wzSetShellyAddress('http://192.168.1.31');
+  assert.equal(draft.shellyScope,'heat_pump'); // same URL is not a new meter
+  A.wzSetShellyAddress('http://192.168.1.32');
+  assert.equal(draft.shellyScope,'unknown'); // manually typed replacement also resets
+  // summary: a meter that is not confirmed as pump-only is a warning, not ok
+  const meter=(scope,w)=>A.wzSummary({site:{region:{},shelly_scope:scope},status:{air:{},shelly_w:w},weather:null,plan:null}).find(x=>x.key==='meter');
+  assert.equal(meter('heat_pump',300).state,'ok');
+  assert.equal(meter('whole_house',300).state,'warn');assert.equal(meter('unknown',300).state,'warn');
+  assert.equal(meter('unknown',null).state,'optional');
+}
+console.log('devices step helpers ok');
 
 (async()=>{
   // P2 #57: failure of site NVS must never durably/actively change the target.

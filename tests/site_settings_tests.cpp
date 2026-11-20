@@ -332,8 +332,29 @@ static void profile_and_comfort_limits() {
     assert(m.profile==OptimizationProfile::Balanced&&m.comfort_min_c==0&&m.comfort_max_c==0);
 }
 
+
+static void shelly_scope_setting() {
+    SiteSettings s{};
+    assert(s.shelly_scope==ShellyScope::Unknown);
+    assert(apply_site_setting(s,"shelly_url","http://192.168.1.30")==SettingError::Ok);
+    assert(apply_site_setting(s,"shelly_scope","heat_pump")==SettingError::Ok&&s.shelly_scope==ShellyScope::HeatPump);
+    assert(apply_site_setting(s,"shelly_scope","pump")==SettingError::BadChoice);
+    // Saving the same address keeps the confirmation ...
+    assert(apply_site_setting(s,"shelly_url","http://192.168.1.30")==SettingError::Ok);
+    assert(s.shelly_scope==ShellyScope::HeatPump);
+    // ... a different meter is unconfirmed until the owner says so again.
+    assert(apply_site_setting(s,"shelly_url","http://192.168.1.31")==SettingError::Ok);
+    assert(s.shelly_scope==ShellyScope::Unknown);
+    assert(apply_site_setting(s,"shelly_scope","whole_house")==SettingError::Ok);
+    assert(apply_site_setting(s,"shelly_url","")==SettingError::Ok&&s.shelly_scope==ShellyScope::Unknown);
+    s.shelly_scope=static_cast<ShellyScope>(9);
+    assert(!valid_site_settings(s));
+    SiteSettingsV1 old{};
+    assert(site_settings_from_v1(old).shelly_scope==ShellyScope::Unknown);
+}
+
 static void older_layout_is_restored_not_reset() {
-    // Codex P1 (#57): a blob written before profiles existed used to fail an
+    // Codex P1 (#57/#58): a blob written by an earlier layout used to fail an
     // exact-size check, silently resetting pump endpoint, location and tariff.
     SiteSettings full{};
     std::strcpy(full.cn105_url,"http://192.168.1.50/events");
@@ -342,32 +363,38 @@ static void older_layout_is_restored_not_reset() {
     full.tariff_confirmed=true;full.setup_complete=true;full.setup_step=9;
     full.tariff.margin_eur_per_kwh=0.005;
     full.profile=OptimizationProfile::Saving;full.comfort_min_c=19;full.comfort_max_c=23;
+    full.shelly_scope=ShellyScope::HeatPump;
     uint8_t buf[sizeof(SiteSettings)];
-    std::memcpy(buf,&full,sizeof(buf));
-    const size_t boundary=kSettingsLayoutBoundaries[0];
     const size_t align=alignof(SiteSettings);
-    const size_t old_size=(boundary+align-1)/align*align;
-    // poison everything the old firmware could not have written
-    std::memset(buf+boundary,0xA5,sizeof(buf)-boundary);
-    SiteSettings out{};
-    assert(restore_site_settings(buf,old_size,out));
-    assert(std::strcmp(out.cn105_url,"http://192.168.1.50/events")==0);
-    assert(std::strcmp(out.pump_adapter,"mitsubishi_cn105")==0);
-    assert(std::strcmp(out.country,"SE")==0&&std::strcmp(out.price_zone,"SE3")==0);
-    assert(out.tariff_confirmed&&out.setup_complete&&out.setup_step==9);
-    assert(near(out.tariff.margin_eur_per_kwh,0.005));
-    // newer members take their defaults, never the poison bytes
-    assert(out.profile==OptimizationProfile::Balanced&&out.comfort_min_c==0&&out.comfort_max_c==0);
-    assert(valid_site_settings(out));
+    for(const size_t boundary:kSettingsLayoutBoundaries) {
+        std::memcpy(buf,&full,sizeof(buf));
+        const size_t old_size=(boundary+align-1)/align*align;
+        // poison everything that layout's firmware could not have written
+        std::memset(buf+boundary,0xA5,sizeof(buf)-boundary);
+        SiteSettings out{};
+        assert(restore_site_settings(buf,old_size,out));
+        assert(std::strcmp(out.cn105_url,"http://192.168.1.50/events")==0);
+        assert(std::strcmp(out.pump_adapter,"mitsubishi_cn105")==0);
+        assert(std::strcmp(out.country,"SE")==0&&std::strcmp(out.price_zone,"SE3")==0);
+        assert(out.tariff_confirmed&&out.setup_complete&&out.setup_step==9);
+        assert(near(out.tariff.margin_eur_per_kwh,0.005));
+        // members the older layout lacked take their defaults, never poison
+        assert(out.shelly_scope==ShellyScope::Unknown);
+        if(boundary<=offsetof(SiteSettings,profile))
+            assert(out.profile==OptimizationProfile::Balanced&&out.comfort_min_c==0&&out.comfort_max_c==0);
+        else
+            assert(out.profile==OptimizationProfile::Saving&&near(out.comfort_min_c,19)&&near(out.comfort_max_c,23));
+        assert(valid_site_settings(out));
+        assert(!restore_site_settings(buf,boundary-1,out));
+    }
     // the current layout restores whole
     std::memcpy(buf,&full,sizeof(buf));
-    assert(restore_site_settings(buf,sizeof(buf),out)&&out.profile==OptimizationProfile::Saving&&near(out.comfort_max_c,23));
+    SiteSettings out{};
+    assert(restore_site_settings(buf,sizeof(buf),out)&&out.shelly_scope==ShellyScope::HeatPump&&near(out.comfort_max_c,23));
     // sizes that match no known layout are refused (corrupt or from newer firmware)
     assert(!restore_site_settings(buf,sizeof(buf)+8,out));
-    assert(!restore_site_settings(buf,boundary-1,out));
     assert(!restore_site_settings(buf,0,out));
     assert(!restore_site_settings(nullptr,sizeof(buf),out));
-    if(old_size+1<sizeof(buf)&&old_size+1>(boundary+align-1)/align*align) assert(!restore_site_settings(buf,old_size+1,out));
 }
 
 static void rollback_edit_overrides_stale_v3() {
@@ -439,6 +466,55 @@ static void nvs_snapshot_failure_does_not_commit_an_unknown_baseline() {
     assert(site_rollback_snapshot_signature(nvs,"v2",signature,scratch,sizeof(scratch)));
     assert(signature==0); // true absence is allowed
 }
+
+
+static void v4_to_v5_preserves_previous_settings_and_rollback() {
+    SiteSettings owner{};
+    std::strcpy(owner.cn105_url,"http://192.168.1.77/events");
+    std::strcpy(owner.shelly_url,"http://192.168.1.53");
+    std::strcpy(owner.fmi_latlon,"61.4638,24.0760");
+    std::strcpy(owner.country,"SE");std::strcpy(owner.price_zone,"SE3");
+    owner.profile=OptimizationProfile::Saving;
+    owner.comfort_min_c=12;owner.comfort_max_c=23;
+    owner.shelly_scope=ShellyScope::HeatPump; // field did not exist in v4
+    owner.tariff.margin_eur_per_kwh=0.039;
+    constexpr size_t legacy_size=
+        (offsetof(SiteSettings,shelly_scope)+alignof(SiteSettings)-1)/
+            alignof(SiteSettings)*alignof(SiteSettings);
+    static_assert(legacy_size<sizeof(SiteSettings),"v4 must be older layout");
+    constexpr size_t disk_size=8+legacy_size+2*sizeof(uint64_t);
+    uint8_t old_v4[disk_size]{};
+    const uint32_t magic=0x45535431;
+    const uint16_t version=4,payload=static_cast<uint16_t>(legacy_size);
+    std::memcpy(old_v4,&magic,4);std::memcpy(old_v4+4,&version,2);
+    std::memcpy(old_v4+6,&payload,2);
+    std::memcpy(old_v4+8,&owner,legacy_size);
+    uint8_t old_v2[32]{};uint8_t old_v3[64]{};
+    const uint64_t b2=site_v2_signature(old_v2,sizeof(old_v2));
+    const uint64_t b3=site_v2_signature(old_v3,sizeof(old_v3));
+    std::memcpy(old_v4+8+legacy_size,&b2,8);
+    std::memcpy(old_v4+8+legacy_size+8,&b3,8);
+    SiteSettings restored{};uint64_t got2=0,got3=0;
+    assert(site_restore_v4_record(old_v4,sizeof(old_v4),restored,got2,got3));
+    assert(std::strcmp(restored.cn105_url,owner.cn105_url)==0);
+    assert(std::strcmp(restored.shelly_url,owner.shelly_url)==0);
+    assert(std::strcmp(restored.fmi_latlon,owner.fmi_latlon)==0);
+    assert(std::strcmp(restored.country,"SE")==0 && std::strcmp(restored.price_zone,"SE3")==0);
+    assert(restored.profile==OptimizationProfile::Saving && near(restored.comfort_min_c,12));
+    assert(near(restored.comfort_max_c,23) && near(restored.tariff.margin_eur_per_kwh,0.039));
+    assert(restored.shelly_scope==ShellyScope::Unknown); // explicit re-confirmation, no inherited pump claim
+    assert(got2==b2 && got3==b3);
+    const uint64_t snapshot_v4=site_v2_signature(old_v4,sizeof(old_v4));
+    assert(!site_rollback_v2_modified(snapshot_v4,old_v4,sizeof(old_v4)));
+    // v5 saves during probation; after rollback v4 firmware edits the prior
+    // v4 key. New v5 must prefer those changed owner settings.
+    old_v4[8+offsetof(SiteSettings,cn105_url)+8]^=1;
+    assert(site_rollback_v2_modified(snapshot_v4,old_v4,sizeof(old_v4)));
+    assert(!site_restore_v4_record(old_v4,sizeof(old_v4)-16,restored,got2,got3));
+    old_v4[4]=9; // invalid version cannot replace v5
+    assert(!site_restore_v4_record(old_v4,sizeof(old_v4),restored,got2,got3));
+}
+
 
 // Crash-recovery journal phase invariants, independent of the device NVS.
 static void comfort_transaction_survives_site_air_split() {
@@ -600,6 +676,7 @@ static void hard_comfort_limits_never_silently_disappear() {
 }
 
 int main() {
+    v4_to_v5_preserves_previous_settings_and_rollback();
     comfort_transaction_survives_site_air_split();
     hard_comfort_limits_never_silently_disappear();
     old_ota_settings_require_real_image_confirmation();
@@ -616,6 +693,7 @@ int main() {
     regional_setup();
     v1_migration();
     profile_and_comfort_limits();
+    shelly_scope_setting();
     batch_is_order_independent();
     transfer_schedule_uses_country_time();
     std::puts("site_settings_tests OK");

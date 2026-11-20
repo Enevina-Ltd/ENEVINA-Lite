@@ -22,19 +22,21 @@
 #include "../../main/market.hpp"
 #include "forecast/market_zones.hpp"
 #include "cottage_geocode.hpp"
+#include "cottage_shelly_discovery.hpp"
 
 using enevina::cottage::SiteSettings;
 using enevina::cottage::SettingError;
 namespace {
 constexpr uint32_t kMagic=0x45535431; // "EST1"
-constexpr uint16_t kVersion=4;  // v4 never overwrites rollback v2/v3
+constexpr uint16_t kVersion=5;  // v5 preserves predecessor v4 for OTA rollback
 struct Stored {
     uint32_t magic=kMagic;
     uint16_t version=kVersion;
     uint16_t size=sizeof(SiteSettings);
     SiteSettings settings{};
     uint64_t rollback_v2_signature=0;
-    uint64_t rollback_v3_signature=0; // both snapshots travel atomically with v4
+    uint64_t rollback_v3_signature=0;
+    uint64_t rollback_v4_signature=0; // three predecessor fingerprints travel atomically with v5
 };
 // v3 blobs are read as versioned prefixes, so both the older pre-signature
 // layout and the signature-bearing v3 draft remain upgrade-readable.
@@ -97,10 +99,10 @@ bool erase_disposable_cache(const char* nspace,const char* key) {
     if(ok) ESP_LOGW("enevina_site","NVS cache reclaimed: %s/%s",nspace,key);
     return ok;
 }
-// Snapshot rollback-readable settings records before writing v4. Their
-// signatures travel INSIDE the same v4 blob: no split-metadata NVS commit.
+// Snapshot rollback-readable settings records before writing v5. Their
+// signatures travel INSIDE the same v5 blob: no split-metadata NVS commit.
 // A missing rollback record is not the same as an unreadable one. Never
-// commit v4 with an unknown baseline: on reboot a recovered old record would
+// commit v5 with an unknown baseline: on reboot a recovered old record would
 // otherwise be mistaken for an edit made AFTER the v4 save.
 bool rollback_key_signature(Preferences& p,const char* key,uint64_t& signature) {
     uint8_t raw[sizeof(Stored)]{};
@@ -152,16 +154,16 @@ bool persist(const SiteSettings& s) {
     const auto write_site=[&]() {
         Preferences p;
         if(!p.begin("site",false)) return false;
-        // Preserve both rollback-readable records until OTA confirmation.
-        // A transient NVS read error is NOT a missing record. Do not write an
-        // untrustworthy baseline, even when there is enough space for v4.
+        // Preserve v2/v3/v4 (including the signed, fixed-size v4 layout)
+        // until OTA confirmation. An NVS read error is NOT an absent record.
         if(!rollback_key_signature(p,"v2",blob.rollback_v2_signature) ||
-           !rollback_key_signature(p,"v3",blob.rollback_v3_signature)) {
+           !rollback_key_signature(p,"v3",blob.rollback_v3_signature) ||
+           !rollback_key_signature(p,"v4",blob.rollback_v4_signature)) {
             snapshot_read_failed=true;
             p.end();
             return false;
         }
-        const size_t written=p.putBytes("v4",&blob,sizeof(blob));
+        const size_t written=p.putBytes("v5",&blob,sizeof(blob));
         const esp_partition_t* running=esp_ota_get_running_partition();
         esp_ota_img_states_t state=ESP_OTA_IMG_UNDEFINED;
         const bool image_valid=running &&
@@ -173,6 +175,7 @@ bool persist(const SiteSettings& s) {
                cottage_ota_confirmation_pending())) {
             // Reclamation is allowed only AFTER OTA confirmation, when the
             // earlier firmware cannot be restored by the OTA rollback path.
+            if(p.isKey("v4")) p.remove("v4");
             if(p.isKey("v3")) p.remove("v3");
             if(p.isKey("v2")) p.remove("v2");
             if(p.isKey("v1")) p.remove("v1");
@@ -232,6 +235,7 @@ void send_settings(WebServer& web) {
     cJSON_AddNumberToObject(root,"min_price_advantage_percent",s.min_price_advantage_fraction*100);
     cJSON_AddStringToObject(root,"cn105_url",s.cn105_url);
     cJSON_AddStringToObject(root,"shelly_url",s.shelly_url);
+    cJSON_AddStringToObject(root,"shelly_scope",enevina::cottage::shelly_scope_name(s.shelly_scope));
     cJSON_AddStringToObject(root,"fmi_latlon",s.fmi_latlon);
     cJSON_AddStringToObject(root,"fmi_latlon_note","applied immediately after save");
     cJSON_AddStringToObject(root,"pump_adapter",s.pump_adapter);
@@ -308,18 +312,29 @@ void site_settings_initialize() {
         comfort_pending.store(p.isKey(kComfortKey));
         Stored blob{};
         StoredV1 old{};
-        bool v4_valid=false;
-        // v4 is the authoritative candidate unless rollback firmware changed
-        // a protected v3 or v2 record since v4's last durable save.
-        if(p.getBytesLength("v4")==sizeof(blob) &&
-           p.getBytes("v4",&blob,sizeof(blob))==sizeof(blob) &&
+        bool v5_valid=false;
+        // v5 is authoritative unless rollback firmware changed v4/v3/v2.
+        if(p.getBytesLength("v5")==sizeof(blob) &&
+           p.getBytes("v5",&blob,sizeof(blob))==sizeof(blob) &&
            blob.magic==kMagic && blob.version==kVersion &&
            blob.size==sizeof(SiteSettings) && acceptable(blob.settings)) {
             s=blob.settings;
             loaded_from_nvs=true;
-            v4_valid=true;
+            v5_valid=true;
         }
         const size_t h=offsetof(Stored,settings);
+        // The previous release stores version FOUR with a smaller settings
+        // payload (480 bytes), followed by both older-version fingerprints.
+        // Never require today's sizeof(Stored) when reading the legacy key.
+        uint8_t raw4[sizeof(Stored)]{};
+        const size_t len4=p.getBytesLength("v4");
+        SiteSettings from4{};
+        uint64_t v4_baseline_v2=0,v4_baseline_v3=0;
+        const bool v4_valid=len4>h && len4<=sizeof(raw4) &&
+            p.getBytes("v4",raw4,len4)==len4 &&
+            enevina::cottage::site_restore_v4_record(
+                raw4,len4,from4,v4_baseline_v2,v4_baseline_v3) &&
+            acceptable(from4);
         // v3 is a full settings record, optionally followed by a prior
         // v2 fingerprint. Decode only the validated settings prefix.
         uint8_t raw3[sizeof(Stored)]{};
@@ -357,15 +372,28 @@ void site_settings_initialize() {
                 enevina::cottage::restore_site_settings(raw2+h,size,from2) &&
                 acceptable(from2);
         }
-        if(v4_valid) {
-            // Priority: the newest rollback-capable version whose record
-            // changed since the v4 candidate saved. Invalid records never
-            // replace a validated v4 record.
-            if(v3_valid && enevina::cottage::site_rollback_v2_modified(
+        if(v5_valid) {
+            // The newest rollback firmware to save its own older key wins.
+            // Unchanged old keys do not supersede owner changes in v5.
+            if(v4_valid && enevina::cottage::site_rollback_v2_modified(
+                    blob.rollback_v4_signature,raw4,len4)) {
+                s=from4;
+            } else if(v3_valid && enevina::cottage::site_rollback_v2_modified(
                     blob.rollback_v3_signature,raw3,len3)) {
                 s=from3;
             } else if(v2_valid && enevina::cottage::site_rollback_v2_modified(
                     blob.rollback_v2_signature,raw2,len2)) {
+                s=from2;
+            }
+        } else if(v4_valid) {
+            // First v4 -> v5 boot: account for edits made by v3/v2 rollback
+            // firmware after v4 was saved, using v4's embedded signatures.
+            s=from4;loaded_from_nvs=true;
+            if(v3_valid && enevina::cottage::site_rollback_v2_modified(
+                    v4_baseline_v3,raw3,len3)) {
+                s=from3;
+            } else if(v2_valid && enevina::cottage::site_rollback_v2_modified(
+                    v4_baseline_v2,raw2,len2)) {
                 s=from2;
             }
         } else if(v3_valid) {
@@ -536,7 +564,45 @@ static void send_geocode(WebServer& web) {
     web.send(st==GeocodeState::Pending?202:200,"application/json; charset=utf-8",body);
     cJSON_free(body);
 }
+// Shelly discovery: the worker task scans; this handler starts/polls only.
+static void send_shelly_scan(WebServer& web) {
+    using namespace enevina_firmware;
+    auto snap=std::unique_ptr<ShellyScanSnapshot>(new(std::nothrow) ShellyScanSnapshot);
+    if(!snap) {web.send(503,"application/json","{\"state\":\"failed\"}");return;}
+    const ShellyScanState st=shelly_scan(*snap);
+    cJSON* root=cJSON_CreateObject();
+    cJSON* list=root?cJSON_AddArrayToObject(root,"devices"):nullptr;
+    if(!list) {cJSON_Delete(root);web.send(503,"application/json","{}");return;}
+    static const char* const names[]={"idle","pending","done","failed"};
+    cJSON_AddStringToObject(root,"state",names[static_cast<int>(st)&3]);
+    cJSON_AddBoolToObject(root,"cooldown",snap->busy_cooldown);
+    cJSON_AddNumberToObject(root,"age_s",snap->age_ms/1000);
+    for(size_t i=0;st==ShellyScanState::Done && i<snap->count;++i) {
+        const auto& f=snap->items[i];
+        cJSON* o=cJSON_CreateObject();
+        if(!o) break;
+        cJSON_AddStringToObject(o,"host",f.host);
+        cJSON_AddStringToObject(o,"url",f.url);
+        cJSON_AddStringToObject(o,"id",f.info.id);
+        cJSON_AddStringToObject(o,"model",f.info.model);
+        cJSON_AddStringToObject(o,"app",f.info.app);
+        cJSON_AddNumberToObject(o,"generation",f.info.generation);
+        cJSON_AddStringToObject(o,"support",enevina::cottage::shelly_support_name(f.info.support));
+        if(f.has_power) cJSON_AddNumberToObject(o,"power_w",f.watts);
+        else cJSON_AddNullToObject(o,"power_w");
+        cJSON_AddItemToArray(list,o);
+    }
+    char* body=cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if(!body) {web.send(503,"application/json","{}");return;}
+    web.sendHeader("Cache-Control","no-store");
+    web.send(st==ShellyScanState::Pending?202:200,"application/json; charset=utf-8",body);
+    cJSON_free(body);
+}
 void site_settings_register_routes(WebServer& web) {
+    web.on("/api/shelly/discover",HTTP_GET,[&web]() {
+        if(cottage_wifi_require_home_lan(web))send_shelly_scan(web);
+    });
     web.on("/api/geocode",HTTP_GET,[&web]() {
         if(cottage_wifi_require_home_lan(web))send_geocode(web);
     });

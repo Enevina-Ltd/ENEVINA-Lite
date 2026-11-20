@@ -11,6 +11,7 @@
 // the selected country (EU summer-time rule) at the 15-minute slot START.
 #include "cottage/finnish_tariff.hpp"
 #include "cottage/optimization_profile.hpp"
+#include "cottage/shelly_discovery.hpp"
 #include "cottage/url_guard.hpp"
 #include "forecast/eu_time.hpp"
 #include "forecast/market_zones.hpp"
@@ -135,6 +136,9 @@ struct SiteSettings {
     OptimizationProfile profile=OptimizationProfile::Balanced;
     double comfort_min_c=0;
     double comfort_max_c=0;
+    // What the consumption meter measures. Unknown until the owner confirms;
+    // only HeatPump may feed the pump COP/consumption model.
+    ShellyScope shelly_scope=ShellyScope::Unknown;
 };
 
 // Byte layout of the shipped v1 settings blob (Finland-only, before regional
@@ -175,7 +179,8 @@ inline SiteSettings site_settings_from_v1(const SiteSettingsV1& old) {
 // leaves everything newer at its default - the owner's saved pump endpoint,
 // location, tariff and wizard state survive a firmware upgrade instead of being
 // discarded. (Without this an exact-size check silently reset the device.)
-constexpr size_t kSettingsLayoutBoundaries[]={offsetof(SiteSettings,profile)};
+constexpr size_t kSettingsLayoutBoundaries[]={offsetof(SiteSettings,profile),
+                                              offsetof(SiteSettings,shelly_scope)};
 // Returns false when `size` matches no known layout (corrupt, or written by a
 // NEWER firmware that this one cannot interpret): the caller keeps defaults.
 inline bool restore_site_settings(const uint8_t* bytes,size_t size,SiteSettings& out) {
@@ -242,6 +247,30 @@ inline bool site_v3_prefer_rollback_v2(const uint8_t* v3,size_t v3_len,
     return site_rollback_v2_modified(baseline,v2,v2_len);
 }
 
+// Restore the predecessor v4 record without treating its saved 480-byte
+// layout as the newer v5 488-byte struct. The v4 CRC-free envelope carries
+// exact magic/version/length plus the old v2/v3 rollback fingerprints.
+inline bool site_restore_v4_record(const uint8_t* raw,size_t n,SiteSettings& out,
+                                   uint64_t& baseline_v2,uint64_t& baseline_v3) {
+    constexpr size_t header=8;
+    baseline_v2=baseline_v3=0;
+    if(!raw||n<header) return false;
+    uint32_t magic=0;uint16_t version=0,settings_bytes=0;
+    std::memcpy(&magic,raw,sizeof(magic));
+    std::memcpy(&version,raw+4,sizeof(version));
+    std::memcpy(&settings_bytes,raw+6,sizeof(settings_bytes));
+    if(magic!=0x45535431U || version!=4 || settings_bytes==0 ||
+       settings_bytes>sizeof(SiteSettings) ||
+       static_cast<size_t>(settings_bytes)>n-header ||
+       n-header-settings_bytes<2*sizeof(uint64_t)) return false;
+    SiteSettings restored{};
+    if(!restore_site_settings(raw+header,settings_bytes,restored))return false;
+    std::memcpy(&baseline_v2,raw+header+settings_bytes,sizeof(baseline_v2));
+    std::memcpy(&baseline_v3,raw+header+settings_bytes+sizeof(uint64_t),sizeof(baseline_v3));
+    out=restored;
+    return true;
+}
+
 // Region that prices are fetched for, or false when the user has not finished
 // choosing one (unsupported country, or multi-zone country without a zone).
 inline bool site_market_region(const SiteSettings& s,const char*& nordpool_area,
@@ -272,7 +301,7 @@ inline bool valid_site_region(const SiteSettings& s);
 inline bool valid_site_settings(const SiteSettings& s) {
     if(!valid_site_region(s)) return false;
     const enevina::MarketCountry* c=enevina::find_market_country(s.country);
-    return static_cast<uint8_t>(s.profile)<=2 &&
+    return static_cast<uint8_t>(s.profile)<=2 && static_cast<uint8_t>(s.shelly_scope)<=2 &&
         valid_comfort_limits(s.comfort_min_c,s.comfort_max_c) &&
         valid_site_tariff(s.tariff,currency_limit_scale(c ? c->currency : "EUR"));
 }
@@ -442,6 +471,8 @@ inline SettingError apply_site_setting(SiteSettings& s,const char* key,const cha
     }
     if(!std::strcmp(key,"shelly_url")) {
         if(*value && !valid_shelly_base_url(value)) return SettingError::BadUrl;
+        // A different meter has not been confirmed to measure the pump.
+        if(std::strcmp(s.shelly_url,value)!=0) s.shelly_scope=ShellyScope::Unknown;
         return detail::copy_text(s.shelly_url,sizeof(s.shelly_url),value)?
             SettingError::Ok:SettingError::TooLong;
     }
@@ -511,6 +542,9 @@ inline SettingError apply_site_setting(SiteSettings& s,const char* key,const cha
         else if(std::strcmp(value,"false")) return SettingError::BadChoice;
         (key[0]=='t'?s.tariff_confirmed:s.setup_complete)=v;
         return SettingError::Ok;
+    }
+    if(!std::strcmp(key,"shelly_scope")) {
+        return parse_shelly_scope(value,s.shelly_scope)?SettingError::Ok:SettingError::BadChoice;
     }
     if(!std::strcmp(key,"optimization_profile")) {
         return parse_profile(value,s.profile)?SettingError::Ok:SettingError::BadChoice;

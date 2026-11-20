@@ -92,6 +92,28 @@ Reading it honestly:
   toggle by design.
 * No field data; no thermal-model calibration.
 
+## OTA storage migration: site/v4 to site/v5
+
+The Shelly measurement-target selection adds a field to persisted site settings,
+so the new firmware writes **site/v5**, not the predecessor's **site/v4**.
+At boot it accepts the verified v5 record or decodes the older v4 prefix
+without losing pump, country, tariff, location, comfort bounds or profile.
+For a migrated v4 record, the previously nonexistent Shelly scope defaults to
+**Unknown**, never automatically claiming pump-only measurement.
+
+During OTA probation, the complete predecessor v4 record remains readable by
+the rollback firmware, alongside any older v2/v3 records. Each v5 save includes
+fingerprints of v2/v3/v4 as one versioned record, enabling a later upgrade to
+recognize settings edited by rollback firmware. A failed NVS snapshot read
+aborts v5 persistence. Old records may be deleted only after OTA confirmation
+when that firmware rollback is no longer possible.
+
+The test harness covers previous v4-size decoding, legacy field preservation,
+corrupt/truncated records, v4 edits after probation rollback, and NVS read
+failures. These are **host simulations**; a physical v4→v5 OTA, power-cut and
+rollback sequence remains to be verified on the ESP32-S3.
+
+
 ## Comfort wizard: crash-safe two-stage journal
 
 When the wizard changes Hold/Occupied target and profile/bounds, the first
