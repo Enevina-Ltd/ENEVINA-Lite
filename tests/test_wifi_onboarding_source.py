@@ -200,7 +200,8 @@ class SiteSettingsSource(unittest.TestCase):
     def test_endpoint_change_revokes_armed_control(self):
         # Codex P1 (PR #30): authorization is bound to the configured pump.
         self.assertIn("endpoint_changed) endpoint_generation.fetch_add(1)", SITE)
-        self.assertIn("strcmp(previous.cn105_url,next.cn105_url)!=0", SITE)
+        self.assertIn("strcmp(effective_previous.cn105_url,next.cn105_url)!=0", SITE)
+        self.assertIn("const SiteSettings effective_previous=site_settings_snapshot();", SITE)
         tick = MAIN.split("static void cottage_control_tick() {", 1)[1].split(
             "ControlSnapshot candidate", 1)[0]
         self.assertIn("control_armed_endpoint.load()!=site_settings_endpoint_generation()", tick)
