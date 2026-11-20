@@ -63,6 +63,7 @@ static_assert(ESP_OTA_IMG_NEW==0u && ESP_OTA_IMG_PENDING_VERIFY==1u &&
               static_cast<uint32_t>(ESP_OTA_IMG_UNDEFINED)==0xffffffffu,
               "ESP-IDF OTA states changed: update portable decoder");
 std::atomic<bool> confirmation_pending{false};
+std::atomic<bool> ota_storage_ready{false};
 bool read_transaction(Preferences& prefs,ota::Transaction& tx) {
     if(prefs.getBytesLength("txv2")!=sizeof(tx))return false;
     if(prefs.getBytes("txv2",&tx,sizeof(tx))!=sizeof(tx))return false;
@@ -334,6 +335,7 @@ bool cottage_ota_configured(){
 #endif
 }
 void cottage_ota_initialize() {
+    ota_storage_ready.store(false);
     confirmation_pending.store(false);
     Preferences p;
     if(!p.begin("c24_ota",false)) {
@@ -414,9 +416,15 @@ void cottage_ota_initialize() {
         // KeepForActivation: do not force reboot or corrupt boot selection.
     }
     p.end();
+    // A failed transaction read or failed cleanup is not authorization to
+    // reclaim older site settings needed by a rollback image.
+    ota_storage_ready.store(last_status.load()!=3);
 }
 bool cottage_ota_confirmation_pending() {
     return confirmation_pending.load();
+}
+bool cottage_ota_runtime_ready() {
+    return ota_storage_ready.load();
 }
 bool cottage_ota_confirm_boot() {
     Preferences p;
