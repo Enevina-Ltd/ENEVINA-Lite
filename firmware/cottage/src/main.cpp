@@ -1771,10 +1771,12 @@ static void timeline_endpoint() {
         web.send(200,"application/json; charset=utf-8","{\"valid\":false,\"slots\":[],\"segments\":[]}");
         return;
     }
-    const BootstrapDecision decision=bootstrap_preview(now,c23_temperature_sample());
-    // A drying target may be valid yet humidity conditions prohibit heating.
-    // Preserve the target for display but suppress heating guidance separately.
-    meta.heating_permitted=has_target &&
+    const TemperatureSample indoor=c23_temperature_sample();
+    const BootstrapDecision decision=bootstrap_preview(now,indoor);
+    // The timeline is advice, not a bypass around the live controller's
+    // independent room-sensor freshness and Drying humidity gates.
+    meta.indoor_fresh=valid_temperature(indoor,now);
+    meta.heating_permitted=has_target && meta.indoor_fresh &&
         !(mode.mode==CottageMode::Drying && drying_blocks_heat(plan));
     meta.currency=market.currency;meta.area=market.area;
     meta.decision_action=bootstrap_action_name(decision.action);

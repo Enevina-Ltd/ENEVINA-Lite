@@ -49,6 +49,8 @@ SemaphoreHandle_t guard=nullptr;
 SiteSettings current{};
 std::atomic<uint32_t> generation{0};
 std::atomic<uint32_t> endpoint_generation{0};
+std::atomic<bool> comfort_pending{false};
+constexpr char kComfortKey[]="comfort_txn";
 bool loaded_from_nvs=false;
 
 SiteSettings compiled_defaults() {
@@ -104,6 +106,22 @@ bool rollback_key_signature(Preferences& p,const char* key,uint64_t& signature) 
     uint8_t raw[sizeof(Stored)]{};
     return enevina::cottage::site_rollback_snapshot_signature(
         p,key,signature,raw,sizeof(raw));
+}
+// The intent is a single durable NVS record. Every later site and air NVS
+// update is recoverable after a reset. On failed intent write, site remains old.
+bool prepare_comfort_transaction(const enevina::cottage::ComfortTxn& tx) {
+    if(!enevina::cottage::valid_comfort_txn(tx) || comfort_pending.load())return false;
+    Preferences p;
+    if(!p.begin("site",false))return false;
+    if(p.isKey(kComfortKey)) {comfort_pending.store(true);p.end();return false;}
+    const size_t wrote=p.putBytes(kComfortKey,&tx,sizeof(tx));
+    enevina::cottage::ComfortTxn back{};
+    const bool ok=wrote==sizeof(tx) && p.getBytesLength(kComfortKey)==sizeof(tx) &&
+        p.getBytes(kComfortKey,&back,sizeof(back))==sizeof(back) &&
+        std::memcmp(&tx,&back,sizeof(tx))==0;
+    comfort_pending.store(p.isKey(kComfortKey)); // ambiguous writes block commands
+    p.end();
+    return ok;
 }
 bool persist(const SiteSettings& s) {
     Stored blob{};
@@ -244,6 +262,7 @@ void site_settings_initialize() {
     SiteSettings s=compiled_defaults();
     Preferences p;
     if(p.begin("site",true)) {
+        comfort_pending.store(p.isKey(kComfortKey));
         Stored blob{};
         StoredV1 old{};
         bool v5_valid=false;
@@ -362,6 +381,36 @@ SiteSettings site_settings_snapshot() {
     const SiteSettings copy=current;
     xSemaphoreGive(guard);
     return copy;
+}
+// A marker can survive a reboot at any point between the two separate NVS
+// records. Never silently discard a valid intent for a newly saved site band.
+bool site_comfort_transaction_pending() { return comfort_pending.load(); }
+bool site_comfort_transaction_read(enevina::cottage::ComfortTxn& out) {
+    Preferences p;
+    if(!p.begin("site",true))return false;
+    const bool valid=p.getBytesLength(kComfortKey)==sizeof(out) &&
+        p.getBytes(kComfortKey,&out,sizeof(out))==sizeof(out) &&
+        enevina::cottage::valid_comfort_txn(out);
+    p.end();
+    return valid;
+}
+bool site_comfort_transaction_abandon() {
+    if(!comfort_pending.load())return true;
+    Preferences p;
+    if(!p.begin("site",false))return false;
+    const bool ok=(!p.isKey(kComfortKey) || p.remove(kComfortKey)) &&
+        !p.isKey(kComfortKey);
+    p.end();
+    if(ok)comfort_pending.store(false);
+    return ok;
+}
+bool site_comfort_transaction_finish(const enevina::cottage::CottageModeConfig& cfg) {
+    if(!comfort_pending.load())return true;
+    enevina::cottage::ComfortTxn tx{};
+    if(!site_comfort_transaction_read(tx) ||
+       !enevina::cottage::comfort_site_matches(tx,site_settings_snapshot()) ||
+       !enevina::cottage::comfort_mode_matches(tx,cfg))return false;
+    return site_comfort_transaction_abandon();
 }
 uint32_t site_settings_generation() { return generation.load(); }
 uint32_t site_settings_endpoint_generation() { return endpoint_generation.load(); }
@@ -512,7 +561,8 @@ void site_settings_register_routes(WebServer& web) {
             }
             for(int i=0;i<web.args() && n<kMaxFields;++i) {
                 names[n]=web.argName(i);
-                if(names[n]=="token" || names[n]=="plain") continue;
+                if(names[n]=="token" || names[n]=="plain" ||
+                   names[n]=="comfort_txn_mode" || names[n]=="comfort_txn_target")continue;
                 vals[n]=web.arg(i);
                 keys[n]=names[n].c_str();
                 values[n]=vals[n].c_str();
@@ -543,6 +593,33 @@ void site_settings_register_routes(WebServer& web) {
             web.send(400,"application/json","{\"saved\":false,\"error\":\"INVALID\"}");
             return;
         }
+        // Only Comfort setup may span site and air records. A durable intent
+        // must precede the first change; the next boot can finish it safely.
+        const bool wants_txn=web.hasArg("comfort_txn_mode")||
+                             web.hasArg("comfort_txn_target");
+        enevina::cottage::ComfortTxn comfort_tx{};
+        if(wants_txn) {
+            const String mode_s=web.arg("comfort_txn_mode");
+            const String target_s=web.arg("comfort_txn_target");
+            if((mode_s!="2"&&mode_s!="3")||target_s.length()>20 ||
+               next.setup_step!=6) {
+                web.send(400,"application/json","{\"saved\":false,\"error\":\"COMFORT_TXN\"}");
+                return;
+            }
+            char* end=nullptr;
+            const double t=strtod(target_s.c_str(),&end);
+            comfort_tx.mode=static_cast<uint8_t>(mode_s.toInt());
+            comfort_tx.profile=static_cast<uint8_t>(next.profile);
+            comfort_tx.target=static_cast<float>(t);
+            comfort_tx.min_c=static_cast<float>(next.comfort_min_c);
+            comfort_tx.max_c=static_cast<float>(next.comfort_max_c);
+            const auto air=enevina::cottage::c23_mode_config();
+            if(end==target_s.c_str() || *end || !enevina::cottage::valid_comfort_txn(comfort_tx) ||
+               static_cast<uint8_t>(air.mode)!=comfort_tx.mode) {
+                web.send(400,"application/json","{\"saved\":false,\"error\":\"COMFORT_TXN\"}");
+                return;
+            }
+        }
         const SiteSettings previous=site_settings_snapshot();
         const bool endpoint_changed=
             strcmp(previous.cn105_url,next.cn105_url)!=0 ||
@@ -553,6 +630,12 @@ void site_settings_register_routes(WebServer& web) {
         if(endpoint_changed && !cottage_control_revoke_saved_intent()) {
             web.send(500,"application/json",
                      "{\"saved\":false,\"error\":\"CONTROL_NVS\"}");
+            return;
+        }
+        // Durable journal must be written before the new site band or a reset
+        // between site+air POSTs could boot with contradictory target/limits.
+        if(wants_txn && !prepare_comfort_transaction(comfort_tx)) {
+            web.send(503,"application/json","{\"saved\":false,\"error\":\"COMFORT_NVS\"}");
             return;
         }
         // Durable first: RAM changes only after NVS accepted the full blob.

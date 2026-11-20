@@ -164,7 +164,7 @@ static void json_is_valid_and_honest() {
     meta.heating_permitted=true;
     CHECK(j.find("\"currency\":\"SEK\"")!=std::string::npos&&j.find("\"setpoint_c\":22.5")!=std::string::npos);
     // there is NO predicted indoor temperature or cost in the document
-    for(const char* forbidden:{"indoor","predicted","cost","savings"}) CHECK(j.find(forbidden)==std::string::npos);
+    for(const char* forbidden:{"\"indoor_c\":","\"predicted\"","\"cost\"","\"savings\""}) CHECK(j.find(forbidden)==std::string::npos);
     // 192 slots: output stays small enough to stream
     CHECK(j.size()<30000);
     // no target (mode without one): headroom null, classes still present

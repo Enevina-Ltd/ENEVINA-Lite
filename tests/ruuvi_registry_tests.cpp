@@ -125,6 +125,13 @@ static void names_are_validated_labels() {
     CHECK(n.set(mac(3),"it's")==NameResult::BadName);
     CHECK(n.set(mac(3),"tab\there")==NameResult::BadName);
     CHECK(n.set(mac(3),"bad\xC3")==NameResult::BadName);                // truncated UTF-8
+    // Explicit invalid Unicode scalar-value sequences: never save malformed UTF-8.
+    CHECK(n.set(mac(3),"\xE0\x80\x80")==NameResult::BadName); // overlong U+0000
+    CHECK(n.set(mac(3),"\xED\xA0\x80")==NameResult::BadName); // surrogate U+D800
+    CHECK(n.set(mac(3),"\xF4\x90\x80\x80")==NameResult::BadName); // >U+10FFFF
+    CHECK(n.set(mac(3),"\xF0\x80\x80\x80")==NameResult::BadName); // overlong 4-byte
+    CHECK(n.set(mac(3),"\xC0\xAF")==NameResult::BadName); // overlong 2-byte
+    CHECK(n.set(mac(3),"\xEF\xBF\xBD")==NameResult::Ok); // valid replacement char
     CHECK(n.set(mac(3),"   ")==NameResult::BadName);
     CHECK(n.set(mac(3),"012345678901234567890123")==NameResult::BadName);    // 24 bytes: no room for the terminator
     CHECK(n.set(mac(3),"01234567890123456789012")==NameResult::Ok);          // 23 bytes is the maximum
