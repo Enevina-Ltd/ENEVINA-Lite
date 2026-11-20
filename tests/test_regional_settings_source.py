@@ -13,6 +13,7 @@ MARKET = (ROOT / "firmware/main/market.cpp").read_text(encoding="utf-8")
 SITE = (ROOT / "firmware/cottage/src/cottage_site_settings.cpp").read_text(encoding="utf-8")
 GEO = (ROOT / "firmware/cottage/src/cottage_geocode.cpp").read_text(encoding="utf-8")
 ROOTS = (ROOT / "firmware/main/tls_roots.hpp").read_text(encoding="utf-8")
+ROLLBACK_POLICY = (ROOT / "cottage/site_rollback_policy.hpp").read_text(encoding="utf-8")
 
 
 class RegionalWiring(unittest.TestCase):
@@ -61,7 +62,15 @@ class RegionalWiring(unittest.TestCase):
     def test_settings_v4_preserves_both_rollback_v2_and_v3(self):
         self.assertIn('p.putBytes("v4",&blob,sizeof(blob))', SITE)
         self.assertIn('p.remove("v1")', SITE)
-        self.assertIn('!cottage_ota_confirmation_pending()', SITE)
+        # Negation now belongs to the shared predicate. Check both the
+        # call site and the fail-closed policy instead of requiring the old
+        # literal expression in the firmware source (Codex P2 #57).
+        reclaim_call = SITE.split("site_old_keys_reclaimable(", 1)[1][:160]
+        self.assertIn("image_valid", reclaim_call)
+        self.assertIn("cottage_ota_runtime_ready()", reclaim_call)
+        self.assertIn("cottage_ota_confirmation_pending()", reclaim_call)
+        self.assertIn("running_image_valid && ota_service_initialized &&", ROLLBACK_POLICY)
+        self.assertIn("!ota_confirmation_pending", ROLLBACK_POLICY)
         self.assertLess(SITE.index('p.putBytes("v4"'), SITE.index('p.remove("v1")'))
         self.assertIn('if(p.isKey("v3")) p.remove("v3")',SITE)
         self.assertIn('if(p.isKey("v2")) p.remove("v2")',SITE)
