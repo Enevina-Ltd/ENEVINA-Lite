@@ -22,9 +22,11 @@ struct FakeNvs {
     bool silent_erase_noop=false;   // erase reports OK but the key stays
     bool fail_epoch_write=false;    // write reports an error, value unchanged
     bool fail_epoch_read=false;
+    int fail_epoch_reads_left=0;    // next N reads fail, then it recovers
     bool fail_presence_check=false;
     EpochRead read_epoch(uint32_t& out) {
         if(fail_epoch_read) return EpochRead::Error;
+        if(fail_epoch_reads_left>0) {--fail_epoch_reads_left;return EpochRead::Error;}
         if(!has_epoch) return EpochRead::Missing;
         out=epoch;return EpochRead::Ok;
     }
@@ -46,6 +48,10 @@ struct FakeNvs {
     }
 };
 constexpr uint32_t base_identity=0xC0FFEE11u;
+ModelResetResult do_reset(FakeNvs& nvs,uint32_t& epoch) {
+    bool known=false;
+    return persist_model_reset(nvs,epoch,known);
+}
 
 BuildingIdentifier learned() {
     BuildingIdentifier id;
@@ -78,7 +84,7 @@ void test_baseline_restores_without_reset() {
 void test_clean_reset_does_not_come_back() {
     FakeNvs nvs;nvs.save(learned(),base_identity);
     uint32_t epoch=0;CHECK(load_model_epoch(nvs,epoch));
-    CHECK(persist_model_reset(nvs,epoch)==ModelResetResult::Persisted);
+    CHECK(do_reset(nvs,epoch)==ModelResetResult::Persisted);
     CHECK(epoch==1 && nvs.epoch==1 && !nvs.has_blob);
     CHECK(!reboot_restores(nvs));
 }
@@ -86,7 +92,7 @@ void test_erase_fails_epoch_still_blocks_old_model() {
     FakeNvs nvs;nvs.save(learned(),base_identity);
     nvs.fail_erase=true;
     uint32_t epoch=0;CHECK(load_model_epoch(nvs,epoch));
-    CHECK(persist_model_reset(nvs,epoch)==ModelResetResult::Persisted);
+    CHECK(do_reset(nvs,epoch)==ModelResetResult::Persisted);
     CHECK(nvs.has_blob);                    // the stale blob is still there ...
     CHECK(!reboot_restores(nvs));           // ... but can never be loaded
 }
@@ -94,20 +100,20 @@ void test_silent_erase_is_verified_not_trusted() {
     FakeNvs nvs;nvs.save(learned(),base_identity);
     nvs.silent_erase_noop=true;
     uint32_t epoch=0;CHECK(load_model_epoch(nvs,epoch));
-    CHECK(persist_model_reset(nvs,epoch)==ModelResetResult::Persisted);   // via epoch
+    CHECK(do_reset(nvs,epoch)==ModelResetResult::Persisted);   // via epoch
     CHECK(!reboot_restores(nvs));
     // Silent erase AND a failing epoch: nothing persisted -> reported failed.
     FakeNvs bad;bad.save(learned(),base_identity);
     bad.silent_erase_noop=true;bad.fail_epoch_write=true;
     epoch=0;CHECK(load_model_epoch(bad,epoch));
-    CHECK(persist_model_reset(bad,epoch)==ModelResetResult::PersistFailed);
+    CHECK(do_reset(bad,epoch)==ModelResetResult::PersistFailed);
     CHECK(epoch==0);
 }
 void test_epoch_write_fails_erase_removes_blob() {
     FakeNvs nvs;nvs.save(learned(),base_identity);
     nvs.fail_epoch_write=true;
     uint32_t epoch=0;CHECK(load_model_epoch(nvs,epoch));
-    CHECK(persist_model_reset(nvs,epoch)==ModelResetResult::Persisted);
+    CHECK(do_reset(nvs,epoch)==ModelResetResult::Persisted);
     CHECK(!nvs.has_blob && epoch==0);
     CHECK(!reboot_restores(nvs));
 }
@@ -115,13 +121,13 @@ void test_all_operations_fail_is_reported_and_retry_succeeds() {
     FakeNvs nvs;nvs.save(learned(),base_identity);
     nvs.fail_erase=true;nvs.fail_epoch_write=true;
     uint32_t epoch=0;CHECK(load_model_epoch(nvs,epoch));
-    CHECK(persist_model_reset(nvs,epoch)==ModelResetResult::PersistFailed);
+    CHECK(do_reset(nvs,epoch)==ModelResetResult::PersistFailed);
     // The old calibration WOULD come back after a reboot here: the caller
     // must therefore not tell the owner the reset is permanent.
     CHECK(reboot_restores(nvs));
     // Storage recovers; the retry persists and the old model is gone.
     nvs.fail_erase=false;nvs.fail_epoch_write=false;
-    CHECK(persist_model_reset(nvs,epoch)==ModelResetResult::Persisted);
+    CHECK(do_reset(nvs,epoch)==ModelResetResult::Persisted);
     CHECK(!reboot_restores(nvs));
 }
 void test_unreadable_epoch_blocks_restore_and_unverifiable_presence_is_failure() {
@@ -131,16 +137,42 @@ void test_unreadable_epoch_blocks_restore_and_unverifiable_presence_is_failure()
     FakeNvs p;p.save(learned(),base_identity);
     p.fail_presence_check=true;p.fail_epoch_write=true;
     uint32_t epoch=0;CHECK(load_model_epoch(p,epoch));
-    CHECK(persist_model_reset(p,epoch)==ModelResetResult::PersistFailed);
+    CHECK(do_reset(p,epoch)==ModelResetResult::PersistFailed);
 }
 void test_new_learning_after_reset_persists_and_second_reset_works() {
     FakeNvs nvs;nvs.save(learned(),base_identity);
     uint32_t epoch=0;CHECK(load_model_epoch(nvs,epoch));
-    CHECK(persist_model_reset(nvs,epoch)==ModelResetResult::Persisted);
+    CHECK(do_reset(nvs,epoch)==ModelResetResult::Persisted);
     nvs.save(learned(),base_identity);      // saved under epoch 1
     CHECK(nvs.epoch==1 && reboot_restores(nvs));
-    CHECK(persist_model_reset(nvs,epoch)==ModelResetResult::Persisted);
+    CHECK(do_reset(nvs,epoch)==ModelResetResult::Persisted);
     CHECK(epoch==2 && !reboot_restores(nvs));
+}
+void test_unknown_epoch_never_counts_as_a_reset() {
+    // Codex P2: stored epoch is already 1 (blob bound to epoch 1). Both the
+    // boot read and the reset's own read fail and the erase fails. Writing
+    // "epoch 1" would be a no-op that still looks like a reset.
+    FakeNvs nvs;nvs.has_epoch=true;nvs.epoch=1;nvs.save(learned(),base_identity);
+    nvs.fail_epoch_reads_left=2;
+    uint32_t epoch=0;
+    CHECK(!load_model_epoch(nvs,epoch));            // boot read fails: unknown
+    nvs.fail_erase=true;
+    bool known=false;
+    CHECK(persist_model_reset(nvs,epoch,known)==ModelResetResult::PersistFailed);
+    CHECK(nvs.epoch==1);                            // the epoch was NOT rewritten from a guess
+    CHECK(reboot_restores(nvs));                    // old model still loads: honestly "failed"
+    // Reads recover: the retry advances from the KNOWN epoch and really resets.
+    bool known2=false;
+    CHECK(do_reset(nvs,epoch)==ModelResetResult::Persisted);
+    (void)known2;
+    CHECK(nvs.epoch==2 && epoch==2);
+    CHECK(!reboot_restores(nvs));
+    // Unknown epoch but the blob is verifiably erased: that alone is persisted.
+    FakeNvs e2;e2.has_epoch=true;e2.epoch=3;e2.save(learned(),base_identity);
+    e2.fail_epoch_read=true;
+    uint32_t ep=0;bool k=false;
+    CHECK(persist_model_reset(e2,ep,k)==ModelResetResult::Persisted);
+    CHECK(!e2.has_blob && e2.epoch==3 && !k);       // nothing guessed, epoch still unknown
 }
 void test_identity_binds_epoch_and_site() {
     CHECK(model_store_identity(1,0)!=model_store_identity(1,1));
@@ -157,6 +189,7 @@ int main() {
     test_all_operations_fail_is_reported_and_retry_succeeds();
     test_unreadable_epoch_blocks_restore_and_unverifiable_presence_is_failure();
     test_new_learning_after_reset_persists_and_second_reset_works();
+    test_unknown_epoch_never_counts_as_a_reset();
     test_identity_binds_epoch_and_site();
     if(failures) {std::printf("%d failure(s)\n",failures);return 1;}
     std::printf("cottage_model_persistence_tests: all passed\n");

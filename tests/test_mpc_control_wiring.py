@@ -108,7 +108,7 @@ class MpcControlWiring(unittest.TestCase):
         # Codex P2 (PR #63): an NVS failure must not let the old calibration
         # return after a reboot, and the owner is never told it is permanent.
         self.assertNotIn("identifier_erase", MAIN)
-        self.assertIn("persist_model_reset(model_store,model_epoch)", WORKER)
+        self.assertIn("persist_model_reset(model_store,model_epoch,epoch_known)", WORKER)
         self.assertIn("load_model_epoch(model_store,model_epoch)", WORKER)
         self.assertIn("model_store_identity(identity,model_epoch)", WORKER)
         # Restoring needs a known epoch; saving never uses an unknown one.
@@ -118,7 +118,7 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn('\\"persisted\\":false', reset)
         self.assertNotIn('\\"persisted\\":true', reset)
         # A failed persist is retried and surfaced in /api/mpc.
-        self.assertIn("reset_unpersisted=persist_model_reset", WORKER)
+        self.assertIn("reset_unpersisted=persist_model_reset(model_store,model_epoch,epoch_known)", WORKER)
         self.assertIn("identifier_reset_state.store(reset_unpersisted?3:2);", WORKER)
         self.assertIn('\\"reset_state\\":\\"%s\\"', MAIN)
         # The adapter verifies instead of trusting the erase call.
@@ -131,6 +131,18 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn('c23_authorize_local_setting(web.arg("token").c_str())', reset)
         self.assertNotIn("password", reset.lower())
         self.assertNotIn("pin", reset.lower().replace("pinned", ""))
+
+    def test_api_plan_serialises_the_same_record_as_api_mpc(self):
+        # Codex P2 (PR #63): the legacy rows are cleared on every verified mode
+        # change, including the plan's own acknowledged transition.
+        plan = MAIN.split("static void plan_endpoint() {", 1)[1].split("static void json_number_or_null", 1)[0]
+        self.assertIn("const MpcPlanRecord record=mpc_plan;", plan)
+        self.assertIn("mpc_row_count", plan)
+        self.assertIn("std::copy(mpc_rows,mpc_rows+n,rows_mem.get());", plan)
+        self.assertIn("record.status==MpcStatus::Ok", plan)
+        self.assertNotIn("plan_count", plan)
+        self.assertNotIn("last_plan", plan)
+        self.assertNotIn("plan_rows", plan)
 
     def test_owner_comfort_limits_reach_planner_and_controller(self):
         arb = MAIN.split("static ArbiterInput build_arbiter_input(", 1)[1].split("\n}\n", 1)[0]
