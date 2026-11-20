@@ -697,6 +697,11 @@ async function wzSaveComfort(skip){
       // source-confirmed device state before compensating the site write.
       await reloadStatus();
       const observed=state.status&&state.status.air;
+      // RAM readback alone cannot prove a target survived a partial NVS
+      // failure. Do not undo the validated site limits unless durable air
+      // settings have been explicitly verified by the device.
+      if(observed&&observed.config_storage_verified===false)
+        throw Error(WT('Tallennus epäonnistui')+' (target status unverified)');
       const currentTarget=observed&&
         (mode===3?observed.occupied_target_c:observed.hold_target_c);
       if(observed&&observed.mode===mode&&currentTarget===r.target) return;

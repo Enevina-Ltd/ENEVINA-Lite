@@ -171,5 +171,14 @@ console.log('comfort step helpers ok');
   ctx.reloadStatus=async()=>{events.push('reload');ctx.state.status=null;};
   await assert.rejects(A.wzSaveComfort(false),/unverified/);
   assert.equal(events.length,3,'unknown air outcome cannot trigger rollback');
+  // The API can return the old RAM target after a partial NVS commit.
+  // It must NOT be mistaken for a durable rollback and must NOT trigger
+  // compensating site writes that would corrupt the new limits.
+  events.length=0;
+  ctx.state.status={air:{mode:2,hold_target_c:12,occupied_target_c:21,drying_delta_c:3,
+    config_storage_verified:false}};
+  ctx.reloadStatus=async()=>{events.push('reload');};
+  await assert.rejects(A.wzSaveComfort(false),/unverified/);
+  assert.equal(events.length,3,'unverified NVS rollback must not undo site settings');
   console.log('wizard rollback-order and ambiguous-response tests OK');
 })().catch(e=>{console.error(e);process.exitCode=1;});
