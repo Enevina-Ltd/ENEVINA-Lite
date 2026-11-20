@@ -16,7 +16,9 @@ Usage: python tools/dev_device_simulator.py [--port 8765] [--configured]
 """
 import argparse
 import json
+import math
 import re
+import subprocess
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -62,6 +64,7 @@ STATE = {
                "tariff_confirmed": False, "setup_complete": False, "setup_step": 0},
 }
 GEO_STATE = {"q": None, "since": 0.0}
+TIMELINE = {"cli": None, "start": 300}     # set by --timeline-cli; start = index into the FI week
 # Sensors: values are the official Ruuvi Data Format 5 test vector (24.3 C) with
 # different MACs/RSSI. The 3rd one stopped advertising (stale) to show that case.
 SENSORS = {"CB:B8:33:4C:88:01": {"rssi": -48, "age0": 4, "live": True, "t": 21.4, "rh": 45.2, "v": 2.98},
@@ -266,6 +269,23 @@ class H(BaseHTTPRequestHandler):
                  "model": "SNSW-001P16EU", "app": "Plus1PM", "generation": 2, "support": "AUTH_REQUIRED", "power_w": None},
                 {"host": "shelly1pm-a4cf12f4d2b1", "url": "http://192.168.1.32", "id": "SHSW-PM", "model": "",
                  "app": "", "generation": 1, "support": "GEN1_NOT_SUPPORTED", "power_w": None}]})
+        if u.path == "/api/timeline":
+            if not TIMELINE["cli"]:
+                return self.send(200, {"valid": False, "slots": [], "segments": []})
+            opt = STATE["optimization"]
+            mode = AIR["mode"]
+            target = AIR["occupied_target_c"] if mode == 3 else AIR["hold_target_c"] if mode == 2 else -1
+            csv = ROOT / "tests/data/prices/FI_EUR_2026-11-12_to_18.csv"
+            out = subprocess.run([TIMELINE["cli"], str(csv), str(TIMELINE["start"]), "192", opt["profile"], str(target),
+                                  str(opt["comfort_min_c"] or 0), str(opt["comfort_max_c"] or 0), "0.06", "EUR", "FI",
+                                  str(target - 0.3 if target > 0 else 21)], capture_output=True, text=True, timeout=10)
+            return self.send(200, out.stdout.strip().encode("utf-8"))
+        if u.path == "/api/weather":
+            # Synthetic outdoor series aligned with the recorded price slice (harness data, not a forecast).
+            rows = [r.split(",") for r in (ROOT / "tests/data/prices/FI_EUR_2026-11-12_to_18.csv").read_text().splitlines()[1:]]
+            t0 = int(rows[TIMELINE["start"]][0]) // 3600 * 3600
+            slots = [{"utc": t0 + h * 3600, "temperature_c": round(-3 + 4 * math.sin(6.2832 * (h - 9) / 24), 1)} for h in range(0, 52)]
+            return self.send(200, {"valid": True, "slots": slots, "source": "simulator"})
         if u.path == "/api/prices":
             return self.send(200, {"valid": False, "slots": []})
         return self.send(404, {"error": "not in simulator"})
@@ -314,7 +334,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--configured", action="store_true", help="start with setup already complete")
+    ap.add_argument("--timeline-cli", help="path to plan_timeline_cli(.exe) built from tools/plan_timeline_cli.cpp")
     a = ap.parse_args()
+    TIMELINE["cli"] = a.timeline_cli
     if a.configured:
         STATE["region"].update(setup_complete=True, setup_step=9)
     print(f"simulator on http://127.0.0.1:{a.port}/ ({len(COUNTRIES)} countries)", flush=True)

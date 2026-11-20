@@ -353,6 +353,19 @@ target_include_directories(shelly_discovery_tests PRIVATE ${CMAKE_CURRENT_SOURCE
 target_link_libraries(shelly_discovery_tests PRIVATE enevina_core)
 add_test(NAME shelly_discovery_tests COMMAND shelly_discovery_tests)
 
+# Plan timeline: classification must agree with the live controller slot by slot.
+add_executable(plan_timeline_tests tests/plan_timeline_tests.cpp)
+target_include_directories(plan_timeline_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(plan_timeline_tests PRIVATE enevina_cottage enevina_core)
+target_compile_definitions(plan_timeline_tests PRIVATE
+    ENEVINA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+add_test(NAME plan_timeline_tests COMMAND plan_timeline_tests)
+
+# Emits the /api/timeline JSON for recorded prices (used by the UI simulator).
+add_executable(plan_timeline_cli tools/plan_timeline_cli.cpp)
+target_include_directories(plan_timeline_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(plan_timeline_cli PRIVATE enevina_cottage enevina_core)
+
 # Live MPC chain: automatic building identification (RLS + walk-forward
 # validation), receding-horizon bridge, MPC -> price -> thermostat arbiter,
 # and the closed-loop comparison harness (SIMULATION, host only).
