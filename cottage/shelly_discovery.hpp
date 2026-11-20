@@ -49,7 +49,7 @@ inline bool parse_shelly_scope(const char* t,ShellyScope& out) {
 inline bool shelly_may_feed_pump_model(ShellyScope s) {return s==ShellyScope::HeatPump;}
 
 enum class ShellySupport : uint8_t {
-    Supported, Gen1NotSupported, AuthRequired, NotShelly
+    Supported, Gen1NotSupported, AuthRequired, NotShelly, PowerNotVerified
 };
 inline const char* shelly_support_name(ShellySupport s) {
     switch(s) {
@@ -57,6 +57,7 @@ inline const char* shelly_support_name(ShellySupport s) {
     case ShellySupport::Gen1NotSupported:return "GEN1_NOT_SUPPORTED";
     case ShellySupport::AuthRequired:return "AUTH_REQUIRED";
     case ShellySupport::NotShelly:return "NOT_SHELLY";
+    case ShellySupport::PowerNotVerified:return "POWER_NOT_VERIFIED";
     }
     return "NOT_SHELLY";
 }
@@ -139,6 +140,15 @@ inline bool parse_shelly_info(const char* json,size_t length,ShellyInfo& out) {
     return true;
 }
 
+// Discovery identification alone does not prove that a Gen2+ device has
+// the Switch:0 power component that our actual meter worker reads. A failed
+// component probe can also mean a transient network outage: retain device
+// details, but NEVER offer it as a compatible selectable meter until verified.
+inline bool shelly_complete_power_probe(ShellyInfo& info,bool verified) {
+    if(info.support!=ShellySupport::Supported)return false;
+    if(!verified)info.support=ShellySupport::PowerNotVerified;
+    return verified;
+}
 // Switch.GetStatus: apower (W) must be a finite, plausible number.
 inline bool parse_shelly_power(const char* json,size_t length,double& watts) {
     if(!json||length<2||length>4096) return false;
