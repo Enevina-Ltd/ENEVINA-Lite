@@ -39,4 +39,31 @@ BridgeResult join_forecast_priced(int64_t now_utc,int64_t price_fetch_utc,
     int64_t weather_fetch_utc,const Spot15* spot,size_t spot_count,
     const enevina::OutdoorPoint* weather,size_t weather_count,
     SlotPricer pricer,void* context,size_t slots);
+// Receding-horizon form used by the live MPC. Instead of requiring a fixed
+// 48 h or 24 h block, it returns the LONGEST horizon that is backed by
+// verified data, capped at `max_slots` (192 = 48 h), and fails only when
+// fewer than `min_slots` remain:
+//  * prices: strictly contiguous UTC 15-minute slots from the current slot;
+//    the first missing, duplicated or unpriceable slot ends the horizon.
+//    Negative spot prices are valid inputs. The tariff/VAT/currency/local
+//    time-zone rule is the caller's `pricer`, evaluated per slot start, so
+//    DST days (92/100 slots) need no special case.
+//  * weather: the strictly hourly run of MET Norway points that covers the
+//    current slot; a missing hour ends the horizon there (no gap filling).
+//  * stale inputs (prices > 36 h, weather > 6 h old, or from the future)
+//    are unusable, exactly like join_forecast_priced().
+enum class HorizonLimit : uint8_t { None, MaxSlots, PriceEnd, PriceGap, BadPrice,
+    WeatherEnd, WeatherGap };
+struct HorizonResult {
+    BridgeResult bridge{};
+    size_t price_slots=0;    // contiguous priced slots available
+    size_t weather_slots=0;  // slots covered by contiguous hourly weather
+    HorizonLimit limit=HorizonLimit::None;
+};
+HorizonResult join_forecast_horizon(int64_t now_utc,int64_t price_fetch_utc,
+    int64_t weather_fetch_utc,const Spot15* spot,size_t spot_count,
+    const enevina::OutdoorPoint* weather,size_t weather_count,
+    SlotPricer pricer,void* context,size_t max_slots,size_t min_slots);
+const char* bridge_status_name(BridgeStatus s);
+const char* horizon_limit_name(HorizonLimit l);
 } // namespace enevina::cottage
