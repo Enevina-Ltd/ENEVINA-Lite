@@ -29,6 +29,12 @@ struct MpcRunControls {
     void* clock_context=nullptr;
     bool (*cancel_requested)(void*)=nullptr;
     void* cancel_context=nullptr;
+    // Terminal condition. NaN (default): the plan must end >= the initial
+    // temperature (equal-terminal open-loop comparisons, unchanged). A
+    // finite value instead requires end >= max(floor, terminal_min_c): used
+    // by receding-horizon control, where "end >= now" ratchets the room up
+    // after every pre-heat and can make the next plan infeasible.
+    double terminal_min_c=__builtin_nan("");
 };
 MpcResult optimize(const Parameters& p, const State& initial,
     const Period* periods, size_t count, size_t memory_budget_bytes=3*1024*1024,

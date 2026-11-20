@@ -29,7 +29,9 @@ class RegionalWiring(unittest.TestCase):
         self.assertIn("xTaskNotifyGive(reader_task)", MARKET)
         self.assertIn("ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(next_ms))", MARKET)
         self.assertIn("price_limit_scale=currency_limit_scale(market.currency)", (ROOT / "firmware/cottage/src/main.cpp").read_text())
-        self.assertIn("priced_model.currency_limit_scale=currency_limit_scale(ms.currency)", (ROOT / "firmware/cottage/src/main.cpp").read_text())
+        # The live MPC planner receives the market currency scale (the model's
+        # Parameters are built from it in BuildingIdentifier::build_parameters).
+        self.assertIn("pi.currency_scale=currency_limit_scale(ms.currency)", (ROOT / "firmware/cottage/src/main.cpp").read_text())
 
     def test_region_change_invalidates_cache_and_inflight_fetch(self):
         self.assertIn("++region_generation", MARKET)
