@@ -21,6 +21,21 @@
 #include <vector>
 
 namespace enevina::cottage {
+// A failed mount does NOT prove the volume is blank. Only permit the initial
+// format after reading every byte of the target flash partition as erased.
+// A read error or any non-FF byte preserves the partition for recovery.
+template<class Read>
+inline bool history_partition_is_blank(size_t length,Read read) {
+    if(!length)return false;
+    uint8_t buf[512];
+    for(size_t off=0;off<length;) {
+        const size_t n=std::min(sizeof(buf),length-off);
+        if(!read(off,buf,n))return false;
+        for(size_t j=0;j<n;++j)if(buf[j]!=0xFF)return false;
+        off+=n;
+    }
+    return true;
+}
 class FileBackend {
 public:
     virtual ~FileBackend()=default;

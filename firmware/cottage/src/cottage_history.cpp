@@ -4,6 +4,7 @@
 #include <WebServer.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_partition.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <cstring>
@@ -103,12 +104,25 @@ void history_initialize() {
     if(!mem) {ESP_LOGE(tag,"no PSRAM for history; feature disabled");return;}   // fail closed
     store=new(std::nothrow) HistoryStore(mem,kHistorySlots);
     if(!store) {heap_caps_free(mem);return;}
-    // Mount the dedicated partition; format it only if it was never formatted.
-    // Nothing else (NVS, OTA slots, settings) lives there.
+    // A mount error may mean corrupted *existing* records or failing flash:
+    // automatically retrying with formatOnFail=true would destroy them.
+    // Format ONLY a verifiably erased, never-written partition. Read the
+    // entire dedicated partition; a failed read or any non-0xFF byte forbids
+    // formatting. This cannot erase another owner's historical records.
     persistent=LittleFS.begin(false,"/lfs",5,"spiffs");
     if(!persistent) {
-        ESP_LOGW(tag,"history partition not formatted yet; formatting it once");
-        persistent=LittleFS.begin(true,"/lfs",5,"spiffs");
+        const esp_partition_t* part=esp_partition_find_first(
+            ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,"spiffs");
+        const bool virgin=part && history_partition_is_blank(part->size,
+            [&](size_t off,void* buf,size_t n) {
+                return esp_partition_read(part,off,buf,n)==ESP_OK;
+            });
+        if(virgin) {
+            ESP_LOGI(tag,"history volume verified erased: first-use format");
+            persistent=LittleFS.begin(true,"/lfs",5,"spiffs");
+        } else {
+            ESP_LOGE(tag,"history mount failed; preserving nonblank/unknown flash, RAM only");
+        }
     }
     if(!persistent) {ESP_LOGE(tag,"history stays in RAM only (mount failed)");return;}
     records_file.remove_stale_temp();
