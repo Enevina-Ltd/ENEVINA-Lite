@@ -658,6 +658,11 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     input.next_total_prices=prices.data();
     input.price_count=valid_prices?n:0;
     input.prices_contiguous_and_fresh=valid_prices;
+    // Keep the profile-specific threshold already set by apply_profile().
+    input.price_limit_scale=currency_limit_scale(market.currency);
+    // The minimum *absolute* advantage is in the selected market currency;
+    // keep approximately the same tariff-relative significance as EUR.
+    input.min_price_advantage_eur_per_kwh=0.005*input.price_limit_scale;
     return bootstrap_price_decision(input);
 }
 // CN105 is a separate local ESPHome gateway. These HTTP calls are the only
@@ -1151,6 +1156,9 @@ static void optimizer_worker(void*) {
             xSemaphoreGive(lock_data);
             ts=c23_temperature_sample();
             const auto ms=enevina_firmware::market_status();
+            Parameters priced_model=model;
+            priced_model.currency_limit_scale=currency_limit_scale(ms.currency);
+            priced_model.switching_penalty_eur*=priced_model.currency_limit_scale;
             const auto ws=enevina_firmware::weather_status();
             const size_t pc=enevina_firmware::future_prices(prices,200);
             const size_t wc=enevina_firmware::future_weather(weather,64);
@@ -1174,7 +1182,7 @@ static void optimizer_worker(void*) {
                valid_cn105(cp,now) && valid_temperature(ts,now) &&
                (cp.mode==ObservedPumpMode::Off ||
                 cp.mode==ObservedPumpMode::Heat) &&
-               COTTAGE_SYNTHETIC_TEST_MODEL && valid(model)) {
+               COTTAGE_SYNTHETIC_TEST_MODEL && valid(priced_model)) {
                 const State initial{ts.indoor_c,
                     cp.mode==ObservedPumpMode::Heat,observed_mode_minutes};
                 const uint32_t begun=millis();
@@ -1182,7 +1190,7 @@ static void optimizer_worker(void*) {
                 limits.runtime_budget_ms=1800;
                 limits.monotonic_now_ms=cottage_now_ms;
                 limits.cancel_requested=cottage_cancel;
-                const MpcResult result=optimize(model,initial,bridge->periods.data(),
+                const MpcResult result=optimize(priced_model,initial,bridge->periods.data(),
                     bridge->count,3*1024*1024,limits);
                 const uint32_t elapsed=millis()-begun;
                 optimizer_ms=elapsed;max_optimizer_ms=std::max(max_optimizer_ms,elapsed);
@@ -1191,7 +1199,7 @@ static void optimizer_worker(void*) {
                 if(result.status==MpcStatus::Ok) {
                     for(size_t i=0;i<result.count;i++) {
                         const bool heat16=result.heat_16_c[i]!=0;
-                        const auto step=advance(model,state,bridge->periods[i],heat16);
+                        const auto step=advance(priced_model,state,bridge->periods[i],heat16);
                         state=step.next;
                         rows[i]={bridge->first_utc+static_cast<int64_t>(900*i),
                             state.indoor_c,step.electric_kwh,step.cost_eur,heat16};
@@ -1754,6 +1762,8 @@ static void timeline_endpoint() {
     TimelineParams params;TimelineMeta meta;
     const bool setup=timeline_setup(site.profile,has_target?plan.target_c:-1,site.comfort_min_c,
         site.comfort_max_c,site.min_price_advantage_fraction,params,meta);
+    params.price_limit_scale=currency_limit_scale(market.currency);
+    params.advantage_eur_floor*=params.price_limit_scale;
     if(!setup || !build_timeline(utc,total,n,params,*timeline)) {
         release();
         web.send(200,"application/json; charset=utf-8","{\"valid\":false,\"slots\":[],\"segments\":[]}");

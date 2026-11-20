@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,7 @@ struct Outcome {
     int switches=0;
     int heating_slots=0;
     int slots=0;
+    double final_c=std::numeric_limits<double>::quiet_NaN();
 };
 
 inline Parameters pump() {
@@ -105,6 +107,36 @@ inline Outcome simulate(const Series& s,double addon_per_kwh,OptimizationProfile
         if(T<eff_lo-0.5||T>eff_hi+0.5) o.minutes_outside_limits+=15;
         ++o.slots;
     }
+    o.final_c=T;
+    return o;
+}
+
+// Equal-terminal thermal-energy accounting, NOT an instant physical heating
+// command or a measured saving. Charge every run for the heat it would need
+// to finish with the SAME stored building energy as the warmest run.
+// The final recorded 4-hour market average and the model's terminal COP
+// provide a common energy-equivalent recovery price. Actual time/dwell
+// feasibility of that hypothetical recovery is NOT demonstrated here.
+struct TerminalAdjustment {
+    double target_c=0, thermal_kwh=0, electric_kwh=0, cost=0, equalized_cost=0;
+};
+inline TerminalAdjustment equalize_terminal(const Outcome& run,
+                                             const Building& building,
+                                             double common_c,double recovery_price,
+                                             double recovery_cop) {
+    TerminalAdjustment o{};
+    o.target_c=common_c;
+    if(!std::isfinite(run.final_c) || !std::isfinite(run.cost) ||
+       !std::isfinite(common_c) || common_c+1e-9<run.final_c ||
+       !std::isfinite(recovery_price) || !std::isfinite(recovery_cop) ||
+       recovery_cop<1 || building.mass_kwh_per_c<=0) {
+        o.equalized_cost=std::numeric_limits<double>::quiet_NaN();
+        return o;
+    }
+    o.thermal_kwh=std::max(0.0,common_c-run.final_c)*building.mass_kwh_per_c;
+    o.electric_kwh=o.thermal_kwh/recovery_cop;
+    o.cost=o.electric_kwh*recovery_price;
+    o.equalized_cost=run.cost+o.cost;
     return o;
 }
 } // namespace profile_sim
