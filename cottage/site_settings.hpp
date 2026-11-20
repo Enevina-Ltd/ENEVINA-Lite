@@ -216,6 +216,37 @@ inline bool site_rollback_v2_modified(uint64_t v3_baseline,const uint8_t* v2,siz
     return n>0 && site_v2_signature(v2,n)!=v3_baseline;
 }
 
+
+// Reads a rollback-compatible NVS record without conflating a missing key
+// with a transient read failure. Caller supplies bounded scratch storage:
+// no dynamic allocation or flash writes while preparing the v4 snapshot.
+template<class Nvs>
+inline bool site_rollback_snapshot_signature(Nvs& p,const char* key,
+                                             uint64_t& signature,uint8_t* scratch,
+                                             size_t scratch_size) {
+    signature=0;
+    const size_t n=p.getBytesLength(key);
+    if(n==0) return !p.isKey(key);
+    if(!scratch || n>scratch_size) return false;
+    if(p.getBytes(key,scratch,n)!=n) return false;
+    signature=site_v2_signature(scratch,n);
+    return true;
+}
+
+// v3's signature-bearing layout contains the previous v2 fingerprint after
+// its settings bytes. A first v4 boot MUST honor that provenance before
+// preferring the older v3 payload over a v2 edited during rollback.
+inline bool site_v3_prefer_rollback_v2(const uint8_t* v3,size_t v3_len,
+                                       size_t settings_bytes,
+                                       const uint8_t* v2,size_t v2_len) {
+    constexpr size_t h=8;
+    if(!v3 || v3_len<h || settings_bytes>v3_len-h ||
+       v3_len-h-settings_bytes<sizeof(uint64_t)) return false;
+    uint64_t baseline=0;
+    std::memcpy(&baseline,v3+h+settings_bytes,sizeof(baseline));
+    return site_rollback_v2_modified(baseline,v2,v2_len);
+}
+
 // Region that prices are fetched for, or false when the user has not finished
 // choosing one (unsupported country, or multi-zone country without a zone).
 inline bool site_market_region(const SiteSettings& s,const char*& nordpool_area,

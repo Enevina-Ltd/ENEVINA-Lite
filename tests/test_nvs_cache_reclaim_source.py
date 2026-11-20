@@ -7,7 +7,7 @@ class NvsSiteRecovery(unittest.TestCase):
     def test_settings_have_bounded_cache_recovery_only(self):
         self.assertIn("persist_with_optional_cache_reclaim",SITE)
         self.assertIn('Preferences p;',SITE)
-        self.assertIn('p.putBytes("v3",&blob,sizeof(blob))',SITE)
+        self.assertIn('p.putBytes("v4",&blob,sizeof(blob))',SITE)
         self.assertIn('nvs_erase_key(handle,key)',SITE)
         self.assertIn('nvs_commit(handle)==ESP_OK',SITE)
         self.assertIn('{"enevina_weather","weather_v2"}',POLICY)

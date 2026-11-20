@@ -8,7 +8,7 @@ assert(m,'wizard script block missing');
 const src=m[1];
 
 // Every Finnish literal with non-ASCII letters must have an English entry.
-const dict=JSON.parse(header.split('const UI_EN=Object.freeze(')[1].split(');\nconst UI_EN_FRAGMENTS')[0]);
+const dict=JSON.parse(header.split('const UI_EN=Object.freeze(')[1].split(/\);\r?\nconst UI_EN_FRAGMENTS/)[0]);
 const literals=[...src.matchAll(/WT\('([^']*)'\)/g)].map(x=>x[1]);
 assert(literals.length>80,'expected the wizard literals to be found');
 const allowedUntranslated=new Set(['Wi-Fi']);
@@ -23,7 +23,7 @@ assert.deepEqual(missing,[],'missing English translations');
 
 const ctx={document:{},state:{},uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS};',ctx);
+vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,WZ};',ctx);
 const A=ctx.api;
 
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
@@ -187,3 +187,44 @@ console.log('comfort step helpers ok');
   assert.equal(meter('unknown',null).state,'optional');
 }
 console.log('devices step helpers ok');
+
+(async()=>{
+  // P2 #57: failure of site NVS must never durably/actively change the target.
+  // On air-write failure after site save, compensate old profile and band.
+  const events=[];
+  ctx.state.site={optimization:{profile:'balanced',comfort_min_c:10,comfort_max_c:14},
+    region:{setup_step:5}};
+  ctx.state.status={air:{mode:2,hold_target_c:12,occupied_target_c:21,drying_delta_c:3}};
+  Object.assign(A.WZ.comfort,{target:'13',min:'9',max:'16',profile:'saving'});
+  ctx.airPostLocal=async()=>{events.push('air');};
+  ctx.reloadStatus=async()=>{events.push('reload');};
+  ctx.wzPost=async()=>{throw Error('NVS');};
+  await assert.rejects(A.wzSaveComfort(false),/NVS/);
+  assert.deepEqual(events,[],'site-write failure must not change target');
+  ctx.wzPost=async f=>{events.push({...f});};
+  await A.wzSaveComfort(false);
+  assert.equal(events[0].optimization_profile,'saving');
+  assert.deepEqual(events.slice(1),['air','reload']);
+  events.length=0;
+  ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
+  await assert.rejects(A.wzSaveComfort(false),/AIR_NVS/);
+  assert.equal(events.length,4,'site write + mode error + readback + restore site');
+  assert.equal(events[2],'reload');
+  assert.equal(events[3].optimization_profile,'balanced');
+  assert.equal(events[3].comfort_min_c,'10');
+  assert.equal(events[3].comfort_max_c,'14');
+  // Ambiguous HTTP response: committed target is visible on status readback.
+  // Undo would pair a new target with the OLD limits (fresh Codex P2 #57).
+  events.length=0;
+  ctx.reloadStatus=async()=>{events.push('reload');ctx.state.status.air.hold_target_c=13;};
+  await A.wzSaveComfort(false);
+  assert.deepEqual(events.slice(1),['air','reload']);
+  assert.equal(events.length,3,'do not compensate a confirmed successful target save');
+  // If Wi-Fi is lost and readback is impossible, don't blindly undo either.
+  events.length=0;
+  ctx.state.status.air.hold_target_c=12;
+  ctx.reloadStatus=async()=>{events.push('reload');ctx.state.status=null;};
+  await assert.rejects(A.wzSaveComfort(false),/unverified/);
+  assert.equal(events.length,3,'unknown air outcome cannot trigger rollback');
+  console.log('wizard rollback-order and ambiguous-response tests OK');
+})().catch(e=>{console.error(e);process.exitCode=1;});
