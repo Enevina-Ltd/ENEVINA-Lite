@@ -11,6 +11,8 @@ enum class ReadStatus : uint8_t {
     Ok, InvalidAddress, InvalidCredentials, ConnectionFailed,
     AuthenticationFailed, ProtocolFailed, UnsupportedState, TimeNotReady, ControlNotConfirmed, ResourceBusy
 };
+uint8_t last_v3_read_detail(); // Nonsecret live-read failure classification.
+uint8_t last_v3_reply_opcode(); // Nonsecret Midea AC message type.
 ReadStatus read_device(const char* private_ipv4,const Credential& credentials,
                        State& reading);
 // Legacy V2 uses direct 5A5A AES-128-ECB + MD5 packets with NO V3 handshake

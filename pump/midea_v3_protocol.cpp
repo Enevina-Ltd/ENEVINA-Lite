@@ -399,6 +399,21 @@ bool encrypted_response(const uint8_t* p,size_t n,
     inner.swap(candidate);
     return true;
 }
+uint8_t parse_state_failure_code(const uint8_t* f,size_t n) {
+    if(!f || n<10+17+2 || n>256)return 1;
+    if(f[0]!=0xaa || f[2]!=0xac)return 2;
+    if(static_cast<size_t>(f[1])+1!=n)return 3;
+    if(f[10]!=0xc0)return 4;
+    if(checksum(f+1,n-2)!=f[n-1])return 5;
+    const size_t paylen=n-12;
+    if(paylen<17)return 1;
+    const uint8_t* payload=f+10;
+    const uint8_t crc=crc8(payload,paylen);
+    if(payload[paylen]!=crc && payload[paylen]!=checksum(payload,paylen))
+        return 6;
+    State parsed{};
+    return parse_state(f,n,parsed)?0:7;
+}
 bool parse_state(const uint8_t* f,size_t n,State& out) {
     if(!f || n<10+17+2 || n>256 || f[0]!=0xaa || f[2]!=0xac ||
        static_cast<size_t>(f[1])+1!=n || f[10]!=0xc0 ||

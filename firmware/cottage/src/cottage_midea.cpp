@@ -4,12 +4,15 @@
 #include <WiFi.h>
 #include <esp_system.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <ctime>
 
 namespace enevina::midea {
 namespace {
 constexpr uint16_t port=6444;
+std::atomic<uint8_t> last_v3_read_detail_code{0};
+std::atomic<uint8_t> last_v3_reply_opcode_code{0};
 constexpr uint32_t read_timeout_ms=2000;
 bool allowed_lan_address(const IPAddress& ip) {
     const uint8_t a=ip[0],b=ip[1];
@@ -106,7 +109,11 @@ ReadStatus read_device_v2(const char* host,uint64_t device_id,State& reading) {
     tcp.stop();
     return result;
 }
+uint8_t last_v3_read_detail(){return last_v3_read_detail_code.load();}
+uint8_t last_v3_reply_opcode(){return last_v3_reply_opcode_code.load();}
 ReadStatus read_device(const char* host,const Credential& creds,State& reading) {
+    last_v3_read_detail_code.store(0);
+    last_v3_reply_opcode_code.store(0);
     if(!host)return ReadStatus::InvalidAddress;
     IPAddress ip;
     if(!ip.fromString(host) || !allowed_lan_address(ip))
@@ -125,6 +132,9 @@ ReadStatus read_device(const char* host,const Credential& creds,State& reading) 
     if(!handshake_response(packet.data(),packet.size(),creds,session)) {
         tcp.stop();return ReadStatus::AuthenticationFailed;
     }
+    // Match msmart-ng V3's post-authentication stabilization interval:
+    // some modules cannot process the first status query immediately.
+    vTaskDelay(pdMS_TO_TICKS(1100));
     const Bytes query=state_query(1);
     Bytes inner;
     if(!inner_encode(creds.device_id,query.data(),query.size(),stamp,inner)) {
@@ -143,14 +153,23 @@ ReadStatus read_device(const char* host,const Credential& creds,State& reading) 
     for(unsigned attempt=0;attempt<3;++attempt) {
         if(!read_8370(tcp,packet)) {status=ReadStatus::ProtocolFailed;break;}
         Bytes v2,frame;
-        if(!encrypted_response(packet.data(),packet.size(),session,v2) ||
-           !inner_decode(v2.data(),v2.size(),frame)) {
+        if(!encrypted_response(packet.data(),packet.size(),session,v2)) {
+            last_v3_read_detail_code.store(20);
             status=ReadStatus::ProtocolFailed;break;
         }
+        if(!inner_decode(v2.data(),v2.size(),frame)) {
+            last_v3_read_detail_code.store(21);
+            status=ReadStatus::ProtocolFailed;break;
+        }
+        if(frame.size()>10)
+            last_v3_reply_opcode_code.store(frame[10]);
         State value{};
         if(parse_state(frame.data(),frame.size(),value)) {
+            last_v3_read_detail_code.store(0);
             reading=value;status=ReadStatus::Ok;break;
         }
+        last_v3_read_detail_code.store(
+            parse_state_failure_code(frame.data(),frame.size()));
     }
     tcp.stop();
     return status;

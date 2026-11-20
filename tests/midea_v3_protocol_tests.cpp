@@ -74,6 +74,22 @@ int main() {
     assert(encrypted[5]==0x66); // REQUEST type, same pad value as response.
     assert(!encrypted_request(reference.data(),reference.size(),key0,3,padding,0,encrypted));
 
+    // Real-world 31-byte short C0 message from the msmart-ng MIT test
+    // corpus. It is a valid response despite a minimal status body.
+    auto real_short=hx(
+      "aa1eac00000000000003c0004b1e7f7f000000000069630000000000000d33");
+    assert(parse_state_failure_code(real_short.data(),real_short.size())==0);
+    State short_state{};
+    assert(parse_state(real_short.data(),real_short.size(),short_state));
+    auto non_state=real_short;non_state[10]=0xc1;
+    assert(parse_state_failure_code(non_state.data(),non_state.size())==4);
+    auto invalid_frame=real_short;invalid_frame[0]=0;
+    assert(parse_state_failure_code(invalid_frame.data(),invalid_frame.size())==2);
+    invalid_frame=real_short;invalid_frame[1]=0;
+    assert(parse_state_failure_code(invalid_frame.data(),invalid_frame.size())==3);
+    invalid_frame=real_short;invalid_frame.back()^=1;
+    assert(parse_state_failure_code(invalid_frame.data(),invalid_frame.size())==5);
+
     // Synthetic AC C0 response: 22 body bytes + CRC + frame checksum.
     Bytes p(22,0);p[0]=0xc0;p[1]=1;p[2]=uint8_t(4u<<5 | 6u);
     p[3]=102;p[7]=1;p[11]=90;p[12]=0xff;p[15]=0;

@@ -274,7 +274,7 @@ void send_status(WebServer& web) {
         "\"control_last_confirmed_utc\":%lld,"
         "\"control_code\":\"%s\","
         "\"last_poll_utc\":%lld,\"last_attempt_utc\":%lld,"
-        "\"polling\":%s,\"read_code\":\"%s\",\"read_status\":%d,\"power\":%s,"
+        "\"polling\":%s,\"read_code\":\"%s\",\"read_status\":%d,\"read_detail\":%u,\"read_opcode\":%u,\"power\":%s,"
         "\"mode\":%u,\"target_c\":%.1f,"
         "\"indoor_available\":%s,\"indoor_c\":%.2f,"
         "\"outdoor_available\":%s,\"outdoor_c\":%.2f}",
@@ -288,6 +288,10 @@ void send_status(WebServer& web) {
         static_cast<long long>(fresh?last:0),
         static_cast<long long>(attempted>0?attempted:0),
         busy?"true":"false",code,status,
+        selected && selected_protocol==3?
+            static_cast<unsigned>(enevina::midea::last_v3_read_detail()):0u,
+        selected && selected_protocol==3?
+            static_cast<unsigned>(enevina::midea::last_v3_reply_opcode()):0u,
         fresh && reading.power?"true":"false",
         fresh?static_cast<unsigned>(reading.mode):255u,
         fresh?reading.setpoint_c:0.0,
