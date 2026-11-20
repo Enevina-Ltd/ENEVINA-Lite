@@ -2333,7 +2333,10 @@ static enevina::cottage::HistoryInputs history_collect() {
         in.price_valid=true;in.price_per_kwh=total;
         in.price_currency=enevina::cottage::history_currency_id(market.currency);
     }
-    const BootstrapDecision d=bootstrap_preview(now,te);
+    // History records the same *proposal* selected by the live MPC/price/
+    // thermostat arbiter. It never claims that the pump executed the action;
+    // separately counted confirmed commands carry that evidence.
+    const BootstrapDecision d=active_control_proposal(now,te);
     in.action=d.action==BootstrapAction::Off?1:d.action==BootstrapAction::HeatSetpoint?2:
               d.action==BootstrapAction::Hold?3:0;
     in.armed=control_armed.load();

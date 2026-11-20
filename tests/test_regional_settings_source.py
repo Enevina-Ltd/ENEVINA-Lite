@@ -219,6 +219,12 @@ class HistoryWiring(unittest.TestCase):
         self.assertIn("in.outdoor_is_forecast=false", body)
         self.assertIn("sse_fresh", body)
         self.assertIn("in.clock_trusted=clock_ok()", body)
+        # The history proposal must agree with the physical command's
+        # arbitration (MPC > price > thermostat), not show fallback prices
+        # when an active MPC plan chose the opposite action.
+        self.assertIn("const BootstrapDecision d=active_control_proposal(now,te);", body)
+        self.assertNotIn("bootstrap_preview(now,te)", body)
+        self.assertIn("d.action==BootstrapAction::HeatSetpoint?2", body)
 
     def test_setpoint_comes_from_the_verified_snapshot_and_scope_is_recorded(self):
         # Codex P2/P1 (#60): sse_observed_pump is never marked received, so the
