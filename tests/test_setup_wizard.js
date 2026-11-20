@@ -249,6 +249,7 @@ console.log('devices step helpers ok');
   assert.equal(events[0].optimization_profile,'saving');
   assert.deepEqual(events.slice(1),['air','reload']);
   events.length=0;
+  A.WZ.comfort.target='14'; // new edit; successful first target is cached now
   ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
   ctx.fetchJSON=async()=>{events.push('readback');return {air:ctx.state.status.air};};
   await assert.rejects(A.wzSaveComfort(false),/AIR_NVS/);
@@ -260,6 +261,8 @@ console.log('devices step helpers ok');
   // Ambiguous HTTP response: committed target is visible on status readback.
   // Undo would pair a new target with the OLD limits (fresh Codex P2 #57).
   events.length=0;
+  A.WZ.comfort.target='13';
+  ctx.state.status.air.hold_target_c=12; // independent lost-response scenario
   // Simulate stale shared state (a periodic status request superseded another).
   // Only the isolated fresh API result may prove a new durable target.
   ctx.fetchJSON=async()=>{events.push('readback');return {air:{...ctx.state.status.air,hold_target_c:13}};};
@@ -294,5 +297,39 @@ console.log('devices step helpers ok');
   ctx.fetchJSON=async()=>{events.push('readback');return {air:ctx.state.status.air};};
   await assert.rejects(A.wzSaveComfort(false),/unverified/);
   assert.equal(events.length,3,'unverified NVS rollback must not undo site settings');
+  // Codex latest P2: the success path cannot depend on reloadStatus() being
+  // applied. A concurrent 15s refresh can supersede and discard that result.
+  ctx.state.site={optimization:{profile:'saving',comfort_min_c:9,comfort_max_c:16},
+    region:{setup_step:6}};
+  ctx.state.status={air:{mode:2,hold_target_c:12,occupied_target_c:21,drying_delta_c:3}};
+  ctx.state.statusRequestSequence=100;
+  events.length=0;
+  A.WZ.comfort.target='13';
+  ctx.wzPost=async fields=>{events.push('site');};
+  ctx.airPostLocal=async()=>{events.push('air');return {saved:true};};
+  ctx.reloadStatus=async()=>{events.push('discarded-status-refresh');};
+  await A.wzSaveComfort(false);
+  assert.equal(ctx.state.status.air.hold_target_c,13,
+    'acknowledged target must be cached even when the status refresh was discarded');
+  assert(ctx.state.statusRequestSequence>100,
+    'any pre-existing periodic status response must be invalidated');
+  A.WZ.comfort.target='12';
+  events.length=0;
+  await A.wzSaveComfort(false);
+  assert(events.includes('air'),
+    'Back -> Comfort must NOT skip second target POST after a discarded refresh');
+  // Also ensure a successfully recovered lost-response readback invalidates
+  // previously started /api/status responses (same cache race).
+  ctx.state.status.air.hold_target_c=12;
+  ctx.state.statusRequestSequence=200;
+  events.length=0;
+  ctx.airPostLocal=async()=>{events.push('air');throw Error('WiFi reply lost');};
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:{
+    mode:2,hold_target_c:13,occupied_target_c:21,drying_delta_c:3,
+    config_storage_verified:true}};};
+  A.WZ.comfort.target='13';
+  await A.wzSaveComfort(false);
+  assert.equal(ctx.state.status.air.hold_target_c,13);
+  assert(ctx.state.statusRequestSequence>200);
   console.log('wizard rollback-order and ambiguous-response tests OK');
 })().catch(e=>{console.error(e);process.exitCode=1;});
