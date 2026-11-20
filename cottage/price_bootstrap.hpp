@@ -156,6 +156,29 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
         d.action=above?BootstrapAction::Off:below?BootstrapAction::HeatSetpoint:
                        BootstrapAction::Hold;
         d.reason=BootstrapReason::ThermostatWithoutPrices;
+    } else if(cheap && (in.comfort_lower_c>0 || in.comfort_upper_c>0 ||
+                        in.preheat_c>0 || in.coast_c>0)) {
+        // A configured profile has an upper storage allowance. HOLD at its
+        // ceiling would let a previously running pump exceed that allowance.
+        // The 0.1 C decision gap prevents 0.02 C sensor jitter from toggling
+        // commands without extending the owner's chosen temperature range.
+        const double ceiling=in.desired_room_c+preheat;
+        d.action=in.indoor_c>=ceiling?BootstrapAction::Off:
+                 in.indoor_c<=ceiling-0.1?BootstrapAction::HeatSetpoint:
+                 BootstrapAction::Hold;
+        d.reason=d.action==BootstrapAction::Hold?
+            BootstrapReason::DeadbandHold:BootstrapReason::CheapWindow;
+    } else if(expensive && (in.comfort_lower_c>0 || in.comfort_upper_c>0 ||
+                            in.preheat_c>0 || in.coast_c>0)) {
+        // Coasting ends at target-coast, not at the HARD outer comfort limit.
+        // Request heat below the profile floor so OFF cannot linger and drain
+        // extra thermal energy during expensive periods.
+        const double floor=in.desired_room_c-coast;
+        d.action=in.indoor_c<=floor?BootstrapAction::HeatSetpoint:
+                 in.indoor_c>=floor+0.1?BootstrapAction::Off:
+                 BootstrapAction::Hold;
+        d.reason=d.action==BootstrapAction::Hold?
+            BootstrapReason::DeadbandHold:BootstrapReason::ExpensiveWindow;
     } else if(cheap && in.indoor_c<in.desired_room_c+preheat) {
         // Pre-heat only in the LOWER half of the deadband ...
         d.action=BootstrapAction::HeatSetpoint;

@@ -315,7 +315,7 @@ const WZ={step:0,regions:null,country:'',language:'',zone:'',city:'',latlon:'',r
   tariff:{margin:'',tday:'',tnight:'',tax:'',vat:'',incl:'false'},adapter:'',cn105:'',shelly:'',
   manual:false,open:false,
   comfort:{target:'',min:'',max:'',profile:'balanced'},
-  sensors:null,sensorTimer:null,confirmBind:'',shellyScan:null,shellyTimer:null,shellyScope:'unknown'};
+  sensors:null,sensorTimer:null,confirmBind:'',shellyScan:null,shellyTimer:null,shellyScope:'unknown',shellyScopeInitialized:false,shellyScopeFor:''};
 const WZ_STEPS=8;                 // region, city, zone, tariff, pump, comfort, devices, summary
 const WZ_DONE=9;
 const WZ_MINOR={EUR:'snt',SEK:'öre',NOK:'øre',DKK:'øre',PLN:'gr'};
@@ -514,6 +514,15 @@ const WZ_SCOPES=[{id:'heat_pump',label:WT('Mittari mittaa vain lämpöpumppua')}
   {id:'unknown',label:WT('En tiedä vielä')}];
 // Fields to save for the meter. URL first: a changed address resets the scope
 // on the device, so the confirmed scope has to follow it.
+// A different meter must never inherit the old device's confirmed scope.
+function wzSetShellyAddress(value){
+  const next=String(value||'');
+  if(next.trim()!==String(WZ.shelly||'').trim()){
+    WZ.shellyScope='unknown';
+    WZ.shellyScopeFor=next.trim();
+  }
+  WZ.shelly=next;
+}
 function wzDevicesFields(v,current){
   const f={setup_step:'7'};
   const url=String(v.shelly||'').trim();
@@ -751,14 +760,49 @@ async function wzSaveComfort(skip){
   const mode=Number.isInteger(air.mode)?air.mode:null;
   const r=wzComfortFields(WZ.comfort,mode);
   if(!r.ok)throw Error(r.error);
-  if(r.target!==null&&r.target!==(mode===3?air.occupied_target_c:air.hold_target_c)){
-    // Existing mode endpoint: mode, delta and the other target stay untouched.
-    await airPostLocal('/api/air/config',{mode:String(mode),
-      hold:String(mode===2?r.target:air.hold_target_c),delta:String(air.drying_delta_c),
-      occupied:String(mode===3?r.target:air.occupied_target_c)});
-    await reloadStatus();
-  }
+  const targetChanged=r.target!==null&&
+    r.target!==(mode===3?air.occupied_target_c:air.hold_target_c);
+  // Keep the previous durable site state for compensation if a second write
+  // fails. The site write MUST come first: an NVS-full site error must never
+  // change the active/persistent mode target (Codex P2 #57).
+  const prior=(state.site&&state.site.optimization)||{};
+  const oldFields={optimization_profile:prior.profile||'balanced',
+    comfort_min_c:prior.comfort_min_c==null?'':String(prior.comfort_min_c),
+    comfort_max_c:prior.comfort_max_c==null?'':String(prior.comfort_max_c),
+    setup_step:String((state.site&&state.site.region&&state.site.region.setup_step)||0)};
   await wzPost({...r.fields,setup_step:'6'});
+  if(targetChanged){
+    try {
+      // Existing mode endpoint: mode, delta and the other target untouched.
+      await airPostLocal('/api/air/config',{mode:String(mode),
+        hold:String(mode===2?r.target:air.hold_target_c),delta:String(air.drying_delta_c),
+        occupied:String(mode===3?r.target:air.occupied_target_c)});
+      await reloadStatus();
+    } catch(error) {
+      // A lost HTTP response is NOT proof that /api/air/config failed: it may
+      // have committed the new target before the Wi-Fi link went away. Read
+      // source-confirmed device state before compensating the site write.
+      await reloadStatus();
+      const observed=state.status&&state.status.air;
+      const currentTarget=observed&&
+        (mode===3?observed.occupied_target_c:observed.hold_target_c);
+      if(observed&&observed.mode===mode&&currentTarget===r.target) return;
+      if(!observed||observed.mode!==mode||currentTarget!==
+         (mode===3?air.occupied_target_c:air.hold_target_c)){
+        // Ambiguous outcome: NEVER undo a possibly successful air write.
+        // The UI must report uncertainty and refresh when connection returns.
+        throw Error(WT('Tallennus epäonnistui')+' (target status unverified)');
+      }
+      // The device still reports its OLD target. Only now is restoring the
+      // previous band/profile safe; if that fails, report the conflict.
+      try {await wzPost(oldFields);}
+      catch(undoError) {
+        throw Error(WT('Tallennus epäonnistui')+
+          ' ('+String(undoError)+')');
+      }
+      throw error;
+    }
+  }
 }
 function wzStopPolling(){
   if(WZ.sensorTimer){clearInterval(WZ.sensorTimer);WZ.sensorTimer=null;}
@@ -870,13 +914,13 @@ function wzRenderShelly(){
       wzEl('div',{class:'wz-srow'},wzEl('strong',{},d.id||d.host),WZ.shelly===d.url?wzEl('span',{class:'wz-badge'},WT('Valittu')):''),
       wzEl('div',{class:'muted tiny'},d.url),wzEl('div',{},wzShellyText(d)));
     if(ok)row.append(wzEl('button',{type:'button',class:'wz-choice','data-use-shelly':d.url,
-      on:{click:()=>{WZ.shelly=d.url;const i=document.getElementById('wz-shelly');if(i)i.value=d.url;wzRenderShelly();}}},WT('Käytä tätä mittaria')));
+      on:{click:()=>{wzSetShellyAddress(d.url);wzRender();}}},WT('Käytä tätä mittaria')));
     box.append(row);
   }
 }
 function wzStepDevices(body){
   const site=state.site||{};
-  if(!WZ.shellyScope||WZ.shellyScopeFor!==(site.shelly_url||'')){WZ.shellyScope=site.shelly_scope||'unknown';WZ.shellyScopeFor=site.shelly_url||'';}
+  if(!WZ.shellyScopeInitialized){WZ.shellyScope=site.shelly_scope||'unknown';WZ.shellyScopeFor=site.shelly_url||'';WZ.shellyScopeInitialized=true;}
   body.append(wzEl('h2',{id:'wz-title'},WT('Anturit ja kulutusmittari')),
     wzEl('h3',{},WT('Huonelämpötila-anturit (RuuviTag)')),
     wzEl('p',{class:'muted'},WT('Valitse listasta sisäanturi ja halutessasi ulkoanturi. Ilman tuoretta sisäanturia Lite ei pidä pumpun omaa lukemaa todistettuna huonelämpötilana.')),
@@ -887,7 +931,8 @@ function wzStepDevices(body){
     wzEl('button',{type:'button',id:'wz-shelly-scan',class:'wz-choice',on:{click:wzShellyScan}},WT('Etsi Shelly-mittarit kotiverkosta')),
     wzEl('div',{id:'wz-shelly-list',class:'muted tiny'}));
   const inp=wzEl('input',{id:'wz-shelly',autocomplete:'off',autocapitalize:'none',spellcheck:'false',value:WZ.shelly||'',placeholder:'http://192.168.1.30'});
-  inp.addEventListener('input',()=>{WZ.shelly=inp.value;});
+  inp.addEventListener('input',()=>wzSetShellyAddress(inp.value));
+  inp.addEventListener('change',()=>wzRender());
   body.append(wzEl('label',{class:'wz-label','for':'wz-shelly'},WT('Mittarin osoite (tai valitse yllä)')),inp,
     wzEl('p',{class:'wz-label'},WT('Mitä mittari mittaa?')));
   const group=wzEl('div',{class:'wz-list',role:'radiogroup','aria-label':WT('Mittarin mittauskohde')});
@@ -971,7 +1016,7 @@ async function wzOpen(fromSettings){
     w.hidden=false;w.querySelector('#wz-body').textContent=WT('Maalistaa ei voitu lukea laitteelta. Päivitä sivu.');return;}
   const site=state.site||{},r=site.region||{};
   WZ.country=r.country||'';WZ.zone=r.price_zone||'';WZ.city=r.city||'';WZ.latlon=site.fmi_latlon||'';
-  WZ.query=r.city||'';WZ.adapter=site.pump_adapter||'';WZ.cn105=site.cn105_url||'';WZ.shelly=site.shelly_url||'';
+  WZ.query=r.city||'';WZ.adapter=site.pump_adapter||'';WZ.cn105=site.cn105_url||'';WZ.shelly=site.shelly_url||'';WZ.shellyScopeInitialized=false;WZ.shellyScopeFor='';
   const opt=site.optimization||{},air=(state.status&&state.status.air)||{};
   WZ.comfort={target:'',min:opt.comfort_min_c?String(opt.comfort_min_c):'',max:opt.comfort_max_c?String(opt.comfort_max_c):'',
     profile:opt.profile||'balanced'};

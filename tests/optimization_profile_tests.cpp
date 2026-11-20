@@ -66,23 +66,23 @@ static void default_is_unchanged() {
 
 static void saving_uses_the_band_comfort_does_not() {
     // Target 21 C, owner allows 19..23 C.
-    // Cheap electricity, room at 22.0 (above target): comfort holds, saving stores heat.
-    CHECK(decide(OptimizationProfile::Comfort,22.0,21,19,23,kCheapNow).action==BootstrapAction::Hold);
+    // Cheap electricity, room at 22.0 (above target): Comfort stops heat at its ceiling, Saving may store it.
+    CHECK(decide(OptimizationProfile::Comfort,22.0,21,19,23,kCheapNow).action==BootstrapAction::Off);
     const auto bal=decide(OptimizationProfile::Balanced,21.5,21,19,23,kCheapNow);
     CHECK(bal.action==BootstrapAction::HeatSetpoint&&bal.reason==BootstrapReason::CheapWindow);   // 40 % = 0.8 C
-    CHECK(decide(OptimizationProfile::Balanced,21.9,21,19,23,kCheapNow).action==BootstrapAction::Hold);
+    CHECK(decide(OptimizationProfile::Balanced,21.9,21,19,23,kCheapNow).action==BootstrapAction::Off);
     // Saving acts 0.75 C inside the limits (working band 19.75..22.25) and uses 80 % of it.
     const auto sav=decide(OptimizationProfile::Saving,21.8,21,19,23,kCheapNow);
     CHECK(sav.action==BootstrapAction::HeatSetpoint&&sav.reason==BootstrapReason::CheapWindow);
     CHECK(sav.heat_setpoint_c>=22.5-1e-9);                          // setpoint reaches the stored-heat target
-    CHECK(decide(OptimizationProfile::Saving,22.1,21,19,23,kCheapNow).action==BootstrapAction::Hold);
-    // Expensive now, room at 20.0 (below target): comfort keeps holding/heating, saving coasts.
-    CHECK(decide(OptimizationProfile::Comfort,20.0,21,19,23,kDearNow).action==BootstrapAction::Hold);
+    CHECK(decide(OptimizationProfile::Saving,22.1,21,19,23,kCheapNow).action==BootstrapAction::Off);
+    // Expensive now, room at 20.0 (below target): Comfort actively restores temperature, Saving can coast.
+    CHECK(decide(OptimizationProfile::Comfort,20.0,21,19,23,kDearNow).action==BootstrapAction::HeatSetpoint);
     const auto coast=decide(OptimizationProfile::Saving,20.2,21,19,23,kDearNow);
     CHECK(coast.action==BootstrapAction::Off&&coast.reason==BootstrapReason::ExpensiveWindow);
-    CHECK(decide(OptimizationProfile::Saving,19.9,21,19,23,kDearNow).action==BootstrapAction::Hold);    // beyond coasting room
+    CHECK(decide(OptimizationProfile::Saving,19.9,21,19,23,kDearNow).action==BootstrapAction::HeatSetpoint); // profile coasting exhausted
     CHECK(decide(OptimizationProfile::Balanced,20.5,21,19,23,kDearNow).action==BootstrapAction::Off);
-    CHECK(decide(OptimizationProfile::Balanced,20.0,21,19,23,kDearNow).action==BootstrapAction::Hold);  // beyond 40 % coasting room
+    CHECK(decide(OptimizationProfile::Balanced,20.0,21,19,23,kDearNow).action==BootstrapAction::HeatSetpoint);  // beyond 40 % coasting room
 }
 
 // Hard comfort limits hold for every profile, price and temperature.
@@ -128,6 +128,16 @@ static void no_prices_is_a_plain_thermostat() {
     }
 }
 
+static void profile_thresholds_stop_and_resume_commands() {
+    // Comfort is never allowed to coast from 21 all the way down to the 19 C
+    // hard limit. Saving must reheat at its own smaller coasting threshold.
+    const auto c=decide(OptimizationProfile::Comfort,20.5,21,19,23,kDearNow);
+    CHECK(c.action==BootstrapAction::HeatSetpoint);
+    const auto upper=decide(OptimizationProfile::Saving,23.0,21,19,23,kCheapNow);
+    CHECK(upper.action==BootstrapAction::Off);
+    const auto lower=decide(OptimizationProfile::Saving,19.9,21,19,23,kDearNow);
+    CHECK(lower.action==BootstrapAction::HeatSetpoint);
+}
 static void price_threshold_scales_with_profile() {
     // Prices differ from the median by ~15 %: Saving (5 %) and Balanced (10 %) act, Comfort (20 %) does not.
     static const double mild[8]={0.17,0.20,0.20,0.20,0.20,0.20,0.20,0.20};   // now 15 % below median 0.20
@@ -185,36 +195,69 @@ static void malformed_input_is_refused() {
 #ifndef ENEVINA_TEST_DATA_DIR
 #error "ENEVINA_TEST_DATA_DIR must point at tests/data"
 #endif
-// Real recorded prices (7 days each), SYNTHETIC building/weather/pump: the
-// limits must hold for every profile, and no profile may cost more than a
-// plain thermostat on these weeks. This is a simulation, not a savings claim.
+// Real recorded market prices, SYNTHETIC building/weather/pump.
+// A lower raw cost can simply be colder stored building mass at the horizon:
+// compare only after charging a common terminal thermal-energy equivalent.
+// This is NOT a measured saving and cannot prove a physically feasible
+// recovery trajectory; no fixed annual saving or cost-ordering is asserted.
 static void simulation_on_real_prices() {
     struct Z {const char* file;double addon;};
     const Z zones[]={{"FI_EUR_2026-11-12_to_18.csv",0.06},{"DK1_EUR_2026-11-12_to_18.csv",0.06},
                      {"SE3_SEK_2026-11-12_to_18.csv",0.70}};
+    const profile_sim::Building building{};
     for(const auto& z:zones) {
         profile_sim::Series s;
         CHECK(profile_sim::load_series(std::string(ENEVINA_TEST_DATA_DIR)+"/prices/"+z.file,s));
-        const auto base=profile_sim::simulate(s,z.addon,OptimizationProfile::Comfort,19,23,false);
-        double previous=base.cost;
-        for(auto p:{OptimizationProfile::Comfort,OptimizationProfile::Balanced,OptimizationProfile::Saving}) {
-            const auto r=profile_sim::simulate(s,z.addon,p,19,23,true);
-            CHECK(r.min_c>=19.0&&r.max_c<=23.0);          // owner's limits hold in the simulated week
-            CHECK(r.minutes_outside_limits==0);
-            CHECK(r.cost<=base.cost);
-            CHECK(r.cost<=previous+1e-9);                  // more aggressive profile never costs more here
-            previous=r.cost;
+        if(s.per_mwh.size()<32)continue;
+        const auto baseline=profile_sim::simulate(s,z.addon,OptimizationProfile::Comfort,19,23,false,building);
+        const auto comfort=profile_sim::simulate(s,z.addon,OptimizationProfile::Comfort,19,23,true,building);
+        const auto balanced=profile_sim::simulate(s,z.addon,OptimizationProfile::Balanced,19,23,true,building);
+        const auto saving=profile_sim::simulate(s,z.addon,OptimizationProfile::Saving,19,23,true,building);
+        const profile_sim::Outcome outcomes[]={baseline,comfort,balanced,saving};
+        double common_c=outcomes[0].final_c;
+        for(const auto& run:outcomes) {
+            CHECK(run.min_c>=19.0&&run.max_c<=23.0);
+            CHECK(run.minutes_outside_limits==0);
+            CHECK(std::isfinite(run.final_c)&&std::isfinite(run.cost));
+            common_c=std::max(common_c,run.final_c);
+        }
+        double average_recovery_price=0;
+        for(size_t j=s.per_mwh.size()-16;j<s.per_mwh.size();++j)
+            average_recovery_price+=s.per_mwh[j]/1000.0+z.addon;
+        average_recovery_price/=16.0;
+        const double recovery_cop=heat_cop(profile_sim::pump(),profile_sim::outdoor_c(s.per_mwh.size()-1));
+        for(size_t i=0;i<4;++i) {
+            const auto adjusted=profile_sim::equalize_terminal(outcomes[i],building,
+                common_c,average_recovery_price,recovery_cop);
+            CHECK(std::isfinite(adjusted.equalized_cost));
+            CHECK(std::fabs(outcomes[i].final_c*building.mass_kwh_per_c+
+                 adjusted.thermal_kwh-common_c*building.mass_kwh_per_c)<1e-7);
+            // Present both figures so cold-end depletion cannot masquerade as
+            // energy savings; whether a profile actually saves is an outcome.
+            std::printf("TERMINAL_AUDIT %s profile=%zu raw=%.4f terminal_c=%.3f debt_kwh=%.3f equalized=%.4f\n",
+                z.file,i,outcomes[i].cost,outcomes[i].final_c,
+                adjusted.thermal_kwh,adjusted.equalized_cost);
         }
     }
+}
+static void terminal_energy_normalization_math() {
+    profile_sim::Outcome cold{};cold.final_c=19.5;cold.cost=4.0;
+    const profile_sim::Building building{6.0,0.12,21.0,21.0};
+    auto adjusted=profile_sim::equalize_terminal(cold,building,21.0,0.2,3.0);
+    CHECK(std::fabs(adjusted.thermal_kwh-9.0)<1e-9);
+    CHECK(std::fabs(adjusted.electric_kwh-3.0)<1e-9);
+    CHECK(std::fabs(adjusted.equalized_cost-4.6)<1e-9);
 }
 
 int main() {
     simulation_on_real_prices();
+    terminal_energy_normalization_math();
     names_and_limits();
     default_is_unchanged();
     saving_uses_the_band_comfort_does_not();
     limits_are_never_priced_away();
     no_prices_is_a_plain_thermostat();
+    profile_thresholds_stop_and_resume_commands();
     price_threshold_scales_with_profile();
     wide_owner_band_never_disables_the_controller();
     malformed_input_is_refused();
