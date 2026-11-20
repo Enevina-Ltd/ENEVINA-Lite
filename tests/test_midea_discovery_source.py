@@ -34,5 +34,10 @@ class MideaDiscoverySource(unittest.TestCase):
             self.assertIn(term,UI)
         endpoint=UI.split("fetch('/api/midea/discover'",1)[1].split("});",1)[0]
         self.assertNotIn("'/api/midea/config'",endpoint)
+        # Multiple matches must not preselect a real pump without populating
+        # the fields; explicitly choosing even the first result fires change.
+        self.assertIn("placeholder.value=''",UI)
+        self.assertIn("placeholder.selected=true",UI)
+        self.assertIn("if(selected==='')return;",UI)
 
 if __name__=='__main__':unittest.main()
