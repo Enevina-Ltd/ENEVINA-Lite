@@ -19,6 +19,31 @@
 
 ---
 
+## AJANTASAINEN KEHITYSTILANNE – 19.11.2026 (TARKISTA AINA GITHUBISTA)
+
+**Tämä osio ohjaa aktiivista työtä; alempana olevat Mitsubishi-pilottia, F01–F09-jonoa ja G-portteja koskevat osiot sisältävät myös historiallista suunnittelua.** Uusimman käyttäjäpäätöksen ja GitHubin todellisen main/PR-tilanteen on ohjattava toteutusta. Älä tulkitse päivämäärällä varustettua tilannekuvaa pysyväksi valmistumisilmoitukseksi.
+
+- **Toteutettu lähdekoodiin aiemmin:** Midea V2/V3:n paikalliset lukuadapterit ja kokeellinen manuaaliohjaus on yhdistetty (#48, #51, #54). Tuotantokelpoisuutta, todellista Lite→Midea-ohjausta tai optimoinnin automaattista kirjoitusta ei ole vielä osoitettu fyysisillä laitetesteillä. Mitsubishi CN105 on erillinen pilottireitti, ei kaikkien pumppujen pakollinen tekniikka.
+- **Avoin pinottu kehitysketju tarkistushetkellä:** #55 monimaan sähkömarkkina-alueet, valuutta/tariffit ja kaupunkihaku → #56 käyttöönottovelho → #57 elävän hintasäätimen optimointiprofiilit → #58 RuuviTag-/Shelly-haku → #59 suunnitelman hintaluokka-aikajana. Kaikki olivat draft-tilassa 19.11.2026 ja Codexin löydöksiä oli auki. Tarkista ennen muokkauksia, etteivät PR:t ole jo muuttuneet tai yhdistyneet.
+- **Ensisijainen seuraava työ:** korjaa PR #55–#59:n todelliset Codex-havainnot ja lisää niitä toistavat regressiot; korjaa alimman yhteisen haara-/rakennetason virhe siellä missä se syntyy ja vie korjaus pinottuihin haaroihin. Päivitä katselmoinnit muuttuneelle head-SHA:lle ja yhdistä hyväksytyt PR:t riippuvuusjärjestyksessä. Älä jatka loputonta draft-PR-pinoa korjausten kustannuksella.
+- **Seuraava toiminnallinen tavoite:** yhdistä valittu sijainti, markkina-alue, oikeat hintayksiköt, sääennuste, käyttäjän mukavuusrajat ja valittu optimointiprofiili yhteen todelliseen optimointisuunnitelmaan. Aikajana ei yksin ole fysiikkapohjainen ennuste. Sisälämpötila-, energiankulutus-, kustannus- tai säästöennustetta ei saa piirtää keksityillä arvoilla: käytä olemassa olevaa todistettavaa mallia ja merkitse tuntematon tieto puuttuvaksi.
+- **Valmis tuotekokemus:** ensin salasanaton Wi-Fi-verkkoon liittyminen, sitten selkeä kieli/maa/markkina-alue/kaupunki/sää/sähkösopimus/pumppu/anturit/mittari/lämpötilarajat/optimointiprofiili -käyttöönotto; mobiiliystävällinen premium-dashboard ja automaattinen yötila, kaikki asetukset myöhemmin muokattavissa, dashboardista täysi OTA-päivityspolku. Yhtään aiemmin toimivaa ominaisuutta ei poisteta tuotteen yksinkertaistamisen nimissä.
+- **Automaattihaku on todellinen toiminto, ei koriste:** valittava yksi paikallisesti yhteensopiva lämpöpumppu, RuuviTag BLE -hakulista ja sensorien roolit, Shelly-haku ja mittarin kohteen vahvistus; manuaalinen osoite/asetus sallittu, kun automaattista tunnistusta ei ole. Lisäanturi tai Shelly ei ole pakollinen Liten käyttöönotolle.
+- **Sään ja hinnan alueellisuus:** käyttäjän valitsema kaupunki/koordinaatit ohjaavat sääpalvelun pyyntöjä; nykyinen kansainvälinen sääsuunta on MET Norway, FMI voi olla todennettu vaihtoehto/fallback, ei pakollinen Suomi-lukitus. Valittu sähkömarkkina-alue ja sen valuutta, hinta-/veroyksikkö, aikavyöhyke sekä 15 min / DST -jaksot kulkevat palvelusta optimointiin ja dashboardiin saakka. Älä väitä fallbackia toimivaksi ennen toteutusta ja testiä.
+- **Todistusasteet:** host-Debug/Release-, Node-, selain-simulaatio- ja firmware-build ovat eri näyttöä kuin flashattu ESP32-S3 N16R8, puhelinselain, fyysinen Ruuvi/Shelly tai oikea pumppuyhteys. Merkitse kukin erikseen. Fyysinen flash/NVS-muutos ja pumppukomennot noudattavat jäljempänä olevia lupaehtoja.
+
+### Pakolliset regressiot nykyiselle PR-ketjulle
+
+1. **Asetusten säilyminen:** NVS/site-skeeman jokainen muutos tarvitsee versionoidun taaksepäin yhteensopivan migraation (erityisesti aiempi `site/v2`), eheys- ja sähkökatkotestit. Päivitys ei saa kadottaa Wi-Fi:tä, pumppuyhteyttä, kaupunkia, tariffia eikä lämpötilarajoja.
+2. **Hintavälimuisti ja valuutta:** uudelleenkäynnistys ei saa pyyhkiä saman alueen ehjää hintavälimuistia; alueen vaihto ei saa näyttää edellisen alueen hintoja. UI, laskenta ja API käyttävät samaa valittua valuuttaa/yksikköä. Maan vaihto mitätöi edellisen maan syötetyn tariffiluonnoksen.
+3. **Ohjaus ja tuoreus:** käyttöliittymän terve yhteys vaatii ajantasaisen, oikeasta lähteestä vahvistetun tiedon; aiemmin saatu SSE-viesti ei riitä. Kaikkien sallittujen optimointiprofiilien parametrien on oltava myös elävän ohjaimen hyväksymällä alueella; mikään sallittu asetus ei saa hiljaisesti estää lämmitystä.
+4. **Käyttöönotto ja laitehaku:** Ohita ei tallenna hylättyjä luonnosasetuksia; Shelly-haun valmistunut tulos pysyy saatavilla riittävän pitkään; RuuviTagin viimeksi kuultu mainos ja hyväksytyn mittauksen tuoreus ovat eri asioita.
+5. **Suunnitelman rehellisyys:** ilman lämmitystavoitetta ei esitetä lämmitysohjeita; puuttuvan sääjakson yli ei piirretä yhtenäistä ennusteviivaa. Testaa myös offline, aikavyöhykkeen ja DST:n vaihdot, asetusten reboot sekä puuttuvat sensorit.
+
+Nämä ovat konkreettisia toiminnallisia regressioita, **eivät** syy löysentää `AGENTS.md`:n turvallisuusvaatimuksia tai hylätä Codex-löydöksiä viittauksen perusteella. Arvioi havainnot koodin ja toistettavan testin perusteella; dokumentoi teknisesti väärät positiiviset löydökset erikseen.
+
+---
+
 ## PAKOLLINEN GITHUB-PR-KATSELMOINTI (17.11.2026 alkaen)
 
 **Järjestys on aina oma katselmointi → omat korjaukset ja testit → Codex-katselmointi → Codex-havaintojen korjaukset ja tarvittaessa uusi Codex-katselmointi → lopullinen hyväksyntä → merge.** Älä muuta tätä järjestystä oikoteillä.
@@ -45,7 +70,7 @@
 
 **18.11.2026 – KEHITYSVAIHEEN EHDOTON SALASANAKIELTO (käyttäjän päätös):** Älä lisää Liteen uusia salasanoja, PIN-koodeja, kirjautumispakkoa, laitekohtaisia WPA2-asennusavaimia, käyttäjätilejä tai näihin verrattavia uusia autentikointivaatimuksia. Wi-Fi-asennusverkko on tarkoituksella avoin ja salasanaton. Kotiverkkoon yhdistäminen käyttää vain kyseisen olemassa olevan Wi-Fi-verkon tavanomaisia tunnuksia; tämä ei ole Liten uusi kirjautumisvaatimus. Säilytä jo olemassa oleva CSRF-asetustoken muuttamatta sitä uudeksi kirjautumisportiksi. Asennusverkon `/setup` ja `/api/wifi/*` sallitaan edelleen, mutta pumpun ohjaus ja vaiheen 2 asetukset eivät saa olla käytettävissä asennusverkon kautta. Tuotteen autentikointia käsitellään vasta valmistumisen yhteydessä ja omistajan erillisellä hyväksynnällä. Agentti ei saa ohittaa kieltoa tietoturvahavainnon perusteella, vaan ratkaisee kehitysvaiheen virheet ilman salasanoja.
 
-**Käyttäjän uusin nimenomainen päätös on etusijalla:** Enevina Lite kehitetään monimerkkiseksi, yhden lämpöpumpun paikalliseksi energianhallinta- ja optimointituotteeksi. Mitsubishi Electric on ensimmäinen pilotti, ei yleisen arkkitehtuurin tai käyttöliittymän rajoitus. Älä lukitse V1:tä monitoring-only-tilaan, poista ohjauspolkuja, kiellä optimoinnin kehitystä tai siirrä niitä automaattisesti V2:een. Kaupallistamisen ominaisuusrajat päätetään myöhemmin mitatun toimintakyvyn perusteella.
+**Käyttäjän uusin nimenomainen päätös on etusijalla:** Enevina Lite kehitetään monimerkkiseksi, yhden lämpöpumpun paikalliseksi energianhallinta- ja optimointituotteeksi. Mitsubishi Electric on aiemmin valittu kenttäpilotti ja Midea V2/V3 on aktiivinen paikallisen Wi-Fi-yhteensopivuuden kehityskohde; kumpikaan ei rajaa yleistä arkkitehtuuria tai käyttöliittymää. Älä lukitse V1:tä monitoring-only-tilaan, poista ohjauspolkuja, kiellä optimoinnin kehitystä tai siirrä niitä automaattisesti V2:een. Kaupallistamisen ominaisuusrajat päätetään myöhemmin mitatun toimintakyvyn perusteella.
 
 **Ei uusia turhia watchdogeja, watchdog-kerroksia, health-watcher-silmukoita, reset-ajastimia eikä automaattisia käynnistysketjuja.** Alkuperäinen Enevina Core kärsi ylenpalttisesta valvonta- ja resetlogiikasta. Selvitä juurisyy, mittaa ongelma ja korjaa koodi. Älä lisää uutta restart-mekanismia vain varmuuden vuoksi. Säilytä jo käytössä olevat perustellut ESP-IDF/Arduino-suojat; niiden korvaaminen tai muuttaminen vaatii erillisen todistettuun vikaan perustuvan päätöksen.
 
@@ -53,19 +78,19 @@
 
 1. **F01:** ESP32:n käynnistyminen, Wi-Fi, paikallinen UI ja HTTP/API luotettavasti.
 2. **F02:** Kohteen RuuviTagin BLE-lämpötila, kosteus ja tiedon todellinen tuoreus.
-3. **F03:** Mitsubishin CN105:n todellinen mittaustieto ja lähdekohtainen tuoreus; SSE-heartbeat ei riitä näytöksi.
+3. **F03:** Valitun pumpun (esim. Mitsubishi CN105 tai Midea V2/V3) todellinen paikallinen mittaustieto ja lähdekohtainen tuoreus; SSE-heartbeat tai yksittäinen vastaanotettu paketti ei riitä näytöksi.
 4. **F04:** Shellyn sähkönkulutuksen luku ja oikea mittauskohde. Älä ohjaa pumpun sähkösyöttöä Shellyn releellä.
-5. **F05:** Nord Poolin 15 minuutin hinta, FMI-sää, aikaleimat, yksiköt ja katkojen käsittely.
-6. **F06:** Yhtenäinen toimiva käyttöliittymä, historia, hälytykset ja selkeä mittausten tila.
+5. **F05:** Valitun maan ja sähkömarkkina-alueen 15 minuutin hinnat, paikallisen kaupungin sääennuste (MET Norway / toteutettu vaihtoehto), valuutat, aikavyöhykkeet, yksiköt, välimuistit ja katkojen käsittely.
+6. **F06:** Yhtenäinen mobiiliystävällinen käyttöönottovelho ja premium-dashboard, historia, hälytykset, kieli-/maa-/kaupunkivalinnat, optimointisuunnitelma ja selkeä mittausten tila.
 7. **F07:** Rakennusfysiikka ja deterministinen MPC oikeilla, turvallisesti luetuilla mittauksilla; tulokset testataan riippumatonta referenssiä vasten.
-8. **F08:** Ohjausketjun, turvallisuusrajojen, CN105-adapterin ja kuittausten kehitys jatkuu host/mock-/testipenkissä. **Älä poista ohjauskoodia**; oikean pumpun ensimmäiset kirjoitukset edellyttävät erikseen hyväksyttyä mallikohtaista koetta.
+8. **F08:** Ohjausketjun, turvallisuusrajojen, Midea V2/V3:n ja Mitsubishi CN105:n sekä muiden mallikohtaisten adapterien kuittausten kehitys jatkuu host/mock-/testipenkissä. **Älä poista ohjauskoodia**; oikean pumpun ensimmäiset kirjoitukset edellyttävät erikseen hyväksyttyä mallikohtaista koetta.
 9. **F09:** Säilytä toimiva allekirjoitettu OTA ja A/B-rollback, korjaa osoitetut viat. Älä luo lisävalvontasysteemiä toimivan päivityksen tilalle.
 
 **Toimivuus ensin, tuotantoportit sitten.** [Kaupallistamisen työlista L01–L25](docs/product/COMMERCIAL_V1_BACKLOG.md) ja G0–G5 ovat kaupallisen julkaisemisen työjono, eivät kielto toteuttaa tai testata ominaisuuksia nyt. L01 tarkoittaa toiminnallisen baseline-version todennusta, ei ohjauskoodin poistamista. L09 tarkoittaa offline-/NVS-ongelmien korjaamista ilman uusia watchdogeja.
 
 **Fyysinen turvallisuus säilyy:** mock-, simulaatio- ja testipenkkikokeet ovat sallittuja, mutta kenttätestiin asennettua ESP32-korttia ei flashata tai resetoida ilman erillistä lupaa eikä oikealle pumpulle lähetetä uusia käskyjä ilman laitekohtaista hyväksyttyä testaussuunnitelmaa. Core-koneen uusi ESP32-S3 N16R8 on regressiotestilaite, ei automaattisesti lupa pyyhkiä sen NVS:ää tai bootloaderia. Älä muuta Home Assistantia, Shelly-relettä tai muuta tuotantoa.
 
-**Työskentely:** lue nykyinen main ja pinotut PR #5–#7, tarkista mitä on jo tehty, korjaa todellinen ongelma pienellä muutoksella, testaa, kirjaa commit/testinäyttö ja jatka. Älä kehitä tarpeettomia uusia sääntökerroksia tai merkitse simulaatiota fyysiseksi testiksi. Jo toimivat OTA-/turvarajat ja salaisuuksien suojaus säilyvät.
+**Työskentely:** lue nykyinen main ja tämänhetkinen GitHubin avoin PR-ketju (19.11.2026 tilanteessa #55–#59), tarkista mitä on jo tehty ja mitä katselmoinneissa on auki, korjaa todellinen ongelma pienellä muutoksella, testaa, kirjaa commit/testinäyttö ja jatka. Älä kehitä tarpeettomia uusia sääntökerroksia tai merkitse simulaatiota fyysiseksi testiksi. Jo toimivat OTA-/turvarajat ja salaisuuksien suojaus säilyvät.
 
 ---
 
@@ -73,13 +98,13 @@
 
 **Enevina Lite on monimerkkinen, yhden lämpöpumpun paikallinen energianhallinta- ja optimointiohjain, josta kehitetään Enevina Oy:n ensimmäinen kaupallinen tuote. Kehitystä ei lukita monitoring-onlyksi.**
 
-**Adapterisopimus:** Yhteinen fysiikka, optimointi, hinnat, sää, turvaportti, laatu-/tuoreustiedot, käyttöliittymä ja OTA eivät saa riippua yhden valmistajan protokollasta. Mallikohtaiset kyvykkyydet, rajat, kuittaukset, kompressori-/sulatustiedot ja varatila kuuluvat adapteriin. Mallit, joissa lähdettä ei voida todentaa, eivät saa väittää vastaanottoaikaa alkuperäiseksi pumppumittaukseksi. Adapterit voivat hyödyntää paikallista langatonta yhteyttä tai erillistä langatonta yhdyskäytävää; tekninen ja turvallinen yhteensopivuus todistetaan mallikohtaisesti. Potentiaalisia sovittimia ovat Mitsubishi CN105, Panasonic/HeishaMon ja NIBE Modbus, eikä luettelo ole hyväksyntä. Älä lisää monipumppuorkestrointia tämän päätöksen perusteella.
+**Adapterisopimus:** Yhteinen fysiikka, optimointi, hinnat, sää, turvaportti, laatu-/tuoreustiedot, käyttöliittymä ja OTA eivät saa riippua yhden valmistajan protokollasta. Mallikohtaiset kyvykkyydet, rajat, kuittaukset, kompressori-/sulatustiedot ja varatila kuuluvat adapteriin. Mallit, joissa lähdettä ei voida todentaa, eivät saa väittää vastaanottoaikaa alkuperäiseksi pumppumittaukseksi. Adapterit voivat hyödyntää paikallista langatonta yhteyttä tai erillistä langatonta yhdyskäytävää; tekninen ja turvallinen yhteensopivuus todistetaan mallikohtaisesti. Työn alla ovat Midea V2/V3:n paikallinen Wi-Fi ja Mitsubishi CN105; mahdollisia muita sovittimia ovat Panasonic/HeishaMon ja NIBE Modbus. Luettelo ei ole yleinen yhteensopivuus- tai tuotantohyväksyntä. Älä lisää monipumppuorkestrointia tämän päätöksen perusteella.
 
 - **Tasan yksi lämpöpumppu per Lite-laite.** Älä lisää monen pumpun orkestrointia, keskitettyä ohjausta, energia-akkujen, aurinkosähkön, EV-latauksen tai koko talon EMS:n hallintaa.
 - **Ei tekoälyä.** Älä lisää koneoppimista, neuroverkkoja, LLM:iä, AI-palveluita, mallien koulutusta tai AI-riippuvuuksia. Deterministinen rakennus- ja lämpöpumppufysiikan laskenta sekä matemaattinen optimointi ovat sallittuja.
 - **Ei Linuxia, Raspberry Pi -vaatimusta, Dockeria, tietokantaa tai Home Assistant -riippuvuutta laitteeseen.** Myös internetin katkettua laitteen on kyettävä toimimaan turvallisesti paikallisesti.
-- Alustava laitevalinta: **ESP32-S3 N16R8** (16 Mt Flash, 8 Mt PSRAM), **2,4 GHz Wi-Fi ensimmäisessä Mitsubishi-pilotissa**, Ethernet muissa laiteversioissa tarvittaessa. C++ ja ESP-IDF; laitekokoonpano on varmistettava.
-- **Ensimmäinen mallikohtainen integraatiotesti: Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA, ilma–ilmapumppu**, ks. [testikohteen Mitsubishi-pilotti](docs/cottage-mitsubishi-fd25va.md). Panasonic/HeishaMon, NIBE/Modbus ja muut dokumentoidut paikalliset protokollat ovat erillisiä mallikohtaisesti todennettavia adapteriperheitä; älä oleta niiden valmiutta. CN105 on tarkistettava todellisesta pumpusta ennen komentoja.
+- Alustava laitevalinta: **ESP32-S3 N16R8** (16 Mt Flash, 8 Mt PSRAM), **2,4 GHz Wi-Fi paikallisille pumppuyhteyksille**, Ethernet muissa laiteversioissa tarvittaessa. C++ ja ESP-IDF; laitekokoonpano on varmistettava.
+- **Mallikohtaiset pilotit:** Mitsubishi Electric MSZ-FD25VA / MUZ-FD25VA on aiempi kenttäpilotti (ks. [Mitsubishi-pilotti](docs/cottage-mitsubishi-fd25va.md)); Midea V2/V3 on tämänhetkinen suoran paikallisen Wi-Fi-yhteensopivuuden testikohde. Muiden valmistajien integraatiot ja myös näiden pilottien fyysinen toiminta on todistettava mallikohtaisesti. CN105 on tarkistettava todellisesta Mitsubishistä ennen komentoja.
 - Erottele Lite Enevina Coresta, Enevina Adaptive Intelligencestä, Finance-koneen tehtävistä sekä olemassa olevista tuotantojärjestelmistä. Älä muuta niiden repositoryja tai tuotantokonfiguraatioita.
 
 Jos ehdotus rikkoo näitä rajoja, älä toteuta sitä. Kerro ristiriita ja ehdota rajaukseen sopiva ratkaisu.
@@ -89,7 +114,7 @@ Jos ehdotus rikkoo näitä rajoja, älä toteuta sitä. Kerro ristiriita ja ehdo
 Ominaisuuksia kehitetään ja testataan yhdessä asteittain; fyysiset laitekirjoitukset hyväksytään erikseen:
 1. Lukemaan pumpun mittaukset, tilan ja sallitut ohjauskyvykkyydet.
 2. Hakemaan ja välimuistittamaan 15 minuutin sähkönhinnat ja sääennusteen luotettavasta lähteestä; käsittelemään puuttuvat, muuttuneet ja vanhentuneet tiedot.
-3. Laskemaan lämpöhäviön, sisälämpötilan kehityksen ja COP:n. Menoveden ja käyttöveden laskenta koskee vain niitä laitteita, joissa ne ovat olemassa; ensimmäinen ilma–ilmapumppu käyttää 16 °C HEAT / OFF -ohjausta.
+3. Laskemaan lämpöhäviön, sisälämpötilan kehityksen ja COP:n silloin, kun lähtötiedot ovat riittävät. Menoveden ja käyttöveden laskenta koskee vain niitä laitteita, joissa ne ovat olemassa; historiallisen Mitsubishi-ilma–ilmapumppupilottimme ohjausmalli on 16 °C HEAT / OFF, ei kaikkien pumppujen yleisohjaus.
 4. Optimoimaan tilalämmityksen kustannukset turvallisesti; käyttövettä optimoidaan vain sitä tukeville pumpuille.
 5. Näyttämään tila, ennuste, seuraava ohjaus, perustelut, viimeisin onnistunut päivitys ja varatilaan siirtymisen syy paikallisessa selainkäyttöliittymässä.
 6. Säilyttämään asetukset turvallisesti ja jatkamaan toimintaa sähkö- tai verkkokatkon jälkeen.
@@ -174,7 +199,7 @@ Tee ensin vain tarvittavat hakemistot ja rajapinnat. Koodi, mittayksiköt, versi
 
 ## 9. Historiallinen ensimmäinen toteutustehtävä (ei kaupallisen V1:n nykyinen työjärjestys)
 
-Uusi ensisijainen kehitystehtävä on [testikohteen Mitsubishi Electric FD25VA -pilotti](docs/cottage-mitsubishi-fd25va.md): rakenna PC:llä ajettava, puhdas C++-malli ilma–ilmapumpun 16 °C HEAT / OFF -jaksojen 15 minuutin ennakointiin, turvallisuusrajoihin ja riippumattomaan referenssivertailuun. Hydronisen lämpöpumpun G0:n tulokset säilytetään erillään. Ensimmäisessä vaiheessa **ei kirjoituksia todelliseen pumppuun**, ei AI:ta eikä tarpeetonta käyttöliittymä- tai pilvirakennetta.
+Historiallinen alkuvaiheen tehtävä oli [Mitsubishi Electric FD25VA -pilotti](docs/cottage-mitsubishi-fd25va.md): PC:llä ajettava C++-malli 16 °C HEAT / OFF -jaksoille, turvallisuusrajoille ja riippumattomalle vertailulle. Tämä ei ole nykyisen monimerkkisen tuotteen prioriteettijono; tarkista ajantasainen kehitystilanne yllä. Hydronisen lämpöpumpun G0:n tulokset säilyvät erillään. Fyysiset komennot edellyttävät edelleen erillistä mallikohtaista hyväksyntää.
 
 Päämittari: *todennettavasti alhaisemmat lämmityksen kokonaiskustannukset ilman mukavuus-, hygienia- tai turvallisuusrajojen rikkomista.*
 
@@ -195,7 +220,7 @@ Priorisoi ohjausreitit: (1) valmistajan dokumentoitu digitaalinen ohjaus, (2) va
 
 ## 11. Mitsubishi Electric — mallikohtainen integraatiotesti 16.11.2026
 
-Tämä on **ensimmäinen todellinen kenttäpilotti**, joka korvaa aikaisemman Panasonic-pilotin. Ensisijainen toteutusjärjestys on **F01–F09: kokonaisuus ensin toimivaksi**, sitten kaupallisen julkaisun L01–L14-portit. Täsmävaatimukset, lähtötilan vahvistukset ja C0–C3-portit: [docs/cottage-mitsubishi-fd25va.md](docs/cottage-mitsubishi-fd25va.md).
+Tämä on **historiallinen ensimmäiseksi valittu Mitsubishi-kenttäpilotti**, ei merkki tämänhetkisestä yleisestä laiteyhteensopivuudesta eikä koko tuotteen ainoa kehityspolku. Aktiivinen kehitys ja PR-ketju on kuvattu yllä; F01–F09 ja kaupallisen julkaisun L01–L14-portit säilyvät tarkistuslistoina. Täsmävaatimukset, lähtötilan vahvistukset ja C0–C3-portit: [docs/cottage-mitsubishi-fd25va.md](docs/cottage-mitsubishi-fd25va.md).
 
 - Vain **yksi** Mitsubishi Electric **MSZ-FD25VA + MUZ-FD25VA** (ilma–ilmapumppu). Ei käyttövesivaraajaa, menoveden säätöä tai shunttia.
 - Pumpun alin lämmityspyynti **16 °C**. Kohteen ylläpitotavoite **5 °C** ja ennakoiva turvamarginaali **8 °C**: ohjaus sallittujen lämmitys-/OFF-komentojen kautta, ei 5 °C:n asetusarvona. 5 °C:n suojaa ei saa väittää taatuksi ilman riippumatonta jäätymissuojausta.

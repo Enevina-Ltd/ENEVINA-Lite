@@ -28,7 +28,9 @@ class RegionalWiring(unittest.TestCase):
         self.assertIn("xTaskNotifyGive(reader_task)", MARKET)
         self.assertIn("ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(next_ms))", MARKET)
         self.assertIn("price_limit_scale=currency_limit_scale(market.currency)", (ROOT / "firmware/cottage/src/main.cpp").read_text())
-        self.assertIn("priced_model.currency_limit_scale=currency_limit_scale(ms.currency)", (ROOT / "firmware/cottage/src/main.cpp").read_text())
+        # The live MPC planner receives the market currency scale (the model's
+        # Parameters are built from it in BuildingIdentifier::build_parameters).
+        self.assertIn("pi.currency_scale=currency_limit_scale(ms.currency)", (ROOT / "firmware/cottage/src/main.cpp").read_text())
 
     def test_region_change_invalidates_cache_and_inflight_fetch(self):
         self.assertIn("++region_generation", MARKET)
@@ -162,7 +164,9 @@ class TimelineWiring(unittest.TestCase):
     def test_endpoint_uses_the_controllers_profile_and_classifier(self):
         self.assertIn("timeline_setup(site.profile", self.MAIN)
         self.assertIn("build_timeline(utc,total,n,params,*timeline)", self.MAIN)
-        self.assertIn("bootstrap_preview(now,indoor)", self.MAIN)
+        # The "now" decision is the ARBITRATED proposal (MPC -> price -> thermostat),
+        # not the price rule alone (PR #63 integration).
+        self.assertIn("active_control_proposal(now,indoor,&arbitration)", self.MAIN)
         # one classifier: the controller and the timeline share it
         self.assertIn("classify_price(in.next_total_prices", self.BOOT)
         self.assertIn("classify_price(total+i", self.TL)
@@ -182,7 +186,9 @@ class TimelineWiring(unittest.TestCase):
         self.assertIn("drying_blocks_heat(plan)", timeline)
         self.assertIn("meta.indoor_fresh=valid_temperature(indoor,now)", timeline)
         self.assertIn("has_target && meta.indoor_fresh", timeline)
-        self.assertIn("bootstrap_preview(now,indoor)", timeline)
+        self.assertIn("active_control_proposal(now,indoor,&arbitration)", timeline)
+        self.assertNotIn("bootstrap_preview(now,indoor)", timeline)
+        self.assertIn("meta.decision_source=proposal_source_name(arbitration.source);", timeline)
         self.assertIn('heating_permitted', self.TL)
         dashboard = (ROOT / "firmware/cottage/include/cottage_premium_dashboard.hpp").read_text(encoding="utf-8")
         self.assertIn('heating_permitted===false', dashboard)

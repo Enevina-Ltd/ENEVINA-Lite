@@ -39,8 +39,17 @@ class ShadowSurfaceTests(unittest.TestCase):
         self.assertIn("HTTPC_DISABLE_FOLLOW_REDIRECTS", self.main)
 
     def test_no_production_calibration_bypass(self):
+        # The synthetic bench model stays off and never reaches control. The
+        # only MPC proposal path is a plan from the measured-data identifier
+        # whose calibration state is CALIBRATED (walk-forward validated).
         self.assertRegex(self.config, r"#define COTTAGE_SYNTHETIC_TEST_MODEL 0")
-        self.assertIn("COTTAGE_SYNTHETIC_TEST_MODEL && valid(model)", self.main)
+        self.assertIn("in.calibrated=calibration_snapshot.state==CalibrationState::Calibrated;", self.main)
+        self.assertIn("const PlannerOutput po=plan_mpc(pi,rows);", self.main)
+        self.assertIn("pi.identifier=id;", self.main)
+        worker = self.main.split("static void optimizer_worker(void*) {", 1)[1].split(
+            "static void status_endpoint()", 1)[0]
+        self.assertNotIn("optimize(priced_model", worker)
+        self.assertNotIn("setup_model", worker)
 
     def test_n16r8_psram_is_initialized_and_checked(self):
         pio=(ROOT / "firmware/cottage/platformio.ini").read_text(encoding="utf8")

@@ -36,7 +36,9 @@ bool valid(const Parameters& p) {
         p.min_heat_minutes % slot_minutes == 0 &&
         p.min_off_minutes % slot_minutes == 0 &&
         finite(p.currency_limit_scale) && p.currency_limit_scale >= 1 &&
-        p.currency_limit_scale <= 12;
+        p.currency_limit_scale <= 12 &&
+        finite(p.stop_afterheat_kwh) && p.stop_afterheat_kwh >= 0 &&
+        p.stop_afterheat_kwh <= 2.0;
 }
 bool valid(const Parameters& p, const State& s, const Period& d) {
     return valid(p) && finite(s.indoor_c) &&
@@ -77,7 +79,10 @@ Step advance(const Parameters& p, const State& s, const Period& d, bool heat_16_
     out.delivered_thermal_kw = heat_16_c ?
         heat_capacity_kw(p,d.outdoor_c) * d.defrost_capacity_factor * run_fraction : 0;
     const double alpha=std::exp(-p.loss_kw_per_c * slot_hours / p.thermal_mass_kwh_per_c);
-    const double gain=out.delivered_thermal_kw + d.internal_gain_kw;
+    // After-heat of a HEAT->OFF transition is spread over that OFF slot.
+    const bool stopping = !heat_16_c && s.heat_requested;
+    const double afterheat_kw = stopping ? p.stop_afterheat_kwh / slot_hours : 0;
+    const double gain=out.delivered_thermal_kw + d.internal_gain_kw + afterheat_kw;
     out.next.indoor_c=d.outdoor_c + (s.indoor_c-d.outdoor_c)*alpha +
         gain / p.loss_kw_per_c * (1.0-alpha);
     out.next.heat_requested=heat_16_c;

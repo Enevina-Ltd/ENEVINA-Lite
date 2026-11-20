@@ -21,7 +21,7 @@ Midea V2/V3 readers and experimental manual controls exist in source, but have n
 
 - **Local by design.** The device runs its own dashboard and local control logic. Electricity-price and weather updates use online data sources, but a continuous cloud connection is not the design requirement.
 - **Electricity prices + weather.** Finnish 15-minute electricity-price periods and FMI weather forecasts are integrated as inputs for monitoring and optimization development.
-- **Predictive control research on an ESP32.** A lightweight thermal model and deterministic MPC can be simulated and benchmarked on the host; the real device's current price-control path is **not yet a field-validated MPC controller**.
+- **Predictive control on an ESP32.** The device learns a lightweight thermal model from its own measurements and switches from price control to a deterministic receding-horizon MPC only after the model passes walk-forward validation. This is host-tested and simulated (see [docs/MPC_CONTROL_20261120.md](docs/MPC_CONTROL_20261120.md)); it is **not yet field-validated** on a real pump.
 - **Manufacturer adapters, not a one-brand product.** The first integration work targets Mitsubishi Electric / CN105. Other brands require their own verified adapters and model-specific tests.
 
 ### What is available today?
@@ -35,7 +35,7 @@ Midea V2/V3 readers and experimental manual controls exist in source, but have n
 | RuuviTag and Shelly | Adapter/parser and integration work, selected device tests | Universal sensor compatibility or pump-only power measurement |
 | Midea V2/V3 LAN | Native C++ local V2/V3 Wi-Fi readers, experimental manual control and dashboard panel, [details](docs/MIDEA_V3_LOCAL_WIFI.md) | ESP32 firmware build passed; no physical Midea control field test and no automated optimizer control |
 | Mitsubishi CN105 | First model-specific experimental integration | Certified or universally safe control of Mitsubishi models |
-| Thermal model + MPC | Host simulation, independent MILP comparisons and benchmark reports | Verified real-world cost savings; MPC as the active calibrated control loop |
+| Thermal model + MPC | Automatic identification, calibration gate and MPC in the control chain; host tests, closed-loop simulation and MILP comparisons | Field calibration on a real pump; verified real-world cost savings |
 | Signed OTA / recovery | Implementation and targeted regression/device tests | A universally approved end-user firmware update |
 
 The details and evidence levels are documented in [Compatibility & development status](docs/COMPATIBILITY.md), [optimization audit](docs/OPTIMIZATION_AUDIT_20261118.md) and [release readiness](docs/release/RELEASE_READINESS.md). Historical test reports document their test date, not a blanket claim about current product readiness.

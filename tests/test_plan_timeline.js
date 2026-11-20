@@ -109,6 +109,17 @@ assert.equal(A.tlNowText({action:'HEAT_SETPOINT',setpoint_c:22.5,reason:'LOW_COS
 assert.equal(A.tlNowText({action:'OFF',setpoint_c:null,reason:'HIGH_COST_WINDOW'}),'Ehdotus: lämmitys pois — sähkö on nyt kallista');
 assert.equal(A.tlNowText({action:'WAT',reason:'???'}),'Ei päätöstä — syy ei tiedossa');
 assert.equal(A.tlNowText(null),'Ei päätöstä');
+// The decision names the controller that really produced it (arbitrated chain).
+assert.equal(A.tlNowText({action:'HEAT_SETPOINT',setpoint_c:16,reason:'MPC_PLAN',source:'MPC'}),
+  'Ehdotus: lämmitys 16,0 °C — kalibroidun MPC-suunnitelman mukaan (kalibroitu MPC)');
+assert.equal(A.tlNowText({action:'OFF',setpoint_c:null,reason:'HIGH_COST_WINDOW',source:'PRICE_CONTROL'}),
+  'Ehdotus: lämmitys pois — sähkö on nyt kallista (hintaohjaus)');
+assert.equal(A.tlNowText({action:'OFF',setpoint_c:null,reason:'THERMOSTAT_NO_PRICES',source:'THERMOSTAT'}),
+  'Ehdotus: lämmitys pois — termostaatti ilman hintatietoa (termostaatti)');
+assert.equal(A.tlNowText({action:'OFF',setpoint_c:null,reason:'HIGH_COST_WINDOW',source:'???'}),
+  'Ehdotus: lämmitys pois — sähkö on nyt kallista');       // unknown source: no claim
+for(const name of ['kalibroitu MPC','hintaohjaus','termostaatti','kalibroidun MPC-suunnitelman mukaan'])
+  assert(name in dict,'timeline source not translated: '+name);
 
 // segment sentence carries the real numbers
 const seg={class:'cheap',start:1794999600,end:1795007100,avg_total:0.1,avg_median:0.2,slots:7};

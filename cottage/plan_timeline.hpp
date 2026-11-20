@@ -141,6 +141,12 @@ struct TimelineMeta {
     double decision_setpoint_c=-1;
     const char* decision_reason="UNKNOWN";
     bool decision_price_valid=false;
+    // Which controller produced the decision above: the calibrated MPC plan,
+    // the price rule or the plain thermostat ("NONE" = no proposal). The slot
+    // classes below always describe the PRICE RULE; only "now" is the
+    // arbitrated decision.
+    const char* decision_source="PRICE_CONTROL";
+    const char* decision_fallback="NONE";   // why MPC is not in control (MpcFallback)
 };
 
 // Derives the classification parameters and the headroom shown on the chart
@@ -189,7 +195,7 @@ inline void opt(Emit& emit,double v,bool set,const char* fmt) {
 template<class Emit>
 inline void timeline_json(const TimelineMeta& m,const Timeline& t,Emit emit) {
     using namespace timeline_detail;
-    char b[160];
+    char b[360];
     std::snprintf(b,sizeof(b),"{\"valid\":%s,\"currency\":\"%s\",\"area\":\"%s\",\"profile\":\"%s\",",
         t.slot_count?"true":"false",m.currency,m.area,m.profile);
     emit(b);
@@ -203,9 +209,10 @@ inline void timeline_json(const TimelineMeta& m,const Timeline& t,Emit emit) {
     std::snprintf(b,sizeof(b),",\"window_slots\":%zu,\"advantage_fraction\":%.4f,",
         m.window_slots,m.advantage_fraction);
     emit(b);
-    std::snprintf(b,sizeof(b),"\"truncated_at_gap\":%s,\"now\":{\"action\":\"%s\",\"reason\":\"%s\",\"price_valid\":%s,\"setpoint_c\":",
+    std::snprintf(b,sizeof(b),"\"truncated_at_gap\":%s,\"slots_basis\":\"PRICE_RULE\",\"now\":{\"action\":\"%s\",\"reason\":\"%s\","
+        "\"source\":\"%s\",\"mpc_fallback\":\"%s\",\"price_valid\":%s,\"setpoint_c\":",
         t.truncated_at_gap?"true":"false",m.decision_action,m.decision_reason,
-        m.decision_price_valid?"true":"false");
+        m.decision_source,m.decision_fallback,m.decision_price_valid?"true":"false");
     emit(b);
     opt(emit,m.decision_setpoint_c,m.decision_setpoint_c>=0,"%.1f");
     emit("},\"segments\":[");

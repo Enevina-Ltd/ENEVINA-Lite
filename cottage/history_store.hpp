@@ -136,7 +136,12 @@ enum class HistoryEventKind : uint8_t {
     CommandSent=4,     // value: how many since the last check
     CommandConfirmed=5,
     CommandFailed=6,
-    UpdateConfirmed=7  // arg: the signed release version that was confirmed good
+    UpdateConfirmed=7, // arg: the signed release version that was confirmed good
+    // The controller whose decision was in force changed. arg: 0 none,
+    // 1 calibrated MPC, 2 price control, 3 thermostat; value: why the MPC is
+    // not in control (MpcFallback code, 0 when it is). Stored as an EVENT so
+    // the 20-byte measurement record and its CRC/format stay untouched.
+    ControlSource=8
 };
 enum class HistorySource : uint8_t { None=0, Wifi=1, Pump=2, Sensor=3, Prices=4 };
 struct HistoryEvent {
@@ -187,6 +192,8 @@ struct HistoryInputs {
     int64_t power_sample_utc=0; // Shelly capture time, not the 15-second history poll
     bool price_valid=false;    double price_per_kwh=0; uint8_t price_currency=0;
     uint8_t action=0;          // 0 unknown, 1 off, 2 heat, 3 hold
+    uint8_t control_source=255; // 255 = not provided; 0 none, 1 MPC, 2 price control, 3 thermostat
+    int16_t control_reason=0;   // MpcFallback code when the MPC is not in control
     bool armed=false;
     uint32_t commands_sent=0,commands_confirmed=0,commands_failed=0;   // monotone counters
     int reset_reason=0;
@@ -225,6 +232,7 @@ public:
         track_source(in,HistorySource::Sensor,in.sensor_online,events);
         track_source(in,HistorySource::Prices,in.prices_ok,events);
         command_events(in,events);
+        control_source_events(in,events);
         if(acc_slot_!=0&&now_slot<acc_slot_) return false;          // clock went backwards: ignore
         if(acc_slot_!=0&&now_slot>acc_slot_) {
             finalized=finalize(store);
@@ -258,6 +266,11 @@ private:
     uint32_t sent_=0,confirmed_=0,failed_=0;
     uint32_t ota_good_=0,ota_pending_version_=0;
     Track tracks_[5];
+    // Control-source change tracking (debounced like the source tracks).
+    bool cs_known_=false;
+    uint8_t cs_state_=255,cs_reported_=254;
+    int64_t cs_since_=0;
+    int16_t cs_reason_=0;
 
     void track_ota_version(uint32_t version,uint32_t confirmed_upgrade,
                            const EventLog& events) {
@@ -389,6 +402,17 @@ private:
                 t.lost_reported=false;
             }
             t.reported=t.state;
+        }
+    }
+    void control_source_events(const HistoryInputs& in,EventLog& events) {
+        if(in.control_source>3) return;               // not provided / invalid
+        if(!cs_known_||in.control_source!=cs_state_) {
+            cs_known_=true;cs_state_=in.control_source;cs_since_=in.utc;cs_reason_=in.control_reason;
+        }
+        if(cs_state_!=cs_reported_&&in.utc-cs_since_>=kDebounceS) {
+            events.put({static_cast<uint32_t>(cs_since_),static_cast<uint8_t>(HistoryEventKind::ControlSource),
+                        0,cs_reason_,cs_state_});
+            cs_reported_=cs_state_;
         }
     }
     void command_events(const HistoryInputs& in,EventLog& events) {

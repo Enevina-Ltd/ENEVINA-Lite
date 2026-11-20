@@ -63,6 +63,13 @@ assert.equal(A.hsEventText({k:2,s:1,v:0},dur),'Wi-Fi katkesi');
 assert.equal(A.hsEventText({k:3,s:2,v:300},dur),'Lämpöpumpun tiedonsiirto palasi, katko kesti 5 min');
 assert.equal(A.hsEventText({k:2,s:3,v:0},dur),'Huonelämpötila-anturi katkesi');
 assert(A.hsEventText({k:1,s:0,v:3},dur).endsWith('3)'));
+// Which controller was in force (arg: 1 MPC, 2 price control, 3 thermostat, 0 none).
+assert.equal(A.hsEventText({k:8,s:0,v:0,a:1},dur),'Ohjauslähde vaihtui: kalibroitu MPC');
+assert.equal(A.hsEventText({k:8,s:0,v:4,a:2},dur),'Ohjauslähde vaihtui: hintaohjaus');
+assert.equal(A.hsEventText({k:8,s:0,v:0,a:3},dur),'Ohjauslähde vaihtui: termostaatti');
+assert.equal(A.hsEventText({k:8,s:0,v:0,a:9},dur),'Ohjauslähde vaihtui: ei ohjausta');   // unknown code: not a source claim
+for(const name of ['ei ohjausta','kalibroitu MPC','hintaohjaus','termostaatti'])assert(name in dict,'control source not translated: '+name);
+assert.equal(A.hsEventClass({k:8}),'info');
 assert(A.hsEventText({k:4,s:0,v:2},dur).endsWith(': 2'));
 assert(A.hsEventText({k:6,s:0,v:1},dur).includes('epäonnistui'));
 assert.equal(A.hsEventText({k:99,s:0,v:0},dur),'Tuntematon tapahtuma');

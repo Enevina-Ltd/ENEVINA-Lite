@@ -155,6 +155,22 @@ static void json_is_valid_and_honest() {
     CHECK(j.find("nan")==std::string::npos&&j.find("inf")==std::string::npos);
     CHECK(j.find("\"valid\":true")!=std::string::npos&&j.find("\"profile\":\"saving\"")!=std::string::npos);
     CHECK(j.find("\"heating_permitted\":true")!=std::string::npos);
+    // The "now" decision names the controller that produced it; the slot
+    // classes are explicitly the PRICE RULE, never presented as the MPC plan.
+    CHECK(j.find("\"slots_basis\":\"PRICE_RULE\"")!=std::string::npos);
+    CHECK(j.find("\"source\":\"PRICE_CONTROL\"")!=std::string::npos);        // default
+    meta.decision_source="MPC";meta.decision_reason="MPC_PLAN";
+    meta.decision_setpoint_c=16.0;meta.decision_fallback="NONE";
+    const std::string mpc=json_of(meta,t);
+    enevina::met_detail::Json vm{mpc.data(),mpc.data()+mpc.size()};
+    CHECK(vm.value());vm.ws();CHECK(vm.cur==vm.end);
+    CHECK(mpc.find("\"source\":\"MPC\",\"mpc_fallback\":\"NONE\"")!=std::string::npos);
+    CHECK(mpc.find("\"reason\":\"MPC_PLAN\"")!=std::string::npos&&
+          mpc.find("\"setpoint_c\":16.0")!=std::string::npos);
+    meta.decision_source="THERMOSTAT";meta.decision_fallback="MODEL_LEARNING";
+    meta.decision_reason="LOW_COST_WINDOW";meta.decision_setpoint_c=22.5;
+    const std::string thermo=json_of(meta,t);
+    CHECK(thermo.find("\"source\":\"THERMOSTAT\",\"mpc_fallback\":\"MODEL_LEARNING\"")!=std::string::npos);
     // Drying humidity may prohibit heating despite a valid calculated target.
     // The target remains available for display, but heat permission is false.
     meta.heating_permitted=false;

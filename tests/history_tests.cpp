@@ -783,7 +783,56 @@ static void legacy_event_log_migration_preserves_old_entries() {
     CHECK(er.newest(0).utc==T0);
 }
 
+static void control_source_is_recorded_as_events() {
+    // Which controller was in force is an EVENT: the 20-byte record and its
+    // CRC/format are untouched.
+    static_assert(sizeof(HistoryRecord)==20,"record unchanged");
+    HistoryStore store(2880);EventLog ev;HistoryRecorder rec_;
+    int64_t t=T0;
+    const auto at=[&](int64_t utc,uint8_t source,int16_t reason=0) {
+        HistoryInputs in=sample(utc);in.control_source=source;in.control_reason=reason;
+        rec_.observe(in,store,ev);
+    };
+    const auto count_kind=[&](HistoryEventKind k) {
+        size_t n=0;
+        for(size_t i=0;i<ev.count();++i) if(ev.newest(i).kind==static_cast<uint8_t>(k)) ++n;
+        return n;
+    };
+    // Not provided (older callers): never an event.
+    for(int i=0;i<20;++i) {t+=10;rec_.observe(sample(t),store,ev);}
+    CHECK(count_kind(HistoryEventKind::ControlSource)==0);
+    // Price control (2) holds long enough: ONE event with its start time.
+    const int64_t price_from=t+10;
+    for(int i=0;i<12;++i) {t+=10;at(t,2,4);}
+    CHECK(count_kind(HistoryEventKind::ControlSource)==1);
+    CHECK(ev.newest(0).arg==2 && ev.newest(0).value==4 && ev.newest(0).utc==static_cast<uint32_t>(price_from));
+    // Flapping to MPC for 30 s does not count.
+    for(int i=0;i<3;++i) {t+=10;at(t,1);}
+    for(int i=0;i<6;++i) {t+=10;at(t,2,4);}
+    CHECK(count_kind(HistoryEventKind::ControlSource)==1);
+    // MPC takes over and stays: one event, reason 0.
+    const int64_t mpc_from=t+10;
+    for(int i=0;i<12;++i) {t+=10;at(t,1,0);}
+    CHECK(count_kind(HistoryEventKind::ControlSource)==2);
+    CHECK(ev.newest(0).arg==1 && ev.newest(0).value==0 && ev.newest(0).utc==static_cast<uint32_t>(mpc_from));
+    // Fall back to the thermostat (3) with the real reason, then no control (0).
+    for(int i=0;i<12;++i) {t+=10;at(t,3,10);}
+    CHECK(count_kind(HistoryEventKind::ControlSource)==3 && ev.newest(0).arg==3 && ev.newest(0).value==10);
+    for(int i=0;i<12;++i) {t+=10;at(t,0,11);}
+    CHECK(count_kind(HistoryEventKind::ControlSource)==4 && ev.newest(0).arg==0);
+    // Invalid values are ignored, the last source stays.
+    for(int i=0;i<12;++i) {t+=10;at(t,7);}
+    CHECK(count_kind(HistoryEventKind::ControlSource)==4);
+    // The events survive the JSON the history view reads (kind 8 with arg).
+    std::vector<HistoryPoint> pts(kMaxHistoryPoints);
+    HistorySummary sum;
+    std::string out;
+    history_json("24h",1,pts.data(),0,sum,ev,T0-1,"EUR","unknown",true,[&](const char* p){out+=p;});
+    CHECK(out.find("\"k\":8")!=std::string::npos&&out.find("\"a\":1}")!=std::string::npos);
+}
+
 int main() {
+    control_source_is_recorded_as_events();
     legacy_event_log_migration_preserves_old_entries();
     mount_failure_never_formats_nonblank_partition();
     measured_energy_requires_verifiable_coverage();
