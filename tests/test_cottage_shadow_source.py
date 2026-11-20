@@ -40,7 +40,9 @@ class ShadowSurfaceTests(unittest.TestCase):
 
     def test_no_production_calibration_bypass(self):
         self.assertRegex(self.config, r"#define COTTAGE_SYNTHETIC_TEST_MODEL 0")
-        self.assertIn("COTTAGE_SYNTHETIC_TEST_MODEL && valid(model)", self.main)
+        # the guard is still the compile-time flag; the model variable was renamed to
+        # priced_model when regional tariffs were added
+        self.assertIn("COTTAGE_SYNTHETIC_TEST_MODEL && valid(priced_model)", self.main)
 
     def test_n16r8_psram_is_initialized_and_checked(self):
         pio=(ROOT / "firmware/cottage/platformio.ini").read_text(encoding="utf8")
