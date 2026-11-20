@@ -59,7 +59,9 @@ The existing owner-invoked device pilot, fresh authenticated state, short
 write queue and authenticated readback remain in place. If the shared LAN
 resource mutex is briefly occupied, the manually queued command retries
 within its original 15-second validity window, using the original Wi-Fi
-generation and approval. An uncertain physical write is **never** retried.
+generation and approval. The original command deadline is rechecked
+after the network lease and just before physical transmission (including
+V3 handshake latency). An uncertain physical write is **never** retried.
 A Midea write is
 **not** activated by merely selecting or discovering a device.
 

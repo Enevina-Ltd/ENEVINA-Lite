@@ -55,7 +55,7 @@ class MideaManualControl(unittest.TestCase):
         self.assertIn('action?',worker)
         self.assertIn('read_device_v2(cfg.host,id,sample)',worker)
         self.assertIn('write_device_v2(',worker)
-        self.assertIn('expected_link,min_c,max_c',worker)
+        self.assertIn('expected_link,queued+15,min_c,max_c',worker)
         self.assertIn('read_device(cfg.host,auth,sample)',worker)
         self.assertIn('write_device(',worker)
         self.assertIn('NetworkBudgetLease lease',worker)

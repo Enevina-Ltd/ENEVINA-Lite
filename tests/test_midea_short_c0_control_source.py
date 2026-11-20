@@ -29,4 +29,7 @@ class ShortC0ControlTests(unittest.TestCase):
   self.assertIn("at-issued<14",SERVICE)
   self.assertIn("expected_link==cottage_wifi_link_generation()",SERVICE)
   self.assertIn("deferred_for_budget?500u:30000u",SERVICE)
+  self.assertIn("after_lease-queued<15",SERVICE)
+  self.assertIn("expected_link,queued+15,min_c,max_c",SERVICE)
+  self.assertEqual(TCP.count("send_at>=command_deadline_utc"),2)
 if __name__=="__main__":unittest.main()

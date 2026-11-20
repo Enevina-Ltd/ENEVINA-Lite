@@ -28,10 +28,12 @@ ReadStatus read_device_v2(const char* private_ipv4,uint64_t device_id,
 ReadStatus write_device_v2(const char* private_ipv4,uint64_t device_id,
                            const ControlPatch& patch,State& confirmed,
                            uint32_t expected_wifi_generation,
+                           int64_t command_deadline_utc,
                            double approved_min_c,double approved_max_c);
 ReadStatus write_device(const char* private_ipv4,const Credential& credentials,
                         const ControlPatch& patch,State& confirmed,
                            uint32_t expected_wifi_generation,
+                           int64_t command_deadline_utc,
                            double approved_min_c,double approved_max_c);
 } // namespace enevina::midea
 #endif

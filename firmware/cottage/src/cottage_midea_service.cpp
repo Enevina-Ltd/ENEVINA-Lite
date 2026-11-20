@@ -742,7 +742,10 @@ void cottage_midea_service_worker(void*) {
             enevina_firmware::NetworkBudgetLease lease(
                 action?2500u:300u,60*1024,16*1024);
             if(!lease.held() && action)deferred_for_budget=true;
-            if(lease.held()) {
+            const int64_t after_lease=static_cast<int64_t>(time(nullptr));
+            if(lease.held() && (!action ||
+                (queued>0 && after_lease>=queued &&
+                 after_lease-queued<15))) {
                 attempted=true;
                 polling.store(true);
                 if(!action)last_attempt.store(time(nullptr));
@@ -753,7 +756,7 @@ void cottage_midea_service_worker(void*) {
                         result=action?
                             enevina::midea::write_device_v2(
                                 cfg.host,id,patch,sample,
-                                expected_link,min_c,max_c):
+                                expected_link,queued+15,min_c,max_c):
                             enevina::midea::read_device_v2(cfg.host,id,sample);
                     } else result=enevina::midea::ReadStatus::InvalidCredentials;
                 } else {
@@ -763,7 +766,7 @@ void cottage_midea_service_worker(void*) {
                         result=action?
                             enevina::midea::write_device(
                                 cfg.host,auth,patch,sample,
-                                expected_link,min_c,max_c):
+                                expected_link,queued+15,min_c,max_c):
                             enevina::midea::read_device(cfg.host,auth,sample);
                     } else result=enevina::midea::ReadStatus::InvalidCredentials;
                 }

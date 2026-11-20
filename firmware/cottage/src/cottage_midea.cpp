@@ -179,6 +179,7 @@ ReadStatus read_device(const char* host,const Credential& creds,State& reading) 
 ReadStatus write_device_v2(const char* host,uint64_t id,
                            const ControlPatch& patch,State& confirmed,
                            uint32_t expected_wifi_generation,
+                           int64_t command_deadline_utc,
                            double approved_min_c,double approved_max_c) {
     if(!valid_control_patch(patch))return ReadStatus::ProtocolFailed;
     if(WiFi.status()!=WL_CONNECTED ||
@@ -214,6 +215,12 @@ ReadStatus write_device_v2(const char* host,uint64_t id,
         tcp.stop();
         return ReadStatus::ResourceBusy;
     }
+    // Last possible pre-send check: state read, lease and V3 handshake
+    // must not outlive the original manual command deadline.
+    const int64_t send_at=static_cast<int64_t>(time(nullptr));
+    if(command_deadline_utc<=0 || send_at>=command_deadline_utc) {
+        tcp.stop();return ReadStatus::ResourceBusy;
+    }
     if(!send_bytes(tcp,request)) {
         tcp.stop();
         return ReadStatus::ConnectionFailed;
@@ -240,6 +247,7 @@ ReadStatus write_device_v2(const char* host,uint64_t id,
 ReadStatus write_device(const char* host,const Credential& creds,
                         const ControlPatch& patch,State& confirmed,
                            uint32_t expected_wifi_generation,
+                           int64_t command_deadline_utc,
                            double approved_min_c,double approved_max_c) {
     if(!valid_control_patch(patch))return ReadStatus::ProtocolFailed;
     if(WiFi.status()!=WL_CONNECTED ||
@@ -292,6 +300,12 @@ ReadStatus write_device(const char* host,const Credential& creds,
     }
     if(WiFi.status()!=WL_CONNECTED ||
        cottage_wifi_link_generation()!=expected_wifi_generation) {
+        tcp.stop();return ReadStatus::ResourceBusy;
+    }
+    // Last possible pre-send check: state read, lease and V3 handshake
+    // must not outlive the original manual command deadline.
+    const int64_t send_at=static_cast<int64_t>(time(nullptr));
+    if(command_deadline_utc<=0 || send_at>=command_deadline_utc) {
         tcp.stop();return ReadStatus::ResourceBusy;
     }
     if(!send_bytes(tcp,request)) {
