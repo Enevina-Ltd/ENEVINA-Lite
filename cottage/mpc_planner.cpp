@@ -15,6 +15,7 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     rec.config_generation=in.config_generation;
     rec.settings_generation=in.settings_generation;
     rec.target_c=in.target_c;
+    rec.limits=in.limits;
     rec.initial_heat=in.pump_heat;
     const auto no_plan=[&](MpcFallback why) {rec.has_plan=false;rec.planning_fallback=why;return out;};
     if(!in.identifier) return no_plan(MpcFallback::ModelLearning);
@@ -26,8 +27,15 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
             MpcFallback::ModelLearning);
     if(!in.heating_allowed) return no_plan(MpcFallback::NoHeatingMode);
     ComfortBand band{};
-    if(!in.target_valid || !mpc_comfort_band(in.target_c,band))
-        return no_plan(MpcFallback::TargetOutsideModel);
+    {   ComfortBand model_band{};
+        // A target outside the HEAT 16 C model is reported as such; a target
+        // inside it with malformed / contradictory owner limits is reported
+        // as invalid limits. The MPC never invents other limits.
+        if(!in.target_valid || !mpc_comfort_band(in.target_c,model_band))
+            return no_plan(MpcFallback::TargetOutsideModel);
+        if(!mpc_comfort_band(in.target_c,band,in.limits))
+            return no_plan(MpcFallback::ComfortLimitsInvalid);
+    }
     rec.band=band;
     if(!in.temperature_fresh || !std::isfinite(in.indoor_c))
         return no_plan(MpcFallback::TemperatureStale);

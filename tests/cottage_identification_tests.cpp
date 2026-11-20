@@ -332,9 +332,122 @@ void test_trend_ring() {
     for(size_t i=1;i<n;++i) CHECK(t[i].utc==t[i-1].utc+900);
     CHECK(t[n-1].utc==sim.utc);
 }
+// Codex round 3 (PR #63): a start/stop is counted only between two slots the
+// HEAT 16 C / OFF model accepted.
+struct Seq {
+    BuildingIdentifier id;
+    int64_t utc=t_start;
+    double indoor=12.0;
+    // One slot; the flags describe what went wrong with it (if anything).
+    bool slot(bool heat,bool pump_ok=true,bool indoor_ok=true,bool outdoor_ok=true,
+              bool in_domain=true) {
+        SlotObservation o{};
+        o.slot_utc=utc;
+        o.indoor_valid=indoor_ok;
+        o.indoor_start_c=indoor;
+        o.indoor_end_c=indoor+(heat?0.15:-0.1);
+        o.outdoor_valid=outdoor_ok;o.outdoor_c=-2.0;
+        o.heat_valid=pump_ok;o.heat_requested=heat;o.in_model_domain=in_domain;
+        indoor=o.indoor_end_c;
+        if(indoor>13.5) indoor=13.5;
+        if(indoor<11.0) indoor=11.0;
+        utc+=900;
+        return id.add(o);
+    }
+    uint32_t starts() const {return id.report(utc).starts;}
+    uint32_t stops() const {return id.report(utc).stops;}
+};
+
+void test_transition_continuity() {
+    {   // HEAT 16 C -> OFF with accepted measurements: one start, one stop.
+        Seq s;
+        s.slot(false);s.slot(false);s.slot(true);s.slot(true);s.slot(false);
+        CHECK(s.starts()==1 && s.stops()==1); }
+    {   // HEAT at a HIGHER setpoint (outside the model) -> OFF: the OFF slot is
+        // not the stop of a heating run the model observed.
+        Seq s;
+        s.slot(false);s.slot(false);
+        s.slot(true,true,true,true,false);      // rejected: not the 16 C model
+        s.slot(false);                           // would have been a "stop"
+        CHECK(s.stops()==0 && s.starts()==0);
+        s.slot(false);s.slot(false);             // chain recovers on its own
+        CHECK(s.id.report(s.utc).samples>=2); }
+    {   // OFF -> HEAT(higher setpoint) -> HEAT(16 C): the first model-valid
+        // HEAT is not a start the model watched.
+        Seq s;
+        s.slot(false);s.slot(false);
+        s.slot(true,true,true,true,false);
+        s.slot(true);
+        CHECK(s.starts()==0);
+        s.slot(false);
+        CHECK(s.stops()==1 && s.starts()==0); }   // stop after TWO accepted slots
+    {   // Missing / stale pump measurement -> OFF.
+        Seq s;
+        s.slot(false);s.slot(false);s.slot(true);
+        s.slot(true,false);                      // pump data stale for this slot
+        s.slot(false);
+        CHECK(s.starts()==1 && s.stops()==0); }
+    {   // Pump measurement missing on the HEAT slot itself, then OFF.
+        Seq s;
+        s.slot(false);s.slot(false);
+        s.slot(true,false);                      // unknown mode, not HEAT
+        s.slot(false);
+        CHECK(s.starts()==0 && s.stops()==0); }
+    {   // Missing indoor temperature -> HEAT, then OFF.
+        Seq s;
+        s.slot(false);s.slot(false);
+        s.slot(true,true,false);
+        s.slot(false);
+        CHECK(s.starts()==0 && s.stops()==0); }
+    {   // Missing indoor temperature on the OFF slot after a clean HEAT run.
+        Seq s;
+        s.slot(false);s.slot(false);s.slot(true);s.slot(true);
+        s.slot(false,true,false);                // OFF slot unusable
+        s.slot(true);                            // next HEAT is not a start
+        CHECK(s.starts()==1 && s.stops()==0); }
+    {   // A single broken slot (forecast gap) inside a HEAT run: no transition
+        // is invented there, and the run stays usable afterwards.
+        Seq s;
+        s.slot(false);s.slot(false);s.slot(true);
+        s.slot(true,true,true,false);            // outdoor missing
+        s.slot(true);                            // follows a broken slot: skipped
+        s.slot(true);
+        CHECK(s.starts()==1 && s.stops()==0);
+        s.slot(false);
+        CHECK(s.stops()==1); }
+    {   // Time gap (missed slots) also breaks the chain.
+        Seq s;
+        s.slot(false);s.slot(false);s.slot(true);
+        s.utc+=3*900;
+        s.slot(false);
+        CHECK(s.stops()==0); }
+    {   // Long-run behaviour: a realistic cycling plant with a periodic
+        // out-of-domain HEAT slot and short data breaks still calibrates,
+        // is never Degraded, and recovers the true time constant.
+        Sim sim;
+        BuildingIdentifier id;
+        bool ever_degraded=false;
+        for(int i=0;i<16*96;++i) {
+            SlotObservation o=sim.step();
+            if(i%37==11) o.in_model_domain=false;
+            if(i%53==20) o.indoor_valid=false;
+            if(i%71==30) o.heat_valid=false;
+            if(i%89==40) o.outdoor_valid=false;
+            id.add(o);
+            ever_degraded|=id.report(sim.utc).state==CalibrationState::Degraded;
+        }
+        const auto r=id.report(sim.utc);
+        const double tau_true=sim.truth.thermal_mass_kwh_per_c/sim.truth.loss_kw_per_c;
+        std::printf("breaks: tau=%.2f (truth %.2f) state=%s windows=%u\n",r.model.tau_h,tau_true,
+            calibration_state_name(r.state),r.windows);
+        CHECK(r.state==CalibrationState::Calibrated && !ever_degraded);
+        CHECK(rel(r.model.tau_h,tau_true)<0.15);
+        CHECK(r.starts>5 && r.stops>5); }
+}
 } // namespace
 
 int main() {
+    test_transition_continuity();
     test_no_data_is_honest();
     test_comfort_band();
     test_recovers_truth_and_calibrates();

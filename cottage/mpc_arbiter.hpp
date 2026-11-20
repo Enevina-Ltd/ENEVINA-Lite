@@ -21,7 +21,7 @@ enum class MpcFallback : uint8_t {
     TargetOutsideModel, OutdoorOutsideLearned, ForecastUnavailable,
     HorizonTooShort, PumpStateUnknown, TemperatureStale, SolverFailed,
     SolverTimeout, PlanStale, PlanInputsChanged, BelowComfortFloor,
-    AboveComfortCeiling, ResourceLimit, SyntheticModelOnly
+    AboveComfortCeiling, ResourceLimit, SyntheticModelOnly, ComfortLimitsInvalid
 };
 
 // Everything the planner fixed when it computed the plan. A plan is only
@@ -38,6 +38,7 @@ struct MpcPlanRecord {
     bool first_heat=false;    // plan decision for first_utc
     double target_c=0;
     ComfortBand band{};
+    ComfortLimits limits{};   // owner's hard limits the band was built from
     size_t count=0;
 };
 
@@ -49,6 +50,9 @@ struct ArbiterInput {
     CalibrationState calibration=CalibrationState::NoData;
     MpcPlanRecord plan{};
     uint32_t mode_generation=0, config_generation=0, settings_generation=0;
+    // The owner's CURRENT hard comfort limits (0 = unset). A plan built from
+    // other limits is revoked; limits that cannot hold the target are refused.
+    ComfortLimits limits{};
     // Pump HEAT/OFF from a SOURCE-VERIFIED, fresh pump poll only; a gateway
     // HTTP/SSE receipt is not pump-origin evidence (Codex P1, PR #63).
     bool pump_state_known=false;
@@ -85,16 +89,24 @@ inline MpcFallback fallback_for_status(MpcStatus s) {
     return MpcFallback::SolverFailed;
 }
 
-// Is the stored plan still valid for the CURRENT mode, inputs and pump?
-// (structural validity; a room outside the band is judged separately in
-// arbitrate()). The dashboard uses this too, so a plan the controller has
-// invalidated is never shown as valid (Codex P2, PR #63).
+// THE single predicate for "may the MPC act now?". arbitrate() uses it and
+// so do /api/plan and /api/mpc, so a plan the controller rejects is never
+// shown as valid (Codex P2, PR #63). Order: calibration, the user's mode,
+// sensor freshness, the plan's own structure/age/inputs, the owner's hard
+// limits and finally the measured room against the band the plan protects.
 inline MpcFallback plan_validity(const ArbiterInput& in) {
+    if(!in.calibrated) {
+        if(in.calibration==CalibrationState::Degraded) return MpcFallback::ModelDegraded;
+        return in.calibration==CalibrationState::Validating?
+            MpcFallback::ModelValidating:MpcFallback::ModelLearning;
+    }
     // "Cold" and a drying mode that does not permit heat both yield
     // NoHeatingRequested in the existing controller.
     if(in.bootstrap.reason==BootstrapReason::NoHeatingRequested &&
        in.bootstrap.action==BootstrapAction::Off)
         return MpcFallback::NoHeatingMode;
+    if(!in.temperature_fresh || !std::isfinite(in.indoor_c))
+        return MpcFallback::TemperatureStale;
     const MpcPlanRecord& p=in.plan;
     if(!p.has_plan) return p.planning_fallback==MpcFallback::None?
         MpcFallback::SolverFailed:p.planning_fallback;
@@ -107,14 +119,18 @@ inline MpcFallback plan_validity(const ArbiterInput& in) {
        p.settings_generation!=in.settings_generation)
         return MpcFallback::PlanInputsChanged;
     if(!in.pump_state_known) return MpcFallback::PumpStateUnknown;
-    // The pump-mode generation also advances when the plan's OWN decision
-    // is executed. Accept that single expected transition only when the
-    // readback confirmed it in this slot and the verified pump now shows it;
-    // any other generation change (external switch, source gap) re-plans.
-    const bool own_transition=p.first_heat!=p.initial_heat &&
+    // The pump-mode generation advances on every source gap, mode change and
+    // re-verification. The ONLY change a plan survives is the single
+    // transition its own first decision causes: exactly one increment, the
+    // plan expected a mode change, the readback confirmed it in this slot and
+    // the verified pump now shows it. Anything more (an extra switch, a
+    // manual HEAT->OFF->HEAT that ends in the original state, a source gap)
+    // re-plans.
+    const uint32_t delta=in.mode_generation-p.mode_generation;   // wraps correctly
+    const bool expects_transition=p.first_heat!=p.initial_heat;
+    const bool own_transition=delta==1 && expects_transition &&
         in.own_transition_confirmed && in.pump_heat==p.first_heat;
-    if(p.mode_generation!=in.mode_generation && !own_transition)
-        return MpcFallback::PlanInputsChanged;
+    if(delta!=0 && !own_transition) return MpcFallback::PlanInputsChanged;
     if(!(in.bootstrap.requested_room_c>0) ||
        std::fabs(in.bootstrap.requested_room_c-p.target_c)>0.01)
         return MpcFallback::PlanInputsChanged;
@@ -122,6 +138,23 @@ inline MpcFallback plan_validity(const ArbiterInput& in) {
     // first decision means an external change (remote, manual): re-plan.
     if(in.pump_heat!=p.initial_heat && in.pump_heat!=p.first_heat)
         return MpcFallback::PlanInputsChanged;
+    // The owner's hard comfort limits. Malformed or contradictory limits: no
+    // MPC (the existing controller takes over); changed limits revoke the plan.
+    ComfortBand band{};
+    if(!mpc_comfort_band(p.target_c,band,in.limits))
+        return MpcFallback::ComfortLimitsInvalid;
+    if(!(in.limits==p.limits) ||
+       std::fabs(band.lower_c-p.band.lower_c)>1e-9 ||
+       std::fabs(band.upper_c-p.band.upper_c)>1e-9)
+        return MpcFallback::PlanInputsChanged;
+    // The measured room must be inside the band the plan protects: outside
+    // it the model is wrong right now and the existing controller (which
+    // heats at/below its lower edge and stops at/above its upper edge) acts.
+    // No tolerance beyond the owner's limit.
+    if(!p.first_heat && in.indoor_c<=band.lower_c)
+        return MpcFallback::BelowComfortFloor;
+    if(p.first_heat && in.indoor_c>=band.upper_c)
+        return MpcFallback::AboveComfortCeiling;
     return MpcFallback::None;
 }
 
@@ -129,34 +162,15 @@ inline ArbiterOutput arbitrate(const ArbiterInput& in) {
     ArbiterOutput out{};
     out.proposal=in.bootstrap;
     out.source=bootstrap_source(in.bootstrap);
-    const auto fallback=[&](MpcFallback why) {
-        out.fallback=why;
-        out.mpc_state=(why==MpcFallback::ModelLearning ||
-                       why==MpcFallback::ModelValidating)?
+    const MpcFallback invalid=plan_validity(in);
+    if(invalid!=MpcFallback::None) {
+        out.fallback=invalid;
+        out.mpc_state=(invalid==MpcFallback::ModelLearning ||
+                       invalid==MpcFallback::ModelValidating)?
             MpcRunState::Calibrating:MpcRunState::Fallback;
         return out;
-    };
-    if(!in.calibrated) {
-        if(in.calibration==CalibrationState::Degraded)
-            return fallback(MpcFallback::ModelDegraded);
-        return fallback(in.calibration==CalibrationState::Validating?
-            MpcFallback::ModelValidating:MpcFallback::ModelLearning);
     }
-    if(in.bootstrap.reason==BootstrapReason::NoHeatingRequested &&
-       in.bootstrap.action==BootstrapAction::Off)
-        return fallback(MpcFallback::NoHeatingMode);
-    if(!in.temperature_fresh || !std::isfinite(in.indoor_c))
-        return fallback(MpcFallback::TemperatureStale);
-    const MpcFallback invalid=plan_validity(in);
-    if(invalid!=MpcFallback::None) return fallback(invalid);
     const MpcPlanRecord& p=in.plan;
-    // Measured room outside the band the plan protects: the plan's model is
-    // wrong right now; the existing controller (which heats below its own
-    // lower edge and stops above its upper edge) takes over this slot.
-    if(!p.first_heat && in.indoor_c<=p.band.lower_c-0.2)
-        return fallback(MpcFallback::BelowComfortFloor);
-    if(p.first_heat && in.indoor_c>=p.band.upper_c+0.3)
-        return fallback(MpcFallback::AboveComfortCeiling);
     BootstrapDecision d{};
     d.requested_room_c=p.target_c;
     d.price_data_valid=true;
@@ -214,6 +228,7 @@ inline const char* mpc_fallback_name(MpcFallback f) {
     case MpcFallback::AboveComfortCeiling:return "ABOVE_COMFORT_CEILING";
     case MpcFallback::ResourceLimit:return "RESOURCE_LIMIT";
     case MpcFallback::SyntheticModelOnly:return "SYNTHETIC_MODEL_ONLY";
+    case MpcFallback::ComfortLimitsInvalid:return "COMFORT_LIMITS_INVALID";
     }
     return "UNKNOWN";
 }

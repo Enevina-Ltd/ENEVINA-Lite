@@ -37,6 +37,7 @@
 #include "cottage/supervisor.hpp"
 #include "cottage/forecast_bridge.hpp"
 #include "cottage/building_identification.hpp"
+#include "cottage/model_persistence.hpp"
 #include "cottage/mpc_arbiter.hpp"
 #include "cottage/mpc_planner.hpp"
 #include "cottage/ruuvi.hpp"
@@ -194,6 +195,10 @@ static HorizonLimit horizon_limit=HorizonLimit::None;
 static uint32_t mpc_solve_ms=0,mpc_solve_worst_ms=0,mpc_solves=0,mpc_solver_failures=0;
 static uint32_t identifier_nvs_saves=0,identifier_nvs_failures=0,identifier_nvs_skipped=0;
 static bool identifier_restored=false;
+// Owner-requested model reset: 0 none, 1 requested (not yet processed), 2 persisted,
+// 3 the NVS erase/epoch write could not be verified (retried; never reported as done).
+static std::atomic<int> identifier_reset_state{0};
+static std::atomic<uint32_t> identifier_reset_failures{0};
 // Slot (UTC start) whose MPC decision the pump bridge confirmed by readback.
 // A plan decision is NEVER reported as executed before this confirmation.
 static std::atomic<int64_t> mpc_confirmed_slot_utc{0};
@@ -204,6 +209,11 @@ static std::atomic<int> mpc_confirmed_heat{-1};
 // it is shown as measured consumption but never used for COP or the MPC's
 // energy model.
 static bool shelly_meter_pump_only() {return false;}
+// The owner's HARD comfort limits (0 = unset). Main has no such setting yet:
+// the stacked optimisation-profile PR adds SiteSettings::comfort_min_c /
+// comfort_max_c and maps them here. The MPC band, the plan and its validity
+// are already bound to these limits (cottage/building_identification.cpp).
+static ComfortLimits owner_comfort_limits() {return ComfortLimits{};}
 
 // All cJSON nodes and serialized HTTP JSON are allocated in PSRAM.
 // Never fall back to scarce internal RAM on allocation failure.
@@ -726,6 +736,7 @@ static ArbiterInput build_arbiter_input(int64_t now,const TemperatureSample& t) 
     in.bootstrap=bootstrap_preview(now,t);
     in.config_generation=c23_config_generation();
     in.settings_generation=site_settings_generation();
+    in.limits=owner_comfort_limits();
     xSemaphoreTake(lock_data,portMAX_DELAY);
     const CN105Telemetry cp=pump;
     const unsigned minutes=observed_mode_duration.minutes(cp.mode,
@@ -1307,12 +1318,49 @@ static ModelStore identifier_store(const BuildingIdentifier& id,uint32_t identit
     heap_caps_free(buf);
     return ok?ModelStore::Stored:ModelStore::Failed;
 }
-static void identifier_erase() {
-    nvs_handle_t handle=0;
-    if(nvs_open("cottage_mdl",NVS_READWRITE,&handle)!=ESP_OK) return;
-    if(nvs_erase_key(handle,"rls1")==ESP_OK) nvs_commit(handle);
-    nvs_close(handle);
-}
+// NVS side of the verifiable model reset (cottage/model_persistence.hpp):
+// the learned model is bound to a persistent "reset epoch" so that a failed
+// erase can never bring the old calibration back after a reboot.
+struct NvsModelStore {
+    EpochRead read_epoch(uint32_t& out) {
+        nvs_handle_t handle=0;
+        esp_err_t err=nvs_open("cottage_mdl",NVS_READONLY,&handle);
+        if(err==ESP_ERR_NVS_NOT_FOUND) return EpochRead::Missing;   // namespace never created
+        if(err!=ESP_OK) return EpochRead::Error;
+        uint32_t value=0;
+        err=nvs_get_u32(handle,"epoch",&value);
+        nvs_close(handle);
+        if(err==ESP_OK) {out=value;return EpochRead::Ok;}
+        return err==ESP_ERR_NVS_NOT_FOUND?EpochRead::Missing:EpochRead::Error;
+    }
+    bool write_epoch(uint32_t value) {
+        nvs_handle_t handle=0;
+        if(nvs_open("cottage_mdl",NVS_READWRITE,&handle)!=ESP_OK) return false;
+        esp_err_t err=nvs_set_u32(handle,"epoch",value);
+        if(err==ESP_OK) err=nvs_commit(handle);
+        nvs_close(handle);
+        return err==ESP_OK;
+    }
+    bool erase_model() {
+        nvs_handle_t handle=0;
+        if(nvs_open("cottage_mdl",NVS_READWRITE,&handle)!=ESP_OK) return false;
+        esp_err_t err=nvs_erase_key(handle,"rls1");
+        bool ok=err==ESP_OK || err==ESP_ERR_NVS_NOT_FOUND;
+        if(err==ESP_OK) ok=nvs_commit(handle)==ESP_OK;
+        nvs_close(handle);
+        return ok;
+    }
+    bool model_present() {                    // true unless verified absent
+        nvs_handle_t handle=0;
+        esp_err_t err=nvs_open("cottage_mdl",NVS_READONLY,&handle);
+        if(err==ESP_ERR_NVS_NOT_FOUND) return false;
+        if(err!=ESP_OK) return true;
+        size_t n=0;
+        err=nvs_get_blob(handle,"rls1",nullptr,&n);
+        nvs_close(handle);
+        return err!=ESP_ERR_NVS_NOT_FOUND;
+    }
+};
 // Outdoor temperature for the slot starting at `utc` from the cached MET
 // Norway hourly points (as-of value; no outdoor sensor exists).
 static bool weather_at(const enevina::OutdoorPoint* w,size_t n,int64_t utc,double& out) {
@@ -1355,7 +1403,15 @@ static void optimizer_worker(void*) {
     if(hz) new(hz) HorizonResult();
     if(rows) for(size_t i=0;i<max_horizon_slots;++i) new(rows+i) PlanRow();
     uint32_t identity=identifier_identity();
-    const bool restored=id && identifier_load(*id,identity);
+    // The stored model is bound to site identity AND the persistent reset
+    // epoch; an unreadable epoch means the blob may be a reset-away model.
+    uint32_t model_epoch=0;
+    NvsModelStore model_store;
+    bool epoch_known=load_model_epoch(model_store,model_epoch);
+    const bool restored=id && epoch_known &&
+        identifier_load(*id,model_store_identity(identity,model_epoch));
+    bool reset_unpersisted=false,reset_by_owner=false;
+    uint32_t last_reset_retry_ms=0;
     if(id) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
         identifier=id;mpc_rows=rows;mpc_trend=trend;identifier_restored=restored;
@@ -1370,22 +1426,46 @@ static void optimizer_worker(void*) {
         const int64_t now=time(nullptr);
         const int64_t slot_start=(now/900)*900;
         bool boundary=false;
-        if(wifi_ok.load() && clock_ok() && prices && weather && aligned && hz && rows &&
-           legacy && trend && id) {
-            // Pump identity/site change or explicit reset: start learning anew.
+        if(id) {
+            // Pump/site/sensor identity change or an explicit owner reset:
+            // start learning anew. The RAM model is reset at once; the NVS
+            // reset is verified (blob gone or epoch advanced) and, if it
+            // cannot be, retried and REPORTED as not persisted - the owner is
+            // never told a reset is permanent while the old calibration could
+            // still come back after a reboot (Codex P2, PR #63).
             const uint32_t current_identity=identifier_identity();
-            if(identifier_reset_requested.exchange(false) || current_identity!=identity) {
+            const bool owner_reset=identifier_reset_requested.exchange(false);
+            if(owner_reset || current_identity!=identity) {
                 identity=current_identity;
                 id->reset();
-                identifier_erase();
+                if(!epoch_known) epoch_known=load_model_epoch(model_store,model_epoch);
+                reset_unpersisted=persist_model_reset(model_store,model_epoch)!=
+                    ModelResetResult::Persisted;
+                epoch_known=true;                  // persist_model_reset follows NVS
                 slot=LearningSlot{};
                 saved_revision=0;
+                boundaries_since_save=0;
+                reset_by_owner=owner_reset;
+                if(owner_reset) identifier_reset_state.store(reset_unpersisted?3:2);
+                if(reset_unpersisted) identifier_reset_failures.fetch_add(1);
+                last_reset_retry_ms=millis();
                 xSemaphoreTake(lock_data,portMAX_DELAY);
                 identifier_restored=false;
                 mpc_plan=MpcPlanRecord{};
+                plan_count=0;
+                last_plan.status=MpcStatus::InvalidInput;
                 calibration_snapshot=id->report(now);
                 xSemaphoreGive(lock_data);
+            } else if(reset_unpersisted &&
+                      static_cast<uint32_t>(millis()-last_reset_retry_ms)>=60000u) {
+                last_reset_retry_ms=millis();
+                reset_unpersisted=persist_model_reset(model_store,model_epoch)!=
+                    ModelResetResult::Persisted;
+                if(reset_by_owner) identifier_reset_state.store(reset_unpersisted?3:2);
             }
+        }
+        if(wifi_ok.load() && clock_ok() && prices && weather && aligned && hz && rows &&
+           legacy && trend && id) {
             // A fresh indoor measurement is not a forecast for an entire
             // unfinished quarter-hour: learn and plan only at the boundary.
             boundary=(now-slot_start)<=60 && slot_start!=last_boundary;
@@ -1437,7 +1517,10 @@ static void optimizer_worker(void*) {
             const uint32_t revision=id->report(now).revision;
             if(++boundaries_since_save>=24 && revision!=saved_revision) {
                 boundaries_since_save=0;
-                const ModelStore stored=identifier_store(*id,identity);
+                if(!epoch_known) epoch_known=load_model_epoch(model_store,model_epoch);
+                const ModelStore stored=epoch_known?
+                    identifier_store(*id,model_store_identity(identity,model_epoch)):
+                    ModelStore::Failed;
                 if(stored==ModelStore::Stored) saved_revision=revision;
                 xSemaphoreTake(lock_data,portMAX_DELAY);
                 if(stored==ModelStore::Stored) identifier_nvs_saves++;
@@ -1469,6 +1552,7 @@ static void optimizer_worker(void*) {
             pi.mode_generation=optimizer_mode_generation;
             pi.config_generation=c23_config_generation();
             pi.settings_generation=site_settings_generation();
+            pi.limits=owner_comfort_limits();
             pi.controls.runtime_budget_ms=1800;
             pi.controls.monotonic_now_ms=cottage_now_ms;
             pi.controls.cancel_requested=cottage_cancel;
@@ -1967,6 +2051,8 @@ static void mpc_endpoint() {
                    failures=mpc_solver_failures,saves=identifier_nvs_saves,
                    save_failures=identifier_nvs_failures,save_skips=identifier_nvs_skipped;
     const bool restored=identifier_restored;
+    const int reset_state=identifier_reset_state.load();
+    const uint32_t reset_failures=identifier_reset_failures.load();
     const ShellyTelemetry meter=consumption;
     const CN105Telemetry cp=pump;
     xSemaphoreGive(lock_data);
@@ -1992,14 +2078,17 @@ static void mpc_endpoint() {
         "\"calibration\":{\"state\":\"%s\",\"block\":\"%s\",\"samples\":%u,\"heating_slots\":%u,"
         "\"off_slots\":%u,\"starts\":%u,\"stops\":%u,\"skipped\":%u,\"outliers\":%u,"
         "\"windows\":%u,\"windows_with_switch\":%u,\"windows_needed\":%u,\"restored\":%s,"
-        "\"nvs_saves\":%u,\"nvs_failures\":%u,\"nvs_skipped_low_space\":%u,",
+        "\"nvs_saves\":%u,\"nvs_failures\":%u,\"nvs_skipped_low_space\":%u,"
+        "\"reset_state\":\"%s\",\"reset_failures\":%u,",
         static_cast<long long>(now),mpc_run_state_name(arb.mpc_state),
         mpc_fallback_name(arb.fallback),proposal_source_name(arb.source),
         control_armed.load()?"true":"false",confirmed?"true":"false",
         pump_verified?"true":"false",calibration_state_name(cal.state),calibration_block_name(cal.block),cal.samples,
         cal.heating_slots,cal.off_slots,cal.starts,cal.stops,cal.skipped,cal.outliers,
         cal.windows,cal.windows_with_switch,CalibrationLimits::windows_needed,
-        restored?"true":"false",saves,save_failures,save_skips);
+        restored?"true":"false",saves,save_failures,save_skips,
+        reset_state==1?"REQUESTED":reset_state==2?"PERSISTED":
+        reset_state==3?"PERSIST_FAILED":"NONE",reset_failures);
     web.sendContent(buf);
     const bool have_model=cal.samples>0 && m.tau_h>0;
     char a[24],b[24],c[24],d[24],e[24],f[24],g[24],h[24];
@@ -2053,13 +2142,14 @@ static void mpc_endpoint() {
     json_number_or_null(a,sizeof(a),energy_kwh,"%.4f",energy_ok);
     json_number_or_null(b,sizeof(b),cost,"%.4f",energy_ok);
     snprintf(buf,sizeof(buf),
-        "\"plan\":{\"valid\":%s,\"computed_utc\":%lld,\"first_utc\":%lld,\"first_heat\":%s,"
+        "\"plan\":{\"valid\":%s,\"had_plan\":%s,\"computed_utc\":%lld,\"first_utc\":%lld,\"first_heat\":%s,"
         "\"planning_fallback\":\"%s\",\"plan_block\":\"%s\",\"bridge_status\":\"%s\",\"horizon_slots\":%u,"
         "\"horizon_limit\":\"%s\",\"price_slots\":%u,\"weather_slots\":%u,"
         "\"target_c\":%.2f,\"lower_c\":%.2f,\"upper_c\":%.2f,\"energy_valid\":%s,"
         "\"energy_kwh\":%s,\"cost\":%s,\"currency\":\"%s\",\"solve_ms\":%u,"
         "\"solve_worst_ms\":%u,\"solves\":%u,\"solver_failures\":%u,\"slots\":[",
-        plan_ok?"true":"false",static_cast<long long>(plan.computed_utc),
+        plan_ok?"true":"false",plan.has_plan?"true":"false",
+        static_cast<long long>(plan.computed_utc),
         static_cast<long long>(plan.first_utc),plan_ok&&plan.first_heat?"true":"false",
         mpc_fallback_name(plan.planning_fallback),mpc_fallback_name(validity),
         bridge_status_name(bs),
@@ -2295,8 +2385,11 @@ void setup() {
             web.send(403,"application/json","{\"queued\":false}");
             return;
         }
+        identifier_reset_state.store(1);
         identifier_reset_requested.store(true);
-        web.send(202,"application/json","{\"queued\":true}");
+        // Queued, NOT done: whether the reset reached flash is reported by
+        // /api/mpc (calibration.reset_state) once the optimizer task has verified it.
+        web.send(202,"application/json","{\"queued\":true,\"persisted\":false}");
     });
     web.on("/api/prices",HTTP_GET,[](){
         if(cottage_wifi_require_home_lan(web))prices_endpoint();

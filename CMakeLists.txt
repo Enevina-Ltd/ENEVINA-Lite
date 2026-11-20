@@ -331,7 +331,7 @@ add_test(NAME geocode_tests COMMAND geocode_tests)
 # Live MPC chain: automatic building identification (RLS + walk-forward
 # validation), receding-horizon bridge, MPC -> price -> thermostat arbiter,
 # and the closed-loop comparison harness (SIMULATION, host only).
-foreach(t cottage_identification_tests cottage_mpc_control_tests cottage_closed_loop_tests)
+foreach(t cottage_identification_tests cottage_mpc_control_tests cottage_closed_loop_tests cottage_model_persistence_tests)
   add_executable(${t} tests/${t}.cpp)
   target_link_libraries(${t} PRIVATE enevina_cottage enevina_core)
   if(MSVC)

@@ -104,6 +104,43 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("plan_validity(arb_in)", mpc)
         self.assertIn("validity==MpcFallback::None", mpc)
 
+    def test_model_reset_is_verified_and_never_claimed_early(self):
+        # Codex P2 (PR #63): an NVS failure must not let the old calibration
+        # return after a reboot, and the owner is never told it is permanent.
+        self.assertNotIn("identifier_erase", MAIN)
+        self.assertIn("persist_model_reset(model_store,model_epoch)", WORKER)
+        self.assertIn("load_model_epoch(model_store,model_epoch)", WORKER)
+        self.assertIn("model_store_identity(identity,model_epoch)", WORKER)
+        # Restoring needs a known epoch; saving never uses an unknown one.
+        self.assertIn("epoch_known &&", WORKER)
+        self.assertIn("ModelStore::Failed", WORKER)
+        reset = MAIN.split('web.on("/api/model/reset",HTTP_POST', 1)[1].split("});", 1)[0]
+        self.assertIn('\\"persisted\\":false', reset)
+        self.assertNotIn('\\"persisted\\":true', reset)
+        # A failed persist is retried and surfaced in /api/mpc.
+        self.assertIn("reset_unpersisted=persist_model_reset", WORKER)
+        self.assertIn("identifier_reset_state.store(reset_unpersisted?3:2);", WORKER)
+        self.assertIn('\\"reset_state\\":\\"%s\\"', MAIN)
+        # The adapter verifies instead of trusting the erase call.
+        store = MAIN.split("struct NvsModelStore {", 1)[1].split("\n};\n", 1)[0]
+        self.assertIn('nvs_erase_key(handle,"rls1")', store)
+        self.assertIn("nvs_commit(handle)", store)
+        self.assertIn("nvs_get_blob(handle,\"rls1\",nullptr,&n)", store)
+        self.assertIn("nvs_set_u32(handle,\"epoch\",value)", store)
+        # The existing local setting token guard is unchanged: no new auth.
+        self.assertIn('c23_authorize_local_setting(web.arg("token").c_str())', reset)
+        self.assertNotIn("password", reset.lower())
+        self.assertNotIn("pin", reset.lower().replace("pinned", ""))
+
+    def test_owner_comfort_limits_reach_planner_and_controller(self):
+        arb = MAIN.split("static ArbiterInput build_arbiter_input(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("in.limits=owner_comfort_limits();", arb)
+        self.assertIn("pi.limits=owner_comfort_limits();", WORKER)
+        self.assertIn("static ComfortLimits owner_comfort_limits()", MAIN)
+        self.assertIn("mpc_comfort_band(p.target_c,band,in.limits)", ARB)
+        self.assertNotIn("p.band.lower_c-0.2", ARB)       # no tolerance beyond the limit
+        self.assertNotIn("p.band.upper_c+0.3", ARB)
+
     def test_meter_scope_rule_on_main(self):
         self.assertIn("static bool shelly_meter_pump_only() {return false;}", MAIN)
         self.assertIn("o.meter_pump_only=shelly_meter_pump_only();", WORKER)

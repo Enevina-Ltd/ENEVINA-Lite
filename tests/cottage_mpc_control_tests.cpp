@@ -373,9 +373,231 @@ void test_afterheat_is_consistent() {
     p.stop_afterheat_kwh=2.5;CHECK(!valid(p));
     p.stop_afterheat_kwh=-0.1;CHECK(!valid(p));
 }
+// --- Codex round 3 (PR #63) ---------------------------------------------
+void test_plan_survives_only_its_own_single_transition() {
+    // Plan: pump OFF at planning time, first decision HEAT, generation 10.
+    const auto mk=[]() {
+        auto in=base_input();
+        in.plan.mode_generation=10;in.mode_generation=10;
+        return in;
+    };
+    {   auto in=mk();                                   // nothing changed
+        CHECK(plan_validity(in)==MpcFallback::None);
+        CHECK(arbitrate(in).source==ProposalSource::Mpc); }
+    {   auto in=mk();in.mode_generation=11;in.pump_heat=true;
+        in.own_transition_confirmed=true;              // exactly one, confirmed
+        CHECK(plan_validity(in)==MpcFallback::None); }
+    {   auto in=mk();in.mode_generation=11;in.pump_heat=true;
+        in.own_transition_confirmed=false;             // no readback confirmation
+        CHECK(plan_validity(in)==MpcFallback::PlanInputsChanged); }
+    // Two or more extra changes in the same 15-minute slot: HEAT->OFF->HEAT
+    // after the own OFF->HEAT is 10 -> 13 and must re-plan, whatever the
+    // final state or confirmation flag says.
+    for(uint32_t gen:{12u,13u,14u}) {
+        for(bool heat:{false,true}) {
+            auto in=mk();in.mode_generation=gen;in.pump_heat=heat;
+            in.own_transition_confirmed=true;
+            CHECK(plan_validity(in)==MpcFallback::PlanInputsChanged);
+            CHECK(arbitrate(in).source==ProposalSource::PriceControl);
+        }
+    }
+    {   // Manual / remote change that returns the pump to its ORIGINAL state:
+        // OFF -> HEAT -> OFF is two increments and ends where the plan began.
+        auto in=mk();in.mode_generation=12;in.pump_heat=false;
+        CHECK(plan_validity(in)==MpcFallback::PlanInputsChanged);
+        in.own_transition_confirmed=true;
+        CHECK(plan_validity(in)==MpcFallback::PlanInputsChanged); }
+    {   // One increment, pump back in the original state: not the plan's
+        // transition (the verified state is not the planned one).
+        auto in=mk();in.mode_generation=11;in.pump_heat=false;
+        in.own_transition_confirmed=true;
+        CHECK(plan_validity(in)==MpcFallback::PlanInputsChanged); }
+    {   // Pump measurement lost: no plan. It recovers with a source gap, which
+        // advances the generation without a confirmed transition: re-plan.
+        auto in=mk();in.pump_state_known=false;
+        CHECK(plan_validity(in)==MpcFallback::PumpStateUnknown);
+        in.pump_state_known=true;in.mode_generation=11;in.pump_heat=false;
+        CHECK(plan_validity(in)==MpcFallback::PlanInputsChanged);
+        // Gap and the own transition in one slot: 10 -> 12 re-plans.
+        in.mode_generation=12;in.pump_heat=true;in.own_transition_confirmed=true;
+        CHECK(plan_validity(in)==MpcFallback::PlanInputsChanged); }
+    {   // 32-bit generation wrap-around: exactly one increment still counts.
+        auto in=mk();in.plan.mode_generation=0xFFFFFFFFu;in.mode_generation=0;
+        in.pump_heat=true;in.own_transition_confirmed=true;
+        CHECK(plan_validity(in)==MpcFallback::None);
+        in.mode_generation=1;
+        CHECK(plan_validity(in)==MpcFallback::PlanInputsChanged); }
+    {   // The plan expected no mode change: any increment is foreign.
+        auto in=mk();in.plan=good_plan(false);in.plan.mode_generation=10;
+        in.mode_generation=11;in.own_transition_confirmed=true;
+        CHECK(plan_validity(in)==MpcFallback::PlanInputsChanged);
+        in.mode_generation=10;
+        CHECK(plan_validity(in)==MpcFallback::None); }
+}
+
+void test_dashboard_validity_equals_controller_decision() {
+    // plan_validity() is what /api/plan and /api/mpc show; arbitrate() is
+    // what the controller acts on. They must agree on EVERY input.
+    const CalibrationState calibs[]={CalibrationState::Calibrated,CalibrationState::Learning,
+        CalibrationState::Validating,CalibrationState::Degraded};
+    const ComfortLimits limits[]={{0,0},{11.0,13.5},{12.5,13.5},{13.0,13.5},{11.0,12.0},{4.0,0}};
+    unsigned combos=0,valid_count=0;
+    for(CalibrationState cal:calibs)
+    for(bool fresh:{true,false})
+    for(bool known:{true,false})
+    for(uint32_t delta:{0u,1u,2u})
+    for(bool conf:{true,false})
+    for(bool pump_heat:{true,false})
+    for(bool first_heat:{true,false})
+    for(double indoor:{10.9,11.5,12.0,13.0,13.4,13.6,double(NAN)})
+    for(const ComfortLimits& lim:limits)
+    for(int stale:{0,1}) {
+        auto in=base_input();
+        in.calibration=cal;in.calibrated=cal==CalibrationState::Calibrated;
+        in.temperature_fresh=fresh;in.pump_state_known=known;
+        in.plan=good_plan(first_heat);in.plan.mode_generation=5;
+        in.mode_generation=5+delta;in.own_transition_confirmed=conf;
+        in.pump_heat=pump_heat;in.indoor_c=indoor;in.limits=lim;
+        in.plan.limits=ComfortLimits{};   // plan built without limits
+        if(stale) in.now_utc=now0+900;
+        const MpcFallback v=plan_validity(in);
+        const ArbiterOutput o=arbitrate(in);
+        ++combos;
+        CHECK((v==MpcFallback::None)==(o.source==ProposalSource::Mpc));
+        CHECK(o.fallback==v);
+        if(v==MpcFallback::None) ++valid_count;
+    }
+    CHECK(combos>20000 && valid_count>0 && valid_count<combos);
+    // The example from the review: stale indoor measurement is rejected by
+    // BOTH, with the real reason, and the MPC proposal is not used.
+    auto in=base_input();in.temperature_fresh=false;
+    CHECK(plan_validity(in)==MpcFallback::TemperatureStale);
+    const auto o=arbitrate(in);
+    CHECK(o.fallback==MpcFallback::TemperatureStale && o.source==ProposalSource::PriceControl);
+    in=base_input();in.indoor_c=NAN;
+    CHECK(plan_validity(in)==MpcFallback::TemperatureStale);
+    // Not calibrated -> the calibration reason, never "valid".
+    in=base_input();in.calibrated=false;in.calibration=CalibrationState::Degraded;
+    CHECK(plan_validity(in)==MpcFallback::ModelDegraded);
+}
+
+void test_user_comfort_limits_are_hard() {
+    ComfortBand b{};
+    // Review example: target 13, owner min 12.0 / max 13.5.
+    CHECK(mpc_comfort_band(13.0,b,ComfortLimits{12.0,13.5}));
+    CHECK(std::fabs(b.lower_c-12.5)<1e-9);        // MPC default is tighter below
+    CHECK(std::fabs(b.upper_c-13.5)<1e-9);        // owner max is tighter above 14.0
+    CHECK(mpc_comfort_band(13.0,b) && std::fabs(b.upper_c-14.0)<1e-9);
+    // Max lower than the default maximum; only min; only max; unset.
+    CHECK(mpc_comfort_band(13.0,b,ComfortLimits{0,13.5}) && std::fabs(b.upper_c-13.5)<1e-9);
+    CHECK(mpc_comfort_band(13.0,b,ComfortLimits{12.0,0}) && std::fabs(b.lower_c-12.5)<1e-9);
+    CHECK(mpc_comfort_band(13.0,b,ComfortLimits{0,0}) && std::fabs(b.upper_c-14.0)<1e-9);
+    // Exactly on the thermostat margin (target -/+ 0.5) is allowed.
+    CHECK(mpc_comfort_band(13.0,b,ComfortLimits{12.5,13.5}));
+    CHECK(std::fabs(b.lower_c-12.5)<1e-9 && std::fabs(b.upper_c-13.5)<1e-9);
+    // A wider owner limit never loosens the MPC band (it stays inside it).
+    CHECK(mpc_comfort_band(13.0,b,ComfortLimits{8.0,20.0}));
+    CHECK(std::fabs(b.lower_c-12.5)<1e-9 && std::fabs(b.upper_c-14.0)<1e-9);
+    // Owner minimum higher than the MPC default minimum: target 13.2 gives a
+    // default floor of 12.7; the owner's 12.5 is looser, so 12.7 stays.
+    CHECK(mpc_comfort_band(13.2,b,ComfortLimits{12.5,0}) && std::fabs(b.lower_c-12.7)<1e-9);
+    // Minimum above target - 0.5 contradicts the thermostat deadband: invalid.
+    CHECK(!mpc_comfort_band(13.0,b,ComfortLimits{13.0,0}));
+    CHECK(!mpc_comfort_band(13.0,b,ComfortLimits{14.0,0}));
+    CHECK(!mpc_comfort_band(13.0,b,ComfortLimits{0,13.0}));   // max at/below target
+    CHECK(!mpc_comfort_band(13.0,b,ComfortLimits{0,12.0}));
+    // Malformed / contradictory limits.
+    CHECK(!mpc_comfort_band(13.0,b,ComfortLimits{14.0,12.0}));   // min > max
+    CHECK(!mpc_comfort_band(13.0,b,ComfortLimits{12.5,13.0}));   // < 1 C apart
+    CHECK(!mpc_comfort_band(13.0,b,ComfortLimits{NAN,13.5}));
+    CHECK(!mpc_comfort_band(13.0,b,ComfortLimits{12.0,INFINITY}));
+    CHECK(!mpc_comfort_band(13.0,b,ComfortLimits{-1.0,13.5}));
+    CHECK(!mpc_comfort_band(13.0,b,ComfortLimits{4.0,0}));       // below 5 C
+    CHECK(!mpc_comfort_band(13.0,b,ComfortLimits{0,27.0}));      // above 26 C
+    CHECK(!mpc_comfort_band(13.0,b,ComfortLimits{12.3,0}));      // off the 0.5 C grid
+    CHECK(b.upper_c==0 && b.lower_c==0);                          // out stays cleared
+    // Everything held to the same rules the settings validator enforces.
+    CHECK(valid_comfort_limits_for_mpc(ComfortLimits{}));
+    CHECK(valid_comfort_limits_for_mpc(ComfortLimits{12.0,13.5}));
+    CHECK(!valid_comfort_limits_for_mpc(ComfortLimits{12.0,12.5}));
+
+    // The planner: predicted room temperature over the WHOLE horizon stays
+    // inside the owner's limits, and invalid limits give a controlled fallback.
+    const BuildingIdentifier id=trained();
+    auto d=make(now0,192,64);
+    for(auto& w:d.weather) w.temperature_c=-3.0;
+    // Cheap-then-expensive prices invite pre-heating up to the ceiling.
+    for(size_t i=0;i<d.prices.size();++i) d.prices[i].eur_per_kwh=(i%48)<16?0.02:0.30;
+    const auto plan_with=[&](const ComfortLimits& lim,std::vector<PlanRow>& rows,PlannerOutput& out) {
+        auto hz=join(d,now0,now0-600,now0-600);
+        auto pi=planner_input(id,hz,now0);
+        pi.target_c=13.0;pi.indoor_c=13.0;pi.limits=lim;
+        rows.assign(max_horizon_slots,PlanRow{});
+        out=plan_mpc(pi,rows.data());
+    };
+    std::vector<PlanRow> rows;PlannerOutput out;
+    plan_with(ComfortLimits{12.0,13.5},rows,out);
+    CHECK(out.record.has_plan && out.rows>=32);
+    CHECK(std::fabs(out.record.band.upper_c-13.5)<1e-9 && out.record.limits==(ComfortLimits{12.0,13.5}));
+    double lo=1e9,hi=-1e9;
+    for(size_t i=0;i<out.rows;++i) {lo=std::min(lo,rows[i].indoor_c);hi=std::max(hi,rows[i].indoor_c);}
+    CHECK(hi<=13.5+1e-6);                         // owner's maximum, whole horizon
+    CHECK(lo>=12.5-1e-6);                         // and never below the floor
+    std::vector<PlanRow> rows_default;PlannerOutput out_default;
+    plan_with(ComfortLimits{},rows_default,out_default);
+    CHECK(out_default.record.has_plan && std::fabs(out_default.record.band.upper_c-14.0)<1e-9);
+    plan_with(ComfortLimits{14.0,12.0},rows,out);
+    CHECK(!out.record.has_plan && out.record.planning_fallback==MpcFallback::ComfortLimitsInvalid);
+    plan_with(ComfortLimits{13.0,0},rows,out);
+    CHECK(!out.record.has_plan && out.record.planning_fallback==MpcFallback::ComfortLimitsInvalid);
+    {   // A target outside the HEAT 16 C model keeps its own reason.
+        auto hz=join(d,now0,now0-600,now0-600);
+        auto pi=planner_input(id,hz,now0);pi.target_c=21.0;pi.limits=ComfortLimits{20.0,22.0};
+        CHECK(plan_mpc(pi,nullptr).record.planning_fallback==MpcFallback::TargetOutsideModel); }
+
+    // The arbiter: limits changed mid-plan revoke it; invalid limits fall back
+    // to the price controller (then the thermostat); the owner's edge is exact.
+    const auto armed=[&]() {
+        auto in=base_input();
+        in.plan.target_c=13.0;in.bootstrap.requested_room_c=13.0;
+        in.limits=ComfortLimits{12.0,13.5};
+        in.plan.limits=in.limits;
+        mpc_comfort_band(13.0,in.plan.band,in.limits);
+        in.indoor_c=13.0;
+        return in;
+    };
+    {   auto in=armed();
+        CHECK(plan_validity(in)==MpcFallback::None);
+        in.limits=ComfortLimits{12.0,14.0};          // owner relaxed the max
+        CHECK(plan_validity(in)==MpcFallback::PlanInputsChanged);
+        in.limits=ComfortLimits{12.5,13.5};          // owner tightened the min
+        CHECK(plan_validity(in)==MpcFallback::PlanInputsChanged);
+        in.limits=ComfortLimits{};                   // owner cleared them
+        CHECK(plan_validity(in)==MpcFallback::PlanInputsChanged); }
+    {   auto in=armed();in.limits=ComfortLimits{13.0,13.5};   // contradictory now
+        const auto o=arbitrate(in);
+        CHECK(o.fallback==MpcFallback::ComfortLimitsInvalid);
+        CHECK(o.source==ProposalSource::PriceControl);
+        CHECK(o.proposal.action==in.bootstrap.action);       // existing controller's decision
+        in.bootstrap.price_data_valid=false;                  // prices gone: thermostat
+        CHECK(arbitrate(in).source==ProposalSource::Thermostat); }
+    {   auto in=armed();in.indoor_c=13.5;                // exactly at the owner's max
+        CHECK(plan_validity(in)==MpcFallback::AboveComfortCeiling);   // heat is refused
+        in.indoor_c=13.49;
+        CHECK(plan_validity(in)==MpcFallback::None);
+        in.plan=good_plan(false);in.plan.target_c=13.0;in.plan.limits=in.limits;
+        mpc_comfort_band(13.0,in.plan.band,in.limits);
+        in.indoor_c=12.5;                                  // exactly at the floor, OFF planned
+        CHECK(plan_validity(in)==MpcFallback::BelowComfortFloor);
+        in.indoor_c=12.51;
+        CHECK(plan_validity(in)==MpcFallback::None); }
+}
 } // namespace
 
 int main() {
+    test_plan_survives_only_its_own_single_transition();
+    test_dashboard_validity_equals_controller_decision();
+    test_user_comfort_limits_are_hard();
     test_horizon_full_and_partial();
     test_horizon_stale_and_clock();
     test_horizon_negative_and_dst();

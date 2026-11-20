@@ -106,13 +106,33 @@ const char* calibration_block_name(CalibrationBlock b) {
     return "UNKNOWN";
 }
 
-bool mpc_comfort_band(double target_c,ComfortBand& out) {
+bool valid_comfort_limits_for_mpc(const ComfortLimits& l) {
+    const auto ok=[](double v){
+        return v==0 || (id_finite(v) && v>=5.0 && v<=26.0 &&
+                        std::fabs(v*2.0-std::round(v*2.0))<1e-9);
+    };
+    if(!ok(l.min_c) || !ok(l.max_c)) return false;
+    return l.min_c==0 || l.max_c==0 || l.max_c-l.min_c>=1.0;
+}
+
+bool mpc_comfort_band(double target_c,ComfortBand& out,const ComfortLimits& limits) {
     out=ComfortBand{};
-    if(!id_finite(target_c)) return false;
+    if(!id_finite(target_c) || !valid_comfort_limits_for_mpc(limits)) return false;
     // Same lower edge as the thermostat/price controller (target - 0.5).
     // HEAT 16 C / OFF physics are only valid up to 15.8 C indoors.
-    const double lower=std::max(5.0,target_c-0.5);
-    const double upper=std::min(15.8,target_c+1.0);
+    double lower=std::max(5.0,target_c-0.5);
+    double upper=std::min(15.8,target_c+1.0);
+    // The owner's limits are HARD: they can only tighten the band. A limit
+    // that is not at least 0.5 C beyond the target on its own side (the
+    // thermostat deadband) is contradictory, not a limit to be ignored.
+    if(limits.min_c>0) {
+        if(limits.min_c>target_c-0.5+1e-9) return false;
+        lower=std::max(lower,limits.min_c);
+    }
+    if(limits.max_c>0) {
+        if(limits.max_c<target_c+0.5-1e-9) return false;
+        upper=std::min(upper,limits.max_c);
+    }
     if(target_c<5.0 || upper-lower<0.8) return false;
     out.target_c=target_c;out.lower_c=lower;out.upper_c=upper;
     return true;
@@ -203,7 +223,8 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
     const bool heat=o.heat_valid && o.heat_requested;
     const bool start=contiguous && o.heat_valid && heat && prev_heat_==0;
     const bool stop=contiguous && o.heat_valid && !heat && prev_heat_==1;
-    const bool thermal_ok=contiguous && o.heat_valid && o.indoor_valid &&
+    // Does THIS slot, taken alone, qualify for the HEAT 16 C / OFF fit?
+    const bool slot_ok=o.heat_valid && o.indoor_valid &&
         o.outdoor_valid && o.in_model_domain &&
         id_finite(o.indoor_start_c) && id_finite(o.indoor_end_c) && id_finite(o.outdoor_c) &&
         o.indoor_start_c>-10 && o.indoor_start_c<40 &&
@@ -212,9 +233,15 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
         std::fabs(o.indoor_end_c-o.indoor_start_c)<3.0 &&
         // The pump's own 16 C thermostat throttles above ~15.5 C indoors.
         !(heat && o.indoor_start_c>15.3);
+    const bool thermal_ok=contiguous && slot_ok;
     last_sample_utc_=o.slot_utc;
     prev_slot_utc_=o.slot_utc;
-    prev_heat_=o.heat_valid?(heat?1:0):-1;
+    // A start/stop is only ever inferred between two ACCEPTED slots: a slot
+    // the model rejected (HEAT above 16 C, missing indoor/outdoor/pump data,
+    // implausible step) breaks the chain, so the next slot is never counted
+    // as the stop/start of a heating run the model did not observe
+    // (Codex P2, PR #63). Learning resumes with the next accepted pair.
+    prev_heat_=slot_ok?(heat?1:0):-1;
     bool updated=false;
     if(thermal_ok) {
         const double to=o.outdoor_c,u=heat?1.0:0.0;

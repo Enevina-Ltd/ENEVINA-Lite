@@ -24,6 +24,7 @@ struct PlannerInput {
     bool heating_allowed=false;      // user mode permits heat
     bool target_valid=false;
     double target_c=0;
+    ComfortLimits limits{};          // owner's hard comfort limits (0 = unset)
     bool temperature_fresh=false;
     double indoor_c=0;
     bool pump_state_known=false;

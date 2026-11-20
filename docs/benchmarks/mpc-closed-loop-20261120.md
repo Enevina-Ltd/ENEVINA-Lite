@@ -26,7 +26,7 @@
 |  | calibrated_mpc | 7.155 | 7.094 | 49.95 | 12.43 | 11.55 | 0.00 | 20 | 243/288 (most: TEMPERATURE_STALE 24) |
 | weather_price_outage | thermostat | 7.360 | 7.370 | 47.53 | 11.93 | 11.20 | 0.26 | 20 | — |
 |  | lite_price | 6.990 | 7.004 | 47.79 | 11.90 | 11.28 | 0.15 | 25 | — |
-|  | calibrated_mpc | 6.888 | 6.849 | 48.69 | 12.28 | 11.38 | 0.01 | 26 | 190/288 (most: FORECAST_UNAVAILABLE 96), solver failures 1 {"INFEASIBLE":1} |
+|  | calibrated_mpc | 6.884 | 6.865 | 48.40 | 12.13 | 11.38 | 0.01 | 24 | 188/288 (most: FORECAST_UNAVAILABLE 96) |
 | wrong_initial_guess | thermostat | 7.763 | 7.830 | 49.74 | 11.51 | 11.30 | 0.16 | 20 | — |
 |  | lite_price | 7.329 | 7.287 | 50.59 | 12.31 | 11.29 | 0.12 | 25 | — |
 |  | calibrated_mpc | 7.234 | 7.177 | 51.52 | 12.42 | 11.48 | 0.00 | 24 | 285/288 (most: SOLVER_FAILED 2), solver failures 2 {"REPLAY_FAILED":2} |

@@ -122,9 +122,27 @@ struct ComfortBand {
     double lower_c=0;   // MPC comfort floor (before uncertainty margin)
     double upper_c=0;   // MPC maximum indoor temperature
 };
-// Comfort band used by the MPC for a room target; false when the target is
-// outside the HEAT 16 C / OFF model domain (e.g. occupied 21 C).
-bool mpc_comfort_band(double target_c, ComfortBand& out);
+// The owner's HARD room-temperature limits (0 = not set), exactly the
+// semantics of the optimisation-profile comfort_min_c / comfort_max_c: 5..26 C
+// in 0.5 C steps, both set at least 1 C apart. The MPC may be tighter than
+// these, never looser.
+struct ComfortLimits {
+    double min_c=0;
+    double max_c=0;
+};
+inline bool operator==(const ComfortLimits& a,const ComfortLimits& b) {
+    return a.min_c==b.min_c && a.max_c==b.max_c;
+}
+// Are the limits well formed (finite, in range, on a 0.5 C grid, >= 1 C apart)?
+bool valid_comfort_limits_for_mpc(const ComfortLimits& limits);
+// Comfort band used by the MPC for a room target and the owner's hard limits;
+// false when the target is outside the HEAT 16 C / OFF model domain (e.g.
+// occupied 21 C) OR the limits are malformed / cannot contain the target with
+// the thermostat's 0.5 C margin (the caller then falls back, never invents
+// other limits). lower = max(target - 0.5, owner min), upper =
+// min(target + 1.0, 15.8, owner max).
+bool mpc_comfort_band(double target_c, ComfortBand& out,
+                      const ComfortLimits& limits=ComfortLimits{});
 
 enum class ModelBuildError : uint8_t {
     None, NotCalibrated, Implausible, OutsideDomain, NumericalFailure

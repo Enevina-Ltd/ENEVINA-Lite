@@ -119,6 +119,41 @@ const active={...learning,state:'ACTIVE',fallback:'NONE',source:'MPC',armed:true
   // Fallback with a reason (degraded model).
   r=await run({...learning,state:'FALLBACK',fallback:'MODEL_DEGRADED'},'en');
   assert.ok(r.card.textContent.includes('Fallback: the model no longer predicts accurately enough'));
+  // Codex P2 (PR #63): a plan the controller rejected (stale indoor sensor)
+  // is never displayed as in force; the controller's real reason is shown and
+  // the old decisions, chart plan and "next decision" are gone.
+  const stale={...active,state:'FALLBACK',fallback:'TEMPERATURE_STALE',source:'PRICE_CONTROL',
+    plan:{...active.plan,valid:false,had_plan:true,plan_block:'TEMPERATURE_STALE',
+          planning_fallback:'NONE',slots:[]}};
+  r=await run(stale,'en');
+  text=r.card.textContent;
+  assert.ok(text.includes('Fallback: indoor temperature missing or stale'));
+  assert.ok(text.includes('The earlier plan is not being executed: indoor temperature missing or stale.'));
+  assert.ok(text.includes('There is no valid MPC plan for this quarter-hour.'));
+  assert.ok(!text.includes('Next decision') && text.split('MPC plan').length===2);   // only inside the "no valid MPC plan" notice
+  assert.ok(!text.includes('not yet confirmed') && !text.includes('confirmed by the pump'));
+  assert.ok(text.includes('Price control'));
+  r=await run(stale,'fi');
+  assert.ok(r.card.textContent.includes('Aiempi suunnitelma ei ole käytössä: sisälämpötila puuttuu tai on vanha.'));
+  // Even if a stale payload still carried slots, valid=false must hide them.
+  r=await run({...stale,plan:{...stale.plan,slots}},'en');
+  assert.ok(!r.card.textContent.includes('Next decision'));
+  assert.ok(!r.card.children.find(c=>c.tag==='svg')||
+    !JSON.stringify(r.card.children.find(c=>c.tag==='svg').children.map(c=>c.attrs.fill)).includes('var(--red)'));
+  // No plan was ever made (learning): do not claim an earlier plan existed.
+  r=await run(learning,'en');
+  assert.ok(!r.card.textContent.includes('earlier plan'));
+  // The owner's contradictory comfort limits are named, in both languages.
+  const limits={...learning,state:'FALLBACK',fallback:'COMFORT_LIMITS_INVALID',
+    plan:{...learning.plan,had_plan:false,plan_block:'COMFORT_LIMITS_INVALID'}};
+  r=await run(limits,'en');
+  assert.ok(r.card.textContent.includes('your temperature limits are contradictory or too close to the target'));
+  r=await run(limits,'fi');
+  assert.ok(r.card.textContent.includes('omat lämpötilarajat ovat ristiriitaiset tai liian lähellä tavoitetta'));
+  // Plan displayed only while the controller accepts it.
+  r=await run(active,'en');
+  assert.ok(r.card.textContent.includes('Next decision'));
+  assert.ok(!r.card.textContent.includes('earlier plan'));
   // Device error.
   r=await run({error:true},'fi');
   assert.ok(r.card.textContent.includes('MPC-tietoja ei saatu laitteelta.'));

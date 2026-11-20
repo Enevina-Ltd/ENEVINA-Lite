@@ -1535,6 +1535,7 @@ fi:{title:'Ennakoiva säätö (MPC)',active:'Käytössä',calibrating:'Kalibroid
  err:'MPC-tietoja ei saatu laitteelta.',sim:'Kaikki luvut ovat laitteen omia laskelmia; säästöjä ei väitetä.',
  limit_MAX_48H:'48 h',limit_PRICES_END:'hinnat loppuvat',limit_PRICE_GAP:'hinnoissa aukko',limit_BAD_PRICE:'hinta ei kelpaa',
  limit_WEATHER_END:'sääennuste loppuu',limit_WEATHER_GAP:'sääennusteessa aukko',limit_NONE:'—',
+ rejected:'Aiempi suunnitelma ei ole käytössä: ',
  unverified:'Pumpun tilaa ei ole lähdetodennettu (CN105-lukutodiste puuttuu): malli ei opi eikä MPC ohjaa, ennen kuin pumpun omat mittaukset ovat todennettuja.'},
 en:{title:'Predictive control (MPC)',active:'Active',calibrating:'Calibrating',fallback:'Fallback',
  source:'Control source now',MPC:'MPC plan',PRICE_CONTROL:'Price control',THERMOSTAT:'Thermostat',NONE:'No proposal',
@@ -1552,6 +1553,7 @@ en:{title:'Predictive control (MPC)',active:'Active',calibrating:'Calibrating',f
  err:'MPC data could not be read from the device.',sim:'All numbers are the device’s own calculations; no savings are claimed.',
  limit_MAX_48H:'48 h',limit_PRICES_END:'prices end',limit_PRICE_GAP:'gap in prices',limit_BAD_PRICE:'invalid price',
  limit_WEATHER_END:'weather forecast ends',limit_WEATHER_GAP:'gap in weather forecast',limit_NONE:'—',
+ rejected:'The earlier plan is not being executed: ',
  unverified:'The pump state is not source-verified (no CN105 read proof): the model does not learn and the MPC does not control until the pump’s own measurements are verified.'}};
 const WHY={
 fi:{NONE:'',MODEL_LEARNING:'malli oppii vielä mittauksista',MODEL_VALIDATING:'mallin ennusteita testataan',
@@ -1561,7 +1563,8 @@ fi:{NONE:'',MODEL_LEARNING:'malli oppii vielä mittauksista',MODEL_VALIDATING:'m
  PUMP_STATE_UNKNOWN:'pumpun tilaa ei ole luettu',TEMPERATURE_STALE:'sisälämpötila puuttuu tai on vanha',
  SOLVER_FAILED:'suunnitelmaa ei löytynyt rajoissa',SOLVER_TIMEOUT:'laskenta-aika ylittyi',PLAN_STALE:'suunnitelma on vanhentunut',
  PLAN_INPUTS_CHANGED:'tila tai asetukset muuttuivat',BELOW_COMFORT_FLOOR:'huone on mukavuusalueen alapuolella',
- ABOVE_COMFORT_CEILING:'huone on mukavuusalueen yläpuolella',RESOURCE_LIMIT:'muistiraja',SYNTHETIC_MODEL_ONLY:'vain testimalli'},
+ ABOVE_COMFORT_CEILING:'huone on mukavuusalueen yläpuolella',RESOURCE_LIMIT:'muistiraja',SYNTHETIC_MODEL_ONLY:'vain testimalli',
+ COMFORT_LIMITS_INVALID:'omat lämpötilarajat ovat ristiriitaiset tai liian lähellä tavoitetta'},
 en:{NONE:'',MODEL_LEARNING:'the model is still learning from measurements',MODEL_VALIDATING:'the model’s predictions are being tested',
  MODEL_DEGRADED:'the model no longer predicts accurately enough',NO_HEATING_MODE:'the selected mode does not heat',
  TARGET_OUTSIDE_MODEL:'the target is outside the HEAT 16 °C model range',OUTDOOR_OUTSIDE_LEARNED_RANGE:'forecast outdoor temperature is outside the learned range',
@@ -1569,7 +1572,8 @@ en:{NONE:'',MODEL_LEARNING:'the model is still learning from measurements',MODEL
  PUMP_STATE_UNKNOWN:'pump state has not been read',TEMPERATURE_STALE:'indoor temperature missing or stale',
  SOLVER_FAILED:'no plan within the limits',SOLVER_TIMEOUT:'computation time exceeded',PLAN_STALE:'plan is stale',
  PLAN_INPUTS_CHANGED:'mode or settings changed',BELOW_COMFORT_FLOOR:'room is below the comfort band',
- ABOVE_COMFORT_CEILING:'room is above the comfort band',RESOURCE_LIMIT:'memory limit',SYNTHETIC_MODEL_ONLY:'test model only'}};
+ ABOVE_COMFORT_CEILING:'room is above the comfort band',RESOURCE_LIMIT:'memory limit',SYNTHETIC_MODEL_ONLY:'test model only',
+ COMFORT_LIMITS_INVALID:'your temperature limits are contradictory or too close to the target'}};
 const STATE={fi:{NO_DATA:'ei mittauksia',LEARNING:'oppii',VALIDATING:'testataan',CALIBRATED:'kalibroitu',DEGRADED:'heikentynyt'},
  en:{NO_DATA:'no measurements',LEARNING:'learning',VALIDATING:'testing',CALIBRATED:'calibrated',DEGRADED:'degraded'}};
 const lang=()=>uiLanguage==='en'?'en':'fi';
@@ -1697,8 +1701,11 @@ function render(){
     g3.append(box(t('updated'),day(p.computed_utc),t('horizon')+' '+f(p.horizon_slots/4,1)+' '+t('h')+' ('+t('limit_'+p.horizon_limit)+')'));
     g3.append(box(t('energy'),p.energy_valid?f(p.energy_kwh,2)+' kWh · '+f(p.cost,2)+' '+(p.currency||''):'—',p.energy_valid?null:t('energyno')));
   } else {
-    g3.append(box(t('plan'),'—',t('noplan')));
-    g3.append(box(t('updated'),p.computed_utc?day(p.computed_utc):'—',WHY[lang()][p.plan_block]||WHY[lang()][p.planning_fallback]||null));
+    // A plan the controller has rejected is never shown as in force: say why
+    // (the same reason the controller used), not the plan's old decisions.
+    const reason=WHY[lang()][p.plan_block]||WHY[lang()][d.fallback]||WHY[lang()][p.planning_fallback]||null;
+    g3.append(box(t('plan'),'—',t('noplan')+(reason&&p.had_plan?' '+t('rejected')+reason+'.':'')));
+    g3.append(box(t('updated'),p.computed_utc?day(p.computed_utc):'—',reason));
   }
   const meter=d.meter||{};
   g3.append(box(t('meter'),num(meter.watts)===null?'—':f(meter.watts,0)+' W',meter.scope==='HEAT_PUMP_ONLY'?t('scopeP'):t('scopeU')));
