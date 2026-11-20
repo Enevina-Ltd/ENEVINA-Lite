@@ -31,18 +31,30 @@ acknowledged and failed.
   until it passes the last slot. The open slot is never stored early.
 * **Events are debounced** (state must hold 60 s) so a flapping link does not spam
   the log; a reboot re-bases the command counters instead of faking events.
-* **Energy** is the sum over slots that actually had a power reading and states how
-  many; it is unknown (not 0) with no readings, and the card says what the meter
-  measures (pump only / whole house / unknown, from the owner's `shelly_scope`).
+* **Energy** is integrated only between successive, independently captured Shelly
+  measurements within the same 15-minute slot (trapezoids, gaps longer than 180 s
+  are not integrated). The 15-second history polling loop does not turn the same
+  old Shelly capture into another observation. Coverage is conservatively
+  reported as whole verified minutes; historic records without coverage metadata
+  are treated as unknown, not full-slot readings. A single 1000 W reading at
+  14:50 does **not** imply 0.25 kWh for the whole slot. The card reports verified
+  power coverage and the measured target (pump only / whole house / unknown).
   The scope is stored in each record (flag bits 6-7), so changing the meter or the
   owner's answer later never relabels readings taken earlier. `meter_scope` in the
   response is what the meter measured over the returned range; `current_meter_scope`
   is only the present setting. If the target changed inside the range the response
   says `mixed`, energy is not summed (`kwh: null`), and a slot whose meter changed
-  halfway has no power value. Forecast provenance is sticky inside a slot: any
-  forecast-derived outdoor sample flags the whole slot average as a forecast.
-* The UI states coverage ("recorded for 95 % of the time") and warns below 80 % or
-  when persistence is unavailable.
+  halfway has no power value. Forecast provenance distinguishes measured,
+  forecast and mixed values within one slot and across multi-slot summaries.
+* **Currencies never retroactively change.** Each valid price observation carries
+  its immutable ISO currency code inside the persisted 20-byte history record.
+  Legacy records without a code remain `unknown`; multi-currency windows are
+  labelled `mixed` and have no cross-currency average. Charts do not place mixed
+  currencies on one axis; CSV rows preserve each observed currency separately.
+  `current_currency` describes the present contract, not historical data.
+* The UI reports both record coverage and **verified power-measurement minutes**
+  and warns about gaps, unknown/mixed price currencies, or missing persistence.
+  Estimated energy from uncovered periods is not invented.
 
 ## Flash use (bounded)
 
@@ -70,7 +82,7 @@ night theme; every text in Finnish and English.
 
 | Check | Result |
 |---|---|
-| `history_tests`: ring monotonicity/eviction, recorder (averages, gaps, clock rules, implausible values), event debounce and command counters, series/summary/coverage, JSON validity (`kwh:null` when unmetered), persistence round-trip, torn append, flipped byte, foreign/old header, duplicate slots, failing append/replace, 120-day bounded growth | pass |
+| `history_tests`: ring monotonicity/eviction, recorder, timestamp-unique Shelly samples, non-full-slot energy integration, historical currency separation, forecast/measurement provenance, JSON validity, persistence round-trip, torn append, corruption, and bounded flash growth | pass (host) |
 | `tests/test_history_view.js` (validation, gap-breaking segments, forecast/measured split, extents, events, coverage, energy wording, CSV, ticks, 20 literals + static captions in English) | pass |
 | Host C++ Debug/Release, Node, Python failing set (= `main`'s 5) | pass / pass / identical |
 | Firmware `esp32s3_cottage_shadow` | SUCCESS (LittleFS + PSRAM ring + collector task) |

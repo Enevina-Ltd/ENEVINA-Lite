@@ -29,7 +29,7 @@ vm.runInContext(src+';this.api={hsValidate,hsSegments,hsExtent,hsDuration,hsEven
 const A=ctx.api;
 
 const step=3600,T0=1794999600;
-const pt=(i,o={})=>({t:T0+i*step,n:4,a:2,f:0,r:0,in:21,rh:45,out:-3,sp:22.5,w:400,p:0.1,...o});
+const pt=(i,o={})=>({t:T0+i*step,n:4,a:2,f:0,os:1,r:0,in:21,rh:45,out:-3,sp:22.5,w:400,scope:'heat_pump',power_coverage_minutes:15,p:0.1,pc:'EUR',...o});
 const good={valid:true,step_s:step,currency:'EUR',meter_scope:'unknown',persistent:true,slots_total:8,slots_present:6,
   kwh:3.2,kwh_slots:6,points:[pt(0),pt(1),pt(2),pt(3),pt(4),pt(5),pt(6),pt(7)],events:[]};
 assert(A.hsValidate(good));
@@ -93,9 +93,22 @@ assert(A.hsEnergyText({kwh:3.2,kwh_slots:6,meter_scope:'whole_house',current_met
 const csv=A.hsCsv({...good,points:[pt(0),pt(1,{in:null,out:null,w:null,sp:null,p:null,a:1,r:1,f:1})]});
 const lines=csv.trim().split('\n');
 assert.equal(lines.length,3);
-assert(lines[0].startsWith('utc_start,records,indoor_c')&&lines[0].includes('price_per_kwh_EUR'));
-assert.equal(lines[1],new Date((T0)*1000).toISOString()+',4,21,45,-3,0,22.5,400,0.1,heat,0');
-assert.equal(lines[2],new Date((T0+step)*1000).toISOString()+',4,,45,,,,,,off,1');
+const cols=lines[0].split(',');
+assert(lines[0].startsWith('utc_start,records,indoor_c'));
+for(const name of ['price_currency','price_per_kwh','power_scope','power_coverage_min','outdoor_source'])
+  assert(cols.includes(name),name+' must survive CSV export');
+const at=(line,name)=>line.split(',')[cols.indexOf(name)];
+assert.equal(at(lines[1],'price_currency'),'EUR');
+assert.equal(at(lines[1],'power_scope'),'heat_pump');
+assert.equal(at(lines[1],'power_coverage_min'),'15');
+assert.equal(at(lines[1],'outdoor_source'),'measured');
+assert.equal(at(lines[1],'price_per_kwh'),'0.1');
+assert.equal(at(lines[2],'price_per_kwh'),'');
+assert.equal(at(lines[2],'power_coverage_min'),'');
+const csvMixed=A.hsCsv({...good,currency:'mixed',points:[
+  pt(0,{pc:'SEK',p:1}),pt(1,{pc:'EUR',p:0.1})]});
+assert(csvMixed.includes(',1,SEK,')&&csvMixed.includes(',0.1,EUR,'),
+  'CSV must keep SEK and EUR on their own rows even when site now uses EUR');
 assert(!csv.includes('NaN')&&!csv.includes('null')&&!csv.includes('undefined'));
 
 // axis ticks: local 6-hour boundaries (or midnights on long ranges)

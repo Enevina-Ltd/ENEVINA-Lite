@@ -1692,12 +1692,14 @@ static enevina::cottage::HistoryInputs history_collect() {
     // stored setpoint missing.
     in.setpoint_valid=valid_cn105(cp,now);in.setpoint_c=cp.setpoint_c;
     in.power_valid=valid_shelly(st,now);in.power_w=st.watts;
+    in.power_sample_utc=st.captured_utc;
     in.power_scope=static_cast<uint8_t>(site_settings_snapshot().shelly_scope);
     const auto market=enevina_firmware::market_status();
     in.prices_ok=market.current_price_valid;
     double total=0;
     if(market.current_price_valid && site_slot_total_price((now/900)*900,market.current_spot_eur_per_kwh,total)) {
         in.price_valid=true;in.price_per_kwh=total;
+        in.price_currency=enevina::cottage::history_currency_id(market.currency);
     }
     const BootstrapDecision d=bootstrap_preview(now,te);
     in.action=d.action==BootstrapAction::Off?1:d.action==BootstrapAction::HeatSetpoint?2:

@@ -161,8 +161,12 @@ static void meter_scope_is_stored_with_each_record() {
     CHECK(v.value());
     // only whole-house readings in range: labelled whole house although the owner now says pump-only
     HistoryStore only;HistoryRecorder r2_;EventLog e2;
-    r2_.observe(power(T0+10,800,2),only,e2);
-    r2_.observe(power(T0+900+10,800,2),only,e2);
+    // Each 15-minute energy slot needs actual consecutive meter coverage,
+    // not one reading extrapolated across the entire quarter-hour.
+    for(int sec=10;sec<900;sec+=15)
+        r2_.observe(power(T0+sec,800,2),only,e2);
+    for(int sec=10;sec<900;sec+=15)
+        r2_.observe(power(T0+900+sec,800,2),only,e2);
     r2_.observe(power(T0+1800+10,800,2),only,e2);
     const int64_t end2=(static_cast<int64_t>(s0)+2)*900+100;
     n=build_history_series(only,end2,96,1,pts.data(),pts.size(),sum);
@@ -259,6 +263,9 @@ static void series_and_summary() {
         HistoryRecord r=rec(first+i,(i%96)<48?20.0:22.0);
         if(i%2==0) r.power_w=400;
         r.outdoor_c100=-200;r.flags=2|kOutdoorIsForecast;
+        // Synthetic complete 15-minute measurements explicitly carry full
+        // verified coverage. Legacy records without it must NOT claim energy.
+        if(i%2==0)r.flags|=static_cast<uint16_t>(15u<<kPowerCoverageShift);
         store.put(r);
     }
     const int64_t end=(static_cast<int64_t>(first)+191)*900+100;
@@ -456,7 +463,92 @@ static void bounded_file_growth_and_compaction() {
     CHECK(l.records>=2880&&s2.newest_slot()==first+120*96-1&&s2.size()==2880);
 }
 
+
+static HistoryInputs meter_reading(int64_t t,double w,uint8_t scope) {
+    auto in=sample(t);in.power_valid=true;in.power_w=w;in.power_scope=scope;return in;
+}
+static void measured_energy_requires_verifiable_coverage() {
+    HistoryStore short_store;EventLog ev;HistoryRecorder recorder;
+    // Meter first appears with 10 seconds left in the 15-minute slot.
+    recorder.observe(meter_reading(T0+14*60+50,1000,1),short_store,ev);
+    recorder.observe(sample(T0+900+5),short_store,ev);
+    const auto* short_slot=short_store.get(static_cast<uint32_t>(T0/900));
+    CHECK(short_slot&&short_slot->power_w==1000);
+    CHECK(short_slot&&history_power_coverage_minutes(short_slot->flags)==0);
+    std::vector<HistoryPoint> pts(kMaxHistoryPoints);HistorySummary sum;
+    const auto n=build_history_series(short_store,T0+900+5,96,1,pts.data(),pts.size(),sum);
+    CHECK(n==96&&sum.kwh_slots==0&&sum.verified_power_minutes==0);
+    std::string js;history_json("24h",1,pts.data(),n,sum,ev,T0,"EUR",
+        "heat_pump",true,[&](const char* b){js+=b;});
+    CHECK(js.find("\"kwh\":null")!=std::string::npos);
+    CHECK(js.find("\"power_coverage_minutes\":0")!=std::string::npos);
+    // A single Shelly capture repeatedly read by a 15 s history worker is
+    // still ONE physical sample. It cannot generate fake covered minutes.
+    HistoryStore repeats;HistoryRecorder repeat_rec;EventLog repeat_events;
+    for(int64_t tick=T0+850;tick<T0+900;tick+=10) {
+        auto in=meter_reading(tick,1000,1);
+        in.power_sample_utc=T0+850; // same unchanged Shelly capture
+        repeat_rec.observe(in,repeats,repeat_events);
+    }
+    repeat_rec.observe(sample(T0+905),repeats,repeat_events);
+    const auto* one=repeats.get(static_cast<uint32_t>(T0/900));
+    CHECK(one&&history_power_coverage_minutes(one->flags)==0);
+    build_history_series(repeats,T0+905,96,1,pts.data(),pts.size(),sum);
+    CHECK(sum.kwh_slots==0&&sum.verified_power_minutes==0);
+    // With 15-second consecutive reports the integral counts ONLY observed
+    // intervals and never assumes 900 seconds from the first sample alone.
+    HistoryStore covered_store;HistoryRecorder covered;EventLog ev2;
+    for(int sec=10;sec<=880;sec+=15)
+        covered.observe(meter_reading(T0+sec,1000,1),covered_store,ev2);
+    covered.observe(sample(T0+900+5),covered_store,ev2);
+    const auto* full=covered_store.get(static_cast<uint32_t>(T0/900));
+    CHECK(full&&history_power_coverage_minutes(full->flags)==14);
+    build_history_series(covered_store,T0+900+5,96,1,pts.data(),pts.size(),sum);
+    CHECK(sum.kwh_slots==1&&sum.verified_power_minutes==14);
+    CHECK(std::fabs(sum.kwh-14.0/60.0)<1e-6);
+    // A long gap must not be bridged and counted as covered time.
+    HistoryStore gap_store;HistoryRecorder gaps;EventLog ev3;
+    gaps.observe(meter_reading(T0+10,1000,1),gap_store,ev3);
+    gaps.observe(meter_reading(T0+850,1000,1),gap_store,ev3);
+    gaps.observe(sample(T0+900+5),gap_store,ev3);
+    const auto* gap=gap_store.get(static_cast<uint32_t>(T0/900));
+    CHECK(gap&&history_power_coverage_minutes(gap->flags)==0);
+}
+static void historical_prices_retain_currency_without_cross_currency_mean() {
+    CHECK(history_currency_id("EUR")==1&&history_currency_id("SEK")==2);
+    CHECK(history_currency_id("NOK")==3&&history_currency_id("DKK")==4);
+    CHECK(history_currency_id("PLN")==5&&history_currency_id("XYZ")==0);
+    HistoryStore s;
+    const uint32_t slot=static_cast<uint32_t>(T0/900);
+    auto a=rec(slot);a.price_e5=10000;
+    a.flags=static_cast<uint16_t>(history_currency_id("SEK")<<kPriceCurrencyShift);
+    auto b=rec(slot+1);b.price_e5=30000;
+    b.flags=static_cast<uint16_t>(history_currency_id("EUR")<<kPriceCurrencyShift);
+    CHECK(s.put(a)&&s.put(b));
+    HistorySummary sum;std::vector<HistoryPoint> pts(kMaxHistoryPoints);
+    const auto n=build_history_series(s,T0+1800+1,96,1,pts.data(),pts.size(),sum);
+    CHECK(n==96);
+    CHECK((sum.currency_mask&(sum.currency_mask-1))!=0);
+    CHECK(std::isnan(sum.price.avg())&&std::string(history_detail::currency_of_range(sum))=="mixed");
+    std::string js;EventLog ev;
+    history_json("24h",1,pts.data(),n,sum,ev,T0,"EUR","unknown",true,
+        [&](const char* p){js+=p;});
+    CHECK(js.find("\"currency\":\"mixed\"")!=std::string::npos);
+    CHECK(js.find("\"current_currency\":\"EUR\"")!=std::string::npos);
+    CHECK(js.find("\"pc\":\"SEK\"")!=std::string::npos);
+    CHECK(js.find("\"pc\":\"EUR\"")!=std::string::npos);
+    CHECK(js.find("\"price\":{\"min\":null,\"max\":null,\"avg\":null}")!=std::string::npos);
+    build_history_series(s,T0+1800+1,96,4,pts.data(),pts.size(),sum);
+    CHECK(std::isnan(pts.back().price) || std::isnan(pts[0].price));
+    // Old format had no currency code. Don't retrospectively label it EUR.
+    HistoryStore old;auto legacy=rec(slot);CHECK(old.put(legacy));
+    build_history_series(old,T0+900+1,96,1,pts.data(),pts.size(),sum);
+    CHECK(std::string(history_detail::currency_of_range(sum))=="unknown");
+}
+
 int main() {
+    measured_energy_requires_verifiable_coverage();
+    historical_prices_retain_currency_without_cross_currency_mean();
     ring_semantics();
     recorder_averages_and_gaps();
     forecast_provenance_survives_a_later_measurement();

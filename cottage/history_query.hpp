@@ -15,6 +15,10 @@ struct HistoryPoint {
     double indoor=kNaN,rh=kNaN,outdoor=kNaN,setpoint=kNaN,power=kNaN,price=kNaN;
     uint8_t action=0;            // last known proposal in the bucket
     bool outdoor_forecast=false,armed=false;
+    uint8_t outdoor_source=0;  // 0 unknown, 1 measured, 2 forecast, 3 mixed
+    uint8_t price_currency=0;  // code 0 unknown, 1-5 supported, 7 mixed
+    uint8_t power_scope=0;     // 0 unknown, 1 heat pump, 2 house, 3 mixed
+    uint32_t verified_power_minutes=0;
     uint32_t records=0;          // 15-minute records that contributed
 };
 struct Range {
@@ -30,7 +34,9 @@ struct HistorySummary {
     size_t slots_total=0,slots_present=0;
     Range indoor,outdoor,price,setpoint;
     double kwh=0;                // energy of the METERED load over present power slots
-    size_t kwh_slots=0;          // how many slots had a power reading
+    size_t kwh_slots=0;          // slots with VERIFIED (not merely present) power coverage
+    uint32_t verified_power_minutes=0;
+    uint8_t currency_mask=0;    // distinct currencies (incl. legacy unknown) in range
     size_t armed_slots=0;
     uint8_t scope_mask=0;        // bit s set: a present power slot was measured under scope s (0/1/2)
     double coverage() const {return slots_total?static_cast<double>(slots_present)/static_cast<double>(slots_total):0;}
@@ -56,7 +62,7 @@ inline size_t build_history_series(const HistoryStore& store,int64_t end_utc,siz
         const int64_t b0=first+static_cast<int64_t>(b*step_slots);
         p.t=b0*kHistoryStepS;
         Range in,rh,od,pw,pr;
-        uint8_t bucket_scopes=0;
+        uint8_t bucket_scopes=0,bucket_currencies=0,bucket_outdoor_sources=0;
         for(size_t k=0;k<step_slots;++k) {
             const HistoryRecord* r=store.get(static_cast<uint32_t>(b0+static_cast<int64_t>(k)));
             if(!r) continue;
@@ -65,7 +71,8 @@ inline size_t build_history_series(const HistoryStore& store,int64_t end_utc,siz
             if(r->rh_c100!=kMissingU16) rh.add(r->rh_c100/100.0);
             if(r->outdoor_c100!=kMissingI16) {
                 od.add(r->outdoor_c100/100.0);summary.outdoor.add(r->outdoor_c100/100.0);
-                if(r->flags&kOutdoorIsForecast) p.outdoor_forecast=true;
+                bucket_outdoor_sources|=(r->flags&kOutdoorMixed)?3:
+                    (r->flags&kOutdoorIsForecast)?2:1;
             }
             if(r->setpoint_c10!=kMissingI16) {p.setpoint=r->setpoint_c10/10.0;summary.setpoint.add(p.setpoint);}
             if(r->power_w!=kMissingU16) {
@@ -73,17 +80,42 @@ inline size_t build_history_series(const HistoryStore& store,int64_t end_utc,siz
                 const uint8_t bit=static_cast<uint8_t>(1u<<(scope<=2?scope:0));
                 bucket_scopes|=bit;summary.scope_mask|=bit;
                 pw.add(r->power_w);
-                summary.kwh+=r->power_w*0.25/1000.0;++summary.kwh_slots;
+                const uint8_t covered=history_power_coverage_minutes(r->flags);
+                if(covered) {
+                    summary.kwh+=r->power_w*(covered/60.0)/1000.0;
+                    summary.verified_power_minutes+=covered;
+                    p.verified_power_minutes+=covered;
+                    ++summary.kwh_slots;
+                }
             }
-            if(r->price_e5!=kMissingI32) {pr.add(r->price_e5/1e5);summary.price.add(r->price_e5/1e5);}
+            if(r->price_e5!=kMissingI32) {
+                const uint8_t code=static_cast<uint8_t>(
+                    (r->flags&kPriceCurrencyMask)>>kPriceCurrencyShift);
+                const uint8_t bit=static_cast<uint8_t>(1u<<code);
+                bucket_currencies|=bit;summary.currency_mask|=bit;
+                pr.add(r->price_e5/1e5);summary.price.add(r->price_e5/1e5);
+            }
             p.action=static_cast<uint8_t>(r->flags&kActionMask);
             if(r->flags&kControlArmed) {p.armed=true;++summary.armed_slots;}
         }
-        p.indoor=in.avg();p.rh=rh.avg();p.outdoor=od.avg();p.price=pr.avg();
-        // A bucket that spans two measurement targets has no honest average power.
+        p.indoor=in.avg();p.rh=rh.avg();p.outdoor=od.avg();
+        p.outdoor_source=bucket_outdoor_sources;
+        p.outdoor_forecast=(bucket_outdoor_sources&2)!=0;
+        // Never average prices across currency changes (including historical
+        // records whose currency cannot be reconstructed truthfully).
+        const bool currency_mixed=(bucket_currencies&(bucket_currencies-1))!=0;
+        p.price=currency_mixed?kNaN:pr.avg();
+        p.price_currency=currency_mixed?7:0;
+        if(!currency_mixed)for(uint8_t code=0;code<=5;++code)
+            if(bucket_currencies==(1u<<code))p.price_currency=code;
         const bool bucket_mixed=(bucket_scopes&(bucket_scopes-1))!=0;
         p.power=bucket_mixed?kNaN:pw.avg();
+        p.power_scope=bucket_mixed?3:(bucket_scopes&0x2)?1:(bucket_scopes&0x4)?2:0;
     }
+    // An aggregate across SEK/EUR (or any differing currencies) is not a
+    // meaningful price, even if individual buckets were homogeneous.
+    if((summary.currency_mask&(summary.currency_mask-1))!=0)
+        summary.price=Range{};
     return buckets;
 }
 
@@ -99,6 +131,13 @@ inline bool history_range_spec(const char* name,RangeSpec& out) {
 }
 
 namespace history_detail {
+inline const char* currency_of_range(const HistorySummary& s) {
+    const uint8_t m=s.currency_mask;
+    if(!m)return "unknown";
+    if((m&(m-1))!=0)return "mixed";
+    for(unsigned c=0;c<=5;++c)if(m==(1u<<c))return history_currency_name(c);
+    return "unknown";
+}
 // What the meter measured over the slots that are actually in the response.
 // "mixed" = the target changed inside the range: energy must not be summed.
 inline const char* scope_of_range(const HistorySummary& s,const char* current) {
@@ -128,12 +167,13 @@ inline void history_json(const char* range_name,size_t step_slots,const HistoryP
                          const char* currency,const char* meter_scope,bool persistent,Emit emit) {
     using namespace history_detail;
     char b[200];
-    std::snprintf(b,sizeof(b),"{\"valid\":%s,\"range\":\"%s\",\"step_s\":%lld,\"currency\":\"%s\",\"meter_scope\":\"%s\",\"current_meter_scope\":\"%s\",\"persistent\":%s,",
-        n?"true":"false",range_name,static_cast<long long>(step_slots*kHistoryStepS),currency,
-        scope_of_range(s,meter_scope),meter_scope,persistent?"true":"false");
+    std::snprintf(b,sizeof(b),"{\"valid\":%s,\"range\":\"%s\",\"step_s\":%lld,\"currency\":\"%s\",\"current_currency\":\"%s\",\"meter_scope\":\"%s\",\"current_meter_scope\":\"%s\",\"persistent\":%s,",
+        n?"true":"false",range_name,static_cast<long long>(step_slots*kHistoryStepS),
+        currency_of_range(s),currency,scope_of_range(s,meter_scope),
+        meter_scope,persistent?"true":"false");
     emit(b);
-    std::snprintf(b,sizeof(b),"\"slots_total\":%zu,\"slots_present\":%zu,\"kwh_slots\":%zu,\"armed_slots\":%zu,",
-        s.slots_total,s.slots_present,s.kwh_slots,s.armed_slots);
+    std::snprintf(b,sizeof(b),"\"slots_total\":%zu,\"slots_present\":%zu,\"kwh_slots\":%zu,\"armed_slots\":%zu,\"power_coverage_minutes\":%u,",
+        s.slots_total,s.slots_present,s.kwh_slots,s.armed_slots,s.verified_power_minutes);
     emit(b);
     emit("\"kwh\":");val(emit,(s.kwh_slots&&s.scope_mask!=0&&(s.scope_mask&(s.scope_mask-1))==0)?s.kwh:kNaN,"%.3f");
     emit(",\"indoor\":{\"min\":");val(emit,s.indoor.min,"%.2f");
@@ -145,8 +185,13 @@ inline void history_json(const char* range_name,size_t step_slots,const HistoryP
     emit("},\"points\":[");
     for(size_t i=0;i<n;++i) {
         const HistoryPoint& p=pts[i];
-        std::snprintf(b,sizeof(b),"%s{\"t\":%lld,\"n\":%u,\"a\":%u,\"f\":%d,\"r\":%d,\"in\":",i?",":"",
-            static_cast<long long>(p.t),p.records,p.action,p.outdoor_forecast?1:0,p.armed?1:0);
+        std::snprintf(b,sizeof(b),"%s{\"t\":%lld,\"n\":%u,\"a\":%u,\"f\":%d,\"r\":%d,\"os\":%u,\"pc\":\"%s\",\"power_coverage_minutes\":%u,",
+            i?",":"",static_cast<long long>(p.t),p.records,p.action,
+            p.outdoor_forecast?1:0,p.armed?1:0,p.outdoor_source,
+            history_currency_name(p.price_currency),p.verified_power_minutes);
+        emit(b);
+        std::snprintf(b,sizeof(b),"\"scope\":\"%s\",\"in\":",p.power_scope==1?"heat_pump":
+            p.power_scope==2?"whole_house":p.power_scope==3?"mixed":"unknown");
         emit(b);
         val(emit,p.indoor,"%.2f");emit(",\"rh\":");val(emit,p.rh,"%.1f");
         emit(",\"out\":");val(emit,p.outdoor,"%.2f");emit(",\"sp\":");val(emit,p.setpoint,"%.1f");
