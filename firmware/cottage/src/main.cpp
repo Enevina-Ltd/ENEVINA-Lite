@@ -2333,7 +2333,11 @@ static void timeline_endpoint() {
         return;
     }
     const TemperatureSample indoor=c23_temperature_sample();
-    const BootstrapDecision decision=bootstrap_preview(now,indoor);
+    ArbiterOutput active{};
+    const BootstrapDecision decision=active_control_proposal(now,indoor,&active);
+    // The displayed "now" proposal must be identical to what the controller
+    // arbitrates (MPC first, then price, then thermostat), never a standalone
+    // price fallback when an MPC plan is active.
     // The timeline is advice, not a bypass around the live controller's
     // independent room-sensor freshness and Drying humidity gates.
     meta.indoor_fresh=valid_temperature(indoor,now);
@@ -2341,8 +2345,11 @@ static void timeline_endpoint() {
         !(mode.mode==CottageMode::Drying && drying_blocks_heat(plan));
     meta.currency=market.currency;meta.area=market.area;
     meta.decision_action=bootstrap_action_name(decision.action);
+    meta.decision_source=proposal_source_name(active.source);
     meta.decision_reason=bootstrap_reason_name(decision.reason);
-    meta.decision_price_valid=decision.price_data_valid;
+    // MPC sets price_data_valid internally to make a proposal executable in
+    // its own branch; the wire's price_valid means verified spot fallback.
+    meta.decision_price_valid=bootstrap_preview(now,indoor).price_data_valid;
     meta.decision_setpoint_c=decision.action==BootstrapAction::HeatSetpoint?decision.heat_setpoint_c:-1;
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.send(200,"application/json; charset=utf-8","");
