@@ -96,7 +96,11 @@ inline ComfortRecoveryAction comfort_recovery_action(const ComfortTxn& tx,
         return ComfortRecoveryAction::Block;
     if(tx.phase==static_cast<uint8_t>(ComfortPhase::Prepared) ||
        !comfort_site_matches(tx,site) ||
-       static_cast<uint8_t>(air.mode)!=tx.mode)
+       static_cast<uint8_t>(air.mode)!=tx.mode ||
+       (!comfort_old_mode_matches(tx,air) &&
+        !comfort_mode_matches(tx,air)))
+        // A rollback-firmware target edit newer than both journal endpoints
+        // belongs to the owner. Never replay the stale target over it.
         return ComfortRecoveryAction::RestorePriorSite;
     return ComfortRecoveryAction::CompleteAirTarget;
 }
