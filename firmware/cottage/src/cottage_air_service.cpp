@@ -748,14 +748,21 @@ void c23_register_routes(WebServer& web) {
             lock();occupied=config.occupied_target_c;unlock();
         }
         lock();
+        const CottageModeConfig previous=config;
         config.mode=static_cast<CottageMode>(mode_s.toInt());
         config.hold_target_c=hold;
         config.occupied_target_c=occupied;
         config.drying_delta_c=delta;
         ++config_generation; // invalidates any in-flight command preparation
-        log_event(3,static_cast<uint8_t>(config.mode));
         unlock();
         const bool saved=save_config();
+        if(!saved) {
+            // Never return an NVS failure while silently keeping the rejected
+            // target active in RAM. The wizard compensates its site-side save.
+            lock();config=previous;++config_generation;unlock();
+        } else {
+            log_event(3,static_cast<uint8_t>(config.mode));
+        }
         web.send(saved?200:500,"application/json",
                  saved?"{\"saved\":true,\"physical_writes\":false}":
                        "{\"saved\":false,\"physical_writes\":false}");

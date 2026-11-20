@@ -199,6 +199,78 @@ inline bool restore_site_settings(const uint8_t* bytes,size_t size,SiteSettings&
     return true;
 }
 
+// Fingerprint the exact rollback-readable v2 record, including its header
+// and padding. A v3 candidate saves this fingerprint alongside its settings.
+// If rollback firmware later edits v2, the next upgraded boot must prefer
+// those newer owner edits to an older v3 candidate. Missing v2 is signature 0.
+inline uint64_t site_v2_signature(const uint8_t* bytes,size_t n) {
+    if(!bytes||n==0)return 0;
+    uint64_t h=UINT64_C(14695981039346656037);
+    for(size_t i=0;i<n;++i) {
+        h^=bytes[i];
+        h*=UINT64_C(1099511628211);
+    }
+    return h?h:1;
+}
+inline bool site_rollback_v2_modified(uint64_t v3_baseline,const uint8_t* v2,size_t n) {
+    return n>0 && site_v2_signature(v2,n)!=v3_baseline;
+}
+
+
+// Reads a rollback-compatible NVS record without conflating a missing key
+// with a transient read failure. Caller supplies bounded scratch storage:
+// no dynamic allocation or flash writes while preparing the v4 snapshot.
+template<class Nvs>
+inline bool site_rollback_snapshot_signature(Nvs& p,const char* key,
+                                             uint64_t& signature,uint8_t* scratch,
+                                             size_t scratch_size) {
+    signature=0;
+    const size_t n=p.getBytesLength(key);
+    if(n==0) return !p.isKey(key);
+    if(!scratch || n>scratch_size) return false;
+    if(p.getBytes(key,scratch,n)!=n) return false;
+    signature=site_v2_signature(scratch,n);
+    return true;
+}
+
+// v3's signature-bearing layout contains the previous v2 fingerprint after
+// its settings bytes. A first v4 boot MUST honor that provenance before
+// preferring the older v3 payload over a v2 edited during rollback.
+inline bool site_v3_prefer_rollback_v2(const uint8_t* v3,size_t v3_len,
+                                       size_t settings_bytes,
+                                       const uint8_t* v2,size_t v2_len) {
+    constexpr size_t h=8;
+    if(!v3 || v3_len<h || settings_bytes>v3_len-h ||
+       v3_len-h-settings_bytes<sizeof(uint64_t)) return false;
+    uint64_t baseline=0;
+    std::memcpy(&baseline,v3+h+settings_bytes,sizeof(baseline));
+    return site_rollback_v2_modified(baseline,v2,v2_len);
+}
+
+// Restore the predecessor v4 record without treating its saved 480-byte
+// layout as the newer v5 488-byte struct. The v4 CRC-free envelope carries
+// exact magic/version/length plus the old v2/v3 rollback fingerprints.
+inline bool site_restore_v4_record(const uint8_t* raw,size_t n,SiteSettings& out,
+                                   uint64_t& baseline_v2,uint64_t& baseline_v3) {
+    constexpr size_t header=8;
+    baseline_v2=baseline_v3=0;
+    if(!raw||n<header) return false;
+    uint32_t magic=0;uint16_t version=0,settings_bytes=0;
+    std::memcpy(&magic,raw,sizeof(magic));
+    std::memcpy(&version,raw+4,sizeof(version));
+    std::memcpy(&settings_bytes,raw+6,sizeof(settings_bytes));
+    if(magic!=0x45535431U || version!=4 || settings_bytes==0 ||
+       settings_bytes>sizeof(SiteSettings) ||
+       static_cast<size_t>(settings_bytes)>n-header ||
+       n-header-settings_bytes<2*sizeof(uint64_t)) return false;
+    SiteSettings restored{};
+    if(!restore_site_settings(raw+header,settings_bytes,restored))return false;
+    std::memcpy(&baseline_v2,raw+header+settings_bytes,sizeof(baseline_v2));
+    std::memcpy(&baseline_v3,raw+header+settings_bytes+sizeof(uint64_t),sizeof(baseline_v3));
+    out=restored;
+    return true;
+}
+
 // Region that prices are fetched for, or false when the user has not finished
 // choosing one (unsupported country, or multi-zone country without a zone).
 inline bool site_market_region(const SiteSettings& s,const char*& nordpool_area,
@@ -215,6 +287,10 @@ inline bool site_market_region(const SiteSettings& s,const char*& nordpool_area,
 // TOTAL price rule bound to the selected region (offset and currency scale).
 inline bool site_region_total_price(const SiteSettings& s,int64_t slot_start_utc,
                                     double spot_per_kwh,double& total) {
+    // The selected country may have invalidated the previous contract. Spot
+    // remains displayable, but spot-only is NOT a confirmed total cost for
+    // price-aware optimization. The live controller falls back to thermostat.
+    if(!s.tariff_confirmed) return false;
     const enevina::MarketCountry* c=enevina::find_market_country(s.country);
     const int offset=c ? c->std_offset_hours : 2;
     const double scale=currency_limit_scale(c ? c->currency : "EUR");

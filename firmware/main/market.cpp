@@ -42,6 +42,8 @@ constexpr size_t max_slots=price_cache_max_slots;
 constexpr uint32_t cache_version=price_cache_version;
 PriceCache cache;
 SemaphoreHandle_t mutex=nullptr;
+TaskHandle_t reader_task=nullptr; // notify on live region change, no new watchdog
+
 // Region the cache belongs to. Default keeps Finland/EUR so an unconfigured
 // or upgraded device behaves exactly as before. Guarded by `mutex`.
 char region_area[8]="FI";
@@ -59,6 +61,9 @@ uint8_t last_error=0;          // enevina::DayAheadError of the last attempt
 int last_http_status=0;
 int64_t last_attempt_utc=0;
 constexpr char region_key[]="price_region";
+// A rollback firmware reads price_v2 unconditionally as FI/EUR. Never place
+// SE/NO/DK/PLN or any other foreign market into that legacy NVS key.
+constexpr char regional_cache_key[]="price_reg_v2";
 
 bool valid_prices(const PriceCache& candidate) {
     if(candidate.version!=cache_version || candidate.count==0 || candidate.count>max_slots)
@@ -101,16 +106,27 @@ void load_cache() {
         return;
     }
     auto* saved=new(std::nothrow) PriceCache;
-    bool migrate_legacy=false;
+    bool migrate_legacy=false, migrate_early_region=false;
+    const bool legacy_fi=std::strcmp(stamp,"FI/EUR")==0;
     if(saved) {
         auto compact=std::unique_ptr<CompactPriceCache>(
             new(std::nothrow) CompactPriceCache);
         size_t size=sizeof(CompactPriceCache);
+        const char* cache_blob_key=legacy_fi?"price_v2":regional_cache_key;
         bool ok=compact &&
-            nvs_get_blob(handle,"price_v2",compact.get(),&size)==ESP_OK &&
+            nvs_get_blob(handle,cache_blob_key,compact.get(),&size)==ESP_OK &&
             size==sizeof(*compact) &&
             unpack_price_cache(*compact,*saved) && valid_prices(*saved);
-        if(!ok) {
+        if(!ok && !legacy_fi && compact) {
+            // Migrate an early unshipped regional build that used price_v2;
+            // stamp must match this selected area and currency (checked above).
+            size=sizeof(*compact);
+            ok=nvs_get_blob(handle,"price_v2",compact.get(),&size)==ESP_OK &&
+                size==sizeof(*compact) &&
+                unpack_price_cache(*compact,*saved) && valid_prices(*saved);
+            migrate_early_region=ok;
+        }
+        if(!ok && legacy_fi) {
             size=sizeof(*saved);
             ok=nvs_get_blob(handle,"price_v1",saved,&size)==ESP_OK &&
                 size==sizeof(*saved) && valid_prices(*saved);
@@ -129,6 +145,7 @@ void load_cache() {
     // Move the verified in-memory legacy price cache without discarding other
     // NVS namespaces (Wi-Fi, OTA, sensors and user settings).
     if(migrate_legacy) save_cache(cache,"FI/EUR");
+    if(migrate_early_region) save_cache(cache,stamp);
 }
 
 void save_cache(const PriceCache& value,const char* stamp) {
@@ -156,7 +173,22 @@ void save_cache(const PriceCache& value,const char* stamp) {
         nvs_close(handle);
         return;
     }
-    if(nvs_set_blob(handle,"price_v2",compact.get(),sizeof(*compact))==ESP_OK) {
+    const bool legacy_fi=std::strcmp(stamp,"FI/EUR")==0;
+    const char* cache_blob_key=legacy_fi?"price_v2":regional_cache_key;
+    // Reclaim the incompatible legacy key BEFORE storing foreign prices:
+    // power-loss during migration may lose a replaceable cache, but cannot
+    // leave a rollback firmware reading foreign prices as FI/EUR.
+    const char* obsolete_key=legacy_fi?regional_cache_key:"price_v2";
+    const esp_err_t obsolete=nvs_erase_key(handle,obsolete_key);
+    if(obsolete!=ESP_OK && obsolete!=ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(tag,"NVS obsolete price removal failed: %d",obsolete);
+        nvs_close(handle);return;
+    }
+    if(obsolete==ESP_OK && nvs_commit(handle)!=ESP_OK) {
+        ESP_LOGW(tag,"NVS obsolete price removal commit failed");
+        nvs_close(handle);return;
+    }
+    if(nvs_set_blob(handle,cache_blob_key,compact.get(),sizeof(*compact))==ESP_OK) {
         // Region stamp AFTER the blob: a power loss between the two leaves a
         // blob whose stamp is missing/old, which load_cache() rejects unless
         // it is the legacy Finland/EUR cache.
@@ -268,7 +300,7 @@ void poll_prices(void*) {
             generation=region_generation;
             xSemaphoreGive(mutex);
             if(!area[0]) {   // no bidding zone chosen: nothing to fetch
-                vTaskDelay(pdMS_TO_TICKS(5000));
+                ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(5000));
                 continue;
             }
             std::snprintf(stamp,sizeof(stamp),"%s/%s",area,currency);
@@ -326,7 +358,7 @@ void poll_prices(void*) {
         }
         const int next_ms=updated ? 30*60*1000 :
             (now>1700000000 ? 60*1000 : 5*1000);
-        vTaskDelay(pdMS_TO_TICKS(next_ms));
+        ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(next_ms));
     }
 }
 }
@@ -334,8 +366,10 @@ void poll_prices(void*) {
 void start_market_reader() {
     if(!mutex) mutex=xSemaphoreCreateMutex();
     if(!mutex) { ESP_LOGE(tag,"market mutex allocation failed"); return; }
-    if(xTaskCreate(poll_prices,"market_read",8192,nullptr,3,nullptr)!=pdPASS)
+    if(xTaskCreate(poll_prices,"market_read",8192,nullptr,3,&reader_task)!=pdPASS) {
+        reader_task=nullptr;
         ESP_LOGE(tag,"market task creation failed");
+    }
 }
 
 bool market_set_region(const char* area,const char* currency) {
@@ -375,11 +409,15 @@ bool market_set_region(const char* area,const char* currency) {
         nvs_handle_t handle;
         if(nvs_open("enevina_market",NVS_READWRITE,&handle)==ESP_OK) {
             nvs_erase_key(handle,"price_v2");
+            nvs_erase_key(handle,regional_cache_key);
             nvs_erase_key(handle,"price_v1");
             nvs_erase_key(handle,region_key);
             nvs_commit(handle);
             nvs_close(handle);
         }
+        // Clear cache only for a genuine runtime region change, then wake the
+        // existing reader even if its previous successful fetch scheduled 30m.
+        if(reader_task) xTaskNotifyGive(reader_task);
     }
     return true;
 }

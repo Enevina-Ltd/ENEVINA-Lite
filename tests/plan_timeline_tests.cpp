@@ -184,7 +184,20 @@ static void json_is_valid_and_honest() {
     CHECK(cs>cc);
 }
 
+static void regional_currency_limits() {
+    constexpr int64_t base_utc=1800000000;
+    int64_t utc[8];double price[8]={-1.5,-1.2,1.2,1.3,1.4,1.5,1.6,1.7};
+    for(int i=0;i<8;++i)utc[i]=base_utc+900*i;
+    Timeline t;TimelineParams p;
+    p.price_limit_scale=12;p.advantage_eur_floor=0.06;
+    CHECK(build_timeline(utc,price,8,p,t));
+    CHECK(t.slot_count==8 && t.slots[0].cls==PriceClass::Cheap);
+    CHECK(!build_timeline(utc,price,8,TimelineParams{},t));
+    CHECK(classify_price(price,8,0.10,0.06,12).cls==PriceClass::Cheap);
+    CHECK(classify_price(price,8,0.10,0.005).cls==PriceClass::Unknown);
+}
 int main() {
+    regional_currency_limits();
     agrees_with_the_controller_on_every_slot();
     edges_and_gaps();
     segments_are_consistent();

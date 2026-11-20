@@ -34,14 +34,17 @@ bool valid(const Parameters& p) {
         p.min_heat_minutes >= slot_minutes && p.min_off_minutes >= slot_minutes &&
         p.min_heat_minutes <= 480 && p.min_off_minutes <= 480 &&
         p.min_heat_minutes % slot_minutes == 0 &&
-        p.min_off_minutes % slot_minutes == 0;
+        p.min_off_minutes % slot_minutes == 0 &&
+        finite(p.currency_limit_scale) && p.currency_limit_scale >= 1 &&
+        p.currency_limit_scale <= 12;
 }
 bool valid(const Parameters& p, const State& s, const Period& d) {
     return valid(p) && finite(s.indoor_c) &&
         s.indoor_c >= p.critical_c - 10 && s.indoor_c <= 40 &&
         finite(d.outdoor_c) && d.outdoor_c >= -55 && d.outdoor_c <= 45 &&
         finite(d.total_price_eur_per_kwh) &&
-        d.total_price_eur_per_kwh >= -5 && d.total_price_eur_per_kwh <= 10 &&
+        d.total_price_eur_per_kwh >= -5*p.currency_limit_scale &&
+        d.total_price_eur_per_kwh <= 10*p.currency_limit_scale &&
         finite(d.internal_gain_kw) && std::abs(d.internal_gain_kw) < 30 &&
         finite(d.defrost_capacity_factor) &&
         d.defrost_capacity_factor >= 0 && d.defrost_capacity_factor <= 1;

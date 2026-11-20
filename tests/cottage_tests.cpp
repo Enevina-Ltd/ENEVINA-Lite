@@ -66,6 +66,14 @@ int main() {
     check(valid(p),"parameter validation");
     State s{10,false,180};
     Period d{-5,0.22,0,1};
+    // Shadow physics must accept finite local-currency prices permitted by
+    // the selected market, without broadening EUR-only input limits.
+    d.total_price_eur_per_kwh=12.0;
+    check(!valid(p,s,d),"EUR range still bounded");
+    p.currency_limit_scale=12;
+    check(valid(p,s,d),"SEK range accepted");
+    p.currency_limit_scale=1;
+    d.total_price_eur_per_kwh=0.22;
     auto off=advance(p,s,d,false);
     auto on=advance(p,s,d,true);
     check(on.next.indoor_c>off.next.indoor_c,"heat warms more than off");

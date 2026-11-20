@@ -8,7 +8,7 @@ assert(m,'wizard script block missing');
 const src=m[1];
 
 // Every Finnish literal with non-ASCII letters must have an English entry.
-const dict=JSON.parse(header.split('const UI_EN=Object.freeze(')[1].split(');\nconst UI_EN_FRAGMENTS')[0]);
+const dict=JSON.parse(header.split('const UI_EN=Object.freeze(')[1].split(/\);\r?\nconst UI_EN_FRAGMENTS/)[0]);
 const literals=[...src.matchAll(/WT\('([^']*)'\)/g)].map(x=>x[1]);
 assert(literals.length>80,'expected the wizard literals to be found');
 const allowedUntranslated=new Set(['Wi-Fi']);
@@ -23,7 +23,7 @@ assert.deepEqual(missing,[],'missing English translations');
 
 const ctx={document:{},state:{},uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS};',ctx);
+vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,WZ};',ctx);
 const A=ctx.api;
 
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
@@ -168,6 +168,18 @@ console.log('comfort step helpers ok');
   assert.equal(f.shelly_scope,'whole_house');assert(!('shelly_url' in f));
   assert.equal(A.wzDevicesFields({shelly:'http://192.168.1.31',scope:'bogus'},have).shelly_scope,'unknown');   // bad scope -> unknown
   assert.deepEqual({...A.wzDevicesFields({shelly:'',scope:'heat_pump'},have)},{setup_step:'7',shelly_url:''}); // clearing the meter
+  // A newly chosen meter must not inherit a prior pump-only confirmation.
+  const draft=vm.runInContext('WZ',ctx);
+  draft.shelly=have.shelly_url;draft.shellyScope='heat_pump';
+  draft.shellyScopeFor=have.shelly_url;draft.shellyScopeInitialized=true;
+  A.wzSetShellyAddress('http://192.168.1.31');
+  assert.equal(draft.shellyScope,'unknown');
+  assert.equal(A.wzDevicesFields({shelly:draft.shelly,scope:draft.shellyScope},have).shelly_scope,'unknown');
+  draft.shellyScope='heat_pump'; // user explicitly confirms the replacement
+  A.wzSetShellyAddress('http://192.168.1.31');
+  assert.equal(draft.shellyScope,'heat_pump'); // same URL is not a new meter
+  A.wzSetShellyAddress('http://192.168.1.32');
+  assert.equal(draft.shellyScope,'unknown'); // manually typed replacement also resets
   // summary: a meter that is not confirmed as pump-only is a warning, not ok
   const meter=(scope,w)=>A.wzSummary({site:{region:{},shelly_scope:scope},status:{air:{},shelly_w:w},weather:null,plan:null}).find(x=>x.key==='meter');
   assert.equal(meter('heat_pump',300).state,'ok');
@@ -175,3 +187,44 @@ console.log('comfort step helpers ok');
   assert.equal(meter('unknown',null).state,'optional');
 }
 console.log('devices step helpers ok');
+
+(async()=>{
+  // P2 #57: failure of site NVS must never durably/actively change the target.
+  // On air-write failure after site save, compensate old profile and band.
+  const events=[];
+  ctx.state.site={optimization:{profile:'balanced',comfort_min_c:10,comfort_max_c:14},
+    region:{setup_step:5}};
+  ctx.state.status={air:{mode:2,hold_target_c:12,occupied_target_c:21,drying_delta_c:3}};
+  Object.assign(A.WZ.comfort,{target:'13',min:'9',max:'16',profile:'saving'});
+  ctx.airPostLocal=async()=>{events.push('air');};
+  ctx.reloadStatus=async()=>{events.push('reload');};
+  ctx.wzPost=async()=>{throw Error('NVS');};
+  await assert.rejects(A.wzSaveComfort(false),/NVS/);
+  assert.deepEqual(events,[],'site-write failure must not change target');
+  ctx.wzPost=async f=>{events.push({...f});};
+  await A.wzSaveComfort(false);
+  assert.equal(events[0].optimization_profile,'saving');
+  assert.deepEqual(events.slice(1),['air','reload']);
+  events.length=0;
+  ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
+  await assert.rejects(A.wzSaveComfort(false),/AIR_NVS/);
+  assert.equal(events.length,4,'site write + mode error + readback + restore site');
+  assert.equal(events[2],'reload');
+  assert.equal(events[3].optimization_profile,'balanced');
+  assert.equal(events[3].comfort_min_c,'10');
+  assert.equal(events[3].comfort_max_c,'14');
+  // Ambiguous HTTP response: committed target is visible on status readback.
+  // Undo would pair a new target with the OLD limits (fresh Codex P2 #57).
+  events.length=0;
+  ctx.reloadStatus=async()=>{events.push('reload');ctx.state.status.air.hold_target_c=13;};
+  await A.wzSaveComfort(false);
+  assert.deepEqual(events.slice(1),['air','reload']);
+  assert.equal(events.length,3,'do not compensate a confirmed successful target save');
+  // If Wi-Fi is lost and readback is impossible, don't blindly undo either.
+  events.length=0;
+  ctx.state.status.air.hold_target_c=12;
+  ctx.reloadStatus=async()=>{events.push('reload');ctx.state.status=null;};
+  await assert.rejects(A.wzSaveComfort(false),/unverified/);
+  assert.equal(events.length,3,'unknown air outcome cannot trigger rollback');
+  console.log('wizard rollback-order and ambiguous-response tests OK');
+})().catch(e=>{console.error(e);process.exitCode=1;});

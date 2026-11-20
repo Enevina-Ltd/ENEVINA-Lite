@@ -12,6 +12,7 @@
 #include <memory>
 #include "cottage_config.hpp"
 #include "cottage_site_settings.hpp"
+#include "cottage_secure_ota.hpp"
 #include "cottage_air_service.hpp"
 #include "../../main/weather.hpp"
 #include "cottage_wifi.hpp"
@@ -25,13 +26,18 @@ using enevina::cottage::SiteSettings;
 using enevina::cottage::SettingError;
 namespace {
 constexpr uint32_t kMagic=0x45535431; // "EST1"
-constexpr uint16_t kVersion=2;
+constexpr uint16_t kVersion=5;  // v5 preserves predecessor v4 for OTA rollback
 struct Stored {
     uint32_t magic=kMagic;
     uint16_t version=kVersion;
     uint16_t size=sizeof(SiteSettings);
     SiteSettings settings{};
+    uint64_t rollback_v2_signature=0;
+    uint64_t rollback_v3_signature=0;
+    uint64_t rollback_v4_signature=0; // three predecessor fingerprints travel atomically with v5
 };
+// v3 blobs are read as versioned prefixes, so both the older pre-signature
+// layout and the signature-bearing v3 draft remain upgrade-readable.
 using enevina::cottage::SiteSettingsV1;
 struct StoredV1 {
     uint32_t magic=kMagic;
@@ -89,16 +95,41 @@ bool erase_disposable_cache(const char* nspace,const char* key) {
     if(ok) ESP_LOGW("enevina_site","NVS cache reclaimed: %s/%s",nspace,key);
     return ok;
 }
+// Snapshot rollback-readable settings records before writing v5. Their
+// signatures travel INSIDE the same v5 blob: no split-metadata NVS commit.
+// A missing rollback record is not the same as an unreadable one. Never
+// commit v5 with an unknown baseline: on reboot a recovered old record would
+// otherwise be mistaken for an edit made AFTER the v4 save.
+bool rollback_key_signature(Preferences& p,const char* key,uint64_t& signature) {
+    uint8_t raw[sizeof(Stored)]{};
+    return enevina::cottage::site_rollback_snapshot_signature(
+        p,key,signature,raw,sizeof(raw));
+}
 bool persist(const SiteSettings& s) {
     Stored blob{};
     blob.settings=s;
+    bool snapshot_read_failed=false;
     const auto write_site=[&]() {
         Preferences p;
         if(!p.begin("site",false)) return false;
-        const size_t written=p.putBytes("v2",&blob,sizeof(blob));
-        // The v1 blob is migrated state; drop it once v2 is durable so the
-        // small NVS partition does not hold the same configuration twice.
-        if(written==sizeof(blob) && p.isKey("v1")) p.remove("v1");
+        // Preserve v2/v3/v4 (including the signed, fixed-size v4 layout)
+        // until OTA confirmation. An NVS read error is NOT an absent record.
+        if(!rollback_key_signature(p,"v2",blob.rollback_v2_signature) ||
+           !rollback_key_signature(p,"v3",blob.rollback_v3_signature) ||
+           !rollback_key_signature(p,"v4",blob.rollback_v4_signature)) {
+            snapshot_read_failed=true;
+            p.end();
+            return false;
+        }
+        const size_t written=p.putBytes("v5",&blob,sizeof(blob));
+        if(written==sizeof(blob) && !cottage_ota_confirmation_pending()) {
+            // Reclamation is allowed only AFTER OTA confirmation, when the
+            // earlier firmware cannot be restored by the OTA rollback path.
+            if(p.isKey("v4")) p.remove("v4");
+            if(p.isKey("v3")) p.remove("v3");
+            if(p.isKey("v2")) p.remove("v2");
+            if(p.isKey("v1")) p.remove("v1");
+        }
         p.end();
         return written==sizeof(blob);
     };
@@ -108,7 +139,9 @@ bool persist(const SiteSettings& s) {
     // caches when the *user-initiated durable write* has failed. Don't touch
     // non-cache NVS keys or clear a whole partition.
     return enevina::cottage::persist_with_optional_cache_reclaim(
-        write_site,erase_disposable_cache);
+        write_site,[&](const char* nspace,const char* key) {
+            return !snapshot_read_failed && erase_disposable_cache(nspace,key);
+        });
 }
 const char* kind_name(enevina::cottage::TransferKind k) {
     switch(k) {
@@ -213,23 +246,99 @@ void site_settings_initialize() {
     if(p.begin("site",true)) {
         Stored blob{};
         StoredV1 old{};
-        // v2 blobs written by an earlier layout of SiteSettings are restored
-        // prefix-wise (see restore_site_settings); exact-size matching used to
-        // discard them and reset the owner's configuration on every upgrade.
-        const size_t stored_len=p.getBytesLength("v2");
-        uint8_t raw[sizeof(Stored)]{};
-        SiteSettings restored{};
-        if(stored_len>offsetof(Stored,settings) && stored_len<=sizeof(raw) &&
-           p.getBytes("v2",raw,stored_len)==stored_len) {
+        bool v5_valid=false;
+        // v5 is authoritative unless rollback firmware changed v4/v3/v2.
+        if(p.getBytesLength("v5")==sizeof(blob) &&
+           p.getBytes("v5",&blob,sizeof(blob))==sizeof(blob) &&
+           blob.magic==kMagic && blob.version==kVersion &&
+           blob.size==sizeof(SiteSettings) && acceptable(blob.settings)) {
+            s=blob.settings;
+            loaded_from_nvs=true;
+            v5_valid=true;
+        }
+        const size_t h=offsetof(Stored,settings);
+        // The previous release stores version FOUR with a smaller settings
+        // payload (480 bytes), followed by both older-version fingerprints.
+        // Never require today's sizeof(Stored) when reading the legacy key.
+        uint8_t raw4[sizeof(Stored)]{};
+        const size_t len4=p.getBytesLength("v4");
+        SiteSettings from4{};
+        uint64_t v4_baseline_v2=0,v4_baseline_v3=0;
+        const bool v4_valid=len4>h && len4<=sizeof(raw4) &&
+            p.getBytes("v4",raw4,len4)==len4 &&
+            enevina::cottage::site_restore_v4_record(
+                raw4,len4,from4,v4_baseline_v2,v4_baseline_v3) &&
+            acceptable(from4);
+        // v3 is a full settings record, optionally followed by a prior
+        // v2 fingerprint. Decode only the validated settings prefix.
+        uint8_t raw3[sizeof(Stored)]{};
+        const size_t len3=p.getBytesLength("v3");
+        SiteSettings from3{};
+        bool v3_valid=false;
+        size_t v3_settings_bytes=0;
+        if(len3>h && len3<=sizeof(raw3) &&
+           p.getBytes("v3",raw3,len3)==len3) {
             uint32_t magic=0;uint16_t version=0,size=0;
-            memcpy(&magic,raw,4);memcpy(&version,raw+4,2);memcpy(&size,raw+6,2);
-            if(magic==kMagic && version==kVersion &&
-               size==stored_len-offsetof(Stored,settings) &&
-               enevina::cottage::restore_site_settings(raw+offsetof(Stored,settings),size,restored) &&
-               acceptable(restored)) {
-                s=restored;
-                loaded_from_nvs=true;
+            memcpy(&magic,raw3,4);memcpy(&version,raw3+4,2);
+            memcpy(&size,raw3+6,2);
+            v3_valid=magic==kMagic && version==3 && size>0 &&
+                size<=len3-h &&
+                enevina::cottage::restore_site_settings(raw3+h,size,from3) &&
+                acceptable(from3);
+            // Signature-bearing v3 followed its settings payload with the
+            // *old v2 fingerprint*. Keep that migration provenance: v3 may
+            // have saved during OTA probation, then v2 rollback firmware
+            // edited its own settings before this first v4 boot.
+            if(v3_valid) v3_settings_bytes=size;
+        }
+        // v2 used several supported prefix layouts as fields were appended.
+        uint8_t raw2[sizeof(Stored)]{};
+        const size_t len2=p.getBytesLength("v2");
+        SiteSettings from2{};
+        bool v2_valid=false;
+        if(len2>h && len2<=sizeof(raw2) &&
+           p.getBytes("v2",raw2,len2)==len2) {
+            uint32_t magic=0;uint16_t version=0,size=0;
+            memcpy(&magic,raw2,4);memcpy(&version,raw2+4,2);
+            memcpy(&size,raw2+6,2);
+            v2_valid=magic==kMagic && version==2 &&
+                size<=len2-h &&
+                enevina::cottage::restore_site_settings(raw2+h,size,from2) &&
+                acceptable(from2);
+        }
+        if(v5_valid) {
+            // The newest rollback firmware to save its own older key wins.
+            // Unchanged old keys do not supersede owner changes in v5.
+            if(v4_valid && enevina::cottage::site_rollback_v2_modified(
+                    blob.rollback_v4_signature,raw4,len4)) {
+                s=from4;
+            } else if(v3_valid && enevina::cottage::site_rollback_v2_modified(
+                    blob.rollback_v3_signature,raw3,len3)) {
+                s=from3;
+            } else if(v2_valid && enevina::cottage::site_rollback_v2_modified(
+                    blob.rollback_v2_signature,raw2,len2)) {
+                s=from2;
             }
+        } else if(v4_valid) {
+            // First v4 -> v5 boot: account for edits made by v3/v2 rollback
+            // firmware after v4 was saved, using v4's embedded signatures.
+            s=from4;loaded_from_nvs=true;
+            if(v3_valid && enevina::cottage::site_rollback_v2_modified(
+                    v4_baseline_v3,raw3,len3)) {
+                s=from3;
+            } else if(v2_valid && enevina::cottage::site_rollback_v2_modified(
+                    v4_baseline_v2,raw2,len2)) {
+                s=from2;
+            }
+        } else if(v3_valid) {
+            // First v4 boot: v3's own rollback signature is the only way to
+            // detect edits made by v2 after v3 was written. Do not throw it
+            // away while restoring the v3 settings prefix.
+            s=(v2_valid && enevina::cottage::site_v3_prefer_rollback_v2(
+                   raw3,len3,v3_settings_bytes,raw2,len2)) ? from2 : from3;
+            loaded_from_nvs=true;
+        } else if(v2_valid) {
+            s=from2;loaded_from_nvs=true;
         }
         if(!loaded_from_nvs && p.getBytesLength("v1")==sizeof(old) &&
            p.getBytes("v1",&old,sizeof(old))==sizeof(old) &&

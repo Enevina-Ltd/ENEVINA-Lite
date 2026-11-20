@@ -41,39 +41,47 @@ Setup: 7 days (2026-11-12..18) of real 15-minute Nord Pool day-ahead prices for
 three zones (`tests/data/prices`); **synthetic** building (6 kWh/K, 0.12 kW/K),
 **synthetic** weather (-3 C mean) and an idealized thermostat heat pump using the
 generic cottage capacity/COP curves; target 21 C, limits 19..23 C; example add-on
-0.06 EUR/kWh (0.70 SEK/kWh). Reproduce: `profile_benchmark tests/data/prices`.
+0.06 EUR/kWh (0.70 SEK/kWh). Reproduce: rebuild and run `profile_benchmark tests/data/prices`.
 
-| Zone (7 days, 15-min real prices) | Profile | Cost | kWh | Cost vs thermostat | Heating share | Mode switches | Room min..max C |
-|---|---|---:|---:|---:|---:|---:|---|
-| Finland FI | thermostat (no prices) | 23.34 EUR | 178.7 | 0 % | 93 % | 9 | 20.28..21.50 |
-| Finland FI | comfort | 23.11 EUR | 176.9 | -1.0 % | 92 % | 12 | 20.09..21.51 |
-| Finland FI | balanced | 22.03 EUR | 173.8 | -5.6 % | 90 % | 26 | 19.53..21.53 |
-| Finland FI | saving | 21.48 EUR | 170.3 | -8.0 % | 88 % | 32 | 19.33..21.50 |
-| Denmark DK1 | thermostat (no prices) | 41.71 EUR | 178.7 | 0 % | 93 % | 9 | 20.28..21.50 |
-| Denmark DK1 | comfort | 41.38 EUR | 177.5 | -0.8 % | 92 % | 11 | 19.98..21.50 |
-| Denmark DK1 | balanced | 40.20 EUR | 173.4 | -3.6 % | 90 % | 23 | 19.50..21.51 |
-| Denmark DK1 | saving | 38.92 EUR | 169.7 | -6.7 % | 88 % | 29 | 19.20..21.00 |
-| Sweden SE3 | thermostat (no prices) | 378.34 SEK | 178.7 | 0 % | 93 % | 9 | 20.28..21.50 |
-| Sweden SE3 | comfort | 374.83 SEK | 176.9 | -0.9 % | 92 % | 11 | 19.97..21.50 |
-| Sweden SE3 | balanced | 363.62 SEK | 174.1 | -3.9 % | 90 % | 26 | 19.62..21.53 |
-| Sweden SE3 | saving | 349.54 SEK | 168.0 | -7.6 % | 87 % | 41 | 19.21..21.18 |
+The previous unadjusted cost-percentage table has been withdrawn: its
+runs finished at different indoor temperatures, effectively crediting
+unbilled depletion of stored building heat. The results below instead add
+an **end-of-horizon thermal-energy equivalent** to equalize their terminal
+building energy. This is **an accounting adjustment, not a physically
+simulated recovery schedule**. The repayment uses an idealized terminal COP
+and the last four hours' recorded average electricity price. Neither
+recovery timing nor the actual achievable saving is proven.
+
+| Zone (7 days) | Profile | Raw cost | End C | Heat debt kWh | Equalized cost | vs equalized thermostat |
+|---|---|---:|---:|---:|---:|---:|
+| Finland FI | thermostat (no prices) | 23.34 EUR | 21.42 | 0.00 | 23.34 EUR | +0.0 % |
+| Finland FI | comfort | 23.19 EUR | 21.19 | 1.38 | 23.27 EUR | -0.3 % |
+| Finland FI | balanced | 22.31 EUR | 20.69 | 4.40 | 22.58 EUR | -3.3 % |
+| Finland FI | saving | 21.66 EUR | 20.00 | 8.50 | 22.18 EUR | -5.0 % |
+| Denmark DK1 | thermostat (no prices) | 41.71 EUR | 21.42 | 0.00 | 41.71 EUR | +0.0 % |
+| Denmark DK1 | comfort | 41.10 EUR | 21.31 | 0.64 | 41.16 EUR | -1.3 % |
+| Denmark DK1 | balanced | 40.40 EUR | 20.90 | 3.12 | 40.71 EUR | -2.4 % |
+| Denmark DK1 | saving | 39.24 EUR | 20.48 | 5.67 | 39.79 EUR | -4.6 % |
+| Sweden SE3 | thermostat (no prices) | 378.34 SEK | 21.42 | 0.00 | 378.34 SEK | +0.0 % |
+| Sweden SE3 | comfort | 376.10 SEK | 21.35 | 0.42 | 376.49 SEK | -0.5 % |
+| Sweden SE3 | balanced | 363.83 SEK | 20.48 | 5.62 | 369.02 SEK | -2.5 % |
+| Sweden SE3 | saving | 354.08 SEK | 19.97 | 8.72 | 362.14 SEK | -4.3 % |
 
 Reading it honestly:
 
-* These are **simulated** cost ratios under the assumptions above, not measured
-  savings, and they depend on the price shape of that week and on the synthetic
-  building. Do not quote them to customers.
-* More aggressive profiles shift heating away from expensive slots, use less energy
-  in this setup, mainly because the room runs cooler on average, and switch modes
-  more often (more pump starts: the Supervisor's minimum run/stop times are not
-  modelled in this simulation).
-* **A finding that shaped the design:** with limits acted on exactly at the limit,
-  Saving let the simulated room reach 18.65 C against a 19 C limit - after coasting,
-  a capacity-limited pump could not recover in a cold spell. The per-profile
-  safety margin (0.25 / 0.75 C) fixes this in the simulated weeks (min 19.2 C or
-  above for all zones), but the controller has no knowledge of pump capacity, so
-  **a real undersized pump can still undershoot**; calibrated capacity (or the MPC)
-  is needed for a guarantee.
+* These results are **synthetic and not measured savings**. Even the
+  normalized ratios depend on assumed terminal COP, repayment prices, pump
+  capacity and thermal mass. Do not present them as verified savings.
+* More aggressive profiles can run colder and store less heat. The updated
+  live controller **stops pre-heating at its permitted ceiling** and
+  **resumes heating when the profile-specific coasting allowance ends**.
+  A HOLD at those limits previously allowed a running or stopped pump to
+  continue in the wrong direction.
+* The simulator does not model the Supervisor's actual minimum run/stop
+  timings or prove that a heat pump can restore the terminal energy debt
+  within comfort limits. A real undersized heat pump may still undershoot
+  the selected comfort limit: field validation and calibrated physics
+  remain necessary.
 
 ## Not done
 
@@ -83,3 +91,24 @@ Reading it honestly:
 * The wizard never arms automatic control; there is no "use automatic optimization"
   toggle by design.
 * No field data; no thermal-model calibration.
+
+## OTA storage migration: site/v4 to site/v5
+
+The Shelly measurement-target selection adds a field to persisted site settings,
+so the new firmware writes **site/v5**, not the predecessor's **site/v4**.
+At boot it accepts the verified v5 record or decodes the older v4 prefix
+without losing pump, country, tariff, location, comfort bounds or profile.
+For a migrated v4 record, the previously nonexistent Shelly scope defaults to
+**Unknown**, never automatically claiming pump-only measurement.
+
+During OTA probation, the complete predecessor v4 record remains readable by
+the rollback firmware, alongside any older v2/v3 records. Each v5 save includes
+fingerprints of v2/v3/v4 as one versioned record, enabling a later upgrade to
+recognize settings edited by rollback firmware. A failed NVS snapshot read
+aborts v5 persistence. Old records may be deleted only after OTA confirmation
+when that firmware rollback is no longer possible.
+
+The test harness covers previous v4-size decoding, legacy field preservation,
+corrupt/truncated records, v4 edits after probation rollback, and NVS read
+failures. These are **host simulations**; a physical v4→v5 OTA, power-cut and
+rollback sequence remains to be verified on the ESP32-S3.

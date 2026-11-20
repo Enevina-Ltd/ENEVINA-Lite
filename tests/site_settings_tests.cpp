@@ -217,6 +217,8 @@ static void transfer_schedule_uses_country_time() {
     // Day tariff starts 06:00 local: Sweden is day, a 07:00..22:00 Finnish
     // schedule would also say day, but at 05:00Z (06:00 SE / 07:00 FI) the
     // boundary matters: 04:45Z = 05:45 SE (night) = 06:45 FI.
+    assert(!site_region_total_price(se,1768193100,0.0,total));
+    se.tariff_confirmed=true;
     assert(site_region_total_price(se,1768193100,0.0,total));   // 04:45Z -> 05:45 SE
     assert(near(total,0.10));
     assert(site_region_total_price(se,1768194000,0.0,total));   // 05:00Z -> 06:00 SE
@@ -230,6 +232,8 @@ static void transfer_schedule_uses_country_time() {
     SiteSettings fi=se;
     assert(apply_site_setting(fi,"country","FI")==SettingError::Ok);
     fi.tariff=se.tariff;
+    assert(!site_region_total_price(fi,1768193100,0.0,total));
+    fi.tariff_confirmed=true;
     assert(site_region_total_price(fi,1768193100,0.0,total));   // 06:45 FI -> day
     assert(near(total,0.40));
 }
@@ -391,7 +395,129 @@ static void older_layout_is_restored_not_reset() {
     assert(!restore_site_settings(nullptr,sizeof(buf),out));
 }
 
+static void rollback_edit_overrides_stale_v3() {
+    // Simulate: v3 candidate saves the unchanged old v2 snapshot, then
+    // rollback firmware edits v2 and the new candidate boots again.
+    uint8_t v2[80]{};
+    v2[0]=0x45;v2[1]=0x53;v2[2]=0x54;v2[3]=0x31;
+    const uint64_t candidate_baseline=site_v2_signature(v2,sizeof(v2));
+    assert(candidate_baseline!=0);
+    assert(!site_rollback_v2_modified(candidate_baseline,v2,sizeof(v2)));
+    v2[36]^=0x5a; // changed owner's endpoint/tariff/location payload
+    assert(site_rollback_v2_modified(candidate_baseline,v2,sizeof(v2)));
+    assert(!site_rollback_v2_modified(candidate_baseline,nullptr,0));
+    assert(site_rollback_v2_modified(0,v2,sizeof(v2)));
+    // New v4 holds separate baselines for rollback v2 and rollback v3.
+    uint8_t v3[96]{};
+    v3[2]=3;
+    const uint64_t baseline_v3=site_v2_signature(v3,sizeof(v3));
+    assert(!site_rollback_v2_modified(baseline_v3,v3,sizeof(v3)));
+    v3[40]=0x7a;
+    assert(site_rollback_v2_modified(baseline_v3,v3,sizeof(v3)));
+}
+
+static void v3_provenance_after_rollback_then_v4_upgrade() {
+    // First v4 boot: a signature-bearing v3 snapshot is valid, but the
+    // intervening v2 rollback owner edit must take priority.
+    uint8_t v2[96]{};
+    uint8_t v3[8+96+sizeof(uint64_t)]{};
+    const uint16_t version=3,settings_len=96;
+    std::memcpy(v3+4,&version,sizeof(version));
+    std::memcpy(v3+6,&settings_len,sizeof(settings_len));
+    const uint64_t v2_at_v3_save=site_v2_signature(v2,sizeof(v2));
+    std::memcpy(v3+8+96,&v2_at_v3_save,sizeof(v2_at_v3_save));
+    assert(!site_v3_prefer_rollback_v2(v3,sizeof(v3),96,v2,sizeof(v2)));
+    v2[55]^=0x3d;  // previous firmware changes a real saved setting
+    assert(site_v3_prefer_rollback_v2(v3,sizeof(v3),96,v2,sizeof(v2)));
+    // A pre-signature v3 never claims to know which record is newer.
+    assert(!site_v3_prefer_rollback_v2(v3,sizeof(v3)-8,96,v2,sizeof(v2)));
+    assert(!site_v3_prefer_rollback_v2(v3,7,0,v2,sizeof(v2)));
+    assert(!site_v3_prefer_rollback_v2(nullptr,sizeof(v3),96,v2,sizeof(v2)));
+}
+struct FaultingSnapshot {
+    uint8_t data[32]{};
+    bool exists=true,read_error=false,zero_length_error=false;
+    size_t getBytesLength(const char*) const {return zero_length_error?0:exists?sizeof(data):0;}
+    bool isKey(const char*) const {return exists;}
+    size_t getBytes(const char*,void* out,size_t n) const {
+        if(read_error)return 0;
+        std::memcpy(out,data,n);
+        return n;
+    }
+};
+static void nvs_snapshot_failure_does_not_commit_an_unknown_baseline() {
+    FaultingSnapshot nvs;
+    uint8_t scratch[64]{};
+    uint64_t signature=123;
+    assert(site_rollback_snapshot_signature(nvs,"v2",signature,scratch,sizeof(scratch)));
+    const uint64_t normal=signature;
+    assert(normal!=0);
+    nvs.read_error=true;
+    assert(!site_rollback_snapshot_signature(nvs,"v2",signature,scratch,sizeof(scratch)));
+    assert(signature==0);   // must not be treated as an absent clean key
+    nvs.read_error=false;
+    nvs.zero_length_error=true;
+    assert(!site_rollback_snapshot_signature(nvs,"v2",signature,scratch,sizeof(scratch)));
+    nvs.zero_length_error=false;
+    assert(!site_rollback_snapshot_signature(nvs,"v2",signature,scratch,4));
+    nvs.exists=false;
+    assert(site_rollback_snapshot_signature(nvs,"v2",signature,scratch,sizeof(scratch)));
+    assert(signature==0); // true absence is allowed
+}
+
+
+static void v4_to_v5_preserves_previous_settings_and_rollback() {
+    SiteSettings owner{};
+    std::strcpy(owner.cn105_url,"http://192.168.1.77/events");
+    std::strcpy(owner.shelly_url,"http://192.168.1.53");
+    std::strcpy(owner.fmi_latlon,"61.4638,24.0760");
+    std::strcpy(owner.country,"SE");std::strcpy(owner.price_zone,"SE3");
+    owner.profile=OptimizationProfile::Saving;
+    owner.comfort_min_c=12;owner.comfort_max_c=23;
+    owner.shelly_scope=ShellyScope::HeatPump; // field did not exist in v4
+    owner.tariff.margin_eur_per_kwh=0.039;
+    constexpr size_t legacy_size=
+        (offsetof(SiteSettings,shelly_scope)+alignof(SiteSettings)-1)/
+            alignof(SiteSettings)*alignof(SiteSettings);
+    static_assert(legacy_size<sizeof(SiteSettings),"v4 must be older layout");
+    constexpr size_t disk_size=8+legacy_size+2*sizeof(uint64_t);
+    uint8_t old_v4[disk_size]{};
+    const uint32_t magic=0x45535431;
+    const uint16_t version=4,payload=static_cast<uint16_t>(legacy_size);
+    std::memcpy(old_v4,&magic,4);std::memcpy(old_v4+4,&version,2);
+    std::memcpy(old_v4+6,&payload,2);
+    std::memcpy(old_v4+8,&owner,legacy_size);
+    uint8_t old_v2[32]{};uint8_t old_v3[64]{};
+    const uint64_t b2=site_v2_signature(old_v2,sizeof(old_v2));
+    const uint64_t b3=site_v2_signature(old_v3,sizeof(old_v3));
+    std::memcpy(old_v4+8+legacy_size,&b2,8);
+    std::memcpy(old_v4+8+legacy_size+8,&b3,8);
+    SiteSettings restored{};uint64_t got2=0,got3=0;
+    assert(site_restore_v4_record(old_v4,sizeof(old_v4),restored,got2,got3));
+    assert(std::strcmp(restored.cn105_url,owner.cn105_url)==0);
+    assert(std::strcmp(restored.shelly_url,owner.shelly_url)==0);
+    assert(std::strcmp(restored.fmi_latlon,owner.fmi_latlon)==0);
+    assert(std::strcmp(restored.country,"SE")==0 && std::strcmp(restored.price_zone,"SE3")==0);
+    assert(restored.profile==OptimizationProfile::Saving && near(restored.comfort_min_c,12));
+    assert(near(restored.comfort_max_c,23) && near(restored.tariff.margin_eur_per_kwh,0.039));
+    assert(restored.shelly_scope==ShellyScope::Unknown); // explicit re-confirmation, no inherited pump claim
+    assert(got2==b2 && got3==b3);
+    const uint64_t snapshot_v4=site_v2_signature(old_v4,sizeof(old_v4));
+    assert(!site_rollback_v2_modified(snapshot_v4,old_v4,sizeof(old_v4)));
+    // v5 saves during probation; after rollback v4 firmware edits the prior
+    // v4 key. New v5 must prefer those changed owner settings.
+    old_v4[8+offsetof(SiteSettings,cn105_url)+8]^=1;
+    assert(site_rollback_v2_modified(snapshot_v4,old_v4,sizeof(old_v4)));
+    assert(!site_restore_v4_record(old_v4,sizeof(old_v4)-16,restored,got2,got3));
+    old_v4[4]=9; // invalid version cannot replace v5
+    assert(!site_restore_v4_record(old_v4,sizeof(old_v4),restored,got2,got3));
+}
+
 int main() {
+    v4_to_v5_preserves_previous_settings_and_rollback();
+    v3_provenance_after_rollback_then_v4_upgrade();
+    nvs_snapshot_failure_does_not_commit_an_unknown_baseline();
+    rollback_edit_overrides_stale_v3();
     older_layout_is_restored_not_reset();
     total_price_rules();
     seasonal_and_dst();
