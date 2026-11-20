@@ -31,6 +31,7 @@ AirHistory history;
 MoistureMonitor alarm_engine;
 CottageModeConfig config{};
 uint32_t config_generation=0;
+bool config_storage_verified=true;  // only false after ambiguous NVS partial failure
 AdvisoryLimits warning_limits{};
 AirMoisture indoor_air{},outdoor_air{};
 RuuviV5 last_indoor{},last_outdoor{},discovered{};
@@ -213,6 +214,24 @@ bool save_config() {
     }
     return saved;
 }
+// Failure-atomic as observed by the owner: don't report a rolled-back target
+// until NVS itself proves that the old target, mode and delta are durable.
+// Preferences::put* writes independent keys, so a later failed key can leave
+// earlier changes in flash even when save_config() returned false.
+bool persisted_mode_matches(const CottageModeConfig& cfg) {
+    Preferences p;
+    if(!p.begin("cottage_air",true))return false;
+    const bool present=p.isKey("mode")&&p.isKey("target")&&
+                       p.isKey("occupied")&&p.isKey("dryadd");
+    const bool match=present &&
+        p.getUChar("mode",255)==static_cast<uint8_t>(cfg.mode) &&
+        std::fabs(p.getFloat("target",NAN)-cfg.hold_target_c)<0.001 &&
+        std::fabs(p.getFloat("occupied",NAN)-cfg.occupied_target_c)<0.001 &&
+        std::fabs(p.getFloat("dryadd",NAN)-cfg.drying_delta_c)<0.001;
+    p.end();
+    return match;
+}
+
 void checkpoint() {
     const uint64_t ms=uptime_ms();
     if(ms-last_store_ms<checkpoint_ms)return;
@@ -533,6 +552,10 @@ uint32_t c23_config_generation() {
     if(!guard)return 0;
     lock();const uint32_t g=config_generation;unlock();return g;
 }
+bool c23_config_storage_verified() {
+    if(!guard)return false;
+    lock();const bool ok=config_storage_verified;unlock();return ok;
+}
 CottageModeConfig c23_mode_config() {
     if(!guard) return CottageModeConfig{};
     lock();const auto snapshot=config;unlock();
@@ -567,6 +590,7 @@ void c23_append_status(cJSON* root) {
     cJSON_AddNumberToObject(air,"hold_target_c",config.hold_target_c);
     cJSON_AddNumberToObject(air,"occupied_target_c",config.occupied_target_c);
     cJSON_AddNumberToObject(air,"drying_delta_c",config.drying_delta_c);
+    cJSON_AddBoolToObject(air,"config_storage_verified",config_storage_verified);
     cJSON_AddNumberToObject(air,"warning_rh70",warning_limits.monitor_rh);
     cJSON_AddNumberToObject(air,"warning_rh80",warning_limits.review_rh);
     cJSON_AddNumberToObject(air,"warning_battery_v",warning_limits.low_battery_v);
@@ -733,19 +757,50 @@ void c23_register_routes(WebServer& web) {
         config.hold_target_c=hold;
         config.occupied_target_c=occupied;
         config.drying_delta_c=delta;
-        ++config_generation; // invalidates any in-flight command preparation
+        const CottageModeConfig desired=config;
+        // Do not issue pump writes while the multi-key NVS transaction is
+        // incomplete; RAM is NOT evidence of durable config.
+        config_storage_verified=false;
+        ++config_generation;
         unlock();
-        const bool saved=save_config();
-        if(!saved) {
-            // Never return an NVS failure while silently keeping the rejected
-            // target active in RAM. The wizard compensates its site-side save.
-            lock();config=previous;++config_generation;unlock();
-        } else {
-            log_event(3,static_cast<uint8_t>(config.mode));
+        save_config(); // durable status is proved by readback, not this bool
+        // A late NVS failure can occur AFTER 'target' was already persisted.
+        // Explicit durable readback determines which state can be reported.
+        const bool desired_durable=persisted_mode_matches(desired);
+        bool old_durable=false;
+        if(!desired_durable) {
+            old_durable=persisted_mode_matches(previous);
+            if(!old_durable) {
+                // A partial NVS write is neither the old nor the new mode.
+                // Restore the previous set of keys and verify from flash,
+                // not just by resetting the in-memory configuration.
+                lock();config=previous;++config_generation;unlock();
+                save_config();
+                old_durable=persisted_mode_matches(previous);
+            }
         }
-        web.send(saved?200:500,"application/json",
-                 saved?"{\"saved\":true,\"physical_writes\":false}":
-                       "{\"saved\":false,\"physical_writes\":false}");
+        lock();
+        if(desired_durable) {
+            config=desired;config_storage_verified=true;
+        } else if(old_durable) {
+            config=previous;config_storage_verified=true;
+        } else {
+            // Neither image is durably verified. Keep the requested RAM
+            // config visible but explicitly uncertain; physical commands
+            // remain blocked until a later verified owner save.
+            config=desired;config_storage_verified=false;
+        }
+        ++config_generation;
+        unlock();
+        if(desired_durable) {
+            // The four values this endpoint owns are durable even if a
+            // non-mode preference made the broader save_config() report false.
+            log_event(3,static_cast<uint8_t>(desired.mode));
+        }
+        web.send(desired_durable?200:old_durable?500:503,"application/json",
+                 desired_durable?"{\"saved\":true,\"physical_writes\":false}":
+                 old_durable?"{\"saved\":false,\"physical_writes\":false,\"restored\":true}":
+                             "{\"saved\":false,\"physical_writes\":false,\"durable_state\":\"unknown\"}");
     });
     web.on("/api/air/thresholds",HTTP_POST,[&web](){
         if(!cottage_wifi_require_home_lan(web))return;
