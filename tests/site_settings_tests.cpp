@@ -519,32 +519,122 @@ static void v4_to_v5_preserves_previous_settings_and_rollback() {
 static void comfort_transaction_survives_site_air_split() {
     ComfortTxn tx{};
     tx.mode=2;tx.profile=static_cast<uint8_t>(OptimizationProfile::Saving);
+    tx.previous_profile=static_cast<uint8_t>(OptimizationProfile::Balanced);
+    tx.previous_setup_step=5;
+    tx.previous_target=12;
     tx.target=20;tx.min_c=19;tx.max_c=23;
+    tx.previous_min_c=9;tx.previous_max_c=14;
     assert(valid_comfort_txn(tx));
     SiteSettings before{},after{};
-    before.setup_step=5;after.setup_step=6;
+    before.setup_step=5;
+    before.profile=OptimizationProfile::Balanced;
+    before.comfort_min_c=9;before.comfort_max_c=14;
+    after.setup_step=6;
     after.profile=OptimizationProfile::Saving;
     after.comfort_min_c=19;after.comfort_max_c=23;
     CottageModeConfig air{};
     air.mode=CottageMode::Hold;air.hold_target_c=12;
-    // Crash just after intent: no site change -> never modify air.
     assert(!comfort_site_matches(tx,before));
-    // Crash after site commit: outstanding record MUST restore desired air.
+    assert(!comfort_site_matches(tx,after));
+    assert(comfort_old_site_matches(tx,before));
+    assert(comfort_old_mode_matches(tx,air));
+    tx.phase=static_cast<uint8_t>(ComfortPhase::SiteCommitted);
+    assert(valid_comfort_txn(tx));
     assert(comfort_site_matches(tx,after));
     assert(!comfort_mode_matches(tx,air));
     comfort_apply_target(tx,air);
     assert(comfort_mode_matches(tx,air));
-    // Reboot after both commits: idempotent completion, no extra change.
-    const double prior=air.hold_target_c;
+    const double previous=air.hold_target_c;
     comfort_apply_target(tx,air);
-    assert(air.hold_target_c==prior);
-    // Corrupt marker or wrong mode never initiates recovery.
+    assert(air.hold_target_c==previous);
+    // Changing only the target cannot be mistaken for a saved site blob:
+    // unchanged limits are not a durable commit marker.
+    tx.target=13;tx.previous_target=12;
+    tx.min_c=9;tx.max_c=14;
+    tx.previous_profile=tx.profile;
+    tx.previous_setup_step=6;
+    tx.previous_min_c=9;tx.previous_max_c=14;
+    SiteSettings same=after;
+    same.comfort_min_c=9;same.comfort_max_c=14;
+    assert(valid_comfort_txn(tx));
+    tx.phase=static_cast<uint8_t>(ComfortPhase::Prepared);
+    assert(!comfort_site_matches(tx,same));
+    assert(comfort_old_site_matches(tx,same));
+    tx.phase=static_cast<uint8_t>(ComfortPhase::SiteCommitted);
+    assert(comfort_site_matches(tx,same));
     tx.magic=0;assert(!valid_comfort_txn(tx));
+}
+static void comfort_journal_power_loss_matrix() {
+    // All crash points from initial marker, site commit, air partial write,
+    // subsequent new mode, and unreadable NVS. Pure firmware recovery policy
+    // is tested without assuming that Preferences putBytes succeeded.
+    ComfortTxn tx{};
+    tx.mode=2;tx.profile=uint8_t(OptimizationProfile::Saving);
+    tx.previous_profile=uint8_t(OptimizationProfile::Balanced);
+    tx.previous_setup_step=6;
+    tx.previous_target=12;tx.previous_min_c=9;tx.previous_max_c=14;
+    tx.target=21;tx.min_c=19;tx.max_c=23;
+    SiteSettings site{};
+    site.setup_step=6;site.profile=OptimizationProfile::Saving;
+    site.comfort_min_c=19;site.comfort_max_c=23;
+    CottageModeConfig air{};
+    air.mode=CottageMode::Hold;air.hold_target_c=12;
+    using Action=ComfortRecoveryAction;
+    // Before site persist or before phase transition, never replay target.
+    tx.phase=uint8_t(ComfortPhase::Prepared);
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+    // Verified phase transitions to air completion only after commit evidence.
+    tx.phase=uint8_t(ComfortPhase::SiteCommitted);
+    assert(comfort_recovery_action(tx,site,air,true)==Action::CompleteAirTarget);
+    // At second air commit old or partially updated target is still recovered
+    // only if the versioned site intent is proven committed.
+    air.hold_target_c=21;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::CompleteAirTarget);
+    // Source NVS corruption or a partially written mode image NEVER recovers.
+    assert(comfort_recovery_action(tx,site,air,false)==Action::Block);
+    tx.magic=0;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::Block);
+    tx.magic=0x43545831;
+    // Owner's later different mode cannot be overwritten by old target.
+    air.mode=CottageMode::Occupied;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+    air.mode=CottageMode::Hold;
+    site.profile=OptimizationProfile::Balanced;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+    // Site match is not enough if phase never changed (target-only case).
+    tx.phase=uint8_t(ComfortPhase::Prepared);
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+}
+static void hard_comfort_limits_never_silently_disappear() {
+    assert(comfort_limits_fit_target(19,23,21));
+    assert(!comfort_limits_fit_target(19,23,12));
+    assert(!comfort_limits_fit_target(19,23,23));
+    assert(comfort_limits_fit_target(0,0,12));
+    assert(comfort_limits_fit_target(11.5,12.5,12));
+    assert(!comfort_limits_fit_target(12,13,12));
+    assert(!comfort_limits_fit_target(11,12,12));
+    SiteSettings s{};
+    s.comfort_min_c=19;s.comfort_max_c=23;
+    CottageModeConfig c{};
+    c.mode=CottageMode::Hold;c.hold_target_c=12;
+    assert(!mode_comfort_limits_fit(s,c));
+    c.hold_target_c=21;
+    assert(mode_comfort_limits_fit(s,c));
+    c.mode=CottageMode::Occupied;c.occupied_target_c=17;
+    assert(!mode_comfort_limits_fit(s,c));
+    c.occupied_target_c=21;
+    assert(mode_comfort_limits_fit(s,c));
+    c.mode=CottageMode::Cold;
+    assert(mode_comfort_limits_fit(s,c));
+    c.mode=CottageMode::Drying;
+    assert(mode_comfort_limits_fit(s,c));
 }
 
 int main() {
     v4_to_v5_preserves_previous_settings_and_rollback();
     comfort_transaction_survives_site_air_split();
+    hard_comfort_limits_never_silently_disappear();
+    comfort_journal_power_loss_matrix();
     v3_provenance_after_rollback_then_v4_upgrade();
     nvs_snapshot_failure_does_not_commit_an_unknown_baseline();
     rollback_edit_overrides_stale_v3();
