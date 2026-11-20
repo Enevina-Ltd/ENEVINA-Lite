@@ -78,6 +78,11 @@ bool encrypted_response(const uint8_t* packet,size_t n,
                         const std::array<uint8_t,32>& session_key,Bytes& inner);
 // Strict checksumming and supported AC state field decoder, not a packet receipt timestamp.
 bool parse_state(const uint8_t* frame,size_t n,State& out);
+// Nonsecret validation reason for troubleshooting device-specific read frames.
+// 0 = valid, 1=length, 2=frame magic/device, 3=declared length,
+// 4=not a C0 status, 5=frame checksum, 6=payload CRC, 7=state range.
+uint8_t parse_state_failure_code(const uint8_t* frame,size_t n);
+
 bool valid_state(const State& s);
 // Midea's expected V3 8370 network packet length from the six-byte header.
 bool packet_size(const uint8_t* header,size_t n,size_t& total);

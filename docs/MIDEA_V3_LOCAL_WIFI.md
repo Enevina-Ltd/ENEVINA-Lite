@@ -43,6 +43,31 @@ not connect to a manufacturer service or issue a pump state/write command.
 - No automatic Midea control or background DHCP re-enrollment is enabled.
   A later IP change can be handled through this manual discovery again.
 
+## Verified Lite-to-Midea V3 local telemetry (20 November 2026)
+
+On the Core machine's connected ESP32-S3 N16R8 test board, **Enevina Lite
+firmware 2026112023** successfully read a live status reply from a physical
+Midea OEM test unit over authenticated TCP/6444 V3 LAN. The one Midea
+found by Lite's own UDP discovery matched the Core-verified device ID.
+The prior build could authenticate/decrypt but rejected the first response
+and reported `protocol_failed`; the working correction follows the
+independently verified msmart-ng protocol's ~1 s delay after V3 handshake
+before sending the first state query. The successful authenticated response
+was a C0 state frame with validated mode, power, setpoint, indoor and
+outdoor temperature fields. Private test-site measurements are not published.
+
+Verified: signed A/B OTA install and boot confirmation, fresh V3 telemetry,
+retained configured credentials, existing safe-control gates, no transmitted
+physical control commands, no new password. The test client's OTA publisher
+access was restored to its original LAN-only allowlist afterward.
+
+**Limits:** this proves runtime LAN telemetry using V3 credentials already
+locally provisioned in Core; it does **not** prove initial cloudless
+provisioning, any Midea write/control, the automatic price optimizer, or
+compatibility with all Midea OEM variants. The Midea manual pilot approval
+remained false, and CN105 automation was not armed. A separate physical
+write experiment requires owner approval and model-specific limits.
+
 **State now:** V2/V3 local telemetry and experimental manual control of
 power, mode, setpoint, fan and swing are implemented in firmware source.
 Each manual command is built from fresh pump status, sent only once and
