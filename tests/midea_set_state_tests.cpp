@@ -71,10 +71,9 @@ int main() {
     assert(!set_state_command(s,patch,7,frame));
     patch.setpoint_c=22;
     s.freeze_protection_known=false;
-    s.freeze_protection=false; // msmart-ng fallback for a short C0
-    assert(set_state_command(s,patch,8,frame)); // ordinary temperature only
-    assert(frame[31]==0); // optional 8 C heat preset inactive at 22 C
-    // Short C0 cannot justify arbitrary full-state controls.
+    s.freeze_protection=false; // not a proven false: short C0 omits this flag
+    assert(!set_state_command(s,patch,8,frame)); // whole-state write rejected
+    // The same unknown flag must block every other full-state control.
     patch.changed=ControlFan;patch.fan=80;
     assert(!set_state_command(s,patch,8,frame));
     patch.changed=ControlMode;patch.mode=2;
@@ -96,10 +95,16 @@ int main() {
     assert(!set_state_command(freeze_preset,patch,8,frame));
     State short_after=s;
     short_after.setpoint_c=patch.setpoint_c;
-    assert(preserved_state_observed(s,short_after,patch));
+    assert(!preserved_state_observed(s,short_after,patch));
     short_after.aux_heat=!short_after.aux_heat;
     assert(!preserved_state_observed(s,short_after,patch));
     s.freeze_protection_known=true;
+    short_after=s;short_after.freeze_protection_known=false;
+    assert(!preserved_state_observed(s,short_after,patch));
+    short_after.freeze_protection_known=true;
+    assert(preserved_state_observed(s,short_after,patch));
+    short_after.freeze_protection=true;
+    assert(!preserved_state_observed(s,short_after,patch));
     s.freeze_protection=true;
     s.independent_aux_heat=true;
     s.swing=15;
