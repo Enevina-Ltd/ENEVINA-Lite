@@ -746,6 +746,21 @@ function wzComfortSiteSaved(site,fields){
     bound(a.comfort_min_c)===bound(fields.comfort_min_c) &&
     bound(a.comfort_max_c)===bound(fields.comfort_max_c);
 }
+// A successful mode POST is NVS-verified by the device, but reloadStatus()
+// may discard its own response if a periodic status request overlaps.
+// Update the request's acknowledged target synchronously so Back->Comfort
+// never compares against an earlier saved target. Invalidate older in-flight
+// /api/status responses before they could restore that old target.
+function wzAcceptAirTarget(mode,target,confirmedStatus){
+  state.statusRequestSequence=(state.statusRequestSequence||0)+1;
+  if(confirmedStatus){
+    state.status=confirmedStatus; // independent, durable target readback
+  }else{
+    const previous=state.status||{};
+    state.status={...previous,air:{...(previous.air||{}),
+      [mode===3?'occupied_target_c':'hold_target_c']:target}};
+  }
+}
 async function wzSaveComfort(skip){
   if(skip){await wzPost({setup_step:'6'});return;}
   const air=(state.status&&state.status.air)||{};
@@ -800,6 +815,9 @@ async function wzSaveComfort(skip){
       await airPostLocal('/api/air/config',{mode:String(mode),
         hold:String(mode===2?r.target:air.hold_target_c),delta:String(air.drying_delta_c),
         occupied:String(mode===3?r.target:air.occupied_target_c)});
+      // The successful POST itself confirms a durable write. Update the
+      // in-memory cache BEFORE any discardable status refresh is awaited.
+      wzAcceptAirTarget(mode,r.target,null);
       await reloadStatus();
     } catch(error) {
       // A lost HTTP response is NOT proof that /api/air/config failed: it may
@@ -822,7 +840,7 @@ async function wzSaveComfort(skip){
         // A successful air POST can lose its reply. A verified independent
         // GET is also the new local state for Back -> Comfort. Otherwise the
         // next save may skip a required target change against stale status.
-        state.status=confirmedStatus;
+        wzAcceptAirTarget(mode,r.target,confirmedStatus);
         return;
       }
       if(!observed||observed.mode!==mode||currentTarget!==
