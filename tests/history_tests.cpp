@@ -621,7 +621,67 @@ static void historical_prices_retain_currency_without_cross_currency_mean() {
     CHECK(std::string(history_detail::currency_of_range(sum))=="unknown");
 }
 
+
+static void legacy_event_log_migration_preserves_old_entries() {
+    using namespace persist_detail;
+    MemFile records,legacy_events;
+    legacy_events.present=true;
+    const Header h=header(kEvtMagic,kLegacyEvtDisk);
+    const auto* hp=reinterpret_cast<const uint8_t*>(&h);
+    legacy_events.data.insert(legacy_events.data.end(),hp,hp+sizeof(h));
+    const LegacyHistoryEvent previous[]={
+        {static_cast<uint32_t>(T0),1,0,3},
+        {static_cast<uint32_t>(T0+60),2,1,0},
+        {static_cast<uint32_t>(T0+360),3,1,300},
+        {static_cast<uint32_t>(T0+720),4,0,2}
+    };
+    for(const auto& e:previous) {
+        const auto* p=reinterpret_cast<const uint8_t*>(&e);
+        legacy_events.data.insert(legacy_events.data.end(),p,p+sizeof(e));
+        const uint16_t crc=history_crc16(p,sizeof(e));
+        const auto* c=reinterpret_cast<const uint8_t*>(&crc);
+        legacy_events.data.insert(legacy_events.data.end(),c,c+sizeof(crc));
+    }
+    CHECK(legacy_events.data.size()==sizeof(Header)+sizeof(previous)/sizeof(previous[0])*kLegacyEvtDisk);
+    HistoryStore store;EventLog events;
+    HistoryPersistence migration(records,legacy_events);
+    const auto loaded=migration.load(store,events);
+    CHECK(loaded.event_header_ok && !loaded.event_tail_cut && loaded.events==4);
+    CHECK(events.count()==4);
+    CHECK(events.newest(0).utc==T0+720 && events.newest(0).kind==4 && events.newest(0).value==2);
+    CHECK(events.newest(1).utc==T0+360 && events.newest(1).value==300);
+    CHECK(events.newest(3).utc==T0 && events.newest(3).arg==0);
+    // Even with no newly appended events, load must trigger atomic rewrite
+    // of legacy events to the current format. No data is silently discarded.
+    CHECK(migration.flush(store,events));
+    Header migrated{};
+    std::memcpy(&migrated,legacy_events.data.data(),sizeof(migrated));
+    CHECK(migrated.record_size==kEvtDisk);
+    CHECK(legacy_events.replaces>0);
+    HistoryStore reread;EventLog old_log;
+    HistoryPersistence restored(records,legacy_events);
+    const auto after=restored.load(reread,old_log);
+    CHECK(after.event_header_ok && after.events==4 && !after.event_tail_cut);
+    CHECK(old_log.newest(0).utc==T0+720 && old_log.newest(0).arg==0);
+    CHECK(old_log.newest(1).value==300);
+    // A torn old-format file still returns the valid prefix and migrates it.
+    MemFile truncated=legacy_events;truncated.data.clear();
+    truncated.data.insert(truncated.data.end(),hp,hp+sizeof(h));
+    const auto* p=reinterpret_cast<const uint8_t*>(&previous[0]);
+    truncated.data.insert(truncated.data.end(),p,p+sizeof(previous[0]));
+    uint16_t crc=history_crc16(p,sizeof(previous[0]));
+    const auto* cp=reinterpret_cast<const uint8_t*>(&crc);
+    truncated.data.insert(truncated.data.end(),cp,cp+2);
+    truncated.data.push_back(0xAA);
+    HistoryStore sr;EventLog er;HistoryPersistence pr(records,truncated);
+    const auto r=pr.load(sr,er);
+    CHECK(r.event_header_ok&&r.event_tail_cut&&r.events==1);
+    CHECK(pr.flush(sr,er));
+    CHECK(er.newest(0).utc==T0);
+}
+
 int main() {
+    legacy_event_log_migration_preserves_old_entries();
     measured_energy_requires_verifiable_coverage();
     historical_prices_retain_currency_without_cross_currency_mean();
     ring_semantics();

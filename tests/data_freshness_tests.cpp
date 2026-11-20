@@ -150,7 +150,8 @@ static void untrusted_clock() {
 static void json_output() {
     const Freshness f=assess_freshness(healthy());
     std::string out;
-    freshness_json(f,true,[&](const char* p){out+=p;});
+    freshness_json(f,true,"READY",[&](const char* p){out+=p;});
+    CHECK(out.find("\"control_gate\":\"READY\"")!=std::string::npos);
     enevina::met_detail::Json v{out.data(),out.data()+out.size()};
     CHECK(v.value());v.ws();CHECK(v.cur==v.end);
     CHECK(out.find("\"fallback\":\"price_control\"")!=std::string::npos&&out.find("\"control_armed\":true")!=std::string::npos);
@@ -158,7 +159,8 @@ static void json_output() {
     CHECK(out.find("nan")==std::string::npos);
     FreshnessInputs bad=healthy();bad.wifi_ok=false;bad.price_current_valid=false;bad.price_error=103;
     std::string o2;
-    freshness_json(assess_freshness(bad),false,[&](const char* p){o2+=p;});
+    freshness_json(assess_freshness(bad),false,"DISABLED",[&](const char* p){o2+=p;});
+    CHECK(o2.find("\"control_gate\":\"DISABLED\"")!=std::string::npos);
     enevina::met_detail::Json v2{o2.data(),o2.data()+o2.size()};
     CHECK(v2.value()&&o2.find("\"offline\":true")!=std::string::npos&&o2.find("\"state\":\"error\"")!=std::string::npos);
 }

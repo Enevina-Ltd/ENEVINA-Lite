@@ -30,7 +30,7 @@ const A=ctx.api;
 
 const fmt={time:u=>'T'+u,age:s=>s+'s',error:c=>'E'+c,kib:b=>Math.round(b/1024)+' KiB'};
 const src_=(id,state,o={})=>({id,state,last_ok_utc:0,valid_until_utc:0,age_s:-1,error:0,...o});
-const report=(o={})=>({clock_ok:true,wifi_ok:true,offline:false,fallback:'price_control',control_armed:false,last_contact_utc:1000,next_expiry_utc:5000,
+const report=(o={})=>({clock_ok:true,wifi_ok:true,offline:false,fallback:'price_control',control_armed:false,control_gate:'READY',last_contact_utc:1000,next_expiry_utc:5000,
   sources:[src_('prices','ok',{valid_until_utc:5000,last_ok_utc:900}),src_('weather','ok',{valid_until_utc:6000,last_ok_utc:800}),
            src_('sensor','ok',{age_s:20}),src_('pump','ok',{age_s:5})],...o});
 
@@ -66,7 +66,16 @@ let disabled=A.frOverall(report(),fmt);
 assert.equal(disabled.kind,'warn');assert(disabled.headline.includes('Vain lämmitysehdotus'));
 assert(disabled.detail.includes('omilla asetuksillaan')&&disabled.detail.includes('ei lähetä komentoja'));
 let linkDown=A.frOverall(report({control_armed:true,sources:report().sources.map(x=>x.id==='pump'?{...x,state:'stale'}:x)}),fmt);
-assert(linkDown.detail.includes('yhteys ei ole todennetusti kunnossa'));
+assert(linkDown.headline.includes('Ohjausportti sallii ohjauksen'));
+assert(linkDown.detail.includes('lisätelemetria on vanhentunut'));
+// Legacy CN105 can operate through fresh direct GET/readback despite stale
+// optional SSE telemetry. Never confuse telemetry freshness with the gate.
+const gateBlocked=A.frOverall(report({control_armed:true,control_gate:'INPUTS_UNVERIFIED',
+  sources:report().sources.map(x=>x.id==='pump'?{...x,state:'stale'}:x)}),fmt);
+assert(gateBlocked.headline.includes('Vain lämmitysehdotus'));
+assert(gateBlocked.detail.includes('Ohjausportti ei tällä hetkellä salli'));
+assert(A.frOverall(report({control_armed:true,control_gate:'NO_PROPOSAL'}),fmt).headline.includes('Vain lämmitysehdotus'));
+assert(A.frOverall(report({control_armed:true,control_gate:'MODE_DWELL'}),fmt).kind==='ok');
 o=A.frOverall(report({offline:true,wifi_ok:false}),fmt);
 assert.equal(o.kind,'warn');assert(o.detail.includes('T5000')&&o.detail.includes('Wi-Fi-pumppuyhteyttä')); // cached data is not working pump control
 o=A.frOverall(report({offline:true,wifi_ok:false,next_expiry_utc:0}),fmt);

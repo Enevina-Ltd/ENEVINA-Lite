@@ -68,3 +68,24 @@ not gate the proposal (the controller does not use outdoor temperature).
 * Release notes in the manifest, a separate "check only" mode, and an update history
   list are not implemented.
 * The first update of a device with no confirmed version is not logged.
+
+## Legacy events.bin migration and real command gate
+
+Previous devices stored history events as an 8-byte event plus 2-byte CRC
+(record_size=10); OTA confirmation added a 32-bit argument and increased the
+disk record to 14 bytes. The loader accepts both valid disk sizes, checks each
+legacy CRC, copies the original UTC/kind/source/value to the new type with
+`arg=0`, retains valid records before a torn tail, and atomically rewrites
+the event log to the new format on its next successful flush. Existing boot,
+outage and command records are **not deleted just because firmware changed**.
+Host tests construct actual old-format event bytes and verify migration,
+reloading, CRC and a torn old-format tail. This is not a physical flash test.
+
+The freshness report exposes the controller's current `control_gate` value,
+which is obtained from `cottage_control_tick` rather than inferred from the
+optional SSE/UART telemetry snapshot. Stale auxiliary telemetry is shown
+separately and does **not** imply that a CN105 path using successful direct
+HTTP GET/readback cannot send commands. Conversely, a fresh telemetry snapshot
+never proves that commands are authorized: disabled, no-proposal and unverified
+gates are explained as *suggestion only*. Neither report changes or bypasses
+the existing controller safety decisions.

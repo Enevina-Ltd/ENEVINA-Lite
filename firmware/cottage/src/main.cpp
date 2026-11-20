@@ -1770,7 +1770,9 @@ static void freshness_endpoint() {
     web.send(200,"application/json; charset=utf-8","");
     char chunk[512];
     size_t used=0;
-    freshness_json(f,in.control_armed,[&](const char* part) {
+    freshness_json(f,in.control_armed,
+        control_gate_name(static_cast<ControlBlock>(control_gate.load())),
+        [&](const char* part) {
         const size_t len=strlen(part);
         if(used+len>=sizeof(chunk)) {chunk[used]=0;web.sendContent(chunk);used=0;}
         memcpy(chunk+used,part,len);used+=len;

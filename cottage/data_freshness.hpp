@@ -141,13 +141,17 @@ inline Freshness assess_freshness(const FreshnessInputs& in) {
 }
 
 template<class Emit>
-inline void freshness_json(const Freshness& f,bool control_armed,Emit emit) {
-    char b[260];
+inline void freshness_json(const Freshness& f,bool control_armed,
+                           const char* control_gate,Emit emit) {
+    char b[280];
+    // Gate is the live controller's own ControlBlock, not inferred from
+    // optional SSE/UART data freshness. No commands are claimed without it.
     std::snprintf(b,sizeof(b),
         "{\"clock_ok\":%s,\"wifi_ok\":%s,\"offline\":%s,\"fallback\":\"%s\",\"control_armed\":%s,"
-        "\"last_contact_utc\":%lld,\"next_expiry_utc\":%lld,\"sources\":[",
+        "\"control_gate\":\"%s\",\"last_contact_utc\":%lld,\"next_expiry_utc\":%lld,\"sources\":[",
         f.clock_ok?"true":"false",f.wifi_ok?"true":"false",f.offline?"true":"false",
         fallback_name(f.fallback),control_armed?"true":"false",
+        control_gate?control_gate:"UNKNOWN",
         static_cast<long long>(f.last_contact_utc),static_cast<long long>(f.next_expiry_utc));
     emit(b);
     const struct {const char* id;const SourceStatus* s;} rows[]={

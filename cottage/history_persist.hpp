@@ -58,6 +58,11 @@ struct Header {
 static_assert(sizeof(Header)==8,"header layout");
 constexpr size_t kRecDisk=sizeof(HistoryRecord)+2;
 constexpr size_t kEvtDisk=sizeof(HistoryEvent)+2;
+// First released history image stored events WITHOUT the 32-bit OTA arg.
+// Keep this exact disk layout decode-only to preserve existing outage logs.
+struct LegacyHistoryEvent {uint32_t utc;uint8_t kind;uint8_t source;int16_t value;};
+static_assert(sizeof(LegacyHistoryEvent)==8,"legacy event ABI changed");
+constexpr size_t kLegacyEvtDisk=sizeof(LegacyHistoryEvent)+2;
 
 template<class T>
 inline void encode(const T& v,uint8_t* out) {
@@ -109,11 +114,23 @@ public:
         }
         // ---- events ----
         std::vector<HistoryEvent> list;
-        if(evt_.exists()&&header_ok(evt_,kEvtMagic,kEvtDisk)) {
+        const bool new_events=evt_.exists()&&header_ok(evt_,kEvtMagic,kEvtDisk);
+        const bool old_events=!new_events&&evt_.exists()&&
+            header_ok(evt_,kEvtMagic,kLegacyEvtDisk);
+        if(new_events||old_events) {
             r.event_header_ok=true;
-            const bool clean=scan(evt_,kEvtDisk,[&](const uint8_t* p)->bool {
-                HistoryEvent e;
-                if(!decode(p,e)) return false;
+            const size_t disk=old_events?kLegacyEvtDisk:kEvtDisk;
+            const bool clean=scan(evt_,disk,[&](const uint8_t* bytes)->bool {
+                HistoryEvent e{};
+                if(old_events) {
+                    uint16_t crc=0;
+                    std::memcpy(&crc,bytes+sizeof(LegacyHistoryEvent),sizeof(crc));
+                    if(crc!=history_crc16(bytes,sizeof(LegacyHistoryEvent)))return false;
+                    LegacyHistoryEvent prior{};
+                    std::memcpy(&prior,bytes,sizeof(prior));
+                    e.utc=prior.utc;e.kind=prior.kind;e.source=prior.source;
+                    e.value=prior.value;e.arg=0;
+                } else if(!decode(bytes,e)) return false;
                 list.push_back(e);
                 return true;
             });
@@ -122,7 +139,9 @@ public:
         events.restore(list.data(),list.size());
         r.events=events.count();
         evt_synced_total_=events.total();
-        evt_dirty_=!r.event_header_ok||r.event_tail_cut;
+        // Rewrite migrated old events atomically on next flush, preserving
+        // timestamps and prior command/outage records without discarding logs.
+        evt_dirty_=old_events||!r.event_header_ok||r.event_tail_cut;
         return r;
     }
 

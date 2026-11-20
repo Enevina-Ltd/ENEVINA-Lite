@@ -23,7 +23,8 @@ int main(int argc,char** argv) {
     in.pump_configured=true;in.pump_fresh=true;in.pump_age_s=5;
     in.control_armed=std::atoi(argv[7])!=0;
     const Freshness f=assess_freshness(in);
-    freshness_json(f,in.control_armed,[](const char* p){std::fputs(p,stdout);});
+    // Synthetic CLI has no physical control gate; never claim one.
+    freshness_json(f,in.control_armed,"UNKNOWN",[](const char* p){std::fputs(p,stdout);});
     std::fputc('\n',stdout);
     return 0;
 }
