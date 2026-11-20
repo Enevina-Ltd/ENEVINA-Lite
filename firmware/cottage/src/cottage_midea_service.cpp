@@ -3,9 +3,12 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
+#include <array>
 #include <IPAddress.h>
 #include <esp_log.h>
 #include <cstring>
+#include <cstdio>
 #include <atomic>
 #include <ctime>
 #include <cstdlib>
@@ -19,6 +22,7 @@
 #include "cottage_wifi.hpp"
 #include "cottage_network_budget.hpp"
 #include "pump/midea_config_migration.hpp"
+#include "pump/midea_discovery.hpp"
 
 namespace {
 // Keep the exact V3 legacy NVS layout readable after upgrading older Lite
@@ -317,6 +321,112 @@ void cottage_midea_service_initialize() {
 }
 void cottage_midea_service_register_routes(WebServer& web) {
     web.on("/api/midea/status",HTTP_GET,[&web](){if(cottage_wifi_require_home_lan(web))send_status(web);});
+    web.on("/api/midea/discover",HTTP_POST,[&web](){
+        // Discovery is an explicit owner action on trusted home LAN, not the
+        // open setup AP. Existing per-boot CSRF token, no new login or PIN.
+        if(!cottage_wifi_require_home_lan(web))return;
+        if(WiFi.status()!=WL_CONNECTED || cottage_wifi_request_via_ap(web) ||
+           !web.hasArg("token") ||
+           !enevina::cottage::c23_authorize_local_setting(
+               web.arg("token").c_str())) {
+            web.send(403,"application/json","{\"error\":\"TOKEN\"}");
+            return;
+        }
+        if(cottage_ota_network_maintenance()) {
+            web.send(503,"application/json","{\"error\":\"OTA_BUSY\"}");
+            return;
+        }
+        // One bounded UDP discovery pass. It cannot enroll a device, write
+        // NVS, authenticate against a cloud, or send an HVAC command.
+        enevina_firmware::NetworkBudgetLease lease(100,64*1024,16*1024);
+        if(!lease.held()) {
+            web.send(503,"application/json","{\"error\":\"NETWORK_BUSY\"}");
+            return;
+        }
+        WiFiUDP udp;
+        if(!udp.begin(0)) {
+            web.send(503,"application/json","{\"error\":\"UDP\"}");
+            return;
+        }
+        const auto ip=WiFi.localIP();
+        const auto mask=WiFi.subnetMask();
+        const IPAddress directed(
+            static_cast<uint8_t>(ip[0] | ~mask[0]),
+            static_cast<uint8_t>(ip[1] | ~mask[1]),
+            static_cast<uint8_t>(ip[2] | ~mask[2]),
+            static_cast<uint8_t>(ip[3] | ~mask[3]));
+        // Both Midea discovery ports. 255.255.255.255 works on LANs which
+        // reject directed broadcast. Failed sends do not create a false hit.
+        const IPAddress broadcasts[2]={{255,255,255,255},directed};
+        for(const auto& dest:broadcasts)
+            for(const uint16_t port:{6445u,20086u}) {
+                if(udp.beginPacket(dest,port)) {
+                    udp.write(enevina::midea::discovery_request.data(),
+                              enevina::midea::discovery_request.size());
+                    udp.endPacket();
+                }
+            }
+        struct Hit {IPAddress ip;uint64_t id;uint8_t protocol;};
+        std::array<Hit,8> hits{};
+        size_t count=0;
+        bool truncated=false;
+        const uint32_t begin=millis();
+        std::array<uint8_t,512> reply{};
+        while(static_cast<uint32_t>(millis()-begin)<1350u) {
+            const int packet_size=udp.parsePacket();
+            if(packet_size<1) {delay(15);continue;}
+            const IPAddress src=udp.remoteIP();
+            if(packet_size>static_cast<int>(reply.size())) {
+                udp.flush();
+                continue;
+            }
+            const int received=udp.read(reply.data(),reply.size());
+            if(received!=packet_size)continue;
+            // Reject responses from off-LAN hosts even if they resemble
+            // Midea: this is a local setup shortlist only.
+            bool on_subnet=true;
+            for(uint8_t n=0;n<4;n++)
+                on_subnet=on_subnet &&
+                    (static_cast<uint8_t>(src[n]&mask[n])==
+                     static_cast<uint8_t>(ip[n]&mask[n]));
+            if(!on_subnet || src==ip)continue;
+            enevina::midea::DiscoveredDevice candidate{};
+            if(!enevina::midea::parse_discovery_reply(
+                    reply.data(),static_cast<size_t>(received),candidate))
+                continue;
+            bool duplicate=false;
+            for(size_t i=0;i<count;i++)
+                duplicate=duplicate ||
+                    (hits[i].id==candidate.id &&
+                     hits[i].protocol==candidate.protocol);
+            if(duplicate)continue;
+            if(count==hits.size()) {truncated=true;continue;}
+            hits[count++]={src,candidate.id,candidate.protocol};
+        }
+        udp.stop();
+        // Bounded and escaped-by-construction response; no Wi-Fi credential,
+        // V3 token/key, MAC address, SSID, or sensor data is returned.
+        char json[1100]{};
+        size_t used=0;
+        auto add=[&](const char* format,auto... args)->bool{
+            if(used>=sizeof(json))return false;
+            const int n=std::snprintf(json+used,sizeof(json)-used,format,args...);
+            if(n<0 || static_cast<size_t>(n)>=sizeof(json)-used)return false;
+            used+=static_cast<size_t>(n);
+            return true;
+        };
+        bool ok=add("{\"devices\":[");
+        for(size_t i=0;i<count && ok;i++)
+            ok=add("%s{\"ip\":\"%u.%u.%u.%u\",\"protocol\":%u,\"device_id\":\"%llu\"}",
+                   i?",":"",hits[i].ip[0],hits[i].ip[1],
+                   hits[i].ip[2],hits[i].ip[3],
+                   static_cast<unsigned>(hits[i].protocol),
+                   static_cast<unsigned long long>(hits[i].id));
+        if(ok)ok=add("],\"count\":%u,\"truncated\":%s}",
+                      static_cast<unsigned>(count),truncated?"true":"false");
+        web.sendHeader("Cache-Control","no-store");
+        web.send(ok?200:500,"application/json",ok?json:"{\"error\":\"BUFFER\"}");
+    });
     web.on("/api/midea/config",HTTP_POST,[&web](){
         // This is a development-only LAN enrollment endpoint. Reject open
         // setup-AP requests; secrets must not travel on the open Wi-Fi.
