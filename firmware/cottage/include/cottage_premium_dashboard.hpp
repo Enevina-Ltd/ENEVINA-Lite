@@ -1509,5 +1509,207 @@ setInterval(reloadMidea,30000);
 setInterval(async()=>{await reloadPrices();await reloadWeather();await reloadPlan();},60000);
 setInterval(reloadHistory,180000);
 </script>
+<script data-part="mpc">
+'use strict';
+// Predictive control (MPC) card on the Optimization view. Read-only: it
+// only GETs /api/mpc. FI+EN texts are bundled here. Predicted energy and
+// cost appear only when the backend marks them trustworthy (a calibrated
+// model AND an owner-confirmed heat-pump-only meter). No savings are
+// calculated or claimed. Colours come from the theme variables, so the
+// automatic night theme applies.
+(function(){
+const MT={
+fi:{title:'Ennakoiva säätö (MPC)',active:'Käytössä',calibrating:'Kalibroidaan',fallback:'Varatila',
+ source:'Ohjauksen lähde nyt',MPC:'MPC-suunnitelma',PRICE_CONTROL:'Hintaohjaus',THERMOSTAT:'Termostaatti',NONE:'Ei ehdotusta',
+ calib:'Rakennusmallin kalibrointi',samples:'Mittausjaksoja',windows:'Ennustetestit',model:'Tunnistettu malli',
+ tau:'Aikavakio',lift:'Lämmityksen nosto',delay:'Käynnistysviive',after:'Jälkilämpö',valid:'Ennustevirhe (testi)',
+ bias:'harha',margin:'Turvamarginaali',nomodel:'Mallia ei vielä ole: säätö käyttää hintaohjausta ja termostaattia, ja malli oppii samalla mittauksista.',
+ cop:'COP:ta ei arvioida: se vaatisi lämpöenergian mittauksen.',bounds:'Alarajat (COP ≥ 1)',
+ plan:'Lämmityssuunnitelma',updated:'Päivitetty',horizon:'Ennustejakso',next:'Seuraava päätös',
+ heat:'HEAT 16 °C',off:'OFF',confirmed:'pumppu vahvisti tilan',unconfirmed:'ei vielä vahvistettu pumpulta',
+ shadow:'varjotila: komentoja ei lähetetä',noplan:'Voimassa olevaa MPC-suunnitelmaa ei ole tälle varttitunnille.',
+ energy:'Ennustettu sähkö ja kustannus',energyno:'Ei näytetä: lämpöpumppukohtaista sähkömittaria ei ole vahvistettu, joten malli käyttää vain suhteellista energiaa.',
+ meter:'Mitattu kulutus nyt (Shelly)',scopeU:'mittauskohde vahvistamaton – voi sisältää muuta kulutusta',scopeP:'vain lämpöpumppu',
+ measured:'Mitattu sisälämpö',predicted:'Mallin ennuste (testi)',planned:'Suunniteltu sisälämpö',outdoor:'Ulkolämpö (MET Norway)',
+ price:'Kokonaishinta',heating:'Lämmitys (suunnitelma)',band:'Mukavuusalue',now:'nyt',h:'h',
+ err:'MPC-tietoja ei saatu laitteelta.',sim:'Kaikki luvut ovat laitteen omia laskelmia; säästöjä ei väitetä.',
+ limit_MAX_48H:'48 h',limit_PRICES_END:'hinnat loppuvat',limit_PRICE_GAP:'hinnoissa aukko',limit_BAD_PRICE:'hinta ei kelpaa',
+ limit_WEATHER_END:'sääennuste loppuu',limit_WEATHER_GAP:'sääennusteessa aukko',limit_NONE:'—'},
+en:{title:'Predictive control (MPC)',active:'Active',calibrating:'Calibrating',fallback:'Fallback',
+ source:'Control source now',MPC:'MPC plan',PRICE_CONTROL:'Price control',THERMOSTAT:'Thermostat',NONE:'No proposal',
+ calib:'Building model calibration',samples:'Measured slots',windows:'Prediction tests',model:'Identified model',
+ tau:'Time constant',lift:'Heating lift',delay:'Start delay',after:'After-heat',valid:'Prediction error (test)',
+ bias:'bias',margin:'Safety margin',nomodel:'No model yet: control uses price control and the thermostat while the model learns from measurements.',
+ cop:'COP is not estimated: that would need a heat-energy measurement.',bounds:'Lower bounds (COP ≥ 1)',
+ plan:'Heating plan',updated:'Updated',horizon:'Horizon',next:'Next decision',
+ heat:'HEAT 16 °C',off:'OFF',confirmed:'confirmed by the pump',unconfirmed:'not yet confirmed by the pump',
+ shadow:'shadow mode: no commands are sent',noplan:'There is no valid MPC plan for this quarter-hour.',
+ energy:'Predicted electricity and cost',energyno:'Not shown: no heat-pump-only meter has been confirmed, so the model uses relative energy only.',
+ meter:'Measured consumption now (Shelly)',scopeU:'measurement scope unconfirmed – may include other loads',scopeP:'heat pump only',
+ measured:'Measured indoor',predicted:'Model prediction (test)',planned:'Planned indoor',outdoor:'Outdoor (MET Norway)',
+ price:'Total price',heating:'Heating (plan)',band:'Comfort band',now:'now',h:'h',
+ err:'MPC data could not be read from the device.',sim:'All numbers are the device’s own calculations; no savings are claimed.',
+ limit_MAX_48H:'48 h',limit_PRICES_END:'prices end',limit_PRICE_GAP:'gap in prices',limit_BAD_PRICE:'invalid price',
+ limit_WEATHER_END:'weather forecast ends',limit_WEATHER_GAP:'gap in weather forecast',limit_NONE:'—'}};
+const WHY={
+fi:{NONE:'',MODEL_LEARNING:'malli oppii vielä mittauksista',MODEL_VALIDATING:'mallin ennusteita testataan',
+ MODEL_DEGRADED:'malli ei enää ennusta riittävän tarkasti',NO_HEATING_MODE:'valittu tila ei lämmitä',
+ TARGET_OUTSIDE_MODEL:'tavoite ei ole HEAT 16 °C -mallin alueella',OUTDOOR_OUTSIDE_LEARNED_RANGE:'ennustettu ulkolämpö on opitun alueen ulkopuolella',
+ FORECAST_UNAVAILABLE:'hinta- tai sääennuste puuttuu tai on vanhentunut',HORIZON_TOO_SHORT:'ennustejakso on liian lyhyt',
+ PUMP_STATE_UNKNOWN:'pumpun tilaa ei ole luettu',TEMPERATURE_STALE:'sisälämpötila puuttuu tai on vanha',
+ SOLVER_FAILED:'suunnitelmaa ei löytynyt rajoissa',SOLVER_TIMEOUT:'laskenta-aika ylittyi',PLAN_STALE:'suunnitelma on vanhentunut',
+ PLAN_INPUTS_CHANGED:'tila tai asetukset muuttuivat',BELOW_COMFORT_FLOOR:'huone on mukavuusalueen alapuolella',
+ ABOVE_COMFORT_CEILING:'huone on mukavuusalueen yläpuolella',RESOURCE_LIMIT:'muistiraja',SYNTHETIC_MODEL_ONLY:'vain testimalli'},
+en:{NONE:'',MODEL_LEARNING:'the model is still learning from measurements',MODEL_VALIDATING:'the model’s predictions are being tested',
+ MODEL_DEGRADED:'the model no longer predicts accurately enough',NO_HEATING_MODE:'the selected mode does not heat',
+ TARGET_OUTSIDE_MODEL:'the target is outside the HEAT 16 °C model range',OUTDOOR_OUTSIDE_LEARNED_RANGE:'forecast outdoor temperature is outside the learned range',
+ FORECAST_UNAVAILABLE:'price or weather forecast missing or stale',HORIZON_TOO_SHORT:'forecast horizon too short',
+ PUMP_STATE_UNKNOWN:'pump state has not been read',TEMPERATURE_STALE:'indoor temperature missing or stale',
+ SOLVER_FAILED:'no plan within the limits',SOLVER_TIMEOUT:'computation time exceeded',PLAN_STALE:'plan is stale',
+ PLAN_INPUTS_CHANGED:'mode or settings changed',BELOW_COMFORT_FLOOR:'room is below the comfort band',
+ ABOVE_COMFORT_CEILING:'room is above the comfort band',RESOURCE_LIMIT:'memory limit',SYNTHETIC_MODEL_ONLY:'test model only'}};
+const STATE={fi:{NO_DATA:'ei mittauksia',LEARNING:'oppii',VALIDATING:'testataan',CALIBRATED:'kalibroitu',DEGRADED:'heikentynyt'},
+ en:{NO_DATA:'no measurements',LEARNING:'learning',VALIDATING:'testing',CALIBRATED:'calibrated',DEGRADED:'degraded'}};
+const lang=()=>uiLanguage==='en'?'en':'fi';
+const t=k=>MT[lang()][k]??MT.fi[k]??k;
+const num=v=>typeof v==='number'&&Number.isFinite(v)?v:null;
+const f=(v,d)=>{const n=num(v);return n===null?'—':n.toLocaleString(uiLocale(),{minimumFractionDigits:d,maximumFractionDigits:d});};
+const hm=u=>new Intl.DateTimeFormat(uiLocale(),{timeZone:uiTimeZone(),hour:'2-digit',minute:'2-digit'}).format(new Date(u*1000));
+const day=u=>new Intl.DateTimeFormat(uiLocale(),{timeZone:uiTimeZone(),weekday:'short',hour:'2-digit',minute:'2-digit'}).format(new Date(u*1000));
+const NS='http://www.w3.org/2000/svg';
+let data=null;
+const st=document.createElement('style');
+st.textContent='#mpc-card .mpc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:12px 0}'+
+ '#mpc-card .mpc-box{border:1px solid var(--edge);border-radius:14px;padding:12px;min-width:0}'+
+ '#mpc-card .mpc-k{font-size:12px;color:var(--muted)}#mpc-card .mpc-v{font-size:18px;font-weight:650;color:var(--ink);overflow-wrap:anywhere}'+
+ '#mpc-card svg{width:100%;height:auto;display:block}#mpc-card .mpc-legend{display:flex;flex-wrap:wrap;gap:10px;font-size:12px;color:var(--muted);margin-top:6px}'+
+ '#mpc-card .mpc-sw{display:inline-block;width:14px;height:4px;border-radius:2px;margin-right:5px;vertical-align:middle}'+
+ '@media(max-width:600px){#mpc-card .mpc-grid{grid-template-columns:repeat(1,minmax(0,1fr))}}';
+document.head.appendChild(st);
+function node(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e;}
+function box(k,v,sub){const b=node('div','mpc-box');b.append(node('div','mpc-k',k),node('div','mpc-v',v));if(sub)b.append(node('div','tiny muted',sub));return b;}
+function svg(tag,a){const e=document.createElementNS(NS,tag);for(const k in a)e.setAttribute(k,String(a[k]));return e;}
+function card(){
+  let c=document.getElementById('mpc-card');
+  if(c)return c;
+  const grid=document.querySelector('#view-plan .grid');
+  if(!grid)return null;
+  c=document.createElement('article');c.className='card span12';c.id='mpc-card';
+  grid.prepend(c);return c;
+}
+function chart(d){
+  const W=720,H=300,L=44,R=44,T=12,TB=196,PB0=214,PB1=286;
+  const past=(d.trend||[]).filter(p=>num(p.measured_c)!==null);
+  const plan=d.plan&&d.plan.valid?(d.plan.slots||[]):[];
+  if(!past.length&&!plan.length)return null;
+  const t0=past.length?past[0].utc-900:d.now_utc;
+  const t1=plan.length?plan[plan.length-1].utc+900:d.now_utc+3600;
+  const x=u=>L+(u-t0)/(t1-t0)*(W-L-R);
+  const temps=[];past.forEach(p=>{temps.push(p.measured_c);if(num(p.open_loop_c)!==null)temps.push(p.open_loop_c);});
+  plan.forEach(p=>temps.push(p.indoor_c));
+  if(d.plan&&d.plan.valid){temps.push(d.plan.lower_c,d.plan.upper_c);}
+  let lo=Math.min(...temps)-0.5,hi=Math.max(...temps)+0.5;if(!(hi>lo)){lo-=1;hi+=1;}
+  const y=v=>TB-(v-lo)/(hi-lo)*(TB-T);
+  const outs=plan.map(p=>p.outdoor_c);
+  const olo=outs.length?Math.min(...outs)-1:0,ohi=outs.length?Math.max(...outs)+1:1;
+  const yo=v=>TB-(v-olo)/(ohi-olo)*(TB-T);
+  const s=svg('svg',{viewBox:'0 0 '+W+' '+H,role:'img','aria-label':t('plan')});
+  s.append(svg('line',{x1:L,y1:TB,x2:W-R,y2:TB,stroke:'var(--edge)'}));
+  for(let i=0;i<=4;i++){const v=lo+(hi-lo)*i/4;
+    s.append(svg('line',{x1:L,y1:y(v),x2:W-R,y2:y(v),stroke:'var(--edge)','stroke-dasharray':'2 4'}));
+    const tx=svg('text',{x:L-6,y:y(v)+4,'text-anchor':'end','font-size':11,fill:'var(--muted)'});tx.textContent=f(v,1);s.append(tx);}
+  if(plan.length){
+    const xs=x(plan[0].utc),xe=x(t1);
+    s.append(svg('rect',{x:xs,y:y(d.plan.upper_c),width:xe-xs,height:Math.max(1,y(d.plan.lower_c)-y(d.plan.upper_c)),fill:'var(--mint)',opacity:0.7}));
+    plan.forEach(p=>{if(p.heat)s.append(svg('rect',{x:x(p.utc),y:TB+4,width:Math.max(1,x(p.utc+900)-x(p.utc)),height:10,fill:'var(--green)'}));});
+    const prices=plan.map(p=>p.price),pmax=Math.max(0.0001,...prices.map(Math.abs));
+    const base=prices.some(v=>v<0)?(PB0+PB1)/2:PB1;
+    plan.forEach(p=>{const hgt=Math.abs(p.price)/pmax*(base-PB0);
+      s.append(svg('rect',{x:x(p.utc),y:p.price>=0?base-hgt:base,width:Math.max(1,x(p.utc+900)-x(p.utc)-0.5),height:Math.max(0.5,hgt),fill:p.price<0?'var(--red)':'var(--muted)',opacity:0.55}));});
+    const op=plan.map((p,i)=>(i?'L':'M')+x(p.utc+450)+' '+yo(p.outdoor_c)).join(' ');
+    s.append(svg('path',{d:op,fill:'none',stroke:'var(--warning)','stroke-width':1.5,'stroke-dasharray':'5 4'}));
+    for(let i=0;i<=2;i++){const v=olo+(ohi-olo)*i/2;
+      const tx=svg('text',{x:W-R+6,y:yo(v)+4,'font-size':11,fill:'var(--warning)'});tx.textContent=f(v,0);s.append(tx);}
+    const pp=plan.map((p,i)=>(i?'L':'M')+x(p.utc+900)+' '+y(p.indoor_c)).join(' ');
+    s.append(svg('path',{d:pp,fill:'none',stroke:'var(--green)','stroke-width':2.2}));
+  }
+  if(past.length){
+    const mp=past.map((p,i)=>(i?'L':'M')+x(p.utc)+' '+y(p.measured_c)).join(' ');
+    s.append(svg('path',{d:mp,fill:'none',stroke:'var(--ink)','stroke-width':2}));
+    const pred=past.filter(p=>num(p.open_loop_c)!==null);
+    if(pred.length>1){
+      const pr=pred.map((p,i)=>(i?'L':'M')+x(p.utc)+' '+y(p.open_loop_c)).join(' ');
+      s.append(svg('path',{d:pr,fill:'none',stroke:'var(--green)','stroke-width':1.6,'stroke-dasharray':'4 3'}));
+    }
+  }
+  const xn=x(d.now_utc);
+  s.append(svg('line',{x1:xn,y1:T,x2:xn,y2:PB1,stroke:'var(--ink)','stroke-width':1,opacity:0.5}));
+  const nt=svg('text',{x:xn+4,y:T+10,'font-size':11,fill:'var(--muted)'});nt.textContent=t('now');s.append(nt);
+  for(let u=Math.ceil(t0/21600)*21600;u<t1;u+=21600){
+    const tx=svg('text',{x:x(u),y:H-2,'text-anchor':'middle','font-size':10,fill:'var(--muted)'});tx.textContent=hm(u);s.append(tx);}
+  return s;
+}
+function legend(){
+  const l=node('div','mpc-legend');
+  [['var(--ink)','measured'],['var(--green)','predicted'],['var(--green)','planned'],['var(--warning)','outdoor'],
+   ['var(--muted)','price'],['var(--green)','heating'],['var(--mint)','band']].forEach(([c,k])=>{
+    const s=node('span');const sw=node('span','mpc-sw');sw.style.background=c;s.append(sw,document.createTextNode(t(k)));l.append(s);});
+  return l;
+}
+function render(){
+  const c=card();if(!c)return;
+  c.replaceChildren();
+  const head=node('div','flex');head.append(node('h2',null,t('title')));
+  if(!data||data.error){head.append(node('span','chip',t('fallback')));c.append(head,node('p','callout warn',t('err')));return;}
+  const d=data,why=WHY[lang()][d.fallback]||d.fallback||'';
+  const label=d.state==='ACTIVE'?t('active'):d.state==='CALIBRATING'?t('calibrating'):t('fallback');
+  head.append(node('span','chip',why&&d.state!=='ACTIVE'?label+': '+why:label));
+  c.append(head);
+  const cal=d.calibration||{},m=cal.model||{};
+  const g=node('div','mpc-grid');
+  g.append(box(t('source'),t(d.source||'NONE')));
+  g.append(box(t('calib'),STATE[lang()][cal.state]||cal.state||'—',
+    t('samples')+' '+(cal.samples??0)+' / 192 · '+t('windows')+' '+Math.min(cal.windows??0,cal.windows_needed??12)+' / '+(cal.windows_needed??12)));
+  g.append(box(t('valid'),num(cal.validation_rms_c)===null?'—':f(cal.validation_rms_c,2)+' °C',
+    num(cal.validation_bias_c)===null?null:t('bias')+' '+f(cal.validation_bias_c,2)+' °C · '+t('margin')+' '+f(cal.planning_uncertainty_c,2)+' °C'));
+  c.append(g);
+  if(m.plausible){
+    const g2=node('div','mpc-grid');
+    g2.append(box(t('tau'),f(m.tau_h,1)+' ± '+f(m.tau_std_h,1)+' '+t('h')));
+    g2.append(box(t('lift'),f(m.lift_k,1)+' ± '+f(m.lift_std_k,1)+' °C',(lang()==='en'?'at outdoor ':'ulkona ')+f(m.lift_outdoor_c,1)+' °C'));
+    g2.append(box(t('delay')+' · '+t('after'),f(m.start_delay_min,1)+' min · '+f(m.afterheat_k,2)+' °C'));
+    c.append(g2);
+    const extra=[t('cop')];
+    if(num(m.ua_lower_kw_per_c)!==null)extra.push(t('bounds')+': UA ≥ '+f(m.ua_lower_kw_per_c,3)+' kW/K, C ≥ '+f(m.capacity_lower_kwh_per_c,2)+' kWh/K');
+    c.append(node('p','tiny muted',extra.join(' ')));
+  } else c.append(node('p','callout',t('nomodel')));
+  const ch=chart(d);
+  if(ch){c.append(ch,legend());}
+  const p=d.plan||{};
+  const g3=node('div','mpc-grid');
+  if(p.valid&&p.slots&&p.slots.length){
+    const first=p.slots[0];
+    let status=d.decision_confirmed?t('confirmed'):d.armed?t('unconfirmed'):t('shadow');
+    g3.append(box(t('next'),(first.heat?t('heat'):t('off'))+' · '+hm(first.utc),status));
+    g3.append(box(t('updated'),day(p.computed_utc),t('horizon')+' '+f(p.horizon_slots/4,1)+' '+t('h')+' ('+t('limit_'+p.horizon_limit)+')'));
+    g3.append(box(t('energy'),p.energy_valid?f(p.energy_kwh,2)+' kWh · '+f(p.cost,2)+' '+(p.currency||''):'—',p.energy_valid?null:t('energyno')));
+  } else {
+    g3.append(box(t('plan'),'—',t('noplan')));
+    g3.append(box(t('updated'),p.computed_utc?day(p.computed_utc):'—',WHY[lang()][p.planning_fallback]||null));
+  }
+  const meter=d.meter||{};
+  g3.append(box(t('meter'),num(meter.watts)===null?'—':f(meter.watts,0)+' W',meter.scope==='HEAT_PUMP_ONLY'?t('scopeP'):t('scopeU')));
+  c.append(g3,node('p','tiny muted',t('sim')));
+}
+async function load(){
+  try{const r=await fetch('/api/mpc',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);data=await r.json();}
+  catch(_){data={error:true};}
+  render();
+}
+document.querySelectorAll('[data-lang]').forEach(b=>b.addEventListener('click',()=>setTimeout(render,0)));
+load();
+setInterval(load,60000);
+})();
+</script>
 </body>
 </html>)ENEVINA_UI";

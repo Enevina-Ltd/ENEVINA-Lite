@@ -40,7 +40,9 @@ MpcResult optimize(const Parameters& p, const State& initial,
         !std::isfinite(initial.indoor_c) ||
         initial.indoor_c > p.maximum_indoor_c ||
         initial.indoor_c < p.critical_c ||
-        memory_budget_bytes==0)
+        memory_budget_bytes==0 ||
+        (std::isfinite(controls.terminal_min_c) &&
+         controls.terminal_min_c > p.maximum_indoor_c))
         return result;
     const auto clock=controls.monotonic_now_ms ?
         controls.monotonic_now_ms : steady_now_ms;
@@ -138,6 +140,8 @@ MpcResult optimize(const Parameters& p, const State& initial,
     const float standby_off=static_cast<float>(p.off_standby_kw);
     const float startup_electric=static_cast<float>(p.startup_electric_kwh);
     const float switching_penalty=static_cast<float>(p.switching_penalty_eur);
+    // Same HEAT->OFF after-heat term as advance(); 0 leaves the search unchanged.
+    const float afterheat=beta*static_cast<float>(p.stop_afterheat_kwh/slot_hours);
     const float search_min=static_cast<float>(min_c);
     const float search_max=static_cast<float>(p.maximum_indoor_c);
     for(size_t t=0;t<count;t++) {
@@ -174,7 +178,8 @@ MpcResult optimize(const Parameters& p, const State& initial,
                 if(on && node.temperature>=16.0f) thermal=0.0f;
                 else if(on && node.temperature>15.5f)
                     thermal*=(16.0f-node.temperature)/0.5f;
-                const float temp=alpha*node.temperature+input+beta*thermal;
+                const float temp=alpha*node.temperature+input+beta*thermal+
+                    (prior_on && !on ? afterheat : 0.0f);
                 // Small FP32 search tolerance only. Exact FP64 replay below
                 // rejects out-of-bounds candidates before returning Ok.
                 if(!std::isfinite(temp) ||
@@ -220,7 +225,8 @@ MpcResult optimize(const Parameters& p, const State& initial,
         current.swap(next);
         active.swap(next_active);
     }
-    const double end_min=std::max(min_c,initial.indoor_c)-1e-8;
+    const double end_min=(std::isfinite(controls.terminal_min_c)?
+        std::max(min_c,controls.terminal_min_c):std::max(min_c,initial.indoor_c))-1e-8;
     const float search_end_min=static_cast<float>(end_min)-1e-4f;
     std::vector<uint16_t> terminals;
     terminals.reserve(states);
