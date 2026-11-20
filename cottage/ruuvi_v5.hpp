@@ -2,6 +2,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 
 namespace enevina::cottage {
 // Ruuvi RAWv2, Data Format 5, complete BLE manufacturer data with
@@ -17,6 +18,17 @@ struct RuuviV5 {
     uint8_t movement_count=0;
     uint16_t sequence=0;
 };
+// Shared rate-of-change acceptance for both the actual control binding and
+// the nearby-sensor registry. A rejected BLE frame may update signal/last-heard
+// metadata but must not refresh the temperature or humidity shown as measured.
+inline bool ruuvi_plausible_progress(const RuuviV5& previous,
+                                     const RuuviV5& next,uint64_t elapsed_ms) {
+    if(elapsed_ms<300000 &&
+       std::fabs(next.temperature_c-previous.temperature_c)>5.0)return false;
+    if(elapsed_ms<60000 &&
+       std::fabs(next.relative_humidity_pct-previous.relative_humidity_pct)>20.0)return false;
+    return true;
+}
 bool decode_ruuvi_v5(const uint8_t* data,size_t len,int rssi,RuuviV5& result);
 bool parse_ruuvi_mac(const char* text,std::array<uint8_t,6>& out);
 enum class RuuviAccept : uint8_t {
