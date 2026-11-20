@@ -66,9 +66,13 @@ acknowledged and failed.
   only after 240 extra records (every ~2.5 days), streamed in 968-byte chunks so no
   file-sized buffer is needed. Host test: 120 days of writes keep the file below ring +
   slack and the traffic far below the partition (< 30 kB/day on average).
-* A power cut can lose at most the last hour. A torn tail is cut at the first bad CRC on
+* A power cut can lose at most the last hour in normal operation. A torn tail is cut at the first bad CRC on
   boot and repaired by a rewrite; a failed append never advances the persisted position;
-  a foreign or old-format file is replaced, never interpreted.
+  a foreign or old-format file is replaced, never interpreted. If a LittleFS flush fails,
+  the API immediately reports `persistent: false`, without pretending RAM data is saved.
+  A bounded 10-minute retry keeps measurements in RAM until flash recovers; once the
+  next flush succeeds the API reports persistence restored. During failed-flash periods,
+  the loss window is longer than one hour and may include unsaved records.
 
 ## UI
 

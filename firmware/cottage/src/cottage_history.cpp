@@ -87,7 +87,10 @@ LfsFile records_file(kRecordsPath),events_file(kEventsPath);
 HistoryPersistence* persistence=nullptr;
 HistoryRecorder recorder;
 bool persistent=false;
+bool persistence_healthy=false;  // mounting is not proof that the latest flush succeeded
 uint32_t last_flush_ms=0;
+uint32_t last_attempt_ms=0;
+constexpr uint32_t kRetryIntervalMs=10UL*60*1000;
 uint64_t events_total_at_flush=0;
 size_t last_load_records=0;
 } // namespace
@@ -115,6 +118,8 @@ void history_initialize() {
     const LoadResult r=persistence->load(*store,events);
     last_load_records=r.records;
     last_flush_ms=millis();
+    last_attempt_ms=last_flush_ms;
+    persistence_healthy=true;
     events_total_at_flush=events.total();
     ESP_LOGI(tag,"history loaded: %u records, %u events%s",static_cast<unsigned>(r.records),
              static_cast<unsigned>(r.events),r.record_tail_cut?" (torn tail will be repaired)":"");
@@ -127,12 +132,19 @@ void history_observe(const HistoryInputs& inputs) {
     const uint32_t now=millis();
     const bool hourly=now-last_flush_ms>=kFlushIntervalMs;
     const bool new_events=events.total()!=events_total_at_flush && now-last_flush_ms>=kEventFlushMinMs;
-    if(persistent&&persistence&&(hourly||new_events)) {
-        // File I/O happens under the lock: the worker is the only writer and the
-        // HTTP handler only reads, so the lock is held for tens of milliseconds.
-        persistence->flush(*store,events);
-        last_flush_ms=now;
-        events_total_at_flush=events.total();
+    if(persistent&&persistence&&(hourly||new_events)&&
+       (persistence_healthy||now-last_attempt_ms>=kRetryIntervalMs)) {
+        // Keep retrying (at most every 10 min after failure), but do NOT mark
+        // history durable or advance success bookkeeping on a failed write.
+        last_attempt_ms=now;
+        const bool ok=persistence->flush(*store,events);
+        persistence_healthy=ok;
+        if(ok) {
+            last_flush_ms=now;
+            events_total_at_flush=events.total();
+        } else {
+            ESP_LOGE(tag,"history flush failed: measurements are RAM-only until retry succeeds");
+        }
     }
     xSemaphoreGive(guard);
 }
@@ -166,7 +178,7 @@ void history_http(WebServer& web) {
     xSemaphoreTake(guard,portMAX_DELAY);
     n=build_history_series(*store,now,spec.range_slots,spec.step_slots,pts,kMaxHistoryPoints,*summary);
     *event_copy=events;
-    const bool saved=persistent;
+    const bool saved=persistent&&persistence&&persistence_healthy;
     xSemaphoreGive(guard);
     const auto market=market_status();
     const SiteSettings site=site_settings_snapshot();
