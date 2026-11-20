@@ -606,6 +606,36 @@ static void comfort_journal_power_loss_matrix() {
     tx.phase=uint8_t(ComfortPhase::Prepared);
     assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
 }
+static void comfort_rollback_owner_target_is_not_replayed() {
+    using Action=ComfortRecoveryAction;
+    ComfortTxn tx{};
+    tx.phase=static_cast<uint8_t>(ComfortPhase::SiteCommitted);
+    tx.mode=2;tx.target=13;tx.previous_target=12;
+    tx.min_c=9;tx.max_c=16;
+    tx.previous_min_c=9;tx.previous_max_c=16;
+    tx.previous_setup_step=6;
+    SiteSettings site{};
+    site.setup_step=6;site.profile=OptimizationProfile::Balanced;
+    site.comfort_min_c=9;site.comfort_max_c=16;
+    CottageModeConfig air{};
+    air.mode=CottageMode::Hold;
+    air.hold_target_c=12;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::CompleteAirTarget);
+    air.hold_target_c=13;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::CompleteAirTarget);
+    // OTA rolled back; older firmware saved a newer owner-selected 14 C.
+    // The journal predates it and must not overwrite it with 13 C.
+    air.hold_target_c=14;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+    assert(mode_comfort_limits_fit(site,air));
+    // If rollback limits cannot fit the newer target, block recovery rather
+    // than silently violating the owner's current setting.
+    air.hold_target_c=22;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+    assert(!mode_comfort_limits_fit(site,air));
+    assert(comfort_recovery_action(tx,site,air,false)==Action::Block);
+}
+
 static void old_ota_settings_require_real_image_confirmation() {
     // PREPARED / PENDING_VERIFY boots run c23_initialize before the OTA
     // transaction service sets confirmation_pending. The early value false
@@ -651,6 +681,7 @@ int main() {
     hard_comfort_limits_never_silently_disappear();
     old_ota_settings_require_real_image_confirmation();
     comfort_journal_power_loss_matrix();
+    comfort_rollback_owner_target_is_not_replayed();
     v3_provenance_after_rollback_then_v4_upgrade();
     nvs_snapshot_failure_does_not_commit_an_unknown_baseline();
     rollback_edit_overrides_stale_v3();
