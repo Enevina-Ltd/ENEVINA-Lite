@@ -809,10 +809,19 @@ async function wzSaveComfort(skip){
       await reloadStatus();
     } catch(error) {
       // A lost HTTP response is NOT proof that /api/air/config failed: it may
-      // have committed the new target before the Wi-Fi link went away. Read
-      // source-confirmed device state before compensating the site write.
-      await reloadStatus();
-      const observed=state.status&&state.status.air;
+      // have committed the new target before the Wi-Fi link went away.
+      // A normal reloadStatus() can silently discard a superseded response;
+      // NEVER consult shared state.status for this transaction readback.
+      // Use the fresh, request-local API response (or fail ambiguous).
+      let confirmedStatus=null;
+      try {confirmedStatus=await fetchJSON('/api/status');}
+      catch(_) { /* unverified; do not compensate site */ }
+      const observed=confirmedStatus&&confirmedStatus.air;
+      // RAM readback alone cannot prove a target survived a partial NVS
+      // failure. Do not undo the validated site limits unless durable air
+      // settings have been explicitly verified by the device.
+      if(observed&&observed.config_storage_verified===false)
+        throw Error(WT('Tallennus epäonnistui')+' (target status unverified)');
       const currentTarget=observed&&
         (mode===3?observed.occupied_target_c:observed.hold_target_c);
       if(observed&&observed.mode===mode&&currentTarget===r.target) return;

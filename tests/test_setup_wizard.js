@@ -207,24 +207,37 @@ console.log('devices step helpers ok');
   assert.deepEqual(events.slice(1),['air','reload']);
   events.length=0;
   ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:ctx.state.status.air};};
   await assert.rejects(A.wzSaveComfort(false),/AIR_NVS/);
   assert.equal(events.length,4,'site write + mode error + readback + restore site');
-  assert.equal(events[2],'reload');
+  assert.equal(events[2],'readback');
   assert.equal(events[3].optimization_profile,'balanced');
   assert.equal(events[3].comfort_min_c,'10');
   assert.equal(events[3].comfort_max_c,'14');
   // Ambiguous HTTP response: committed target is visible on status readback.
   // Undo would pair a new target with the OLD limits (fresh Codex P2 #57).
   events.length=0;
-  ctx.reloadStatus=async()=>{events.push('reload');ctx.state.status.air.hold_target_c=13;};
+  // Simulate stale shared state (a periodic status request superseded another).
+  // Only the isolated fresh API result may prove a new durable target.
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:{...ctx.state.status.air,hold_target_c:13}};};
+  ctx.reloadStatus=async()=>{events.push('reload');};
   await A.wzSaveComfort(false);
-  assert.deepEqual(events.slice(1),['air','reload']);
+  assert.deepEqual(events.slice(1),['air','readback']);
   assert.equal(events.length,3,'do not compensate a confirmed successful target save');
   // If Wi-Fi is lost and readback is impossible, don't blindly undo either.
   events.length=0;
   ctx.state.status.air.hold_target_c=12;
-  ctx.reloadStatus=async()=>{events.push('reload');ctx.state.status=null;};
+  ctx.fetchJSON=async()=>{events.push('readback');throw Error('WiFi lost');};
   await assert.rejects(A.wzSaveComfort(false),/unverified/);
   assert.equal(events.length,3,'unknown air outcome cannot trigger rollback');
+  // The API can return the old RAM target after a partial NVS commit.
+  // It must NOT be mistaken for a durable rollback and must NOT trigger
+  // compensating site writes that would corrupt the new limits.
+  events.length=0;
+  ctx.state.status={air:{mode:2,hold_target_c:12,occupied_target_c:21,drying_delta_c:3,
+    config_storage_verified:false}};
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:ctx.state.status.air};};
+  await assert.rejects(A.wzSaveComfort(false),/unverified/);
+  assert.equal(events.length,3,'unverified NVS rollback must not undo site settings');
   console.log('wizard rollback-order and ambiguous-response tests OK');
 })().catch(e=>{console.error(e);process.exitCode=1;});
