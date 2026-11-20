@@ -27,6 +27,7 @@ struct PricePoint {
     double spot_eur_per_kwh=0;
 };
 void start_market_reader();
+uint32_t market_reader_stack_free();
 // Select the bidding zone and currency prices are fetched for (Nord Pool
 // deliveryArea such as "SE3", ISO 4217 such as "SEK"). nullptr/nullptr means
 // "no zone chosen yet": nothing is fetched. A change discards the old zone's

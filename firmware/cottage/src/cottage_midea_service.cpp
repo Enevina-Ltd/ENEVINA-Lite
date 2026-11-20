@@ -564,6 +564,13 @@ void cottage_midea_service_register_routes(WebServer& web) {
         web.send(202,"application/json","{\"queued\":true}");
     });
 }
+bool cottage_midea_service_needs_worker() {
+    if(!is_midea_selected() || !mutex)return false;
+    xSemaphoreTake(mutex,portMAX_DELAY);
+    const bool ready=configured;
+    xSemaphoreGive(mutex);
+    return ready;
+}
 void cottage_midea_service_worker(void*) {
     poll_task.store(xTaskGetCurrentTaskHandle());
     for(;;) {

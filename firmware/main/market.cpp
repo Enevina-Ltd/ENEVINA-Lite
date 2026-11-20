@@ -363,6 +363,9 @@ void poll_prices(void*) {
 }
 }
 
+uint32_t market_reader_stack_free() {
+    return reader_task?uxTaskGetStackHighWaterMark(reader_task):0;
+}
 void start_market_reader() {
     if(!mutex) mutex=xSemaphoreCreateMutex();
     if(!mutex) { ESP_LOGE(tag,"market mutex allocation failed"); return; }

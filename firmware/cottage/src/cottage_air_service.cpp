@@ -1,7 +1,5 @@
 #include <Arduino.h>
-#include <BLEDevice.h>
-#include <BLEScan.h>
-#include <BLEAdvertisedDevice.h>
+#include <NimBLEDevice.h>
 #include <Preferences.h>
 #include <WebServer.h>
 #include <esp_timer.h>
@@ -121,15 +119,15 @@ void accept_indoor(const RuuviV5& r,uint64_t ms) {
               result==RuuviAccept::OldSequence) samples_duplicate++;
     else samples_rejected++;
 }
-class OnAdvertisement : public BLEAdvertisedDeviceCallbacks {
+class OnAdvertisement : public NimBLEAdvertisedDeviceCallbacks {
 public:
-    void onResult(BLEAdvertisedDevice device) override {
-        if(!device.haveManufacturerData())return;
-        const std::string raw=device.getManufacturerData();
+    void onResult(NimBLEAdvertisedDevice* device) override {
+        if(!device->haveManufacturerData())return;
+        const std::string raw=device->getManufacturerData();
         RuuviV5 parsed{};
         if(!decode_ruuvi_v5(
               reinterpret_cast<const uint8_t*>(raw.data()),
-              raw.size(),device.getRSSI(),parsed))return;
+              raw.size(),device->getRSSI(),parsed))return;
         if(!guard)return;
         lock();
         discovered=parsed;have_discovered=true;
@@ -497,10 +495,15 @@ void c23_initialize() {
     last_store_ms=uptime_ms();
 }
 void c23_ble_worker(void*) {
-    // Keep existing, bundled Arduino/ESP-IDF BLE stack. NimBLE migration
-    // requires a separate verified ESP-IDF/Arduino compatibility test.
-    BLEDevice::init("EnevinaLiteC23");
-    BLEScan* scan=BLEDevice::getScan();
+    // Pinned NimBLE-Arduino replaces Bluedroid's larger BLE host. Validated
+    // on the ESP32-S3: live advertisements and HTTPS price/weather together.
+    NimBLEDevice::init("EnevinaLiteC23");
+    NimBLEScan* scan=NimBLEDevice::getScan();
+    if(!scan) {
+        Serial.println("C23_BLE_INIT_ERROR: scanner unavailable");
+        vTaskDelete(nullptr);
+        return;
+    }
     scan->setAdvertisedDeviceCallbacks(new OnAdvertisement(),true);
     scan->setActiveScan(false);
     ble_initialized.store(true);
