@@ -75,7 +75,8 @@ const gateBlocked=A.frOverall(report({control_armed:true,control_gate:'INPUTS_UN
 assert(gateBlocked.headline.includes('Vain lämmitysehdotus'));
 assert(gateBlocked.detail.includes('Ohjausportti ei tällä hetkellä salli'));
 assert(A.frOverall(report({control_armed:true,control_gate:'NO_PROPOSAL'}),fmt).headline.includes('Vain lämmitysehdotus'));
-assert(A.frOverall(report({control_armed:true,control_gate:'MODE_DWELL'}),fmt).kind==='ok');
+assert(A.frOverall(report({control_armed:true,control_gate:'MODE_DWELL'}),fmt).kind==='warn');
+assert(A.frOverall(report({control_armed:true,control_gate:'MODE_DWELL'}),fmt).detail.includes('vähimmäiskestoa'));
 o=A.frOverall(report({offline:true,wifi_ok:false}),fmt);
 assert.equal(o.kind,'warn');assert(o.detail.includes('T5000')&&o.detail.includes('Wi-Fi-pumppuyhteyttä')); // cached data is not working pump control
 o=A.frOverall(report({offline:true,wifi_ok:false,next_expiry_utc:0}),fmt);

@@ -14,7 +14,7 @@ constexpr int64_t NOW=1800000000;
 static FreshnessInputs healthy() {
     FreshnessInputs in;
     in.clock_trusted=true;in.now=NOW;in.wifi_ok=true;
-    in.price_zone_configured=true;in.price_current_valid=true;
+    in.price_zone_configured=true;in.price_current_valid=true;in.price_decision_valid=true;
     in.price_last_fetch=NOW-600;in.price_valid_until=NOW+20*3600;
     in.weather_configured=true;in.weather_available=true;in.weather_fetched=NOW-1800;in.weather_valid_until=NOW+30*3600;
     in.sensor_bound=in.sensor_fresh=true;in.sensor_age_s=20;
@@ -28,7 +28,8 @@ static BootstrapDecision controller(const FreshnessInputs& in) {
     b.indoor_fresh=in.sensor_fresh;b.indoor_c=20.0;b.desired_room_c=21.0;
     static const double prices[8]={0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1};
     const bool eligible=in.clock_trusted&&in.price_current_valid&&in.price_last_fetch<=in.now&&
-        in.price_last_fetch>=in.now-36*3600&&in.price_valid_until>=(in.now/900)*900+8*900;
+        in.price_last_fetch>=in.now-36*3600&&in.price_valid_until>=(in.now/900)*900+8*900&&
+        in.price_decision_valid;
     b.next_total_prices=prices;b.price_count=8;b.prices_contiguous_and_fresh=eligible;
     return bootstrap_price_decision(b);
 }
@@ -123,6 +124,19 @@ static void missing_and_unconfigured_sources() {
     CHECK(assess_freshness(in).weather.state==SourceState::NotConfigured&&assess_freshness(in).fallback==ControllerFallback::PriceControl);
 }
 
+static void actual_price_eligibility_and_pump_age() {
+    FreshnessInputs in=healthy();
+    // Spot metadata may be fresh even if the owner's tariff is not confirmed
+    // or a slot in the next 2h is missing. Actual bootstrap says false.
+    in.price_decision_valid=false;
+    const Freshness f=assess_freshness(in);
+    CHECK(f.prices.state==SourceState::Ok);
+    CHECK(f.fallback==ControllerFallback::Thermostat);
+    agrees_with_controller(in,ControllerFallback::Thermostat);
+    CHECK(verified_pump_age(NOW,true,NOW-5,false,NOW-5000)==5);
+    CHECK(verified_pump_age(NOW,false,NOW-5000,true,NOW-7)==7);
+    CHECK(verified_pump_age(NOW,false,0,false,0)==-1);
+}
 static void sensor_and_pump() {
     FreshnessInputs in=healthy();
     in.sensor_fresh=false;in.sensor_age_s=900;
@@ -171,6 +185,7 @@ int main() {
     thirty_six_hour_rule();
     quarter_hour_alignment();
     missing_and_unconfigured_sources();
+    actual_price_eligibility_and_pump_age();
     sensor_and_pump();
     untrusted_clock();
     json_output();

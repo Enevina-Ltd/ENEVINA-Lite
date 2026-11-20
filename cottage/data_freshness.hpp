@@ -62,6 +62,7 @@ struct FreshnessInputs {
     // prices
     bool price_zone_configured=false;
     bool price_current_valid=false;
+    bool price_decision_valid=false; // ACTUAL bootstrap decision validated tariff and 8-slot totals
     int64_t price_last_fetch=0,price_valid_until=0;
     uint8_t price_error=0;
     // weather forecast
@@ -90,6 +91,13 @@ struct Freshness {
     int64_t next_expiry_utc=0;    // earliest moment cached data stops being usable, 0 = none
 };
 
+// The displayed pump age must refer to the source that actually proved fresh.
+// Direct CN105 and optional SSE have different capture timestamps.
+inline int64_t verified_pump_age(int64_t now,bool direct_valid,int64_t direct_utc,
+                                 bool sse_valid,int64_t sse_utc) {
+    const int64_t captured=direct_valid?direct_utc:sse_valid?sse_utc:0;
+    return captured>0 && now>=captured?now-captured:-1;
+}
 inline Freshness assess_freshness(const FreshnessInputs& in) {
     Freshness f;
     f.clock_ok=in.clock_trusted;f.wifi_ok=in.wifi_ok;f.offline=!in.wifi_ok;
@@ -123,7 +131,7 @@ inline Freshness assess_freshness(const FreshnessInputs& in) {
     u.age_s=in.pump_age_s;
     u.state=!in.pump_configured?SourceState::NotConfigured:in.pump_fresh?SourceState::Ok:SourceState::Stale;
     // ---- what the controller does (same conditions as main.cpp) ----
-    const bool prices_usable=p.state==SourceState::Ok;
+    const bool prices_usable=p.state==SourceState::Ok && in.price_decision_valid;
     if(s.state!=SourceState::Ok) f.fallback=ControllerFallback::Blocked;
     else if(prices_usable) f.fallback=ControllerFallback::PriceControl;
     else f.fallback=ControllerFallback::Thermostat;

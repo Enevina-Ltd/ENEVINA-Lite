@@ -1747,6 +1747,10 @@ static void freshness_endpoint() {
     const char* area=nullptr;const char* currency=nullptr;int offset=0;
     in.price_zone_configured=site_market_region(site,area,currency,offset);
     in.price_current_valid=market.current_price_valid;
+    // Reuse the live controller's validated total-price path, not spot-only
+    // metadata. This checks the confirmed tariff, contiguous 8 slots and
+    // actual proposal mode; never claim price control if bootstrap falls back.
+    in.price_decision_valid=bootstrap_preview(now,c23_temperature_sample()).price_data_valid;
     in.price_last_fetch=market.last_fetch_utc;in.price_valid_until=market.valid_until_utc;
     in.price_error=market.last_error;
     const auto ws=enevina_firmware::weather_status();
@@ -1763,8 +1767,10 @@ static void freshness_endpoint() {
     in.sensor_age_s=te.received&&now>=te.captured_utc?now-te.captured_utc:-1;
     const bool sse_fresh=observed.received && climate_time>0 && now>=climate_time && now-climate_time<=180;
     in.pump_configured=site.pump_adapter[0]!=0;
-    in.pump_fresh=valid_cn105(cp,now) || sse_fresh;
-    in.pump_age_s=climate_time>0&&now>=climate_time?now-climate_time:-1;
+    const bool cn105_fresh=valid_cn105(cp,now);
+    in.pump_fresh=cn105_fresh || sse_fresh;
+    in.pump_age_s=verified_pump_age(now,cn105_fresh,cp.captured_utc,
+                                    sse_fresh,climate_time);
     in.control_armed=control_armed.load();
     const Freshness f=assess_freshness(in);
     web.sendHeader("Cache-Control","no-store");
