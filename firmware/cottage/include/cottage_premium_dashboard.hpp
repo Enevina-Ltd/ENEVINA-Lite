@@ -783,6 +783,12 @@ async function wzSaveComfort(skip){
     comfort_max_c:prior.comfort_max_c==null?'':String(prior.comfort_max_c),
     setup_step:String((state.site&&state.site.region&&state.site.region.setup_step)||0)};
   const newFields={...r.fields,setup_step:'6'};
+  if(targetChanged && (mode===2||mode===3)) {
+    // A single durable intent precedes the site write, allowing the firmware
+    // to reconcile the mode target at boot after power loss between POSTs.
+    newFields.comfort_txn_mode=String(mode);
+    newFields.comfort_txn_target=String(r.target);
+  }
   try {await wzPost(newFields);}
   catch(siteError) {
     // POST may have committed the whole site blob despite a dropped JSON
