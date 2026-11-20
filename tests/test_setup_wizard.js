@@ -144,8 +144,28 @@ console.log('comfort step helpers ok');
   ctx.airPostLocal=async()=>{events.push('air');};
   ctx.reloadStatus=async()=>{events.push('reload');};
   ctx.wzPost=async()=>{throw Error('NVS');};
+  ctx.fetchJSON=async()=>{events.push('site-readback');return {
+    optimization:{profile:'balanced',comfort_min_c:10,comfort_max_c:14},
+    region:{setup_step:5}};};
   await assert.rejects(A.wzSaveComfort(false),/NVS/);
-  assert.deepEqual(events,[],'site-write failure must not change target');
+  assert.deepEqual(events,['site-readback'],'verified failed site write must not change target');
+  events.length=0;
+  // A site POST may commit all comfort bounds before its HTTP response fails.
+  // Reconcile with an isolated GET and still write the matching air target.
+  ctx.wzPost=async()=>{events.push('site-post');throw Error('HTTP dropped');};
+  ctx.fetchJSON=async()=>{events.push('site-readback');return {
+    optimization:{profile:'saving',comfort_min_c:9,comfort_max_c:16},
+    region:{setup_step:6}};};
+  await A.wzSaveComfort(false);
+  assert.deepEqual(events,['site-post','site-readback','air','reload'],
+    'committed site with lost reply must finish the air target write');
+  // No GET or a third state is not proof that the site write failed:
+  // never apply the second half, nor falsely report the old persisted site.
+  events.length=0;
+  ctx.fetchJSON=async()=>{events.push('site-readback');throw Error('network');};
+  await assert.rejects(A.wzSaveComfort(false),/site status unverified/);
+  assert.deepEqual(events,['site-post','site-readback']);
+  events.length=0;
   ctx.wzPost=async f=>{events.push({...f});};
   await A.wzSaveComfort(false);
   assert.equal(events[0].optimization_profile,'saving');

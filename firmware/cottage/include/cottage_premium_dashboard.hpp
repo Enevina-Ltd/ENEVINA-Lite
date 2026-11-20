@@ -667,6 +667,18 @@ function wzStepComfort(body){
   body.append(wzEl('label',{class:'wz-label'},WT('Optimointiprofiili')),group,
     wzEl('p',{class:'muted tiny'},WT('Lite ei lupaa etukäteen tiettyä säästöä. Rajat pysyvät samoina kaikissa profiileissa; profiili määrää vain, kuinka paljon vaihteluväliä ja hintaeroa käytetään. Automaattiohjaus ei käynnisty tästä, vaan se otetaan erikseen käyttöön Asetuksista.')));
 }
+// A settings POST may persist successfully while its HTTP response is lost.
+// The local site batch is persisted before RAM is updated. Accept an ambiguous
+// response only when a new, direct GET confirms the exact durable owner band.
+function wzComfortSiteSaved(site,fields){
+  if(!site||site.stored_in_device!==true||!site.optimization||!site.region||
+     Number(site.region.setup_step)<6)return false;
+  const a=site.optimization;
+  const bound=x=>x===null||x===''||x===undefined?null:Number(x);
+  return a.profile===fields.optimization_profile &&
+    bound(a.comfort_min_c)===bound(fields.comfort_min_c) &&
+    bound(a.comfort_max_c)===bound(fields.comfort_max_c);
+}
 async function wzSaveComfort(skip){
   if(skip){await wzPost({setup_step:'6'});return;}
   const air=(state.status&&state.status.air)||{};
@@ -683,7 +695,28 @@ async function wzSaveComfort(skip){
     comfort_min_c:prior.comfort_min_c==null?'':String(prior.comfort_min_c),
     comfort_max_c:prior.comfort_max_c==null?'':String(prior.comfort_max_c),
     setup_step:String((state.site&&state.site.region&&state.site.region.setup_step)||0)};
-  await wzPost({...r.fields,setup_step:'6'});
+  const newFields={...r.fields,setup_step:'6'};
+  try {await wzPost(newFields);}
+  catch(siteError) {
+    // POST may have committed the whole site blob despite a dropped JSON
+    // response. Do not skip the air write while durable new comfort limits
+    // are already installed: reconcile with a fresh, request-local read.
+    let persisted=null;
+    try {persisted=await fetchJSON('/api/settings');}
+    catch(_) {throw Error(WT('Tallennus epäonnistui')+' (site status unverified)');}
+    const opt=persisted&&persisted.optimization;
+    const step=persisted&&persisted.region&&persisted.region.setup_step;
+    const matches=fields=>opt&&opt.profile===fields.optimization_profile&&
+      (opt.comfort_min_c===null?0:Number(opt.comfort_min_c))===Number(fields.comfort_min_c||0)&&
+      (opt.comfort_max_c===null?0:Number(opt.comfort_max_c))===Number(fields.comfort_max_c||0)&&
+      Number(step)===Number(fields.setup_step);
+    if(!matches(newFields)) {
+      if(matches(oldFields))throw siteError; // verified no durable site change
+      throw Error(WT('Tallennus epäonnistui')+' (site status unverified)');
+    }
+    // The site write succeeded; finish the target update even if its
+    // response was lost. Do not roll back a successfully saved profile.
+  }
   if(targetChanged){
     try {
       // Existing mode endpoint: mode, delta and the other target untouched.
