@@ -47,21 +47,30 @@ bool load_model_epoch(Store& store,uint32_t& epoch) {
     return false;   // epoch unknown: do not restore a model that may be stale
 }
 
-// `epoch` follows what NVS verifiably holds. Persisted when the blob is
-// verifiably gone or the epoch verifiably advanced; either alone prevents
-// the old calibration from coming back after a reboot.
+// `epoch` follows what NVS verifiably holds; `epoch_known` says whether the
+// current stored epoch was actually read. Epoch advancement counts as proof
+// of a reset ONLY from a KNOWN current epoch: advancing from a guessed value
+// could rewrite the epoch the surviving blob is already bound to, and the
+// old calibration would load again after a reboot. With an unknown epoch only
+// a verified blob removal counts as persisted (Codex P2, PR #63).
 template<class Store>
-ModelResetResult persist_model_reset(Store& store,uint32_t& epoch) {
+ModelResetResult persist_model_reset(Store& store,uint32_t& epoch,bool& epoch_known) {
+    uint32_t current=0;
+    switch(store.read_epoch(current)) {
+    case EpochRead::Ok:epoch=current;epoch_known=true;break;
+    case EpochRead::Missing:epoch=0;epoch_known=true;break;
+    case EpochRead::Error:epoch_known=false;break;
+    }
     const bool erased=store.erase_model() && !store.model_present();
-    const uint32_t next=epoch+1;
     bool marked=false;
-    if(store.write_epoch(next)) {
+    const uint32_t next=epoch+1;
+    if(epoch_known && store.write_epoch(next)) {
         uint32_t readback=0;
         marked=store.read_epoch(readback)==EpochRead::Ok && readback==next;
     }
     uint32_t stored=0;
-    if(store.read_epoch(stored)==EpochRead::Ok) epoch=stored;
-    else if(marked) epoch=next;
+    if(store.read_epoch(stored)==EpochRead::Ok) {epoch=stored;epoch_known=true;}
+    else if(marked) {epoch=next;epoch_known=true;}
     return (erased||marked)?ModelResetResult::Persisted:ModelResetResult::PersistFailed;
 }
 

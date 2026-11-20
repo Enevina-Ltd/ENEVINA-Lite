@@ -1468,10 +1468,8 @@ static void optimizer_worker(void*) {
             if(owner_reset || current_identity!=identity) {
                 identity=current_identity;
                 id->reset();
-                if(!epoch_known) epoch_known=load_model_epoch(model_store,model_epoch);
-                reset_unpersisted=persist_model_reset(model_store,model_epoch)!=
+                reset_unpersisted=persist_model_reset(model_store,model_epoch,epoch_known)!=
                     ModelResetResult::Persisted;
-                epoch_known=true;                  // persist_model_reset follows NVS
                 slot=LearningSlot{};
                 saved_revision=0;
                 boundaries_since_save=0;
@@ -1489,7 +1487,7 @@ static void optimizer_worker(void*) {
             } else if(reset_unpersisted &&
                       static_cast<uint32_t>(millis()-last_reset_retry_ms)>=60000u) {
                 last_reset_retry_ms=millis();
-                reset_unpersisted=persist_model_reset(model_store,model_epoch)!=
+                reset_unpersisted=persist_model_reset(model_store,model_epoch,epoch_known)!=
                     ModelResetResult::Persisted;
                 if(reset_by_owner) identifier_reset_state.store(reset_unpersisted?3:2);
             }
@@ -1697,7 +1695,7 @@ static void optimizer_worker(void*) {
 static void status_endpoint() {
     CN105Telemetry cp;ShellyTelemetry st;TemperatureSample te;
     CN105Telemetry observed; // SSE-only values, never source-verified
-    BridgeStatus bs;MpcResult plan;Decision current_safety;
+    BridgeStatus bs;MpcResult plan;MpcStatus plan_record_status=MpcStatus::InvalidInput;Decision current_safety;
     int64_t optimized=0,climate_time=0,compressor_time=0,link_time=0;
     double link_uptime_s=0;
     bool relay_on=false;
@@ -1713,6 +1711,7 @@ static void status_endpoint() {
     link_time=cn105_link_event_utc;
     link_uptime_s=cn105_link_uptime_s;
     plan=last_plan;optimized=last_optimized_utc;
+    plan_record_status=mpc_plan.has_plan?mpc_plan.status:MpcStatus::InvalidInput;
     strlcpy(reason,reason_text,sizeof(reason));
     ms=optimizer_ms;worst=max_optimizer_ms;heap=free_heap;psram=free_psram;
     stack=stack_watermark;
@@ -1892,7 +1891,8 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"price_last_attempt_utc",
                             static_cast<double>(price.last_attempt_utc));
     cJSON_AddNumberToObject(root,"bridge_status",static_cast<int>(bs));
-    cJSON_AddNumberToObject(root,"mpc_status",static_cast<int>(plan.status));
+    // The MPC record the controller uses, not the legacy copy cleared on every verified mode change.
+    cJSON_AddNumberToObject(root,"mpc_status",static_cast<int>(plan_record_status));
     cJSON_AddNumberToObject(root,"mpc_ms",ms);
     cJSON_AddNumberToObject(root,"mpc_worst_ms",worst);
     cJSON_AddNumberToObject(root,"optimized_utc",static_cast<double>(optimized));
@@ -2027,15 +2027,19 @@ static void status_endpoint() {
     cJSON_free(serialized);cJSON_Delete(root);
 }
 static void plan_endpoint() {
+    // The SAME plan record and rows /api/mpc serves (not a separate legacy
+    // copy that the pump's own acknowledged transition would clear), so both
+    // endpoints share one validity (Codex P2, PR #63).
+    struct PsramFree {void operator()(void* x) const {heap_caps_free(x);}};
+    std::unique_ptr<PlanRow,PsramFree> rows_mem(static_cast<PlanRow*>(heap_caps_malloc(
+        sizeof(PlanRow)*max_horizon_slots,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)));
     xSemaphoreTake(lock_data,portMAX_DELAY);
-    const MpcResult p=last_plan;
-    const size_t n=plan_count;
     const MpcPlanRecord record=mpc_plan;
+    const size_t n=(mpc_rows && rows_mem)?mpc_row_count:0;
+    if(n>0 && n<=max_horizon_slots) std::copy(mpc_rows,mpc_rows+n,rows_mem.get());
     const bool calibrated=calibration_snapshot.state==CalibrationState::Calibrated;
     const bool energy=mpc_energy_in_kwh;
     const double cost=mpc_cost;
-    std::unique_ptr<Row[]> rows(new(std::nothrow) Row[max_horizon_slots]);
-    if(rows) std::copy(plan_rows.begin(),plan_rows.end(),rows.get());
     xSemaphoreGive(lock_data);
     const int64_t current_utc=time(nullptr);
     // The same predicate the controller uses: a plan invalidated by a mode
@@ -2049,26 +2053,32 @@ static void plan_endpoint() {
     char buf[220];
     // Only the CURRENT slot's plan from a calibrated model is ever shown:
     // a plan from an earlier slot is stale and never displayed as valid.
-    const bool ok=rows && calibrated && record.has_plan && p.status==MpcStatus::Ok &&
+    const bool ok=rows_mem && calibrated && record.has_plan && record.status==MpcStatus::Ok &&
         validity==MpcFallback::None &&
-        n>0 && n<=192 && current_utc>=record.first_utc && current_utc<record.first_utc+900;
+        n>0 && n<=max_horizon_slots && current_utc>=record.first_utc &&
+        current_utc<record.first_utc+900;
+    double minimum_c=0;
+    if(ok) {
+        minimum_c=rows_mem.get()[0].indoor_c;
+        for(size_t i=1;i<n;i++) minimum_c=std::min(minimum_c,rows_mem.get()[i].indoor_c);
+    }
     char cost_text[32];
     if(ok && energy && std::isfinite(cost)) snprintf(cost_text,sizeof(cost_text),"%.8f",cost);
     else strlcpy(cost_text,"null",sizeof(cost_text));
     snprintf(buf,sizeof(buf),
       "{\"valid\":%s,\"count\":%u,\"energy_valid\":%s,\"cost_eur\":%s,\"minimum_c\":%.5f,\"slots\":[",
       ok?"true":"false",static_cast<unsigned>(ok?n:0),ok&&energy?"true":"false",cost_text,
-      ok?p.minimum_c:0);
+      minimum_c);
     web.sendContent(buf);
     for(size_t i=0;ok&&i<n;i++) {
-        const auto& r=rows[i];
+        const PlanRow& r=rows_mem.get()[i];
         char kwh[24],eur[24];
-        if(energy && std::isfinite(r.electric)) snprintf(kwh,sizeof(kwh),"%.6f",r.electric);
+        if(energy && std::isfinite(r.energy_kwh)) snprintf(kwh,sizeof(kwh),"%.6f",r.energy_kwh);
         else strlcpy(kwh,"null",sizeof(kwh));
-        if(energy && std::isfinite(r.price)) snprintf(eur,sizeof(eur),"%.7f",r.price);
+        if(energy && std::isfinite(r.cost)) snprintf(eur,sizeof(eur),"%.7f",r.cost);
         else strlcpy(eur,"null",sizeof(eur));
         snprintf(buf,sizeof(buf),"%s{\"utc\":%lld,\"heat\":%s,\"indoor_c\":%.5f,\"kwh\":%s,\"eur\":%s}",
-            i?",":"",static_cast<long long>(r.utc),r.heat16?"true":"false",r.indoor,kwh,eur);
+            i?",":"",static_cast<long long>(r.utc),r.heat?"true":"false",r.indoor_c,kwh,eur);
         web.sendContent(buf);
     }
     web.sendContent("]}");
