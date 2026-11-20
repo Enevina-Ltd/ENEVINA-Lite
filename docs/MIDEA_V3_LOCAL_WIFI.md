@@ -43,28 +43,27 @@ not connect to a manufacturer service or issue a pump state/write command.
 - No automatic Midea control or background DHCP re-enrollment is enabled.
   A later IP change can be handled through this manual discovery again.
 
-## Short C0 state compatibility for manual setpoint changes
+## Short C0: preserve the hidden 8 C heat-preservation preset
 
-Some Midea V3 OEM models return a short C0 status without the optional
-8 °C freeze-protection **heating preset** bit. This preset is different from
-the device firmware's automatic coil anti-freeze, compressor and defrost
-protections. Because LAN 0x40 writes the *whole state*, a short reply does not
-justify blindly clearing that hidden bit.
+Some Midea/OEM V2/V3 devices send a short C0 status response without the
+optional 8 °C heating-preset bit. A 0x40 command writes **the entire state**.
+Neither `msmart-ng`'s default `false` nor a visible >=16 °C target proves
+that the omitted bit is off on every OEM firmware. Therefore **all 0x40 writes
+are rejected when this bit has not been observed**, including temperature-only
+requests, regardless of pilot approval. This does not change the pump's
+native defrost or compressor protections.
 
-A full C0 with a known freeze-protection bit is preserved exactly.
-When the bit is unavailable, **only an explicit temperature-only request**
-is accepted, and only if the old and requested temperature are each at least
-16 °C (ordinary Midea setpoint range). The 8 °C heat-preservation preset
-commands an 8 °C target and is therefore incompatible with the observed
-ordinary >=16 °C state. Mixed changes, power, mode, swing, fan, and any
-attempt to enter/leave the 8 °C preservation range require an independently
-known flag or a separate verified model-specific control method.
+When a long C0 reports the bit, the write preserves its value. A successful
+write is confirmed only when a new authenticated C0 also reports the bit
+and its value is unchanged, in addition to confirming the requested setting.
+If the readback is short, the write cannot be called confirmed.
 
-This compatibility gate is *not* evidence that every OEM exposes the same
-8 °C semantics. The physical pilot is verified only on its actual unit and
-cannot establish support for other models. See Midea heat-pump user manuals
-for the 8 °C heat-preservation setting; the model-specific path needs review
-and explicit product qualification before a wider release.
+The physical Midea pilot previously demonstrated a 22 -> 22.5 -> 22 °C
+setpoint round trip on firmware 2026112025 with the power off. **That does
+not prove preservation of the hidden bit**, and therefore the new firmware
+must not repeat such writes until a model-verified full-state read or a
+verified field-only command is available. This is a known device-specific
+compatibility gap, not a reason to claim the pump is fully controllable.
 
 The existing owner-invoked device pilot, fresh authenticated state, short
 write queue and authenticated readback remain in place. If the shared LAN
