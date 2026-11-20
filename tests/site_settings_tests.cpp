@@ -1,4 +1,6 @@
 #include "cottage/site_settings.hpp"
+#include "cottage/comfort_transaction.hpp"
+#include "cottage/site_rollback_policy.hpp"
 #include "pump/adapter_catalog.hpp"
 #include <cassert>
 #include <cmath>
@@ -300,13 +302,320 @@ static void batch_is_order_independent() {
     assert(apply_site_settings_batch(d,2,k4,v4,bad)==SettingError::OutOfRange&&bad==1);
 }
 
+
+static void profile_and_comfort_limits() {
+    SiteSettings s{};
+    assert(s.profile==OptimizationProfile::Balanced&&s.comfort_min_c==0&&s.comfort_max_c==0);
+    assert(valid_site_settings(s));
+    assert(apply_site_setting(s,"optimization_profile","saving")==SettingError::Ok&&
+           s.profile==OptimizationProfile::Saving);
+    assert(apply_site_setting(s,"optimization_profile","eco")==SettingError::BadChoice);
+    assert(s.profile==OptimizationProfile::Saving);              // rejected input changes nothing
+    assert(apply_site_setting(s,"comfort_min_c","19")==SettingError::Ok);
+    assert(apply_site_setting(s,"comfort_max_c","23,5")==SettingError::Ok);
+    assert(near(s.comfort_min_c,19)&&near(s.comfort_max_c,23.5)&&valid_site_settings(s));
+    assert(apply_site_setting(s,"comfort_min_c","4")==SettingError::OutOfRange);
+    assert(apply_site_setting(s,"comfort_max_c","27")==SettingError::OutOfRange);
+    assert(apply_site_setting(s,"comfort_min_c","19.3")==SettingError::OutOfRange);   // 0.5 steps
+    assert(apply_site_setting(s,"comfort_min_c","abc")==SettingError::BadNumber);
+    assert(apply_site_setting(s,"comfort_min_c","")==SettingError::Ok&&s.comfort_min_c==0);  // clears
+    // Whole-struct check catches limits that cross after separate edits.
+    s.comfort_min_c=23;s.comfort_max_c=19;
+    assert(!valid_site_settings(s));
+    s.comfort_min_c=20;s.comfort_max_c=20.5;
+    assert(!valid_site_settings(s));                              // need >= 1 C of band
+    s.comfort_min_c=0;s.comfort_max_c=0;s.profile=static_cast<OptimizationProfile>(7);
+    assert(!valid_site_settings(s));
+    // Upgraded devices keep the pre-profile behaviour.
+    SiteSettingsV1 old{};
+    const SiteSettings m=site_settings_from_v1(old);
+    assert(m.profile==OptimizationProfile::Balanced&&m.comfort_min_c==0&&m.comfort_max_c==0);
+}
+
+static void older_layout_is_restored_not_reset() {
+    // Codex P1 (#57): a blob written before profiles existed used to fail an
+    // exact-size check, silently resetting pump endpoint, location and tariff.
+    SiteSettings full{};
+    std::strcpy(full.cn105_url,"http://192.168.1.50/events");
+    std::strcpy(full.pump_adapter,"mitsubishi_cn105");
+    std::strcpy(full.country,"SE");std::strcpy(full.price_zone,"SE3");
+    full.tariff_confirmed=true;full.setup_complete=true;full.setup_step=9;
+    full.tariff.margin_eur_per_kwh=0.005;
+    full.profile=OptimizationProfile::Saving;full.comfort_min_c=19;full.comfort_max_c=23;
+    uint8_t buf[sizeof(SiteSettings)];
+    std::memcpy(buf,&full,sizeof(buf));
+    const size_t boundary=kSettingsLayoutBoundaries[0];
+    const size_t align=alignof(SiteSettings);
+    const size_t old_size=(boundary+align-1)/align*align;
+    // poison everything the old firmware could not have written
+    std::memset(buf+boundary,0xA5,sizeof(buf)-boundary);
+    SiteSettings out{};
+    assert(restore_site_settings(buf,old_size,out));
+    assert(std::strcmp(out.cn105_url,"http://192.168.1.50/events")==0);
+    assert(std::strcmp(out.pump_adapter,"mitsubishi_cn105")==0);
+    assert(std::strcmp(out.country,"SE")==0&&std::strcmp(out.price_zone,"SE3")==0);
+    assert(out.tariff_confirmed&&out.setup_complete&&out.setup_step==9);
+    assert(near(out.tariff.margin_eur_per_kwh,0.005));
+    // newer members take their defaults, never the poison bytes
+    assert(out.profile==OptimizationProfile::Balanced&&out.comfort_min_c==0&&out.comfort_max_c==0);
+    assert(valid_site_settings(out));
+    // the current layout restores whole
+    std::memcpy(buf,&full,sizeof(buf));
+    assert(restore_site_settings(buf,sizeof(buf),out)&&out.profile==OptimizationProfile::Saving&&near(out.comfort_max_c,23));
+    // sizes that match no known layout are refused (corrupt or from newer firmware)
+    assert(!restore_site_settings(buf,sizeof(buf)+8,out));
+    assert(!restore_site_settings(buf,boundary-1,out));
+    assert(!restore_site_settings(buf,0,out));
+    assert(!restore_site_settings(nullptr,sizeof(buf),out));
+    if(old_size+1<sizeof(buf)&&old_size+1>(boundary+align-1)/align*align) assert(!restore_site_settings(buf,old_size+1,out));
+}
+
+static void rollback_edit_overrides_stale_v3() {
+    // Simulate: v3 candidate saves the unchanged old v2 snapshot, then
+    // rollback firmware edits v2 and the new candidate boots again.
+    uint8_t v2[80]{};
+    v2[0]=0x45;v2[1]=0x53;v2[2]=0x54;v2[3]=0x31;
+    const uint64_t candidate_baseline=site_v2_signature(v2,sizeof(v2));
+    assert(candidate_baseline!=0);
+    assert(!site_rollback_v2_modified(candidate_baseline,v2,sizeof(v2)));
+    v2[36]^=0x5a; // changed owner's endpoint/tariff/location payload
+    assert(site_rollback_v2_modified(candidate_baseline,v2,sizeof(v2)));
+    assert(!site_rollback_v2_modified(candidate_baseline,nullptr,0));
+    assert(site_rollback_v2_modified(0,v2,sizeof(v2)));
+    // New v4 holds separate baselines for rollback v2 and rollback v3.
+    uint8_t v3[96]{};
+    v3[2]=3;
+    const uint64_t baseline_v3=site_v2_signature(v3,sizeof(v3));
+    assert(!site_rollback_v2_modified(baseline_v3,v3,sizeof(v3)));
+    v3[40]=0x7a;
+    assert(site_rollback_v2_modified(baseline_v3,v3,sizeof(v3)));
+}
+
+static void v3_provenance_after_rollback_then_v4_upgrade() {
+    // First v4 boot: a signature-bearing v3 snapshot is valid, but the
+    // intervening v2 rollback owner edit must take priority.
+    uint8_t v2[96]{};
+    uint8_t v3[8+96+sizeof(uint64_t)]{};
+    const uint16_t version=3,settings_len=96;
+    std::memcpy(v3+4,&version,sizeof(version));
+    std::memcpy(v3+6,&settings_len,sizeof(settings_len));
+    const uint64_t v2_at_v3_save=site_v2_signature(v2,sizeof(v2));
+    std::memcpy(v3+8+96,&v2_at_v3_save,sizeof(v2_at_v3_save));
+    assert(!site_v3_prefer_rollback_v2(v3,sizeof(v3),96,v2,sizeof(v2)));
+    v2[55]^=0x3d;  // previous firmware changes a real saved setting
+    assert(site_v3_prefer_rollback_v2(v3,sizeof(v3),96,v2,sizeof(v2)));
+    // A pre-signature v3 never claims to know which record is newer.
+    assert(!site_v3_prefer_rollback_v2(v3,sizeof(v3)-8,96,v2,sizeof(v2)));
+    assert(!site_v3_prefer_rollback_v2(v3,7,0,v2,sizeof(v2)));
+    assert(!site_v3_prefer_rollback_v2(nullptr,sizeof(v3),96,v2,sizeof(v2)));
+}
+struct FaultingSnapshot {
+    uint8_t data[32]{};
+    bool exists=true,read_error=false,zero_length_error=false;
+    size_t getBytesLength(const char*) const {return zero_length_error?0:exists?sizeof(data):0;}
+    bool isKey(const char*) const {return exists;}
+    size_t getBytes(const char*,void* out,size_t n) const {
+        if(read_error)return 0;
+        std::memcpy(out,data,n);
+        return n;
+    }
+};
+static void nvs_snapshot_failure_does_not_commit_an_unknown_baseline() {
+    FaultingSnapshot nvs;
+    uint8_t scratch[64]{};
+    uint64_t signature=123;
+    assert(site_rollback_snapshot_signature(nvs,"v2",signature,scratch,sizeof(scratch)));
+    const uint64_t normal=signature;
+    assert(normal!=0);
+    nvs.read_error=true;
+    assert(!site_rollback_snapshot_signature(nvs,"v2",signature,scratch,sizeof(scratch)));
+    assert(signature==0);   // must not be treated as an absent clean key
+    nvs.read_error=false;
+    nvs.zero_length_error=true;
+    assert(!site_rollback_snapshot_signature(nvs,"v2",signature,scratch,sizeof(scratch)));
+    nvs.zero_length_error=false;
+    assert(!site_rollback_snapshot_signature(nvs,"v2",signature,scratch,4));
+    nvs.exists=false;
+    assert(site_rollback_snapshot_signature(nvs,"v2",signature,scratch,sizeof(scratch)));
+    assert(signature==0); // true absence is allowed
+}
+
+// Crash-recovery journal phase invariants, independent of the device NVS.
+static void comfort_transaction_survives_site_air_split() {
+    ComfortTxn tx{};
+    tx.mode=2;tx.profile=static_cast<uint8_t>(OptimizationProfile::Saving);
+    tx.previous_profile=static_cast<uint8_t>(OptimizationProfile::Balanced);
+    tx.previous_setup_step=5;
+    tx.previous_target=12;
+    tx.target=20;tx.min_c=19;tx.max_c=23;
+    tx.previous_min_c=9;tx.previous_max_c=14;
+    assert(valid_comfort_txn(tx));
+    SiteSettings before{},after{};
+    before.setup_step=5;
+    before.profile=OptimizationProfile::Balanced;
+    before.comfort_min_c=9;before.comfort_max_c=14;
+    after.setup_step=6;
+    after.profile=OptimizationProfile::Saving;
+    after.comfort_min_c=19;after.comfort_max_c=23;
+    CottageModeConfig air{};
+    air.mode=CottageMode::Hold;air.hold_target_c=12;
+    assert(!comfort_site_matches(tx,before));
+    assert(!comfort_site_matches(tx,after));
+    assert(comfort_old_site_matches(tx,before));
+    assert(comfort_old_mode_matches(tx,air));
+    tx.phase=static_cast<uint8_t>(ComfortPhase::SiteCommitted);
+    assert(valid_comfort_txn(tx));
+    assert(comfort_site_matches(tx,after));
+    assert(!comfort_mode_matches(tx,air));
+    comfort_apply_target(tx,air);
+    assert(comfort_mode_matches(tx,air));
+    const double previous=air.hold_target_c;
+    comfort_apply_target(tx,air);
+    assert(air.hold_target_c==previous);
+    // Changing only the target cannot be mistaken for a saved site blob:
+    // unchanged limits are not a durable commit marker.
+    tx.target=13;tx.previous_target=12;
+    tx.min_c=9;tx.max_c=14;
+    tx.previous_profile=tx.profile;
+    tx.previous_setup_step=6;
+    tx.previous_min_c=9;tx.previous_max_c=14;
+    SiteSettings same=after;
+    same.comfort_min_c=9;same.comfort_max_c=14;
+    assert(valid_comfort_txn(tx));
+    tx.phase=static_cast<uint8_t>(ComfortPhase::Prepared);
+    assert(!comfort_site_matches(tx,same));
+    assert(comfort_old_site_matches(tx,same));
+    tx.phase=static_cast<uint8_t>(ComfortPhase::SiteCommitted);
+    assert(comfort_site_matches(tx,same));
+    tx.magic=0;assert(!valid_comfort_txn(tx));
+}
+static void comfort_journal_power_loss_matrix() {
+    // All crash points from initial marker, site commit, air partial write,
+    // subsequent new mode, and unreadable NVS. Pure firmware recovery policy
+    // is tested without assuming that Preferences putBytes succeeded.
+    ComfortTxn tx{};
+    tx.mode=2;tx.profile=uint8_t(OptimizationProfile::Saving);
+    tx.previous_profile=uint8_t(OptimizationProfile::Balanced);
+    tx.previous_setup_step=6;
+    tx.previous_target=12;tx.previous_min_c=9;tx.previous_max_c=14;
+    tx.target=21;tx.min_c=19;tx.max_c=23;
+    SiteSettings site{};
+    site.setup_step=6;site.profile=OptimizationProfile::Saving;
+    site.comfort_min_c=19;site.comfort_max_c=23;
+    CottageModeConfig air{};
+    air.mode=CottageMode::Hold;air.hold_target_c=12;
+    using Action=ComfortRecoveryAction;
+    // Before site persist or before phase transition, never replay target.
+    tx.phase=uint8_t(ComfortPhase::Prepared);
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+    // Verified phase transitions to air completion only after commit evidence.
+    tx.phase=uint8_t(ComfortPhase::SiteCommitted);
+    assert(comfort_recovery_action(tx,site,air,true)==Action::CompleteAirTarget);
+    // At second air commit old or partially updated target is still recovered
+    // only if the versioned site intent is proven committed.
+    air.hold_target_c=21;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::CompleteAirTarget);
+    // Source NVS corruption or a partially written mode image NEVER recovers.
+    assert(comfort_recovery_action(tx,site,air,false)==Action::Block);
+    tx.magic=0;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::Block);
+    tx.magic=0x43545831;
+    // Owner's later different mode cannot be overwritten by old target.
+    air.mode=CottageMode::Occupied;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+    air.mode=CottageMode::Hold;
+    site.profile=OptimizationProfile::Balanced;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+    // Site match is not enough if phase never changed (target-only case).
+    tx.phase=uint8_t(ComfortPhase::Prepared);
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+}
+static void comfort_rollback_owner_target_is_not_replayed() {
+    using Action=ComfortRecoveryAction;
+    ComfortTxn tx{};
+    tx.phase=static_cast<uint8_t>(ComfortPhase::SiteCommitted);
+    tx.mode=2;tx.target=13;tx.previous_target=12;
+    tx.min_c=9;tx.max_c=16;
+    tx.previous_min_c=9;tx.previous_max_c=16;
+    tx.previous_setup_step=6;
+    SiteSettings site{};
+    site.setup_step=6;site.profile=OptimizationProfile::Balanced;
+    site.comfort_min_c=9;site.comfort_max_c=16;
+    CottageModeConfig air{};
+    air.mode=CottageMode::Hold;
+    air.hold_target_c=12;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::CompleteAirTarget);
+    air.hold_target_c=13;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::CompleteAirTarget);
+    // OTA rolled back; older firmware saved a newer owner-selected 14 C.
+    // The journal predates it and must not overwrite it with 13 C.
+    air.hold_target_c=14;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+    assert(mode_comfort_limits_fit(site,air));
+    // If rollback limits cannot fit the newer target, block recovery rather
+    // than silently violating the owner's current setting.
+    air.hold_target_c=22;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+    assert(!mode_comfort_limits_fit(site,air));
+    assert(comfort_recovery_action(tx,site,air,false)==Action::Block);
+}
+
+static void old_ota_settings_require_real_image_confirmation() {
+    // PREPARED / PENDING_VERIFY boots run c23_initialize before the OTA
+    // transaction service sets confirmation_pending. The early value false
+    // must not delete the previous firmware's NVS records.
+    assert(!site_old_keys_reclaimable(false,false,false));
+    assert(!site_old_keys_reclaimable(false,true,false));
+    // A bootloader VALID state alone is not enough before the OTA transaction
+    // service has read its signed journal. This closes the VALID-then-crash
+    // window between IDF confirmation and durable signed OTA confirmation.
+    assert(!site_old_keys_reclaimable(true,false,false));
+    assert(!site_old_keys_reclaimable(true,false,true));
+    assert(!site_old_keys_reclaimable(true,true,true));
+    assert(site_old_keys_reclaimable(true,true,false));
+}
+static void hard_comfort_limits_never_silently_disappear() {
+    assert(comfort_limits_fit_target(19,23,21));
+    assert(!comfort_limits_fit_target(19,23,12));
+    assert(!comfort_limits_fit_target(19,23,23));
+    assert(comfort_limits_fit_target(0,0,12));
+    assert(comfort_limits_fit_target(11.5,12.5,12));
+    assert(!comfort_limits_fit_target(12,13,12));
+    assert(!comfort_limits_fit_target(11,12,12));
+    SiteSettings s{};
+    s.comfort_min_c=19;s.comfort_max_c=23;
+    CottageModeConfig c{};
+    c.mode=CottageMode::Hold;c.hold_target_c=12;
+    assert(!mode_comfort_limits_fit(s,c));
+    c.hold_target_c=21;
+    assert(mode_comfort_limits_fit(s,c));
+    c.mode=CottageMode::Occupied;c.occupied_target_c=17;
+    assert(!mode_comfort_limits_fit(s,c));
+    c.occupied_target_c=21;
+    assert(mode_comfort_limits_fit(s,c));
+    c.mode=CottageMode::Cold;
+    assert(mode_comfort_limits_fit(s,c));
+    c.mode=CottageMode::Drying;
+    assert(mode_comfort_limits_fit(s,c));
+}
+
 int main() {
+    comfort_transaction_survives_site_air_split();
+    hard_comfort_limits_never_silently_disappear();
+    old_ota_settings_require_real_image_confirmation();
+    comfort_journal_power_loss_matrix();
+    comfort_rollback_owner_target_is_not_replayed();
+    v3_provenance_after_rollback_then_v4_upgrade();
+    nvs_snapshot_failure_does_not_commit_an_unknown_baseline();
+    rollback_edit_overrides_stale_v3();
+    older_layout_is_restored_not_reset();
     total_price_rules();
     seasonal_and_dst();
     parsing();
     catalog();
     regional_setup();
     v1_migration();
+    profile_and_comfort_limits();
     batch_is_order_independent();
     transfer_schedule_uses_country_time();
     std::puts("site_settings_tests OK");

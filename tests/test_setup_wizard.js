@@ -8,7 +8,7 @@ assert(m,'wizard script block missing');
 const src=m[1];
 
 // Every Finnish literal with non-ASCII letters must have an English entry.
-const dict=JSON.parse(header.split('const UI_EN=Object.freeze(')[1].split(');\nconst UI_EN_FRAGMENTS')[0]);
+const dict=JSON.parse(header.split('const UI_EN=Object.freeze(')[1].split(/\);\r?\nconst UI_EN_FRAGMENTS/)[0]);
 const literals=[...src.matchAll(/WT\('([^']*)'\)/g)].map(x=>x[1]);
 assert(literals.length>80,'expected the wizard literals to be found');
 const allowedUntranslated=new Set(['Wi-Fi']);
@@ -23,7 +23,7 @@ assert.deepEqual(missing,[],'missing English translations');
 
 const ctx={document:{},state:{},uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzNeedsAction,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS};',ctx);
+vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,WZ};',ctx);
 const A=ctx.api;
 
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
@@ -64,12 +64,12 @@ const good={site:{fmi_latlon:'61.4638,24.0760',pump_adapter:'mitsubishi_cn105_es
   status:{spot:0.05,price_error:0,cn105_source_verified:true,air:{sensor_fresh:true},shelly_w:300},
   weather:{valid:true},plan:{valid:true}};
 let s=A.wzSummary(good);const by=Object.fromEntries(s.map(x=>[x.key,x.state]));
-assert.deepEqual(by,{wifi:'ok',location:'ok',zone:'ok',tariff:'ok',pump:'ok',sensor:'ok',meter:'ok',optimizer:'ok'});
+assert.deepEqual(by,{wifi:'ok',location:'ok',zone:'ok',tariff:'ok',pump:'ok',sensor:'ok',meter:'ok',profile:'ok',optimizer:'ok'});
 assert.equal(A.wzNeedsAction(s).length,0);
 // fresh device: nothing configured -> todo/warn, never a fake ok
 s=A.wzSummary({site:{region:{}},status:{air:{}},weather:null,plan:null});
 const by2=Object.fromEntries(s.map(x=>[x.key,x.state]));
-assert.deepEqual(by2,{wifi:'ok',location:'todo',zone:'todo',tariff:'warn',pump:'todo',sensor:'warn',meter:'optional',optimizer:'warn'});
+assert.deepEqual(by2,{wifi:'ok',location:'todo',zone:'todo',tariff:'warn',pump:'todo',sensor:'warn',meter:'optional',profile:'ok',optimizer:'warn'});
 assert.equal(A.wzNeedsAction(s).length,6);          // optional meter and wifi are not "action"
 // zone chosen but the price fetch failed: warn with the real reason
 const failing=JSON.parse(JSON.stringify(good));failing.status.spot=null;failing.status.price_error=104;
@@ -94,7 +94,7 @@ assert.deepEqual({...A.wzBlankTariff()},{margin:'',tday:'',tnight:'',tax:'',vat:
 const handler=header.split("sel.addEventListener('change'")[1].split('});')[0];
 assert(handler.includes('wzBlankTariff()')&&handler.indexOf('wzBlankTariff()')<handler.indexOf('WZ.country=sel.value'));
 // Skip on the devices step posts only the step (a mistyped meter address cannot block it)
-assert(/else if\(s===5\)\{if\(skip\)await wzPost\(\{setup_step:'6'\}\);else await wzSaveDevices\(\);\}/.test(header));
+assert(/else if\(s===6\)\{if\(skip\)await wzPost\(\{setup_step:'7'\}\);else await wzSaveDevices\(\);\}/.test(header));
 assert(!header.includes("fmt(p.cost_eur,2)+' €'"),'plan cost must use the zone currency');
 // stale/invalid weather is a warning
 const noWx=JSON.parse(JSON.stringify(good));noWx.weather={valid:false};
@@ -105,3 +105,176 @@ console.log('test_setup_wizard OK ('+literals.length+' literals checked)');
  const loc=A.wzSummary(manual).find(x=>x.key==='location');
  assert.equal(loc.state,'ok');assert(loc.detail.includes('61.4638,24.0760'));}
 console.log('manual-location summary ok');
+
+// ---- comfort step: target, limits, profile ---------------------------------
+{
+  const ok=(v,mode)=>A.wzComfortFields({target:'21',min:'19',max:'23',profile:'saving',...v},mode);
+  let r=ok({},3);
+  assert(r.ok);assert.equal(r.target,21);
+  assert.deepEqual({...r.fields},{optimization_profile:'saving',comfort_min_c:'19',comfort_max_c:'23'});
+  // limits are optional and clear when empty
+  r=ok({min:'',max:''},3);assert(r.ok);assert.equal(r.fields.comfort_min_c,'');assert.equal(r.fields.comfort_max_c,'');
+  // Finnish decimal comma and half-degree steps
+  r=ok({target:'21,5'},3);assert(r.ok);assert.equal(r.target,21.5);
+  assert(!ok({target:'21.3'},3).ok);                       // 0.5 steps only
+  assert(!ok({target:'15'},3).ok);                         // Asuttu is 16..26
+  assert(ok({target:'15',min:'',max:''},2).ok);            // Ylläpito allows 5..24
+  assert(!ok({target:'25'},2).ok);
+  assert(!ok({target:'21'},0).ok);                         // no mode that has a target
+  assert(ok({target:''},0).ok);                            // but limits/profile can still be saved
+  // limits must stay in range, ordered, >= 1 C apart and outside target +-0.5
+  for(const bad of [{min:'4'},{max:'27'},{min:'19.3'},{min:'abc'},{min:'23',max:'19'},{min:'20',max:'20.5'},
+                    {min:'20.8'},{max:'21.2'},{profile:'eco'},{profile:''}])
+    assert(!ok(bad,3).ok,JSON.stringify(bad));
+  assert(ok({min:'20.5',max:'21.5'},3).ok);                // exactly 0.5 C either side is allowed
+  assert.deepEqual([...A.WZ_PROFILES.map(p=>p.id)],['comfort','balanced','saving']);
+}
+// The three profile descriptions never promise a saving figure.
+for(const p of A.WZ_PROFILES)assert(!/%|€|EUR/.test(p.text),p.id);
+console.log('comfort step helpers ok');
+
+(async()=>{
+  // P2 #57: failure of site NVS must never durably/actively change the target.
+  // On air-write failure after site save, compensate old profile and band.
+  const events=[];
+  ctx.state.site={optimization:{profile:'balanced',comfort_min_c:10,comfort_max_c:14},
+    region:{setup_step:5}};
+  ctx.state.status={air:{mode:2,hold_target_c:12,occupied_target_c:21,drying_delta_c:3}};
+  Object.assign(A.WZ.comfort,{target:'13',min:'9',max:'16',profile:'saving'});
+  ctx.airPostLocal=async()=>{events.push('air');};
+  ctx.reloadStatus=async()=>{events.push('reload');};
+  ctx.wzPost=async()=>{throw Error('NVS');};
+  ctx.fetchJSON=async()=>{events.push('site-readback');return {
+    optimization:{profile:'balanced',comfort_min_c:10,comfort_max_c:14},
+    region:{setup_step:5}};};
+  await assert.rejects(A.wzSaveComfort(false),/NVS/);
+  assert.deepEqual(events,['site-readback'],'verified failed site write must not change target');
+  events.length=0;
+  // A site POST may commit all comfort bounds before its HTTP response fails.
+  // Reconcile with an isolated GET and still write the matching air target.
+  ctx.wzPost=async()=>{events.push('site-post');throw Error('HTTP dropped');};
+  ctx.fetchJSON=async()=>{events.push('site-readback');return {
+    optimization:{profile:'saving',comfort_min_c:9,comfort_max_c:16},
+    region:{setup_step:6}};};
+  await A.wzSaveComfort(false);
+  assert.deepEqual(events,['site-post','site-readback','air','reload'],
+    'committed site with lost reply must finish the air target write');
+  // No GET or a third state is not proof that the site write failed:
+  // never apply the second half, nor falsely report the old persisted site.
+  events.length=0;
+  ctx.fetchJSON=async()=>{events.push('site-readback');throw Error('network');};
+  await assert.rejects(A.wzSaveComfort(false),/site status unverified/);
+  assert.deepEqual(events,['site-post','site-readback']);
+  assert.equal(ctx.state.site.optimization.profile,'saving',
+    'lost-response recovery must update the local cached durable profile');
+  // Revisit Comfort via Back and save a second target. If its air write
+  // fails, compensation must restore the FIRST recovered save's limits,
+  // not the stale pre-first-save band.
+  events.length=0;
+  ctx.state.status.air.hold_target_c=13; // first air save is now durable
+  A.WZ.comfort.target='14';
+  ctx.wzPost=async f=>{events.push({...f});};
+  ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:ctx.state.status.air};};
+  await assert.rejects(A.wzSaveComfort(false),/AIR_NVS/);
+  assert.equal(events.at(-1).optimization_profile,'saving');
+  assert.equal(events.at(-1).comfort_min_c,'9');
+  assert.equal(events.at(-1).comfort_max_c,'16');
+  // Restore the initial state for independent tests below.
+  ctx.state.site={optimization:{profile:'balanced',comfort_min_c:10,comfort_max_c:14},
+    region:{setup_step:5}};
+  ctx.state.status.air.hold_target_c=12;
+  A.WZ.comfort.target='13';
+  events.length=0;
+  ctx.airPostLocal=async()=>{events.push('air');};
+  ctx.wzPost=async f=>{events.push({...f});};
+  await A.wzSaveComfort(false);
+  assert.equal(events[0].comfort_txn_mode,'2','a target change must create durable mode intent');
+  assert.equal(events[0].comfort_txn_target,'13','journal must preserve desired air target');
+  assert.equal(events[0].optimization_profile,'saving');
+  assert.deepEqual(events.slice(1),['air','reload']);
+  events.length=0;
+  A.WZ.comfort.target='14'; // new edit; successful first target is cached now
+  ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:ctx.state.status.air};};
+  await assert.rejects(A.wzSaveComfort(false),/AIR_NVS/);
+  assert.equal(events.length,4,'site write + mode error + readback + restore site');
+  assert.equal(events[2],'readback');
+  assert.equal(events[3].optimization_profile,'balanced');
+  assert.equal(events[3].comfort_min_c,'10');
+  assert.equal(events[3].comfort_max_c,'14');
+  // Ambiguous HTTP response: committed target is visible on status readback.
+  // Undo would pair a new target with the OLD limits (fresh Codex P2 #57).
+  events.length=0;
+  A.WZ.comfort.target='13';
+  ctx.state.status.air.hold_target_c=12; // independent lost-response scenario
+  // Simulate stale shared state (a periodic status request superseded another).
+  // Only the isolated fresh API result may prove a new durable target.
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:{...ctx.state.status.air,hold_target_c:13}};};
+  ctx.reloadStatus=async()=>{events.push('reload');};
+  await A.wzSaveComfort(false);
+  assert.deepEqual(events.slice(1),['air','readback']);
+  assert.equal(events.length,3,'do not compensate a confirmed successful target save');
+  assert.equal(ctx.state.status.air.hold_target_c,13,
+    'confirmed air POST must refresh local status after lost HTTP reply');
+  // Back -> Comfort with the earlier target must not be considered unchanged:
+  // durable air target is 13, not the pre-recovery cached 12.
+  events.length=0;
+  A.WZ.comfort.target='12';
+  ctx.airPostLocal=async()=>{events.push('air');};
+  await A.wzSaveComfort(false);
+  assert(events.includes('air'),'back navigation must issue the necessary target POST');
+  // Reset for separate negative response / partial NVS tests below.
+  A.WZ.comfort.target='13';
+  ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
+  // If Wi-Fi is lost and readback is impossible, don't blindly undo either.
+  events.length=0;
+  ctx.state.status.air.hold_target_c=12;
+  ctx.fetchJSON=async()=>{events.push('readback');throw Error('WiFi lost');};
+  await assert.rejects(A.wzSaveComfort(false),/unverified/);
+  assert.equal(events.length,3,'unknown air outcome cannot trigger rollback');
+  // The API can return the old RAM target after a partial NVS commit.
+  // It must NOT be mistaken for a durable rollback and must NOT trigger
+  // compensating site writes that would corrupt the new limits.
+  events.length=0;
+  ctx.state.status={air:{mode:2,hold_target_c:12,occupied_target_c:21,drying_delta_c:3,
+    config_storage_verified:false}};
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:ctx.state.status.air};};
+  await assert.rejects(A.wzSaveComfort(false),/unverified/);
+  assert.equal(events.length,3,'unverified NVS rollback must not undo site settings');
+  // Codex latest P2: the success path cannot depend on reloadStatus() being
+  // applied. A concurrent 15s refresh can supersede and discard that result.
+  ctx.state.site={optimization:{profile:'saving',comfort_min_c:9,comfort_max_c:16},
+    region:{setup_step:6}};
+  ctx.state.status={air:{mode:2,hold_target_c:12,occupied_target_c:21,drying_delta_c:3}};
+  ctx.state.statusRequestSequence=100;
+  events.length=0;
+  A.WZ.comfort.target='13';
+  ctx.wzPost=async fields=>{events.push('site');};
+  ctx.airPostLocal=async()=>{events.push('air');return {saved:true};};
+  ctx.reloadStatus=async()=>{events.push('discarded-status-refresh');};
+  await A.wzSaveComfort(false);
+  assert.equal(ctx.state.status.air.hold_target_c,13,
+    'acknowledged target must be cached even when the status refresh was discarded');
+  assert(ctx.state.statusRequestSequence>100,
+    'any pre-existing periodic status response must be invalidated');
+  A.WZ.comfort.target='12';
+  events.length=0;
+  await A.wzSaveComfort(false);
+  assert(events.includes('air'),
+    'Back -> Comfort must NOT skip second target POST after a discarded refresh');
+  // Also ensure a successfully recovered lost-response readback invalidates
+  // previously started /api/status responses (same cache race).
+  ctx.state.status.air.hold_target_c=12;
+  ctx.state.statusRequestSequence=200;
+  events.length=0;
+  ctx.airPostLocal=async()=>{events.push('air');throw Error('WiFi reply lost');};
+  ctx.fetchJSON=async()=>{events.push('readback');return {air:{
+    mode:2,hold_target_c:13,occupied_target_c:21,drying_delta_c:3,
+    config_storage_verified:true}};};
+  A.WZ.comfort.target='13';
+  await A.wzSaveComfort(false);
+  assert.equal(ctx.state.status.air.hold_target_c,13);
+  assert(ctx.state.statusRequestSequence>200);
+  console.log('wizard rollback-order and ambiguous-response tests OK');
+})().catch(e=>{console.error(e);process.exitCode=1;});

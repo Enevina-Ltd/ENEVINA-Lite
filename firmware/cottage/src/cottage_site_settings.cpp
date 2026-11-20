@@ -3,6 +3,8 @@
 #include <Preferences.h>
 #include <nvs.h>
 #include <esp_log.h>
+#include <esp_ota_ops.h>
+#include "cottage/site_rollback_policy.hpp"
 #include "cottage/nvs_cache_reclaim_policy.hpp"
 #include <WebServer.h>
 #include <cJSON.h>
@@ -25,13 +27,17 @@ using enevina::cottage::SiteSettings;
 using enevina::cottage::SettingError;
 namespace {
 constexpr uint32_t kMagic=0x45535431; // "EST1"
-constexpr uint16_t kVersion=2;
+constexpr uint16_t kVersion=4;  // v4 never overwrites rollback v2/v3
 struct Stored {
     uint32_t magic=kMagic;
     uint16_t version=kVersion;
     uint16_t size=sizeof(SiteSettings);
     SiteSettings settings{};
+    uint64_t rollback_v2_signature=0;
+    uint64_t rollback_v3_signature=0; // both snapshots travel atomically with v4
 };
+// v3 blobs are read as versioned prefixes, so both the older pre-signature
+// layout and the signature-bearing v3 draft remain upgrade-readable.
 using enevina::cottage::SiteSettingsV1;
 struct StoredV1 {
     uint32_t magic=kMagic;
@@ -43,6 +49,8 @@ SemaphoreHandle_t guard=nullptr;
 SiteSettings current{};
 std::atomic<uint32_t> generation{0};
 std::atomic<uint32_t> endpoint_generation{0};
+std::atomic<bool> comfort_pending{false};
+constexpr char kComfortKey[]="comfort_txn";
 bool loaded_from_nvs=false;
 
 SiteSettings compiled_defaults() {
@@ -89,18 +97,86 @@ bool erase_disposable_cache(const char* nspace,const char* key) {
     if(ok) ESP_LOGW("enevina_site","NVS cache reclaimed: %s/%s",nspace,key);
     return ok;
 }
+// Snapshot rollback-readable settings records before writing v4. Their
+// signatures travel INSIDE the same v4 blob: no split-metadata NVS commit.
+// A missing rollback record is not the same as an unreadable one. Never
+// commit v4 with an unknown baseline: on reboot a recovered old record would
+// otherwise be mistaken for an edit made AFTER the v4 save.
+bool rollback_key_signature(Preferences& p,const char* key,uint64_t& signature) {
+    uint8_t raw[sizeof(Stored)]{};
+    return enevina::cottage::site_rollback_snapshot_signature(
+        p,key,signature,raw,sizeof(raw));
+}
+// The intent is a single durable NVS record. Every later site and air NVS
+// update is recoverable after a reset. On failed intent write, site remains old.
+bool prepare_comfort_transaction(const enevina::cottage::ComfortTxn& tx) {
+    if(!enevina::cottage::valid_comfort_txn(tx) || comfort_pending.load())return false;
+    Preferences p;
+    if(!p.begin("site",false))return false;
+    if(p.isKey(kComfortKey)) {comfort_pending.store(true);p.end();return false;}
+    const size_t wrote=p.putBytes(kComfortKey,&tx,sizeof(tx));
+    enevina::cottage::ComfortTxn back{};
+    const bool ok=wrote==sizeof(tx) && p.getBytesLength(kComfortKey)==sizeof(tx) &&
+        p.getBytes(kComfortKey,&back,sizeof(back))==sizeof(back) &&
+        std::memcmp(&tx,&back,sizeof(tx))==0;
+    comfort_pending.store(p.isKey(kComfortKey)); // ambiguous writes block commands
+    p.end();
+    return ok;
+}
+// NVS putBytes is one key, but two independent keys cannot be atomically
+// committed. An explicit phase transition prevents target-only false replay:
+/// PREPARED -> site record persisted/read back -> SITE_COMMITTED -> air.
+bool mark_comfort_site_committed() {
+    if(!comfort_pending.load())return false;
+    Preferences p;
+    if(!p.begin("site",false))return false;
+    enevina::cottage::ComfortTxn tx{};
+    const bool read=p.getBytesLength(kComfortKey)==sizeof(tx) &&
+        p.getBytes(kComfortKey,&tx,sizeof(tx))==sizeof(tx) &&
+        enevina::cottage::valid_comfort_txn(tx);
+    if(!read) {p.end();return false;}
+    tx.phase=static_cast<uint8_t>(enevina::cottage::ComfortPhase::SiteCommitted);
+    const size_t wrote=p.putBytes(kComfortKey,&tx,sizeof(tx));
+    enevina::cottage::ComfortTxn check{};
+    const bool ok=wrote==sizeof(tx) &&
+        p.getBytesLength(kComfortKey)==sizeof(check) &&
+        p.getBytes(kComfortKey,&check,sizeof(check))==sizeof(check) &&
+        std::memcmp(&check,&tx,sizeof(tx))==0;
+    p.end();
+    return ok;
+}
 bool persist(const SiteSettings& s) {
     Stored blob{};
     blob.settings=s;
+    bool snapshot_read_failed=false;
     const auto write_site=[&]() {
         Preferences p;
         if(!p.begin("site",false)) return false;
-        const size_t written=p.putBytes("v2",&blob,sizeof(blob));
-        // Keep the previous firmware's v1 settings during OTA probation.
-        // A rollback still reads site/v1, while new firmware reads site/v2.
-        // Remove v1 only when OTA confirms that rollback is no longer pending.
-        if(written==sizeof(blob) && p.isKey("v1") &&
-           !cottage_ota_confirmation_pending()) p.remove("v1");
+        // Preserve both rollback-readable records until OTA confirmation.
+        // A transient NVS read error is NOT a missing record. Do not write an
+        // untrustworthy baseline, even when there is enough space for v4.
+        if(!rollback_key_signature(p,"v2",blob.rollback_v2_signature) ||
+           !rollback_key_signature(p,"v3",blob.rollback_v3_signature)) {
+            snapshot_read_failed=true;
+            p.end();
+            return false;
+        }
+        const size_t written=p.putBytes("v4",&blob,sizeof(blob));
+        const esp_partition_t* running=esp_ota_get_running_partition();
+        esp_ota_img_states_t state=ESP_OTA_IMG_UNDEFINED;
+        const bool image_valid=running &&
+            esp_ota_get_state_partition(running,&state)==ESP_OK &&
+            state==ESP_OTA_IMG_VALID;
+        if(written==sizeof(blob) &&
+           enevina::cottage::site_old_keys_reclaimable(
+               image_valid,cottage_ota_runtime_ready(),
+               cottage_ota_confirmation_pending())) {
+            // Reclamation is allowed only AFTER OTA confirmation, when the
+            // earlier firmware cannot be restored by the OTA rollback path.
+            if(p.isKey("v3")) p.remove("v3");
+            if(p.isKey("v2")) p.remove("v2");
+            if(p.isKey("v1")) p.remove("v1");
+        }
         p.end();
         return written==sizeof(blob);
     };
@@ -110,7 +186,24 @@ bool persist(const SiteSettings& s) {
     // caches when the *user-initiated durable write* has failed. Don't touch
     // non-cache NVS keys or clear a whole partition.
     return enevina::cottage::persist_with_optional_cache_reclaim(
-        write_site,erase_disposable_cache);
+        write_site,[&](const char* nspace,const char* key) {
+            return !snapshot_read_failed && erase_disposable_cache(nspace,key);
+        });
+}
+bool site_persisted_matches(const SiteSettings& s) {
+    Preferences p;
+    if(!p.begin("site",true))return false;
+    Stored record{};
+    // The next stacked PR migrates site v4->v5. Verify whichever site
+    // record version this build actually persists.
+    const char* key=kVersion>=5?"v5":"v4";
+    const bool valid=p.getBytesLength(key)==sizeof(record) &&
+        p.getBytes(key,&record,sizeof(record))==sizeof(record) &&
+        record.magic==kMagic && record.version==kVersion &&
+        record.size==sizeof(SiteSettings) &&
+        std::memcmp(&record.settings,&s,sizeof(s))==0;
+    p.end();
+    return valid;
 }
 const char* kind_name(enevina::cottage::TransferKind k) {
     switch(k) {
@@ -142,6 +235,14 @@ void send_settings(WebServer& web) {
     cJSON_AddStringToObject(root,"fmi_latlon",s.fmi_latlon);
     cJSON_AddStringToObject(root,"fmi_latlon_note","applied immediately after save");
     cJSON_AddStringToObject(root,"pump_adapter",s.pump_adapter);
+    cJSON* optimization=cJSON_AddObjectToObject(root,"optimization");
+    if(optimization) {
+        cJSON_AddStringToObject(optimization,"profile",enevina::cottage::profile_name(s.profile));
+        if(s.comfort_min_c>0) cJSON_AddNumberToObject(optimization,"comfort_min_c",s.comfort_min_c);
+        else cJSON_AddNullToObject(optimization,"comfort_min_c");
+        if(s.comfort_max_c>0) cJSON_AddNumberToObject(optimization,"comfort_max_c",s.comfort_max_c);
+        else cJSON_AddNullToObject(optimization,"comfort_max_c");
+    }
     cJSON* region=cJSON_AddObjectToObject(root,"region");
     if(region) {
         cJSON_AddStringToObject(region,"country",s.country);
@@ -204,15 +305,80 @@ void site_settings_initialize() {
     SiteSettings s=compiled_defaults();
     Preferences p;
     if(p.begin("site",true)) {
+        comfort_pending.store(p.isKey(kComfortKey));
         Stored blob{};
         StoredV1 old{};
-        if(p.getBytesLength("v2")==sizeof(blob) &&
-           p.getBytes("v2",&blob,sizeof(blob))==sizeof(blob) &&
+        bool v4_valid=false;
+        // v4 is the authoritative candidate unless rollback firmware changed
+        // a protected v3 or v2 record since v4's last durable save.
+        if(p.getBytesLength("v4")==sizeof(blob) &&
+           p.getBytes("v4",&blob,sizeof(blob))==sizeof(blob) &&
            blob.magic==kMagic && blob.version==kVersion &&
            blob.size==sizeof(SiteSettings) && acceptable(blob.settings)) {
             s=blob.settings;
             loaded_from_nvs=true;
-        } else if(p.getBytesLength("v1")==sizeof(old) &&
+            v4_valid=true;
+        }
+        const size_t h=offsetof(Stored,settings);
+        // v3 is a full settings record, optionally followed by a prior
+        // v2 fingerprint. Decode only the validated settings prefix.
+        uint8_t raw3[sizeof(Stored)]{};
+        const size_t len3=p.getBytesLength("v3");
+        SiteSettings from3{};
+        bool v3_valid=false;
+        size_t v3_settings_bytes=0;
+        if(len3>h && len3<=sizeof(raw3) &&
+           p.getBytes("v3",raw3,len3)==len3) {
+            uint32_t magic=0;uint16_t version=0,size=0;
+            memcpy(&magic,raw3,4);memcpy(&version,raw3+4,2);
+            memcpy(&size,raw3+6,2);
+            v3_valid=magic==kMagic && version==3 && size>0 &&
+                size<=len3-h &&
+                enevina::cottage::restore_site_settings(raw3+h,size,from3) &&
+                acceptable(from3);
+            // Signature-bearing v3 followed its settings payload with the
+            // *old v2 fingerprint*. Keep that migration provenance: v3 may
+            // have saved during OTA probation, then v2 rollback firmware
+            // edited its own settings before this first v4 boot.
+            if(v3_valid) v3_settings_bytes=size;
+        }
+        // v2 used several supported prefix layouts as fields were appended.
+        uint8_t raw2[sizeof(Stored)]{};
+        const size_t len2=p.getBytesLength("v2");
+        SiteSettings from2{};
+        bool v2_valid=false;
+        if(len2>h && len2<=sizeof(raw2) &&
+           p.getBytes("v2",raw2,len2)==len2) {
+            uint32_t magic=0;uint16_t version=0,size=0;
+            memcpy(&magic,raw2,4);memcpy(&version,raw2+4,2);
+            memcpy(&size,raw2+6,2);
+            v2_valid=magic==kMagic && version==2 &&
+                size<=len2-h &&
+                enevina::cottage::restore_site_settings(raw2+h,size,from2) &&
+                acceptable(from2);
+        }
+        if(v4_valid) {
+            // Priority: the newest rollback-capable version whose record
+            // changed since the v4 candidate saved. Invalid records never
+            // replace a validated v4 record.
+            if(v3_valid && enevina::cottage::site_rollback_v2_modified(
+                    blob.rollback_v3_signature,raw3,len3)) {
+                s=from3;
+            } else if(v2_valid && enevina::cottage::site_rollback_v2_modified(
+                    blob.rollback_v2_signature,raw2,len2)) {
+                s=from2;
+            }
+        } else if(v3_valid) {
+            // First v4 boot: v3's own rollback signature is the only way to
+            // detect edits made by v2 after v3 was written. Do not throw it
+            // away while restoring the v3 settings prefix.
+            s=(v2_valid && enevina::cottage::site_v3_prefer_rollback_v2(
+                   raw3,len3,v3_settings_bytes,raw2,len2)) ? from2 : from3;
+            loaded_from_nvs=true;
+        } else if(v2_valid) {
+            s=from2;loaded_from_nvs=true;
+        }
+        if(!loaded_from_nvs && p.getBytesLength("v1")==sizeof(old) &&
            p.getBytes("v1",&old,sizeof(old))==sizeof(old) &&
            old.magic==kMagic && old.version==1 &&
            old.size==sizeof(SiteSettingsV1)) {
@@ -234,6 +400,63 @@ SiteSettings site_settings_snapshot() {
     const SiteSettings copy=current;
     xSemaphoreGive(guard);
     return copy;
+}
+// A marker can survive a reboot at any point between the two separate NVS
+// records. Never silently discard a valid intent for a newly saved site band.
+bool site_comfort_transaction_pending() { return comfort_pending.load(); }
+bool site_comfort_transaction_read(enevina::cottage::ComfortTxn& out) {
+    Preferences p;
+    if(!p.begin("site",true))return false;
+    const bool valid=p.getBytesLength(kComfortKey)==sizeof(out) &&
+        p.getBytes(kComfortKey,&out,sizeof(out))==sizeof(out) &&
+        enevina::cottage::valid_comfort_txn(out);
+    p.end();
+    return valid;
+}
+bool site_comfort_transaction_abandon() {
+    if(!comfort_pending.load())return true;
+    Preferences p;
+    if(!p.begin("site",false))return false;
+    const bool ok=(!p.isKey(kComfortKey) || p.remove(kComfortKey)) &&
+        !p.isKey(kComfortKey);
+    p.end();
+    if(ok)comfort_pending.store(false);
+    return ok;
+}
+bool site_comfort_transaction_mark_site_committed() {
+    return mark_comfort_site_committed();
+}
+bool site_comfort_transaction_abort_verified(
+    const enevina::cottage::CottageModeConfig& proven_air) {
+    if(!comfort_pending.load())return true;
+    enevina::cottage::ComfortTxn tx{};
+    if(!site_comfort_transaction_read(tx))return false;
+    SiteSettings old=site_settings_snapshot();
+    old.profile=static_cast<enevina::cottage::OptimizationProfile>(tx.previous_profile);
+    old.comfort_min_c=tx.previous_min_c;
+    old.comfort_max_c=tx.previous_max_c;
+    old.setup_step=tx.previous_setup_step;
+    // A later explicit owner mode change is preserved only if the restored
+    // hard limits fit it; an unknown/conflicting state must not be unblocked.
+    if(!enevina::cottage::mode_comfort_limits_fit(old,proven_air))
+        return false;
+    if(!site_persisted_matches(old)) {
+        if(!persist(old) || !site_persisted_matches(old))return false;
+    }
+    xSemaphoreTake(guard,portMAX_DELAY);
+    current=old;
+    loaded_from_nvs=true;
+    xSemaphoreGive(guard);
+    generation.fetch_add(1);
+    return site_comfort_transaction_abandon();
+}
+bool site_comfort_transaction_finish(const enevina::cottage::CottageModeConfig& cfg) {
+    if(!comfort_pending.load())return true;
+    enevina::cottage::ComfortTxn tx{};
+    if(!site_comfort_transaction_read(tx) ||
+       !enevina::cottage::comfort_site_matches(tx,site_settings_snapshot()) ||
+       !enevina::cottage::comfort_mode_matches(tx,cfg))return false;
+    return site_comfort_transaction_abandon();
 }
 uint32_t site_settings_generation() { return generation.load(); }
 uint32_t site_settings_endpoint_generation() { return endpoint_generation.load(); }
@@ -346,7 +569,8 @@ void site_settings_register_routes(WebServer& web) {
             }
             for(int i=0;i<web.args() && n<kMaxFields;++i) {
                 names[n]=web.argName(i);
-                if(names[n]=="token" || names[n]=="plain") continue;
+                if(names[n]=="token" || names[n]=="plain" ||
+                   names[n]=="comfort_txn_mode" || names[n]=="comfort_txn_target")continue;
                 vals[n]=web.arg(i);
                 keys[n]=names[n].c_str();
                 values[n]=vals[n].c_str();
@@ -377,10 +601,108 @@ void site_settings_register_routes(WebServer& web) {
             web.send(400,"application/json","{\"saved\":false,\"error\":\"INVALID\"}");
             return;
         }
+        // Only Comfort setup may span site and air records. A durable intent
+        // must precede the first change; the next boot can finish it safely.
+        const bool wants_txn=web.hasArg("comfort_txn_mode")||
+                             web.hasArg("comfort_txn_target");
+        enevina::cottage::ComfortTxn comfort_tx{};
+        if(wants_txn) {
+            // The journal retains only mode/profile/bounds/setup-step.
+            // Do not mix unrelated site edits into a transaction that can
+            // intentionally roll those fields back after a power failure.
+            for(int i=0;i<web.args();++i) {
+                const String key=web.argName(i);
+                if(key=="token"||key=="plain"||key=="comfort_txn_mode"||
+                   key=="comfort_txn_target"||key=="setup_step"||
+                   key=="optimization_profile"||key=="comfort_min_c"||
+                   key=="comfort_max_c")continue;
+                web.send(400,"application/json",
+                         "{\"saved\":false,\"error\":\"COMFORT_FIELDS\"}");
+                return;
+            }
+            const String mode_s=web.arg("comfort_txn_mode");
+            const String target_s=web.arg("comfort_txn_target");
+            if((mode_s!="2"&&mode_s!="3")||target_s.length()>20 ||
+               next.setup_step!=6) {
+                web.send(400,"application/json","{\"saved\":false,\"error\":\"COMFORT_TXN\"}");
+                return;
+            }
+            char* end=nullptr;
+            const double t=strtod(target_s.c_str(),&end);
+            comfort_tx.mode=static_cast<uint8_t>(mode_s.toInt());
+            comfort_tx.profile=static_cast<uint8_t>(next.profile);
+            comfort_tx.target=static_cast<float>(t);
+            const auto existing_air=enevina::cottage::c23_mode_config();
+            comfort_tx.previous_target=comfort_tx.mode==3?
+                existing_air.occupied_target_c:existing_air.hold_target_c;
+            comfort_tx.min_c=static_cast<float>(next.comfort_min_c);
+            comfort_tx.max_c=static_cast<float>(next.comfort_max_c);
+            const auto air=enevina::cottage::c23_mode_config();
+            if(end==target_s.c_str() || *end || !enevina::cottage::valid_comfort_txn(comfort_tx) ||
+               static_cast<uint8_t>(air.mode)!=comfort_tx.mode) {
+                web.send(400,"application/json","{\"saved\":false,\"error\":\"COMFORT_TXN\"}");
+                return;
+            }
+        }
         const SiteSettings previous=site_settings_snapshot();
+        const enevina::cottage::CottageModeConfig air=enevina::cottage::c23_mode_config();
+        const double prospective_target=wants_txn?comfort_tx.target:
+            air.mode==enevina::cottage::CottageMode::Occupied?
+                air.occupied_target_c:air.hold_target_c;
+        // Enforce what the UI labels HARD lower/upper comfort limits.
+        // Never accept a band that the runtime would silently discard.
+        if((air.mode==enevina::cottage::CottageMode::Hold ||
+            air.mode==enevina::cottage::CottageMode::Occupied) &&
+           !enevina::cottage::comfort_limits_fit_target(
+                next.comfort_min_c,next.comfort_max_c,prospective_target)) {
+            web.send(409,"application/json",
+                     "{\"saved\":false,\"error\":\"COMFORT_TARGET_CONFLICT\"}");
+            return;
+        }
+        if(site_comfort_transaction_pending()) {
+            enevina::cottage::ComfortTxn pending{};
+            if(!site_comfort_transaction_read(pending)) {
+                web.send(503,"application/json",
+                         "{\"saved\":false,\"error\":\"COMFORT_JOURNAL_UNVERIFIED\"}");
+                return;
+            }
+            const bool same=wants_txn &&
+                pending.phase==static_cast<uint8_t>(enevina::cottage::ComfortPhase::SiteCommitted) &&
+                pending.mode==comfort_tx.mode &&
+                std::fabs(pending.target-comfort_tx.target)<0.001 &&
+                pending.profile==comfort_tx.profile &&
+                std::fabs(pending.min_c-comfort_tx.min_c)<0.001 &&
+                std::fabs(pending.max_c-comfort_tx.max_c)<0.001 &&
+                enevina::cottage::comfort_site_matches(pending,previous);
+            if(same) {
+                // A lost response or failed air POST is retried idempotently.
+                web.send(200,"application/json","{\"saved\":true,\"retry\":true}");
+                return;
+            }
+            // A non-Comfort settings POST must never accidentally reapply
+            // the in-flight site's comfort band after we roll it back:
+            // only an explicit owner compensation payload may cancel it.
+            const bool explicit_old_band=!wants_txn &&
+                web.hasArg("optimization_profile") &&
+                web.hasArg("comfort_min_c") && web.hasArg("comfort_max_c") &&
+                enevina::cottage::comfort_old_site_matches(pending,next);
+            if(!wants_txn && !explicit_old_band) {
+                web.send(409,"application/json",
+                         "{\"saved\":false,\"error\":\"COMFORT_RECOVERY_REQUIRED\"}");
+                return;
+            }
+            if(!enevina::cottage::c23_mode_config_is_durable(air) ||
+               !enevina::cottage::comfort_old_mode_matches(pending,air) ||
+               !site_comfort_transaction_abort_verified(air)) {
+                web.send(409,"application/json",
+                         "{\"saved\":false,\"error\":\"COMFORT_RECOVERY_REQUIRED\"}");
+                return;
+            }
+        }
+        const SiteSettings effective_previous=site_settings_snapshot();
         const bool endpoint_changed=
-            strcmp(previous.cn105_url,next.cn105_url)!=0 ||
-            strcmp(previous.pump_adapter,next.pump_adapter)!=0;
+            strcmp(effective_previous.cn105_url,next.cn105_url)!=0 ||
+            strcmp(effective_previous.pump_adapter,next.pump_adapter)!=0;
         // Durable revocation MUST precede new site commit. Otherwise an
         // immediate reset could reinstate the old pump permission when the
         // user later selects the previous URL again.
@@ -389,9 +711,35 @@ void site_settings_register_routes(WebServer& web) {
                      "{\"saved\":false,\"error\":\"CONTROL_NVS\"}");
             return;
         }
+        // Durable journal must be written before the new site band or a reset
+        // between site+air POSTs could boot with contradictory target/limits.
+        if(wants_txn) {
+            comfort_tx.previous_profile=static_cast<uint8_t>(effective_previous.profile);
+            comfort_tx.previous_setup_step=effective_previous.setup_step;
+            comfort_tx.previous_min_c=effective_previous.comfort_min_c;
+            comfort_tx.previous_max_c=effective_previous.comfort_max_c;
+            comfort_tx.previous_target=comfort_tx.mode==3?
+                air.occupied_target_c:air.hold_target_c;
+        }
+        if(wants_txn && !prepare_comfort_transaction(comfort_tx)) {
+            web.send(503,"application/json","{\"saved\":false,\"error\":\"COMFORT_NVS\"}");
+            return;
+        }
         // Durable first: RAM changes only after NVS accepted the full blob.
-        if(!persist(next)) {
+        const bool site_saved=persist(next) && site_persisted_matches(next);
+        if(!site_saved) {
+            // No air change has been attempted. Recommit the previous site
+            // and clear the marker ONLY after NVS verifies the old image.
+            if(wants_txn && enevina::cottage::c23_mode_config_is_durable(air))
+                site_comfort_transaction_abort_verified(air);
             web.send(500,"application/json","{\"saved\":false,\"error\":\"NVS\"}");
+            return;
+        }
+        if(wants_txn && !site_comfort_transaction_mark_site_committed()) {
+            if(enevina::cottage::c23_mode_config_is_durable(air))
+                site_comfort_transaction_abort_verified(air);
+            web.send(503,"application/json",
+                     "{\"saved\":false,\"error\":\"COMFORT_NVS\"}");
             return;
         }
         xSemaphoreTake(guard,portMAX_DELAY);

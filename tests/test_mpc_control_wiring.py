@@ -153,6 +153,14 @@ class MpcControlWiring(unittest.TestCase):
         self.assertNotIn("p.band.lower_c-0.2", ARB)       # no tolerance beyond the limit
         self.assertNotIn("p.band.upper_c+0.3", ARB)
 
+    def test_owner_limits_come_from_the_profile_settings(self):
+        fn = MAIN.split("static ComfortLimits owner_comfort_limits() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("site.comfort_min_c", fn)
+        self.assertIn("site.comfort_max_c", fn)
+        boot = MAIN.split("static BootstrapDecision bootstrap_preview(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("mode_comfort_limits_fit(site,mode)", boot)
+        self.assertIn("apply_profile(input,site.profile,site.comfort_min_c,site.comfort_max_c", boot)
+
     def test_meter_scope_rule_on_main(self):
         self.assertIn("static bool shelly_meter_pump_only() {return false;}", MAIN)
         self.assertIn("o.meter_pump_only=shelly_meter_pump_only();", WORKER)

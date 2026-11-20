@@ -13,6 +13,10 @@ TemperatureSample c23_temperature_sample();
 CottageModeConfig c23_mode_config();
 CottageModePlan c23_current_mode_plan();
 uint32_t c23_config_generation();
+bool c23_config_storage_verified();
+// Separate from the pending journal gate: verify the four real mode NVS keys
+// when aborting an interrupted cross-namespace Comfort transaction.
+bool c23_mode_config_is_durable(const CottageModeConfig& cfg);
 uint32_t c23_indoor_binding_id();
 bool c23_authorize_local_setting(const char* submitted_token);
 // Existing per-boot local CSRF token (also published in /api/status).

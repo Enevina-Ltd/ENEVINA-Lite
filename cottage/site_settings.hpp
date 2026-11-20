@@ -10,11 +10,13 @@
 // Timestamps are UTC; the transfer schedule is evaluated in the civil time of
 // the selected country (EU summer-time rule) at the 15-minute slot START.
 #include "cottage/finnish_tariff.hpp"
+#include "cottage/optimization_profile.hpp"
 #include "cottage/url_guard.hpp"
 #include "forecast/eu_time.hpp"
 #include "forecast/market_zones.hpp"
 #include "forecast/pricing.hpp"
 #include <cerrno>
+#include <cstddef>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -128,6 +130,11 @@ struct SiteSettings {
     bool tariff_confirmed=false; // user entered/confirmed contract prices
     bool setup_complete=true; // first-run wizard finished (fresh devices: false)
     uint8_t setup_step=0;     // resume point of the wizard
+    // Optimization profile and the owner's comfort limits (0 = not set).
+    // Balanced without limits behaves exactly like the firmware before profiles.
+    OptimizationProfile profile=OptimizationProfile::Balanced;
+    double comfort_min_c=0;
+    double comfort_max_c=0;
 };
 
 // Byte layout of the shipped v1 settings blob (Finland-only, before regional
@@ -161,6 +168,80 @@ inline SiteSettings site_settings_from_v1(const SiteSettingsV1& old) {
     return s;
 }
 
+// Layout history of the persisted SiteSettings blob (version field stays 2).
+// New members are ONLY ever appended, so every older layout is a prefix of the
+// current one. A boundary is the offset of the first member a layout added:
+// restore_site_settings() copies the largest prefix the stored blob covers and
+// leaves everything newer at its default - the owner's saved pump endpoint,
+// location, tariff and wizard state survive a firmware upgrade instead of being
+// discarded. (Without this an exact-size check silently reset the device.)
+constexpr size_t kSettingsLayoutBoundaries[]={offsetof(SiteSettings,profile)};
+// Returns false when `size` matches no known layout (corrupt, or written by a
+// NEWER firmware that this one cannot interpret): the caller keeps defaults.
+inline bool restore_site_settings(const uint8_t* bytes,size_t size,SiteSettings& out) {
+    if(!bytes||size>sizeof(SiteSettings)) return false;
+    size_t take=0;
+    if(size==sizeof(SiteSettings)) take=sizeof(SiteSettings);
+    else for(const size_t b:kSettingsLayoutBoundaries) {
+        // an older layout's size is its last member rounded up by struct padding
+        const size_t padded=(b+alignof(SiteSettings)-1)/alignof(SiteSettings)*alignof(SiteSettings);
+        if(size>=b&&size<=padded&&b>take) take=b;
+    }
+    if(take==0) return false;
+    SiteSettings s{};                       // defaults for anything newer than the blob
+    std::memcpy(&s,bytes,take);             // never beyond the last whole older member
+    out=s;
+    return true;
+}
+
+// Fingerprint the exact rollback-readable v2 record, including its header
+// and padding. A v3 candidate saves this fingerprint alongside its settings.
+// If rollback firmware later edits v2, the next upgraded boot must prefer
+// those newer owner edits to an older v3 candidate. Missing v2 is signature 0.
+inline uint64_t site_v2_signature(const uint8_t* bytes,size_t n) {
+    if(!bytes||n==0)return 0;
+    uint64_t h=UINT64_C(14695981039346656037);
+    for(size_t i=0;i<n;++i) {
+        h^=bytes[i];
+        h*=UINT64_C(1099511628211);
+    }
+    return h?h:1;
+}
+inline bool site_rollback_v2_modified(uint64_t v3_baseline,const uint8_t* v2,size_t n) {
+    return n>0 && site_v2_signature(v2,n)!=v3_baseline;
+}
+
+
+// Reads a rollback-compatible NVS record without conflating a missing key
+// with a transient read failure. Caller supplies bounded scratch storage:
+// no dynamic allocation or flash writes while preparing the v4 snapshot.
+template<class Nvs>
+inline bool site_rollback_snapshot_signature(Nvs& p,const char* key,
+                                             uint64_t& signature,uint8_t* scratch,
+                                             size_t scratch_size) {
+    signature=0;
+    const size_t n=p.getBytesLength(key);
+    if(n==0) return !p.isKey(key);
+    if(!scratch || n>scratch_size) return false;
+    if(p.getBytes(key,scratch,n)!=n) return false;
+    signature=site_v2_signature(scratch,n);
+    return true;
+}
+
+// v3's signature-bearing layout contains the previous v2 fingerprint after
+// its settings bytes. A first v4 boot MUST honor that provenance before
+// preferring the older v3 payload over a v2 edited during rollback.
+inline bool site_v3_prefer_rollback_v2(const uint8_t* v3,size_t v3_len,
+                                       size_t settings_bytes,
+                                       const uint8_t* v2,size_t v2_len) {
+    constexpr size_t h=8;
+    if(!v3 || v3_len<h || settings_bytes>v3_len-h ||
+       v3_len-h-settings_bytes<sizeof(uint64_t)) return false;
+    uint64_t baseline=0;
+    std::memcpy(&baseline,v3+h+settings_bytes,sizeof(baseline));
+    return site_rollback_v2_modified(baseline,v2,v2_len);
+}
+
 // Region that prices are fetched for, or false when the user has not finished
 // choosing one (unsupported country, or multi-zone country without a zone).
 inline bool site_market_region(const SiteSettings& s,const char*& nordpool_area,
@@ -191,7 +272,9 @@ inline bool valid_site_region(const SiteSettings& s);
 inline bool valid_site_settings(const SiteSettings& s) {
     if(!valid_site_region(s)) return false;
     const enevina::MarketCountry* c=enevina::find_market_country(s.country);
-    return valid_site_tariff(s.tariff,currency_limit_scale(c ? c->currency : "EUR"));
+    return static_cast<uint8_t>(s.profile)<=2 &&
+        valid_comfort_limits(s.comfort_min_c,s.comfort_max_c) &&
+        valid_site_tariff(s.tariff,currency_limit_scale(c ? c->currency : "EUR"));
 }
 inline bool valid_site_region(const SiteSettings& s) {
     auto terminated=[](const char* p,size_t n){return std::memchr(p,0,n)!=nullptr;};
@@ -427,6 +510,19 @@ inline SettingError apply_site_setting(SiteSettings& s,const char* key,const cha
         if(!std::strcmp(value,"true")) v=true;
         else if(std::strcmp(value,"false")) return SettingError::BadChoice;
         (key[0]=='t'?s.tariff_confirmed:s.setup_complete)=v;
+        return SettingError::Ok;
+    }
+    if(!std::strcmp(key,"optimization_profile")) {
+        return parse_profile(value,s.profile)?SettingError::Ok:SettingError::BadChoice;
+    }
+    if(!std::strcmp(key,"comfort_min_c") || !std::strcmp(key,"comfort_max_c")) {
+        double v=0;
+        if(*value) {
+            if(!detail::parse_decimal(value,v)) return SettingError::BadNumber;
+            if(v<kComfortMinAllowedC || v>kComfortMaxAllowedC ||
+               std::fabs(v*2.0-std::round(v*2.0))>1e-9) return SettingError::OutOfRange;
+        }
+        (key[9]=='i'?s.comfort_min_c:s.comfort_max_c)=v;   // "" clears the limit
         return SettingError::Ok;
     }
     if(!std::strcmp(key,"setup_step")) {

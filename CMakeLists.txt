@@ -328,10 +328,23 @@ target_compile_definitions(geocode_tests PRIVATE
     ENEVINA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 add_test(NAME geocode_tests COMMAND geocode_tests)
 
+# Optimization profiles on the live price-aware room controller.
+add_executable(optimization_profile_tests tests/optimization_profile_tests.cpp)
+target_include_directories(optimization_profile_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(optimization_profile_tests PRIVATE enevina_cottage enevina_core)
+target_compile_definitions(optimization_profile_tests PRIVATE
+    ENEVINA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+add_test(NAME optimization_profile_tests COMMAND optimization_profile_tests)
+
+# Simulated profile comparison on real recorded prices (Markdown to stdout).
+add_executable(profile_benchmark tools/profile_benchmark.cpp)
+target_include_directories(profile_benchmark PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(profile_benchmark PRIVATE enevina_cottage enevina_core)
+
 # Live MPC chain: automatic building identification (RLS + walk-forward
 # validation), receding-horizon bridge, MPC -> price -> thermostat arbiter,
 # and the closed-loop comparison harness (SIMULATION, host only).
-foreach(t cottage_identification_tests cottage_mpc_control_tests cottage_closed_loop_tests cottage_model_persistence_tests)
+foreach(t cottage_identification_tests cottage_mpc_control_tests cottage_closed_loop_tests cottage_model_persistence_tests cottage_mpc_integration_tests)
   add_executable(${t} tests/${t}.cpp)
   target_link_libraries(${t} PRIVATE enevina_cottage enevina_core)
   if(MSVC)
