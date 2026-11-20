@@ -116,29 +116,11 @@ static std::atomic<uint32_t> control_armed_endpoint{0};
 // task (arming) and the optimizer task, serialized by mode_history_lock.
 static MitsubishiModeHistory control_mode_history{};
 static portMUX_TYPE mode_history_lock=portMUX_INITIALIZER_UNLOCKED;
-// Last HEAT/OFF + setpoint read back from the pump bridge (GET), used by the
-// MPC chain as its pump-state input. -1 = never observed since boot.
-static std::atomic<int> bridge_observed_heat{-1};
-static std::atomic<int> bridge_observed_setpoint_tenths{0};
-static std::atomic<uint32_t> bridge_observed_ms{0};
 static void control_note_observed_mode(bool heating) {
     const uint32_t now=millis();
     portENTER_CRITICAL(&mode_history_lock);
     control_mode_history.observe(heating,now);
     portEXIT_CRITICAL(&mode_history_lock);
-}
-static void remember_bridge_readback(bool heating,double setpoint) {
-    bridge_observed_setpoint_tenths.store(static_cast<int>(std::lround(setpoint*10.0)));
-    bridge_observed_heat.store(heating?1:0);
-    bridge_observed_ms.store(millis());
-}
-// A bridge observation is usable for planning only while recent.
-static bool recent_bridge_observation(bool& heating,double& setpoint,uint32_t max_age_ms) {
-    const int h=bridge_observed_heat.load();
-    if(h<0 || static_cast<uint32_t>(millis()-bridge_observed_ms.load())>max_age_ms) return false;
-    heating=h==1;
-    setpoint=bridge_observed_setpoint_tenths.load()/10.0;
-    return true;
 }
 static void control_note_mode_dispatch() {
     const uint32_t now=millis();
@@ -718,6 +700,21 @@ static void mpc_mode_target(bool& heating_allowed,double& target_c) {
     if(mode.mode==CottageMode::Drying && drying_blocks_heat(plan)) return;
     heating_allowed=true;target_c=plan.target_c;
 }
+// Pump HEAT/OFF for the MPC chain (planning, learning, plan validity): ONLY a
+// fresh, source-verified CN105 poll (pump-origin time + completed UART poll
+// proof). An ESPHome GET/SSE receipt can repeat cached state while the pump
+// link is down, so it is never used as evidence here (Codex P1, PR #63).
+// `minutes` is the verified, uninterrupted time in that mode.
+struct PumpView {bool known=false,heat=false;double setpoint=0;unsigned minutes=0;};
+static PumpView pump_view(const CN105Telemetry& cp,int64_t now,unsigned verified_minutes) {
+    PumpView v{};
+    if(valid_cn105(cp,now) && cp.evidence.source_time_verified &&
+       (cp.mode==ObservedPumpMode::Heat || cp.mode==ObservedPumpMode::Off)) {
+        v.known=true;v.heat=cp.mode==ObservedPumpMode::Heat;v.setpoint=cp.setpoint_c;
+        v.minutes=verified_minutes;
+    }
+    return v;
+}
 // ONE proposal for the physical control path: a calibrated, current MPC
 // plan's first decision, otherwise the price controller, which itself falls
 // back to a thermostat without prices. Never authorises a write by itself.
@@ -730,15 +727,21 @@ static BootstrapDecision active_control_proposal(int64_t now,const TemperatureSa
     in.bootstrap=bootstrap_preview(now,t);
     in.config_generation=c23_config_generation();
     in.settings_generation=site_settings_generation();
-    bool heat=false;double setpoint=0;
-    in.pump_state_known=recent_bridge_observation(heat,setpoint,5u*60u*1000u);
-    in.pump_heat=heat;
     xSemaphoreTake(lock_data,portMAX_DELAY);
+    const CN105Telemetry cp=pump;
+    const unsigned minutes=observed_mode_duration.minutes(cp.mode,
+        static_cast<uint64_t>(esp_timer_get_time()/1000),valid_cn105(cp,now));
     in.calibration=calibration_snapshot.state;
     in.calibrated=calibration_snapshot.state==CalibrationState::Calibrated;
     in.plan=mpc_plan;
     in.mode_generation=observed_mode_generation;
     xSemaphoreGive(lock_data);
+    const PumpView view=pump_view(cp,now,minutes);
+    in.pump_state_known=view.known;
+    in.pump_heat=view.heat;
+    in.own_transition_confirmed=in.plan.has_plan &&
+        mpc_confirmed_slot_utc.load()==in.plan.first_utc &&
+        mpc_confirmed_heat.load()==(in.plan.first_heat?1:0);
     const ArbiterOutput out=arbitrate(in);
     if(detail) *detail=out;
     return out.proposal;
@@ -1047,10 +1050,8 @@ static void cottage_control_tick() {
     // history and avoid a stale observation gap at the next HEAT request.
     if(proposal.action==BootstrapAction::Hold) {
         bool observed_heat=false;double observed_setpoint=0;
-        if(cn105_bridge_get(observed_heat,observed_setpoint)) {
+        if(cn105_bridge_get(observed_heat,observed_setpoint))
             control_note_observed_mode(observed_heat);
-            remember_bridge_readback(observed_heat,observed_setpoint);
-        }
         control_gate.store(static_cast<int>(ControlBlock::NoProposal));
         return;
     }
@@ -1084,7 +1085,6 @@ static void cottage_control_tick() {
     candidate.current_setpoint_c=current_setpoint;
     candidate.proposal=proposal;
     control_note_observed_mode(current_heat);
-    remember_bridge_readback(current_heat,current_setpoint);
     candidate.ms_since_mode_change=control_ms_since_mode_change();
     const auto decision=choose_mitsubishi_control(candidate);
     control_gate.store(static_cast<int>(decision.gate));
@@ -1120,7 +1120,6 @@ static void cottage_control_tick() {
             double read_setpoint=0;
             if(!cn105_bridge_get(read_heating,read_setpoint))continue;
             control_note_observed_mode(read_heating);
-            remember_bridge_readback(read_heating,read_setpoint);
             last_heating=read_heating;last_setpoint=read_setpoint;
             confirmed=decision.step==ControlStep::Setpoint ?
                 std::fabs(read_setpoint-decision.target_c)<=0.001 :
@@ -1329,37 +1328,9 @@ struct LearningSlot {
     int64_t utc=0;
     bool indoor_ok=false;double indoor_c=0;
     bool outdoor_ok=false;double outdoor_c=0;
-    bool heat_known=false,heat=false;double setpoint=0;
     uint32_t commands_sent=0;
     bool energy_ok=false;double total_wh=0;int64_t energy_utc=0;
 };
-// Pump HEAT/OFF state for planning/learning: a fresh bridge readback (the
-// control path's own truth), else a source-verified CN105 poll.
-struct PumpView {bool known=false,heat=false;double setpoint=0;unsigned minutes=0;};
-static PumpView pump_view(const CN105Telemetry& cp,int64_t now,unsigned verified_minutes) {
-    PumpView v{};
-    bool heat=false;double setpoint=0;
-    if(recent_bridge_observation(heat,setpoint,90u*1000u)) {
-        v.known=true;v.heat=heat;v.setpoint=setpoint;
-        v.minutes=std::min<uint32_t>(600u,control_ms_since_mode_change()/60000u);
-    } else if(valid_cn105(cp,now) && cp.evidence.source_time_verified &&
-              (cp.mode==ObservedPumpMode::Heat || cp.mode==ObservedPumpMode::Off)) {
-        v.known=true;v.heat=cp.mode==ObservedPumpMode::Heat;v.setpoint=cp.setpoint_c;
-        v.minutes=verified_minutes;
-    }
-    return v;
-}
-// Read-only bridge GET when the last readback is older than `max_age_ms`.
-// Keeps the 5-minute mode-history continuity in shadow mode too.
-static void refresh_bridge_observation(uint32_t max_age_ms) {
-    if(!cn105_selected() || !wifi_ok.load()) return;
-    bool heat=false;double setpoint=0;
-    if(recent_bridge_observation(heat,setpoint,max_age_ms)) return;
-    if(cn105_bridge_get(heat,setpoint)) {
-        control_note_observed_mode(heat);
-        remember_bridge_readback(heat,setpoint);
-    }
-}
 static void optimizer_worker(void*) {
     auto* prices=new enevina_firmware::PricePoint[200];
     auto* weather=new enevina::OutdoorPoint[64];
@@ -1411,7 +1382,6 @@ static void optimizer_worker(void*) {
             // A fresh indoor measurement is not a forecast for an entire
             // unfinished quarter-hour: learn and plan only at the boundary.
             boundary=(now-slot_start)<=60 && slot_start!=last_boundary;
-            refresh_bridge_observation(boundary?60u*1000u:150u*1000u);
         }
         CN105Telemetry cp;TemperatureSample ts;ShellyTelemetry meter;
         unsigned observed_mode_minutes=0;
@@ -1437,14 +1407,15 @@ static void optimizer_worker(void*) {
                 o.indoor_valid=slot.indoor_ok && valid_temperature(ts,now);
                 o.indoor_start_c=slot.indoor_c;o.indoor_end_c=ts.indoor_c;
                 o.outdoor_valid=slot.outdoor_ok;o.outdoor_c=slot.outdoor_c;
-                // Held unchanged for the whole slot: same readback at both
-                // ends and no command sent in between.
-                o.heat_valid=slot.heat_known && view.known && view.heat==slot.heat &&
+                // The verified pump mode at the slot end, held uninterrupted
+                // (source-verified polls, gaps reset the duration) since at
+                // most ~1 min after the slot began, and no command sent
+                // during the slot. A gateway receipt never labels data.
+                o.heat_valid=view.known && view.minutes>=14 &&
                     control_commands_sent.load()==slot.commands_sent;
-                o.heat_requested=slot.heat;
+                o.heat_requested=view.heat;
                 // HEAT above the 16 C operating point is outside the model.
-                o.in_model_domain=!slot.heat ||
-                    (slot.setpoint<=16.01 && view.setpoint<=16.01);
+                o.in_model_domain=!view.heat || view.setpoint<=16.01;
                 const int64_t dt=meter.captured_utc-slot.energy_utc;
                 o.electric_valid=slot.energy_ok && valid_shelly(meter,now,60) &&
                     meter.total_wh>=slot.total_wh && dt>=600 && dt<=1200;
@@ -1573,14 +1544,12 @@ static void optimizer_worker(void*) {
         }
         cottage_control_tick();
         if(boundary) {
-            // (5) Open the new slot with the state AFTER this boundary's
-            // control decision (a command and its readback happen above).
-            const PumpView view=pump_view(cp,time(nullptr),observed_mode_minutes);
+            // (5) Open the new slot AFTER this boundary's control decision:
+            // a command sent later in the slot invalidates its observation.
             slot=LearningSlot{};
             slot.open=true;slot.utc=slot_start;
             slot.indoor_ok=valid_temperature(ts,now);slot.indoor_c=ts.indoor_c;
             slot.outdoor_ok=ws.available && weather_at(weather,wc,slot_start+450,slot.outdoor_c);
-            slot.heat_known=view.known;slot.heat=view.heat;slot.setpoint=view.setpoint;
             slot.commands_sent=control_commands_sent.load();
             xSemaphoreTake(lock_data,portMAX_DELAY);
             meter=consumption;
@@ -1815,6 +1784,8 @@ static void status_endpoint() {
             mpc_confirmed_slot_utc.load()==current_slot &&
             mpc_confirmed_heat.load()==(mp.first_heat?1:0));
         cJSON_AddBoolToObject(root,"shelly_meter_pump_only",shelly_meter_pump_only());
+        cJSON_AddBoolToObject(root,"mpc_pump_source_verified",
+            valid_cn105(cp,now) && cp.evidence.source_time_verified);
     }
     cJSON_AddBoolToObject(root,"independent_freeze_protection_verified",false);
     cJSON_AddNumberToObject(root,"safety_mode",static_cast<int>(current_safety.mode));
@@ -1981,7 +1952,9 @@ static void mpc_endpoint() {
                    save_failures=identifier_nvs_failures,save_skips=identifier_nvs_skipped;
     const bool restored=identifier_restored;
     const ShellyTelemetry meter=consumption;
+    const CN105Telemetry cp=pump;
     xSemaphoreGive(lock_data);
+    const bool pump_verified=valid_cn105(cp,now) && cp.evidence.source_time_verified;
     const auto market=enevina_firmware::market_status();
     const int64_t current_slot=(now/900)*900;
     // Never display a plan from an earlier slot or from an uncalibrated model.
@@ -1999,6 +1972,7 @@ static void mpc_endpoint() {
     snprintf(buf,sizeof(buf),
         "{\"evidence\":\"MODEL_FROM_LOCAL_MEASUREMENTS\",\"now_utc\":%lld,\"state\":\"%s\","
         "\"fallback\":\"%s\",\"source\":\"%s\",\"armed\":%s,\"decision_confirmed\":%s,"
+        "\"pump_source_verified\":%s,"
         "\"calibration\":{\"state\":\"%s\",\"block\":\"%s\",\"samples\":%u,\"heating_slots\":%u,"
         "\"off_slots\":%u,\"starts\":%u,\"stops\":%u,\"skipped\":%u,\"outliers\":%u,"
         "\"windows\":%u,\"windows_with_switch\":%u,\"windows_needed\":%u,\"restored\":%s,"
@@ -2006,7 +1980,7 @@ static void mpc_endpoint() {
         static_cast<long long>(now),mpc_run_state_name(arb.mpc_state),
         mpc_fallback_name(arb.fallback),proposal_source_name(arb.source),
         control_armed.load()?"true":"false",confirmed?"true":"false",
-        calibration_state_name(cal.state),calibration_block_name(cal.block),cal.samples,
+        pump_verified?"true":"false",calibration_state_name(cal.state),calibration_block_name(cal.block),cal.samples,
         cal.heating_slots,cal.off_slots,cal.starts,cal.stops,cal.skipped,cal.outliers,
         cal.windows,cal.windows_with_switch,CalibrationLimits::windows_needed,
         restored?"true":"false",saves,save_failures,save_skips);

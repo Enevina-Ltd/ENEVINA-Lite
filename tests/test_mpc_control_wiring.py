@@ -69,6 +69,22 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("const bool energy_ok=plan_ok && energy;", mpc)
         self.assertIn('\\"cop_identified\\":false', mpc)
 
+    def test_pump_state_only_from_verified_source(self):
+        # Codex P1 (PR #63): a gateway GET/SSE receipt may repeat cached
+        # state; learning labels, planning state and plan validity use only
+        # a fresh source-verified CN105 poll.
+        view = MAIN.split("static PumpView pump_view(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("cp.evidence.source_time_verified", view)
+        self.assertIn("valid_cn105(cp,now)", view)
+        self.assertNotIn("cn105_bridge_get", view)
+        self.assertNotIn("cn105_bridge_get", WORKER)
+        self.assertIn("o.heat_valid=view.known && view.minutes>=14 &&", WORKER)
+        self.assertIn("o.heat_requested=view.heat;", WORKER)
+        arb = MAIN.split("static BootstrapDecision active_control_proposal(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("const PumpView view=pump_view(cp,now,minutes);", arb)
+        self.assertIn("mpc_confirmed_slot_utc.load()==in.plan.first_utc", arb)
+        self.assertNotIn("bridge_observed", MAIN)
+
     def test_meter_scope_rule_on_main(self):
         self.assertIn("static bool shelly_meter_pump_only() {return false;}", MAIN)
         self.assertIn("o.meter_pump_only=shelly_meter_pump_only();", WORKER)

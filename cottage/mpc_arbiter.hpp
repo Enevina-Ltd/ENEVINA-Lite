@@ -49,8 +49,13 @@ struct ArbiterInput {
     CalibrationState calibration=CalibrationState::NoData;
     MpcPlanRecord plan{};
     uint32_t mode_generation=0, config_generation=0, settings_generation=0;
+    // Pump HEAT/OFF from a SOURCE-VERIFIED, fresh pump poll only; a gateway
+    // HTTP/SSE receipt is not pump-origin evidence (Codex P1, PR #63).
     bool pump_state_known=false;
     bool pump_heat=false;
+    // The pump readback confirmed THIS plan's first decision in its own slot
+    // (set by the control path only after a matching readback).
+    bool own_transition_confirmed=false;
     BootstrapDecision bootstrap{};  // the existing price/thermostat decision
 };
 
@@ -112,16 +117,25 @@ inline ArbiterOutput arbitrate(const ArbiterInput& in) {
     if(in.now_utc<p.first_utc || in.now_utc>=p.first_utc+900 ||
        p.computed_utc>in.now_utc || p.computed_utc<p.first_utc)
         return fallback(MpcFallback::PlanStale);
-    if(p.mode_generation!=in.mode_generation ||
-       p.config_generation!=in.config_generation ||
+    if(p.config_generation!=in.config_generation ||
        p.settings_generation!=in.settings_generation)
+        return fallback(MpcFallback::PlanInputsChanged);
+    if(!in.pump_state_known) return fallback(MpcFallback::PumpStateUnknown);
+    // The pump-mode generation also advances when the plan's OWN decision
+    // is executed. Accept that single expected transition only when the
+    // readback confirmed it in this slot and the verified pump now shows it;
+    // any other generation change (external switch, source gap) re-plans
+    // (Codex P2, PR #63).
+    const bool own_transition=p.first_heat!=p.initial_heat &&
+        in.own_transition_confirmed && in.pump_heat==p.first_heat;
+    if(p.mode_generation!=in.mode_generation && !own_transition)
         return fallback(MpcFallback::PlanInputsChanged);
     if(!(in.bootstrap.requested_room_c>0) ||
        std::fabs(in.bootstrap.requested_room_c-p.target_c)>0.01)
         return fallback(MpcFallback::PlanInputsChanged);
     // A pump state other than the planned start state or the plan's own
     // first decision means an external change (remote, manual): re-plan.
-    if(in.pump_state_known && in.pump_heat!=p.initial_heat && in.pump_heat!=p.first_heat)
+    if(in.pump_heat!=p.initial_heat && in.pump_heat!=p.first_heat)
         return fallback(MpcFallback::PlanInputsChanged);
     // Measured room outside the band the plan protects: the plan's model is
     // wrong right now; the existing controller (which heats below its own

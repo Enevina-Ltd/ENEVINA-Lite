@@ -79,6 +79,11 @@ const active={...learning,state:'ACTIVE',fallback:'NONE',source:'MPC',armed:true
   assert.ok(text.includes('Mallia ei vielä ole'));
   assert.ok(text.includes('voi sisältää muuta kulutusta'));
   assert.ok(!text.includes('kWh ·'));
+  assert.ok(!text.includes('lähdetodennettu'));      // field absent -> no claim
+  r=await run({...learning,pump_source_verified:false},'en');
+  assert.ok(r.card.textContent.includes('not source-verified'));
+  r=await run({...learning,pump_source_verified:true},'en');
+  assert.ok(!r.card.textContent.includes('not source-verified'));
   // Learning, English.
   r=await run(learning,'en');
   text=r.card.textContent;

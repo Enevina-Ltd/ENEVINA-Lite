@@ -178,6 +178,28 @@ void test_arbiter_order_and_fallbacks() {
         CHECK(arbitrate(in).fallback==MpcFallback::PlanInputsChanged); }
     {   auto in=base_input();in.settings_generation=2;
         CHECK(arbitrate(in).fallback==MpcFallback::PlanInputsChanged); }
+    // Codex P1 (PR #63): no verified pump-origin state -> no MPC decision.
+    {   auto in=base_input();in.pump_state_known=false;
+        CHECK(arbitrate(in).fallback==MpcFallback::PumpStateUnknown);
+        CHECK(arbitrate(in).source==ProposalSource::PriceControl); }
+    // Codex P2 (PR #63): the plan's OWN executed transition advances the
+    // mode generation; with a confirmed readback and the verified pump in the
+    // planned state the plan stays in force for its slot.
+    {   auto in=base_input();in.mode_generation=1;in.pump_heat=true;
+        in.own_transition_confirmed=true;
+        const auto o=arbitrate(in);
+        CHECK(o.source==ProposalSource::Mpc && o.proposal.action==BootstrapAction::HeatSetpoint); }
+    {   // Same generation advance without a confirmed readback: re-plan.
+        auto in=base_input();in.mode_generation=1;in.pump_heat=true;
+        CHECK(arbitrate(in).fallback==MpcFallback::PlanInputsChanged); }
+    {   // Confirmed, but the verified pump is NOT in the planned state.
+        auto in=base_input();in.mode_generation=1;in.pump_heat=false;
+        in.own_transition_confirmed=true;
+        CHECK(arbitrate(in).fallback==MpcFallback::PlanInputsChanged); }
+    {   // A plan that keeps the mode cannot explain a generation change.
+        auto in=base_input();in.plan=good_plan(false);in.mode_generation=1;
+        in.own_transition_confirmed=true;
+        CHECK(arbitrate(in).fallback==MpcFallback::PlanInputsChanged); }
     {   auto in=base_input();in.bootstrap.requested_room_c=13.0;
         CHECK(arbitrate(in).fallback==MpcFallback::PlanInputsChanged); }
     {   // Plan from OFF, decided OFF; pump found HEAT (manual): re-plan.

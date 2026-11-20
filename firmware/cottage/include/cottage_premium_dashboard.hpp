@@ -1534,7 +1534,8 @@ fi:{title:'Ennakoiva säätö (MPC)',active:'Käytössä',calibrating:'Kalibroid
  price:'Kokonaishinta',heating:'Lämmitys (suunnitelma)',band:'Mukavuusalue',now:'nyt',h:'h',
  err:'MPC-tietoja ei saatu laitteelta.',sim:'Kaikki luvut ovat laitteen omia laskelmia; säästöjä ei väitetä.',
  limit_MAX_48H:'48 h',limit_PRICES_END:'hinnat loppuvat',limit_PRICE_GAP:'hinnoissa aukko',limit_BAD_PRICE:'hinta ei kelpaa',
- limit_WEATHER_END:'sääennuste loppuu',limit_WEATHER_GAP:'sääennusteessa aukko',limit_NONE:'—'},
+ limit_WEATHER_END:'sääennuste loppuu',limit_WEATHER_GAP:'sääennusteessa aukko',limit_NONE:'—',
+ unverified:'Pumpun tilaa ei ole lähdetodennettu (CN105-lukutodiste puuttuu): malli ei opi eikä MPC ohjaa, ennen kuin pumpun omat mittaukset ovat todennettuja.'},
 en:{title:'Predictive control (MPC)',active:'Active',calibrating:'Calibrating',fallback:'Fallback',
  source:'Control source now',MPC:'MPC plan',PRICE_CONTROL:'Price control',THERMOSTAT:'Thermostat',NONE:'No proposal',
  calib:'Building model calibration',samples:'Measured slots',windows:'Prediction tests',model:'Identified model',
@@ -1550,7 +1551,8 @@ en:{title:'Predictive control (MPC)',active:'Active',calibrating:'Calibrating',f
  price:'Total price',heating:'Heating (plan)',band:'Comfort band',now:'now',h:'h',
  err:'MPC data could not be read from the device.',sim:'All numbers are the device’s own calculations; no savings are claimed.',
  limit_MAX_48H:'48 h',limit_PRICES_END:'prices end',limit_PRICE_GAP:'gap in prices',limit_BAD_PRICE:'invalid price',
- limit_WEATHER_END:'weather forecast ends',limit_WEATHER_GAP:'gap in weather forecast',limit_NONE:'—'}};
+ limit_WEATHER_END:'weather forecast ends',limit_WEATHER_GAP:'gap in weather forecast',limit_NONE:'—',
+ unverified:'The pump state is not source-verified (no CN105 read proof): the model does not learn and the MPC does not control until the pump’s own measurements are verified.'}};
 const WHY={
 fi:{NONE:'',MODEL_LEARNING:'malli oppii vielä mittauksista',MODEL_VALIDATING:'mallin ennusteita testataan',
  MODEL_DEGRADED:'malli ei enää ennusta riittävän tarkasti',NO_HEATING_MODE:'valittu tila ei lämmitä',
@@ -1683,6 +1685,7 @@ function render(){
     if(num(m.ua_lower_kw_per_c)!==null)extra.push(t('bounds')+': UA ≥ '+f(m.ua_lower_kw_per_c,3)+' kW/K, C ≥ '+f(m.capacity_lower_kwh_per_c,2)+' kWh/K');
     c.append(node('p','tiny muted',extra.join(' ')));
   } else c.append(node('p','callout',t('nomodel')));
+  if(d.pump_source_verified===false)c.append(node('p','callout warn',t('unverified')));
   const ch=chart(d);
   if(ch){c.append(ch,legend());}
   const p=d.plan||{};

@@ -88,8 +88,23 @@ mittauksiin.
 Rajat ovat dokumentoituja suunnitteluvalintoja, eivät kenttätodennettuja.
 MPC:n turvamarginaali on 2 × testi-RMS (0,2–2,0 °C). Suunniteltu minimi
 (lattia + marginaali) on sama `tavoite − 0,5 °C`, jossa nykyinen
-termostaatti/hintaohjaus käynnistää lämmityksen. Opittavat varttitunnit
-hylätään, jos HEAT/OFF muuttui kesken jakson, tila ei ole tiedossa,
+termostaatti/hintaohjaus käynnistää lämmityksen.
+
+**Pumpun tila vain lähdetodennetusta mittauksesta (Codex P1, PR #63).**
+Opetusdatan HEAT/OFF-merkintä, suunnitelman lähtötila ja suunnitelman
+voimassaolo perustuvat vain tuoreeseen, lähdetodennettuun CN105-lukuun
+(`text_sensor/Enevina CN105 Verified Snapshot`: pumpun oma aikaleima ja
+valmis UART-luku). ESPHome-sillan GET tai SSE voi toistaa välimuistissa
+olevaa tilaa, vaikka pumppuyhteys olisi katkennut, joten niitä ei käytetä
+todisteena. Vartti opitaan vain, jos todennettu tila on pysynyt
+keskeytyksettä samana vähintään 14 minuuttia vartin lopussa ja vartin
+aikana ei lähetetty komentoa. **Seuraus:** ilman todennettua lukutodistetta
+malli pysyy tilassa `NO_DATA`, MPC ei ohjaa ja hintaohjaus jatkaa.
+`/api/status`:n `mpc_pump_source_verified`, `/api/mpc`:n
+`pump_source_verified` ja MPC-kortti kertovat tämän suoraan.
+
+Opittavat varttitunnit
+hylätään myös, jos HEAT/OFF muuttui kesken jakson, tila ei ole tiedossa,
 asetusarvo on yli 16 °C (HEAT 16 °C -mallin ulkopuolella), sisälämpö on yli
 15,3 °C lämmitettäessä, mittaus puuttuu tai jatkuvuus katkesi. MPC ei
 myöskään ekstrapoloi: jos ennustettu ulkolämpö on yli 3 K opitun alueen
@@ -122,8 +137,13 @@ muissa asetuksissa) nollaa mallin.
 
 MPC lasketaan jokaisen varttitunnin alussa (≤ 60 s rajasta), ja pumpulle
 viedään vain ensimmäinen päätös. Suunnitelma kelpaa vain oman varttinsa
-ajan ja vain, jos tila-, asetus- ja tavoitegeneraatiot ovat ennallaan ja
-pumpun tila on suunnitelman lähtötila tai sen ensimmäinen päätös.
+ajan ja vain, jos asetus- ja tavoitegeneraatiot ovat ennallaan ja
+todennettu pumpun tila on suunnitelman lähtötila tai sen ensimmäinen päätös.
+Pumpun tilageneraatio kasvaa myös silloin, kun suunnitelman oma päätös
+toteutuu. Tämä yksi odotettu muutos hyväksytään vain, jos takaisinluku
+vahvisti sen samassa vartissa ja todennettu pumppu on suunnitellussa tilassa.
+Muu generaatiomuutos (ulkoinen vaihto tai lähdekatko) vaatii uuden
+suunnitelman (Codex P2, PR #63).
 Käynnistykset, 30 minuutin minimikäynti- ja seisonta-aika (sama kuin
 ohjausportin `ModeDwell`) sekä kytkentäsakko ovat mukana. HEAT tarkoittaa
 pumpun omaa 16 °C:n asetusarvoa, jota Mitsubishin sovitin tukee todennetusti
@@ -143,9 +163,8 @@ optimizer-tehtävä (varttitunnin raja)
 ```
 
 - Midea ja muut vain luku -sovittimet eivät koskaan pääse CN105-kirjoitukseen
-  (`if(!cn105_selected())` ennen ehdotusta). Vain luku -tilassa tehdään
-  korkeintaan noin 3 minuutin välein yksi CN105-GET, jotta tilahistorian
-  5 minuutin jatkuvuus säilyy ja malli voi oppia.
+  (`if(!cn105_selected())` ennen ehdotusta). MPC-ketju ei tee omia
+  CN105-pyyntöjä; varjotilan verkkokuorma on sama kuin ennen.
 - Uusia watchdogeja, uudelleenkäynnistyksiä tai tehtäviä ei lisätty.
   MPC:n ajoaikaraja on 1 800 ms, ja sen peruu Wi-Fi-katko tai web-silmukan
   pysähtyminen (`cottage_cancel`). Aikakatkaisu johtaa varatilaan, ei
@@ -301,7 +320,10 @@ been run on a real heat pump and no board was flashed.**
 - **Identification** (`cottage/building_identification.*`): a 6-parameter
   RLS model of the same heat balance as `advance()`. It identifies the time
   constant, the heating lift, the start delay, the after-heat and a constant
-  gain, each with its uncertainty. The calibration state is honest and is
+  gain, each with its uncertainty. HEAT/OFF labels, the plan's start state and plan
+  validity come ONLY from a fresh source-verified CN105 poll: an ESPHome GET
+  or SSE receipt is not pump-origin evidence. Without that proof stream the
+  model stays NO_DATA and price control continues (Codex P1, PR #63). The calibration state is honest and is
   backed by walk-forward 4 h validation windows. **COP and absolute C/UA are
   not identifiable** from these measurements. With an owner-confirmed
   heat-pump-only meter it gives only lower bounds (COP ≥ 1). A whole-house or
