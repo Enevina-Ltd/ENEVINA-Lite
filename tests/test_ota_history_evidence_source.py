@@ -41,6 +41,18 @@ class ConfirmedOtaHistoryAndNoHeat(unittest.TestCase):
         flush=HISTORY_FW.split('const bool ok=persistence->flush(*store,events)',1)[1]
         self.assertLess(flush.index('if(ok)'),flush.index('cottage_ota_acknowledge_history_upgrade(pending_ota,e.utc)'))
         self.assertIn('cottage_ota_acknowledge_history_upgrade(pending_ota,e.utc)',HISTORY_FW)
+    def test_pre_summary_confirmations_are_migrated_after_reboot(self):
+        # Older firmware has hist_done but no hist_last, so the pending
+        # version is zero although the durable UpdateConfirmed event exists.
+        # Initialization must backfill under the OTA store's signed checks.
+        init=HISTORY_FW.split("void history_initialize() {",1)[1].split(
+            "void history_observe(",1)[0]
+        self.assertIn("const uint32_t pending_ota=cottage_ota_recorded_upgrade_version()",init)
+        self.assertIn("pending_ota==0 || e.arg==pending_ota",init)
+        self.assertIn("cottage_ota_acknowledge_history_upgrade(e.arg,e.utc)",init)
+        self.assertNotIn("if(pending_ota!=0)",init)
+        self.assertIn('p.getUInt("good",0)==version',OTA)
+        self.assertIn('p.getUInt(kHistoryUpgradeKey,0)==version',OTA)
     def test_last_confirmed_update_is_persisted_outside_history_ring(self):
         self.assertIn('struct OtaHistoryLast',POLICY)
         self.assertIn('valid_ota_history_last',POLICY)

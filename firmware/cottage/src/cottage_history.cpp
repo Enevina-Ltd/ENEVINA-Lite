@@ -132,19 +132,18 @@ void history_initialize() {
     if(!persistence) {persistent=false;return;}
     const LoadResult r=persistence->load(*store,events);
     last_load_records=r.records;
-    // After power loss between the LittleFS commit and the separate NVS
-    // history acknowledgement, an already persisted event proves the
-    // signed OTA version has been logged and can be safely acknowledged.
+    // Migrate an already-durable UpdateConfirmed event into the independent
+    // NVS summary. This includes legacy installs where hist_done was written
+    // before hist_last existed: pending_ota is then zero, but the event is
+    // still the signed-confirmed history evidence. The OTA transaction
+    // service itself verifies good==hist_upg==e.arg before accepting it.
     const uint32_t pending_ota=cottage_ota_recorded_upgrade_version();
-    if(pending_ota!=0) {
-        for(size_t i=0;i<events.count();++i) {
-            const HistoryEvent& e=events.newest(i);
-            if(e.kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed) &&
-               e.arg==pending_ota) {
-                cottage_ota_acknowledge_history_upgrade(pending_ota,e.utc);
-                break;
-            }
-        }
+    for(size_t i=0;i<events.count();++i) {
+        const HistoryEvent& e=events.newest(i);
+        if(e.kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed) &&
+           e.arg!=0 && (pending_ota==0 || e.arg==pending_ota) &&
+           cottage_ota_acknowledge_history_upgrade(e.arg,e.utc))
+            break;
     }
     last_flush_ms=millis();
     last_attempt_ms=last_flush_ms;
