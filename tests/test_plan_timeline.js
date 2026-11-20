@@ -7,7 +7,7 @@ const m=/<script id="timeline-script">([\s\S]*?)<\/script>/.exec(header);
 assert(m,'timeline script block missing');
 const src=m[1];
 
-const dict=JSON.parse(header.split('const UI_EN=Object.freeze(')[1].split(');\nconst UI_EN_FRAGMENTS')[0]);
+const dict=JSON.parse(header.split('const UI_EN=Object.freeze(')[1].split(/\);\r?\nconst UI_EN_FRAGMENTS/)[0]);
 const literals=[...src.matchAll(/TT\('([^']*)'\)/g)].map(x=>x[1]);
 assert(literals.length>25);
 assert.deepEqual(literals.filter(l=>!(l in dict)),[],'missing English translations');
