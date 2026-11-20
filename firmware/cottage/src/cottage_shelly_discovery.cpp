@@ -58,9 +58,10 @@ void inspect(const char* host,const IPAddress& ip,ShellyScanSnapshot& out) {
     if(f.info.support==ShellySupport::Supported) {
         if(!shelly_read_url(f.url,"/rpc/Switch.GetStatus?id=0",path,sizeof(path)))return;
         double w=0;
-        if(fetch(path,body,sizeof(body)) && parse_shelly_power(body,std::strlen(body),w)) {
-            f.has_power=true;f.watts=w;
-        }
+        const bool verified=fetch(path,body,sizeof(body)) &&
+            parse_shelly_power(body,std::strlen(body),w);
+        f.has_power=shelly_complete_power_probe(f.info,verified);
+        if(f.has_power)f.watts=w;
     }
     out.items[out.count++]=f;
 }

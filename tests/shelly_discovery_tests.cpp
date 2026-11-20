@@ -46,6 +46,21 @@ static void rejects_things_that_are_not_shelly() {
     CHECK(i.support==ShellySupport::NotShelly);                                // failed parse resets the output
 }
 
+static void only_verified_power_component_is_compatible() {
+    ShellyInfo a{};
+    CHECK(info(R"({"id":"shellyplus1pm-a8032abe7d94","gen":2,"auth_en":false})",a));
+    CHECK(a.support==ShellySupport::Supported); // identity is not power evidence
+    CHECK(!shelly_complete_power_probe(a,false)); // absent Switch:0 / 404 / no apower
+    CHECK(a.support==ShellySupport::PowerNotVerified);
+    CHECK(std::strcmp(shelly_support_name(a.support),"POWER_NOT_VERIFIED")==0);
+    CHECK(!shelly_complete_power_probe(a,false)); // cannot turn itself compatible
+    CHECK(info(R"({"id":"shellyplus1pm-a8032abe7d94","gen":2,"auth_en":false})",a));
+    CHECK(shelly_complete_power_probe(a,true));
+    CHECK(a.support==ShellySupport::Supported); // zero-watt reading also succeeds
+    CHECK(info(R"({"id":"shellyplus1pm-a8032abe7d94","gen":2,"auth_en":true})",a));
+    CHECK(!shelly_complete_power_probe(a,true)); // auth cannot be bypassed
+    CHECK(a.support==ShellySupport::AuthRequired);
+}
 static void power_reading() {
     double w=-1;
     const std::string ok=R"({"id":0,"source":"init","output":true,"apower":412.7,"voltage":231.2,"current":1.9,"aenergy":{"total":18234.5,"by_minute":[0,0,0],"minute_ts":1795000000},"temperature":{"tC":38.1,"tF":100.6}})";
@@ -107,6 +122,7 @@ int main() {
     gen2_documents();
     gen1_documents();
     rejects_things_that_are_not_shelly();
+    only_verified_power_component_is_compatible();
     power_reading();
     host_and_url_rules();
     full_length_rpc_url_is_not_truncated();
