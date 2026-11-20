@@ -537,6 +537,7 @@ static void update_confirmation_events() {
     const size_t n=build_history_series(s4,(T0/900+99)*900,96,1,pts.data(),pts.size(),sum);
     history_json("24h",1,pts.data(),n,sum,ev,pts[0].t-100000,"EUR","unknown",true,[&](const char* part){out+=part;});
     CHECK(out.find("\"k\":7")!=std::string::npos&&out.find("\"a\":20261119")!=std::string::npos);
+}
 
 static HistoryInputs meter_reading(int64_t t,double w,uint8_t scope) {
     auto in=sample(t);in.power_valid=true;in.power_w=w;in.power_scope=scope;return in;
