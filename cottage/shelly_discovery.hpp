@@ -19,6 +19,14 @@
 #include <string_view>
 
 namespace enevina::cottage {
+// Construct Shelly's read-only local RPC path without truncation. A valid
+// maximum-length LAN address (192.168.255.254) needs 49 bytes including NUL.
+inline bool shelly_read_url(const char* base,const char* suffix,char* out,size_t cap) {
+    if(!base||!suffix||!out||cap==0)return false;
+    const int n=std::snprintf(out,cap,"%s%s",base,suffix);
+    return n>0&&static_cast<size_t>(n)<cap;
+}
+
 enum class ShellyScope : uint8_t { Unknown=0, HeatPump=1, WholeHouse=2 };
 inline const char* shelly_scope_name(ShellyScope s) {
     switch(s) {
