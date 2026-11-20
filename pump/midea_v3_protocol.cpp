@@ -218,24 +218,14 @@ bool valid_control_patch(const ControlPatch& patch) {
 }
 bool set_state_command(const State& existing,const ControlPatch& patch,
                        uint8_t msg,Bytes& frame) {
-    // An abbreviated C0 does not report the 8 C heat-preservation preset.
-    // A 0x40 write is WHOLE-STATE: writing a guessed false flag for a fan,
-    // mode, power or swing change could silently disable that preset.
-    //
-    // Preserve a *known* flag exactly. For an unknown flag accept only a
-    // user-selected, temperature-only change which starts AND ends in the
-    // ordinary >=16 C setpoint range. The Midea 8 C heat-preservation mode
-    // fixes its temperature to 8 C; a pump already reporting >=16 C cannot
-    // currently be maintaining that 8 C preset. Do not extrapolate this
-    // mode-specific inference to other full-state controls or 8 C operation.
-    // The hardware's compressor/defrost protection is independent of this
-    // optional user-facing 8 C preset.
-    if(!valid_control_patch(patch) || !valid_state(existing))return false;
-    if(!existing.freeze_protection_known &&
-       (patch.changed!=ControlTemperature ||
-        existing.setpoint_c<16.0 ||
-        patch.setpoint_c<16.0 ||
-        existing.freeze_protection))return false;
+    // Midea 0x40 writes the full AC state, including the optional 8 C
+    // heat-preservation bit. Short C0 reads do not report this bit. Even
+    // when the visible setpoint is >=16 C, its actual value is unknown on
+    // some OEM firmware; never serialize a guessed zero. A model-specific
+    // read or verified field-only write is required for short-C0 devices.
+    // This is an optional heating preset, not the firmware's defrost logic.
+    if(!valid_control_patch(patch) || !valid_state(existing) ||
+       !existing.freeze_protection_known)return false;
     const bool power=(patch.changed&ControlPower)?patch.power:existing.power;
     const uint8_t mode=(patch.changed&ControlMode)?patch.mode:existing.mode;
     const double temp=(patch.changed&ControlTemperature)?
@@ -305,8 +295,10 @@ bool preserved_state_observed(const State& before,const State& after,
                               const ControlPatch& patch) {
     if(!valid_control_patch(patch) ||
        !valid_state(before) || !valid_state(after) ||
-       (before.freeze_protection_known && after.freeze_protection_known &&
-        before.freeze_protection!=after.freeze_protection) ||
+       // Do not report confirmed state when the post-write C0 omits the
+       // preserved flag: matching visible setpoints cannot prove its value.
+       !before.freeze_protection_known || !after.freeze_protection_known ||
+       before.freeze_protection!=after.freeze_protection ||
        before.independent_aux_heat!=after.independent_aux_heat ||
        before.aux_heat!=after.aux_heat)return false;
     // No false success if the controller has silently reset a different
