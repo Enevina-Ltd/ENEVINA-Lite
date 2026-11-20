@@ -116,7 +116,9 @@ private:
             return true;
         }
         e.restart_candidate=false;
-        return true;
+        // Match the control binding: advancing BLE sequences alone cannot
+        // make an implausible jump into a new, apparently fresh measurement.
+        return ruuvi_plausible_progress(e.measured,s,ms-e.measured_ms);
     }
     RuuviSeen* find(const std::array<uint8_t,6>& mac) {
         for(auto& e:slots_) if(e.used&&e.latest.mac==mac) return &e;

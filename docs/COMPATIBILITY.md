@@ -27,7 +27,7 @@
 | RuuviTag BLE + humidity | Parser and local measurement integration | Sensor pairing and physical radio co-existence must be verified |
 | Shelly power monitoring | Read-only measurement integration | A meter measuring a whole building must **not** be presented as pump-only power |
 | Price-based heat control | Experimental price heuristic in the pilot path | Not the same as the model-based MPC benchmark |
-| Thermal MPC | Host simulation and independent MILP benchmarks | No confirmed field savings and not a production-calibrated live controller |
+| Thermal MPC | In the control chain behind a walk-forward calibration gate; host-tested and simulated | Not yet calibrated or validated on a real pump; no confirmed field savings |
 | Signed OTA / recovery | Implementation and focused tests | Exact board, partition layout and rollback procedure must be approved before user distribution |
 
 See the [optimization audit](OPTIMIZATION_AUDIT_20261118.md), [Wi-Fi onboarding notes](ONBOARDING_WIFI_FIRST_20261118.md), [CN105 measurement evidence](field/CN105_SOURCE_PROOF_20261117.md) and [release readiness](release/RELEASE_READINESS.md) for detailed sources and dated limitations.

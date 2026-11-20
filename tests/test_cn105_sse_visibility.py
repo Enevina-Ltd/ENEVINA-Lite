@@ -74,7 +74,7 @@ class Cn105SseVisibilityTests(unittest.TestCase):
         # called while the POST owns that same mutex.
         self.assertLess(post.index('cn105_bridge_get(bridge_heat,bridge_setpoint)'),
                         post.index('NetworkBudgetLease lease'))
-        self.assertIn('const auto refreshed=bootstrap_preview',post)
+        self.assertIn('const auto refreshed=active_control_proposal',post)
         self.assertIn('const auto decision=choose_mitsubishi_control(candidate);',MAIN)
         controller = MAIN.split("static bool cn105_bridge_post(",1)[1].split(
             "static void cottage_control_registration()",1)[0]
@@ -82,7 +82,7 @@ class Cn105SseVisibilityTests(unittest.TestCase):
         self.assertNotIn("source_time_verified", controller)
         self.assertNotIn("cn105_source_proof_good", controller)
         self.assertIn("cn105_bridge_get", controller)
-        self.assertIn("bootstrap_preview", controller)
+        self.assertIn("active_control_proposal", controller)
         self.assertIn("c23_config_generation()!=config_generation", controller)
 
         self.assertIn("confirmed=decision.step==ControlStep::Setpoint",MAIN)

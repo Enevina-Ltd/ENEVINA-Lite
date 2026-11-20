@@ -138,6 +138,7 @@ struct TimelineMeta {
     size_t window_slots=8;
     double advantage_fraction=0.10;
     const char* decision_action="UNAVAILABLE";
+    const char* decision_source="NONE"; // MPC, PRICE_CONTROL, THERMOSTAT, NONE
     double decision_setpoint_c=-1;
     const char* decision_reason="UNKNOWN";
     bool decision_price_valid=false;
@@ -208,7 +209,8 @@ inline void timeline_json(const TimelineMeta& m,const Timeline& t,Emit emit) {
         m.decision_price_valid?"true":"false");
     emit(b);
     opt(emit,m.decision_setpoint_c,m.decision_setpoint_c>=0,"%.1f");
-    emit("},\"segments\":[");
+    std::snprintf(b,sizeof(b),",\"source\":\"%s\"},\"segments\":[",m.decision_source);
+    emit(b);
     for(size_t i=0;i<t.segment_count;++i) {
         const auto& g=t.segments[i];
         std::snprintf(b,sizeof(b),"%s{\"start\":%lld,\"end\":%lld,\"class\":\"%s\",\"slots\":%zu,",
