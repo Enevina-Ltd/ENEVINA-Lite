@@ -811,7 +811,13 @@ async function wzSaveComfort(skip){
         throw Error(WT('Tallennus epäonnistui')+' (target status unverified)');
       const currentTarget=observed&&
         (mode===3?observed.occupied_target_c:observed.hold_target_c);
-      if(observed&&observed.mode===mode&&currentTarget===r.target) return;
+      if(observed&&observed.mode===mode&&currentTarget===r.target) {
+        // A successful air POST can lose its reply. A verified independent
+        // GET is also the new local state for Back -> Comfort. Otherwise the
+        // next save may skip a required target change against stale status.
+        state.status=confirmedStatus;
+        return;
+      }
       if(!observed||observed.mode!==mode||currentTarget!==
          (mode===3?air.occupied_target_c:air.hold_target_c)){
         // Ambiguous outcome: NEVER undo a possibly successful air write.

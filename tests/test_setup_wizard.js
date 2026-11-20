@@ -265,6 +265,18 @@ console.log('devices step helpers ok');
   await A.wzSaveComfort(false);
   assert.deepEqual(events.slice(1),['air','readback']);
   assert.equal(events.length,3,'do not compensate a confirmed successful target save');
+  assert.equal(ctx.state.status.air.hold_target_c,13,
+    'confirmed air POST must refresh local status after lost HTTP reply');
+  // Back -> Comfort with the earlier target must not be considered unchanged:
+  // durable air target is 13, not the pre-recovery cached 12.
+  events.length=0;
+  A.WZ.comfort.target='12';
+  ctx.airPostLocal=async()=>{events.push('air');};
+  await A.wzSaveComfort(false);
+  assert(events.includes('air'),'back navigation must issue the necessary target POST');
+  // Reset for separate negative response / partial NVS tests below.
+  A.WZ.comfort.target='13';
+  ctx.airPostLocal=async()=>{events.push('air');throw Error('AIR_NVS');};
   // If Wi-Fi is lost and readback is impossible, don't blindly undo either.
   events.length=0;
   ctx.state.status.air.hold_target_c=12;
