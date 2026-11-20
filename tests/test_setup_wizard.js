@@ -244,6 +244,8 @@ console.log('devices step helpers ok');
   ctx.airPostLocal=async()=>{events.push('air');};
   ctx.wzPost=async f=>{events.push({...f});};
   await A.wzSaveComfort(false);
+  assert.equal(events[0].comfort_txn_mode,'2','a target change must create durable mode intent');
+  assert.equal(events[0].comfort_txn_target,'13','journal must preserve desired air target');
   assert.equal(events[0].optimization_profile,'saving');
   assert.deepEqual(events.slice(1),['air','reload']);
   events.length=0;

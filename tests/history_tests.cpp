@@ -45,6 +45,27 @@ struct MemFile : FileBackend {
     void replace_abort() override {pending.clear();pending_open=false;}
 };
 
+static void mount_failure_never_formats_nonblank_partition() {
+    std::vector<uint8_t> raw(4097,0xFF);
+    auto read=[&](size_t off,void* dst,size_t n) {
+        if(off+n>raw.size())return false;
+        std::memcpy(dst,raw.data()+off,n);return true;
+    };
+    CHECK(history_partition_is_blank(raw.size(),read));
+    raw.back()=0x01; // Last byte: scanning only a flash prefix is unsafe.
+    CHECK(!history_partition_is_blank(raw.size(),read));
+    raw.back()=0xFF;raw[0]=0x00;
+    CHECK(!history_partition_is_blank(raw.size(),read));
+    raw[0]=0xFF;
+    int reads=0;
+    CHECK(!history_partition_is_blank(raw.size(),[&](size_t off,void* dst,size_t n) {
+        ++reads;
+        if(off>=512)return false;
+        return read(off,dst,n);
+    }));
+    CHECK(reads>=2);
+    CHECK(!history_partition_is_blank(0,read));
+}
 static HistoryRecord rec(uint32_t slot,double indoor=21.0) {
     HistoryRecord r;
     r.slot=slot;
@@ -682,6 +703,7 @@ static void legacy_event_log_migration_preserves_old_entries() {
 
 int main() {
     legacy_event_log_migration_preserves_old_entries();
+    mount_failure_never_formats_nonblank_partition();
     measured_energy_requires_verifiable_coverage();
     historical_prices_retain_currency_without_cross_currency_mean();
     ring_semantics();

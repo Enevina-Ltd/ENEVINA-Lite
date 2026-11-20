@@ -59,8 +59,11 @@ acknowledged and failed.
 ## Flash use (bounded)
 
 * Storage: the otherwise unused `spiffs` partition (3.4 MB in `default_16MB.csv`) via
-  LittleFS, mounted read-write; it is formatted **only if the mount fails** (never
-  formatted), and nothing else lives there. NVS, OTA slots and settings are untouched.
+  LittleFS, mounted read-write; on initial mount failure it is formatted **only
+  when every byte of the dedicated partition is independently verified erased**.
+  Any nonblank data or flash-read error leaves the partition untouched and history
+  runs in RAM-only mode, allowing manual recovery. The partition is never erased
+  merely because it cannot mount. Nothing else lives there. NVS, OTA slots and settings are untouched.
 * Records are **appended hourly** (4 records, ~88 bytes); new events are flushed at most
   every 10 min; each record has a CRC-16. The file is compacted (atomic temp + rename)
   only after 240 extra records (every ~2.5 days), streamed in 968-byte chunks so no

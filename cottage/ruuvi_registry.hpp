@@ -136,17 +136,33 @@ private:
 
 // Display text from the owner: valid UTF-8, no controls, no markup characters.
 inline bool safe_display_text(const char* s) {
+    if(!s)return false;
     const unsigned char* p=reinterpret_cast<const unsigned char*>(s);
     while(*p) {
-        const unsigned char c=*p;
-        if(c<0x20||c==0x7f||c=='<'||c=='>'||c=='"'||c=='&'||c=='\\'||c=='\'') return false;
-        size_t extra=0;
-        if(c>=0xF0&&c<=0xF4) extra=3;
-        else if(c>=0xE0) extra=2;
-        else if(c>=0xC2) extra=1;
-        else if(c>=0x80) return false;
-        ++p;
-        for(size_t i=0;i<extra;++i,++p) if((*p&0xC0)!=0x80) return false;
+        const unsigned char c=*p++;
+        if(c<0x20||c==0x7f||c=='<'||c=='>'||c=='"'||c=='&'||c==0x5c||c==0x27)
+            return false;
+        if(c<0x80)continue; // printable ASCII
+        unsigned extra=0;
+        unsigned second_min=0x80,second_max=0xBF;
+        // Unicode scalar values only: reject C0/C1 overlong, E0 overlong,
+        // ED surrogate, F0 overlong, F4 >U+10FFFF and F5..FF.
+        if(c>=0xC2&&c<=0xDF) extra=1;
+        else if(c>=0xE0&&c<=0xEF) {
+            extra=2;
+            if(c==0xE0)second_min=0xA0;
+            if(c==0xED)second_max=0x9F;
+        } else if(c>=0xF0&&c<=0xF4) {
+            extra=3;
+            if(c==0xF0)second_min=0x90;
+            if(c==0xF4)second_max=0x8F;
+        } else return false;
+        for(unsigned i=0;i<extra;++i) {
+            const unsigned char b=*p;
+            if(!b || b<(i==0?second_min:0x80) ||
+               b>(i==0?second_max:0xBF))return false;
+            ++p;
+        }
     }
     return true;
 }

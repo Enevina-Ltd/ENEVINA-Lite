@@ -14,6 +14,7 @@
 #include <string>
 #include "cottage_config.hpp"
 #include "cottage_air_service.hpp"
+#include "cottage_site_settings.hpp"
 #include "cottage_wifi.hpp"
 #include "cottage_network_budget.hpp"
 #include "cottage/memory_policy.hpp"
@@ -456,6 +457,40 @@ void c23_initialize() {
             Serial.println("C23_HISTORY_SOURCE_UNVERIFIED: checkpoint blocked");
         }
     }
+    // The Comfort wizard writes a durable one-record intent BEFORE updating
+    // the site band. Recover the air target after a reset at any point in the
+    // two independent NVS commits. Never make a physical decision with an
+    // unresolved, corrupt, or mismatched journal.
+    if(site_comfort_transaction_pending()) {
+        ComfortTxn tx{};
+        if(!site_comfort_transaction_read(tx)) {
+            config_storage_verified=false;
+            Serial.println("C23_COMFORT_JOURNAL_UNREADABLE: commands blocked");
+        } else if(!comfort_site_matches(tx,site_settings_snapshot())) {
+            // Restart after the journal write but BEFORE site commit: retain
+            // old air config. A later setting change also supersedes intent.
+            if(!site_comfort_transaction_abandon())config_storage_verified=false;
+        } else if(static_cast<uint8_t>(config.mode)!=tx.mode) {
+            config_storage_verified=false; // never apply a target to another mode
+        } else {
+            CottageModeConfig recovered=config;
+            comfort_apply_target(tx,recovered);
+            if(!persisted_mode_matches(recovered)) {
+                config=recovered;
+                // Writes independent air keys. The journal is retained
+                // until durable readback confirms ALL relevant keys.
+                save_config();
+            }
+            if(persisted_mode_matches(recovered)) {
+                config=recovered;
+                if(!site_comfort_transaction_finish(recovered))
+                    config_storage_verified=false;
+            } else {
+                config_storage_verified=false;
+                Serial.println("C23_COMFORT_RECOVERY_FAILED: commands blocked");
+            }
+        }
+    }
     last_store_ms=uptime_ms();
 }
 void c23_ble_worker(void*) {
@@ -574,7 +609,10 @@ uint32_t c23_config_generation() {
 }
 bool c23_config_storage_verified() {
     if(!guard)return false;
-    lock();const bool ok=config_storage_verified;unlock();return ok;
+    lock();const bool ok=config_storage_verified;unlock();
+    // A site save may have committed while the air save is still pending.
+    // Pending intent is always a physical-write gate, including this boot.
+    return ok && !site_comfort_transaction_pending();
 }
 CottageModeConfig c23_mode_config() {
     if(!guard) return CottageModeConfig{};
@@ -610,7 +648,8 @@ void c23_append_status(cJSON* root) {
     cJSON_AddNumberToObject(air,"hold_target_c",config.hold_target_c);
     cJSON_AddNumberToObject(air,"occupied_target_c",config.occupied_target_c);
     cJSON_AddNumberToObject(air,"drying_delta_c",config.drying_delta_c);
-    cJSON_AddBoolToObject(air,"config_storage_verified",config_storage_verified);
+    cJSON_AddBoolToObject(air,"config_storage_verified",
+                          config_storage_verified&&!site_comfort_transaction_pending());
     cJSON_AddNumberToObject(air,"warning_rh70",warning_limits.monitor_rh);
     cJSON_AddNumberToObject(air,"warning_rh80",warning_limits.review_rh);
     cJSON_AddNumberToObject(air,"warning_battery_v",warning_limits.low_battery_v);
@@ -812,13 +851,19 @@ void c23_register_routes(WebServer& web) {
         }
         ++config_generation;
         unlock();
-        if(desired_durable) {
-            // The four values this endpoint owns are durable even if a
-            // non-mode preference made the broader save_config() report false.
+        // The journal can be cleared only AFTER verified mode/target NVS
+        // readback AND a matching persisted site band. A failed delete leaves
+        // the safe control gate blocked and reboot recovery can try again.
+        const bool finished=desired_durable &&
+            site_comfort_transaction_finish(desired);
+        if(desired_durable && finished) {
             log_event(3,static_cast<uint8_t>(desired.mode));
         }
-        web.send(desired_durable?200:old_durable?500:503,"application/json",
-                 desired_durable?"{\"saved\":true,\"physical_writes\":false}":
+        web.send(desired_durable?(finished?200:503):old_durable?500:503,
+                 "application/json",
+                 desired_durable?(finished?
+                     "{\"saved\":true,\"physical_writes\":false}":
+                     "{\"saved\":false,\"physical_writes\":false,\"durable_state\":\"journal_pending\"}"):
                  old_durable?"{\"saved\":false,\"physical_writes\":false,\"restored\":true}":
                              "{\"saved\":false,\"physical_writes\":false,\"durable_state\":\"unknown\"}");
     });
