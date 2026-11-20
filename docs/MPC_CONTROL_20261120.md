@@ -282,18 +282,45 @@ kenttäsäästöjä.
 
 ## 9. Yhteensopivuus PR-pinon #57→#62 kanssa
 
-Haara on leikattu `origin/main`ista (51d242f, sisältää #55 ja #56). Se
-yhdistettiin kertakäyttöisessä worktreessä #62:n kärkeen (b91aacb).
-Tekstuaaliset ristiriidat syntyivät vain `CMakeLists.txt`:n loppuun ja
-`/api/plan`-reitin perään lisättyihin riveihin, ja molemmat pidetään.
-Yhdistetty puu: CMake 46/46, pytest samat 6 perustason virhettä, node 9/9
-ja `pio run` onnistui. Yhdistämisen jälkeiset pienet jatkotyöt:
+Haara on leikattu `origin/main`ista (51d242f, sisältää #55 ja #56). Yhteensopivuus
+tarkistettiin #62:n **uusimpaan** kärkeen `c08f5cc` (#57 a1d40aa, #58 caf5ac1,
+#59 2294f35, #60 829abbb) erillisessä haarassa `integration/lite-57-63-20261120`.
+Tämä haara on koehaara: sitä ei yhdistetä mainiin.
 
-1. #58: `shelly_meter_pump_only()` → `site_settings_snapshot().shelly_scope==ShellyScope::HeatPump`
-   (yhden rivin muutos, kun molemmat ovat mainissa).
-2. #57: profiilin `comfort_min_c` / `comfort_max_c` -rajojen vienti MPC:n `ComfortBand`iin.
-3. #59: `/api/timeline` näyttää nyt `bootstrap_preview()`-päätöksen; sen pitää näyttää arbitroitu ehdotus.
-4. #60: historiaan voi tallentaa vartin ohjauslähteen (MPC / hinta / termostaatti).
+Tekstuaaliset ristiriidat: `CMakeLists.txt`, `cottage_air_service.hpp`,
+`cottage_air_service.cpp` ja `main.cpp`. Kaikki ovat pelkkiä lisäyksiä samaan
+kohtaan (testit/rajapintareitit/apufunktiot), ja molemmat puolet säilytettiin.
+Yhdistämisen päälle tehdyt integraatiot (vain koehaarassa, koska ne tarvitsevat
+#57–#60:n asetukset):
+
+1. **Shelly (#58):** `shelly_meter_pump_only()` = `shelly_may_feed_pump_model(shelly_scope)`.
+   Vain omistajan vahvistama "vain lämpöpumppu" syöttää MPC:n energiamallia;
+   URL:n muutos nollaa vahvistuksen ja `reset_electric()` aloittaa sähkömallin
+   alusta, jolloin toisen mittarin lukemat eivät sekoitu.
+2. **Mukavuusrajat (#57):** `owner_comfort_limits()` = profiilin `comfort_min_c` /
+   `comfort_max_c`. MPC-kaista, suunnitelma ja suunnitelman kelpoisuus on sidottu
+   niihin; ne voivat vain kiristää kaistaa. Asetuskerros ja MPC hyväksyvät täsmälleen
+   samat rajat (omaisuustesti, yli 19 000 yhdistelmää), ja varaohjain (`apply_profile` +
+   `mode_comfort_limits_fit`) noudattaa samoja rajoja.
+3. **Aikajana (#59):** `/api/timeline` `now`-kenttä on arbitroitu päätös
+   (`source`: MPC / PRICE_CONTROL / THERMOSTAT / NONE, `mpc_fallback`), ei pelkkä
+   hintasääntö. Vuorokauden slotit on merkitty `slots_basis: PRICE_RULE`.
+4. **Historia (#60):** ohjauslähteen vaihtuminen tallentuu `ControlSource`-tapahtumana
+   (arg 0–3, value = MPC:n varasyy). 20-tavuinen mittaustietue ja sen muoto/CRC
+   eivät muutu, joten #60:n torn-write-, tiedostomuoto- ja compaction-suojat ovat ennallaan.
+5. **OTA / NVS (#57–#62):** `c23_config_storage_verified()`-portti, asetusten
+   asettelupalautus (`kSettingsLayoutBoundaries`), rollback-v2-vertailu, mukavuus-
+   transaktio ja OTA-verkkohuoltoportti ovat koskemattomia; lähdevartijat
+   (koehaaran `tests/test_mpc_integration_source.py`) varmistavat järjestyksen.
+6. **Anturi:** sisäanturin vaihto kasvattaa `config_generation`ia ja muuttaa mallin
+   identiteettiä: vanha malli ja suunnitelma mitätöityvät.
+7. **Ohjausturva:** CN105-lähdetodennus, takaisinluku, käyttäjän erikseen aktivoima
+   automaattiohjaus ja 30 min tilanvaihtoviive ovat ennallaan; järjestys
+   (`cn105_selected` → armed → endpoint → config-storage → ehdotus → `choose_mitsubishi_control`) on vartioitu.
+
+Tulos yhdistetyllä puulla (c08f5cc + #63): CMake Debug 48/48, Release 48/48, node 9/9,
+pytest samat 6 perustason virhettä kuin #62:ssa (ei uusia; #62:n 7. virhe
+`test_no_production_calibration_bypass` menee läpi), `pio run -e esp32s3_cottage_shadow` onnistui.
 
 ## 10. Testikomennot
 
@@ -316,6 +343,19 @@ build-release/cottage_mpc_resource_bench docs/benchmarks/mpc-host-resources-2026
 3. Laitekohtainen, erikseen hyväksytty koesuunnitelma ennen kuin MPC-päätös
    saa ohjata aktivoitua pumppua.
 
+## 12. Riippumaton katselmointi 3 (head fddccbc): korjaukset
+
+| # | Löydös | Korjaus |
+|---|---|---|
+| 1 | P2: suunnitelma säilyi vaikka pumpun tilavaihtoja oli useampi kuin sen oma | `plan_validity()` sallii vain tasan yhden generaatiokasvun, kun suunnitelma odotti tilanvaihtoa, takaisinluku vahvisti sen tässä slotissa ja varmennettu pumppu on suunnitellussa tilassa. Muu kasvu (HEAT→OFF→HEAT, lähdekatko, manuaalinen paluu alkutilaan) pakottaa uudelleenlaskennan. 32-bittinen ylivuoto kestää. |
+| 2 | P2: dashboard näytti kelvollisena suunnitelman, jonka ohjain hylkäsi | `plan_validity()` on nyt ainoa kelpoisuusehto (kalibrointi, tila, anturin tuoreus, suunnitelman ikä/rakenne, asetus-/malli-/rajamuutokset, pumppulähde, huone vs. kaista). `arbitrate()`, `/api/plan` ja `/api/mpc` käyttävät sitä; kattava vertailutesti (>20 000 yhdistelmää). Dashboard näyttää todellisen syyn eikä aiempaa suunnitelmaa voimassa olevana. |
+| 3 | P2: hylätyn HEAT-jakson jälkeinen OFF tulkittiin hyväksytyksi pysäytykseksi | `prev_heat_` asetetaan vain, kun jakso itse kelpaa HEAT 16 °C / OFF -mallille; start/stop päätellään vain kahden hyväksytyn jakson välillä. Oppiminen jatkuu seuraavasta hyväksytystä parista. Pitkä ajo katkoineen kalibroituu eikä jää DEGRADED-tilaan. |
+| 4 | P2: mallin nollaus ei käsitellyt NVS-virhettä | Malli sidotaan pysyvään nollaussukupolveen (`cottage/model_persistence.hpp`). Nollaus poistaa blobin ja varmentaa sen sekä kasvattaa sukupolvea ja lukee sen takaisin; riittää kumpi tahansa. Muuten tila on `PERSIST_FAILED`, yritys toistetaan minuutin välein, rajapinta ei väitä `persisted`. Tunnistamaton sukupolvi estää palautuksen. Virheinjektiotestit + uudelleenkäynnistys. |
+| 5 | P1: MPC ei noudattanut käyttäjän kovia rajoja | `mpc_comfort_band(target, band, limits)`, suunnitelma ja kelpoisuus on sidottu omistajan rajoihin; ne vain kiristävät. Ristiriitaiset/virheelliset rajat → `COMFORT_LIMITS_INVALID` ja nykyinen ohjain. Arbiterin +0,3 / −0,2 °C -toleranssit poistettu. |
+
+Rajaus: vain tämä PR. Seuraavissa asioissa ei ole muutosta: pumpun lähdetodennus, takaisinluku,
+30 min viive, arming, adapterin kyvykkyysrajat.
+
 ---
 
 ## English summary
@@ -335,6 +375,16 @@ been run on a real heat pump and no board was flashed.**
   heat-pump-only meter it gives only lower bounds (COP ≥ 1). A whole-house or
   unconfirmed meter is never used. On `main` the meter is always treated as
   unconfirmed (the setting arrives with #58).
+- **Review round 3 (head fddccbc)**: a plan survives only its own single
+  confirmed mode transition (any extra generation increment re-plans);
+  `plan_validity()` is the one predicate used by the controller and by
+  `/api/plan` and `/api/mpc`; start/stop is inferred only between two slots
+  the model accepted; the model reset is bound to a persistent reset epoch and
+  reported persisted only when verified; the owner's hard comfort limits
+  (`min`/`max`, 0 = unset) are part of the MPC band, plan and validity and can
+  only tighten it (invalid ones fall back to the existing controller).
+  Integration against the latest #57-#62 tip (c08f5cc) is tested in the
+  separate branch `integration/lite-57-63-20261120`.
 - **Forecast** (`join_forecast_horizon`): the longest verified contiguous
   price and MET Norway run, 8–48 h. Stale data is unusable; gaps end the
   horizon; DST and negative prices are handled through the same price rule as
