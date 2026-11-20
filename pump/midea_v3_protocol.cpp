@@ -218,12 +218,24 @@ bool valid_control_patch(const ControlPatch& patch) {
 }
 bool set_state_command(const State& existing,const ControlPatch& patch,
                        uint8_t msg,Bytes& frame) {
-    // A short C0 response does not expose the freeze-protection flag.
-    // Follow the established msmart-ng compatibility behavior for this
-    // missing field (false), rather than disabling all Midea controls.
-    // For known flags, preserve the true value. A separate authenticated
-    // readback still confirms observable unchanged settings.
+    // An abbreviated C0 does not report the 8 C heat-preservation preset.
+    // A 0x40 write is WHOLE-STATE: writing a guessed false flag for a fan,
+    // mode, power or swing change could silently disable that preset.
+    //
+    // Preserve a *known* flag exactly. For an unknown flag accept only a
+    // user-selected, temperature-only change which starts AND ends in the
+    // ordinary >=16 C setpoint range. The Midea 8 C heat-preservation mode
+    // fixes its temperature to 8 C; a pump already reporting >=16 C cannot
+    // currently be maintaining that 8 C preset. Do not extrapolate this
+    // mode-specific inference to other full-state controls or 8 C operation.
+    // The hardware's compressor/defrost protection is independent of this
+    // optional user-facing 8 C preset.
     if(!valid_control_patch(patch) || !valid_state(existing))return false;
+    if(!existing.freeze_protection_known &&
+       (patch.changed!=ControlTemperature ||
+        existing.setpoint_c<16.0 ||
+        patch.setpoint_c<16.0 ||
+        existing.freeze_protection))return false;
     const bool power=(patch.changed&ControlPower)?patch.power:existing.power;
     const uint8_t mode=(patch.changed&ControlMode)?patch.mode:existing.mode;
     const double temp=(patch.changed&ControlTemperature)?

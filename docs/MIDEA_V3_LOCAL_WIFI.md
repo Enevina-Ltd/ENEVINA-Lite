@@ -45,15 +45,26 @@ not connect to a manufacturer service or issue a pump state/write command.
 
 ## Short C0 state compatibility for manual setpoint changes
 
-Some Midea V3 OEM models report a shorter C0 status which omits the
-optional freeze-protection bit. Previously the Lite controller rejected
-**all** control attempts even when power, mode and setpoint were fresh.
-The controller now follows the established msmart-ng compatibility choice:
-an omitted freeze-protection bit is represented as false in a full-state
-0x40 write. A known true bit is still preserved. This is a deliberate
-trade-off: when a device omits the bit, its actual hidden state cannot be
-proven unchanged. For this reason the release should clearly document the
-fallback rather than claiming preservation of an unknown setting.
+Some Midea V3 OEM models return a short C0 status without the optional
+8 °C freeze-protection **heating preset** bit. This preset is different from
+the device firmware's automatic coil anti-freeze, compressor and defrost
+protections. Because LAN 0x40 writes the *whole state*, a short reply does not
+justify blindly clearing that hidden bit.
+
+A full C0 with a known freeze-protection bit is preserved exactly.
+When the bit is unavailable, **only an explicit temperature-only request**
+is accepted, and only if the old and requested temperature are each at least
+16 °C (ordinary Midea setpoint range). The 8 °C heat-preservation preset
+commands an 8 °C target and is therefore incompatible with the observed
+ordinary >=16 °C state. Mixed changes, power, mode, swing, fan, and any
+attempt to enter/leave the 8 °C preservation range require an independently
+known flag or a separate verified model-specific control method.
+
+This compatibility gate is *not* evidence that every OEM exposes the same
+8 °C semantics. The physical pilot is verified only on its actual unit and
+cannot establish support for other models. See Midea heat-pump user manuals
+for the 8 °C heat-preservation setting; the model-specific path needs review
+and explicit product qualification before a wider release.
 
 The existing owner-invoked device pilot, fresh authenticated state, short
 write queue and authenticated readback remain in place. If the shared LAN

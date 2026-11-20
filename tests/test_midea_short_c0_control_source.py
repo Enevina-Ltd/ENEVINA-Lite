@@ -9,7 +9,11 @@ class ShortC0ControlTests(unittest.TestCase):
  def test_readback_retained_and_short_state_not_globally_rejected(self):
   setter=PROTO.split("bool set_state_command(",1)[1].split("bool control_patch_observed(",1)[0]
   readback=PROTO.split("bool preserved_state_observed(",1)[1].split("bool inner_encode(",1)[0]
-  self.assertNotIn("!existing.freeze_protection_known",setter)
+  self.assertNotIn("!existing.freeze_protection_known)return false",setter)
+  self.assertIn("patch.changed!=ControlTemperature",setter)
+  self.assertIn("existing.setpoint_c<16.0",setter)
+  self.assertIn("patch.setpoint_c<16.0",setter)
+  self.assertIn("existing.freeze_protection",setter)
   self.assertIn("existing.freeze_protection?0x80:0",setter)
   self.assertIn("before.freeze_protection_known && after.freeze_protection_known",readback)
   self.assertIn("before.power!=after.power",readback)

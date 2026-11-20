@@ -72,8 +72,28 @@ int main() {
     patch.setpoint_c=22;
     s.freeze_protection_known=false;
     s.freeze_protection=false; // msmart-ng fallback for a short C0
-    assert(set_state_command(s,patch,8,frame)); // short C0 is actionable
-    assert(frame[31]==0); // unknown freeze => unset, never random data
+    assert(set_state_command(s,patch,8,frame)); // ordinary temperature only
+    assert(frame[31]==0); // optional 8 C heat preset inactive at 22 C
+    // Short C0 cannot justify arbitrary full-state controls.
+    patch.changed=ControlFan;patch.fan=80;
+    assert(!set_state_command(s,patch,8,frame));
+    patch.changed=ControlMode;patch.mode=2;
+    assert(!set_state_command(s,patch,8,frame));
+    patch.changed=ControlPower;patch.power=false;
+    assert(!set_state_command(s,patch,8,frame));
+    patch.changed=ControlSwing;patch.swing=12;
+    assert(!set_state_command(s,patch,8,frame));
+    patch.changed=ControlTemperature;patch.setpoint_c=22;
+    State freeze_preset=s;freeze_preset.setpoint_c=8;
+    assert(!set_state_command(freeze_preset,patch,8,frame));
+    freeze_preset.setpoint_c=12;
+    assert(!set_state_command(freeze_preset,patch,8,frame));
+    patch.setpoint_c=12;
+    assert(!set_state_command(s,patch,8,frame));
+    patch.setpoint_c=22;
+    // Contradictory unknown state must not be accepted.
+    freeze_preset=s;freeze_preset.freeze_protection=true;
+    assert(!set_state_command(freeze_preset,patch,8,frame));
     State short_after=s;
     short_after.setpoint_c=patch.setpoint_c;
     assert(preserved_state_observed(s,short_after,patch));
