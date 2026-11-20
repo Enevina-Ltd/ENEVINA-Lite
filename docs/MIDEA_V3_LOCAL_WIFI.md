@@ -22,6 +22,27 @@ The experimental native C++ code in this change lives in:
 - `tests/midea_v3_protocol_tests.cpp`: host vectors generated against the
   independently installed msmart-ng 2026.8.1 and tamper/invalid-input cases.
 
+## Local discovery from the Lite dashboard
+
+The setup page has an owner-initiated **Etsi Midea lähiverkosta** button.
+It runs a bounded (1.35-second) **local UDP** search to ports 6445 and 20086,
+using the standard Midea discovery packet. It verifies V2/V3 response framing
+and extracts the advertised 48-bit device ID, protocol and reply IP. It does
+not connect to a manufacturer service or issue a pump state/write command.
+
+- Discovery candidates populate the **IP, protocol, and device ID** fields only
+  after selecting a result; no settings are saved automatically.
+- If multiple devices respond, the owner selects the correct device. A reply
+  is **untrusted** until the subsequently configured V2/V3 authentication and
+  an actual fresh status read succeed.
+- V3 still requires previously provisioned **128-character token and
+  64-character key** entered directly in the owner's trusted LAN dashboard.
+  Discovery cannot supply keys or prove cloudless first provisioning.
+- Access is limited to the established LAN and existing per-boot settings
+  token, not the open setup AP. No new password or PIN was introduced.
+- No automatic Midea control or background DHCP re-enrollment is enabled.
+  A later IP change can be handled through this manual discovery again.
+
 **State now:** V2/V3 local telemetry and experimental manual control of
 power, mode, setpoint, fan and swing are implemented in firmware source.
 Each manual command is built from fresh pump status, sent only once and
