@@ -71,14 +71,24 @@ enum class Recovery {
 // NVS writes are not atomic with bootloader VALID. Keep the transaction
 // until every durable step succeeds; another call (even after reboot)
 // can safely complete any partially applied good/cleanup sequence.
-template<class Store>
-bool confirm_persistence(Store& store,const Transaction& tx,uint32_t current_good) {
+template<class Store,class OnDurableGood>
+bool confirm_persistence(Store& store,const Transaction& tx,uint32_t current_good,
+                         OnDurableGood on_durable_good) {
     if(!valid(tx))return false;
     if(current_good<tx.version && !store.write_good(tx.version))
         return false;
+    // The signed candidate's good version has been committed (or was already
+    // committed before a power cut). Give optional history a chance to save
+    // its intent WHILE txv2 is still durable. Do not make a full event/NVS
+    // history partition block successful OTA confirmation.
+    on_durable_good(tx.version);
     if(!store.remove_legacy_pending())return false;
     if(!store.remove_transaction())return false;
     return true;
+}
+template<class Store>
+bool confirm_persistence(Store& store,const Transaction& tx,uint32_t current_good) {
+    return confirm_persistence(store,tx,current_good,[](uint32_t){});
 }
 inline Recovery decide(const Transaction& tx,const Evidence& e) {
     if(!valid(tx))return Recovery::Blocked;

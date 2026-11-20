@@ -223,7 +223,7 @@ class HistoryWiring(unittest.TestCase):
         # arbitration (MPC > price > thermostat), not show fallback prices
         # when an active MPC plan chose the opposite action.
         self.assertIn("const BootstrapDecision d=active_control_proposal(now,te);", body)
-        self.assertNotIn("bootstrap_preview(now,te)", body)
+        self.assertNotIn("bootstrap_preview(now,te)", body.split("static void freshness_endpoint()",1)[0])
         self.assertIn("d.action==BootstrapAction::HeatSetpoint?2", body)
 
     def test_setpoint_comes_from_the_verified_snapshot_and_scope_is_recorded(self):
@@ -244,6 +244,30 @@ class HistoryWiring(unittest.TestCase):
     def test_worker_is_separate_low_priority_and_not_in_health_gate(self):
         self.assertIn('xTaskCreatePinnedToCore(history_worker,"cottage_hist",8192,nullptr,1,nullptr,0)', self.MAIN)
         self.assertIn("enevina_firmware::history_initialize();", self.MAIN)
+
+
+class FreshnessWiring(unittest.TestCase):
+    MAIN = (ROOT / "firmware/cottage/src/main.cpp").read_text(encoding="utf-8")
+    FRESH = (ROOT / "cottage/data_freshness.hpp").read_text(encoding="utf-8")
+
+    def test_endpoint_uses_the_shared_assessment_and_fresh_validators(self):
+        body = self.MAIN.split("static void freshness_endpoint()")[1].split("static void history_worker")[0]
+        self.assertIn("assess_freshness(in)", body)
+        self.assertIn("valid_temperature(te,now)", body)
+        self.assertIn("valid_cn105(cp,now)", body)
+        self.assertIn("in.clock_trusted=clock_ok()", body)
+        self.assertIn('web.on("/api/freshness",HTTP_GET', self.MAIN)
+
+    def test_price_limits_match_the_controller(self):
+        # the controller's own eligibility constants in main.cpp
+        self.assertIn("now-36*3600", self.MAIN)
+        self.assertIn("kPriceMaxAgeS=36*3600", self.FRESH)
+        self.assertIn("kPriceMinAheadS=8*900", self.FRESH)
+
+    def test_ota_trust_chain_and_update_event_wiring(self):
+        self.assertIn("in.ota_good_version=cottage_ota_good_version()", self.MAIN)
+        self.assertIn("history_last_event(", self.MAIN)
+        self.assertIn('"ota_last_update_utc"', self.MAIN)
 
 
 if __name__ == "__main__":

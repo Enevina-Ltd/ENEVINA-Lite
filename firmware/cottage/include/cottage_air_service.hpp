@@ -13,6 +13,8 @@ TemperatureSample c23_temperature_sample();
 // Fresh indoor humidity and a FRESH measured outdoor temperature (outdoor
 // RuuviTag), each with its own validity flag. Never returns a stale value.
 void c23_history_air(double& rh_pct,bool& rh_ok,double& outdoor_c,bool& outdoor_ok);
+// True when an indoor RuuviTag is bound (fresh or not).
+bool c23_indoor_bound();
 CottageModeConfig c23_mode_config();
 CottageModePlan c23_current_mode_plan();
 uint32_t c23_config_generation();

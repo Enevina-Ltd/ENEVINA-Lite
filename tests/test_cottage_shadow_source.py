@@ -21,7 +21,15 @@ class ShadowSurfaceTests(unittest.TestCase):
         self.assertIn('web.on("/api/control/arm",HTTP_POST',self.main)
         self.assertIn('c23_authorize_local_setting(web.arg("token").c_str())',self.main)
         self.assertIn('control_armed.store(false)',self.main)
-        self.assertIn('if(prefs.getBool("armed",false))prefs.putBool("armed",false)',self.main)
+        # Old always-disarm assertion predates the signed-image-bound intent
+        # record. A same-image reboot may restore the owner choice, but an OTA
+        # image change or mismatching pump identity must fail closed.
+        reg=self.main.split('static void cottage_control_registration() {',1)[1].split(
+            'web.on("/api/control/arm"',1)[0]
+        self.assertIn('control_armed.store(false)',reg)
+        self.assertIn('valid_image && !activating_ota',reg)
+        self.assertIn('control_intent_restorable(saved,site_settings_snapshot()',reg)
+        self.assertIn('control_armed.store(restore && !must_revoke)',reg)
         self.assertIn('mode.mode==CottageMode::Drying',self.main)
         self.assertIn('valid_temperature(sample,now)',self.main)
         self.assertIn('control_last_bridge_read_utc',self.main)

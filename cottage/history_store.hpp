@@ -135,7 +135,8 @@ enum class HistoryEventKind : uint8_t {
     SourceBack=3,      // value: seconds it was missing (saturated)
     CommandSent=4,     // value: how many since the last check
     CommandConfirmed=5,
-    CommandFailed=6
+    CommandFailed=6,
+    UpdateConfirmed=7  // arg: the signed release version that was confirmed good
 };
 enum class HistorySource : uint8_t { None=0, Wifi=1, Pump=2, Sensor=3, Prices=4 };
 struct HistoryEvent {
@@ -143,8 +144,9 @@ struct HistoryEvent {
     uint8_t kind=0;
     uint8_t source=0;
     int16_t value=0;
+    uint32_t arg=0;           // kind-specific 32-bit detail (e.g. release version)
 };
-static_assert(sizeof(HistoryEvent)==8,"event must stay 8 bytes");
+static_assert(sizeof(HistoryEvent)==12,"event must stay 12 bytes");
 
 class EventLog {
 public:
@@ -188,6 +190,8 @@ struct HistoryInputs {
     bool armed=false;
     uint32_t commands_sent=0,commands_confirmed=0,commands_failed=0;   // monotone counters
     int reset_reason=0;
+    uint32_t ota_good_version=0;   // last version the signed OTA confirmed good (0 = unknown)
+    uint32_t ota_upgrade_event_version=0; // signed OTA proof, not just a new observed number
 };
 
 class HistoryRecorder {
@@ -195,6 +199,9 @@ public:
     static constexpr int64_t kDebounceS=60;      // a state must hold this long to become an event
     // Feed every ~10-15 s. Returns true when a record was finalized.
     bool observe(const HistoryInputs& in,HistoryStore& store,EventLog& events) {
+        // OTA boot confirmation may precede NTP. Remember the previously
+        // observed confirmed version even while event timestamps are unknown.
+        track_ota_version(in.ota_good_version,in.ota_upgrade_event_version,events);
         if(!in.clock_trusted||in.utc<=1700000000) return false;
         const uint32_t now_slot=static_cast<uint32_t>(in.utc/kHistoryStepS);
         bool finalized=false;
@@ -204,6 +211,14 @@ public:
                         static_cast<int16_t>(in.reset_reason)});
             counters_known_=true;
             sent_=in.commands_sent;confirmed_=in.commands_confirmed;failed_=in.commands_failed;
+        }
+        // The clock may have become trusted after OTA confirmation. The
+        // event is recorded at the first trusted observation, never with an
+        // invented timestamp from the clock-untrusted period.
+        if(ota_pending_version_!=0) {
+            events.put({static_cast<uint32_t>(in.utc),static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed),0,0,
+                        ota_pending_version_});
+            ota_pending_version_=0;
         }
         track_source(in,HistorySource::Wifi,in.wifi_ok,events);
         track_source(in,HistorySource::Pump,in.pump_online,events);
@@ -241,7 +256,33 @@ private:
     uint32_t samples_=0;
     bool booted_=false,counters_known_=false;
     uint32_t sent_=0,confirmed_=0,failed_=0;
+    uint32_t ota_good_=0,ota_pending_version_=0;
     Track tracks_[5];
+
+    void track_ota_version(uint32_t version,uint32_t confirmed_upgrade,
+                           const EventLog& events) {
+        if(version==0)return; // OTA store has not loaded
+        // A confirmed upgrade can already be the FIRST version observed by
+        // this in-memory recorder after boot. The persisted signed-OTA hint
+        // proves it was a transition, not just a factory first boot. Dedup
+        // against existing flash history on reboot while the hint remains.
+        const bool explicitly_confirmed=confirmed_upgrade!=0 &&
+            confirmed_upgrade==version;
+        const bool observed_transition=ota_good_!=0 && version>ota_good_;
+        bool already_logged=false;
+        for(size_t i=0;i<events.count();++i) {
+            const auto& e=events.newest(i);
+            if(e.kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed) &&
+               e.arg==version) {already_logged=true;break;}
+        }
+        if((explicitly_confirmed||observed_transition)&&!already_logged)
+            ota_pending_version_=version;
+        else if(already_logged && ota_pending_version_==version)
+            ota_pending_version_=0;
+        if(ota_good_!=0 && version<ota_good_)
+            ota_pending_version_=0; // rollback, not success
+        ota_good_=version;
+    }
 
     void reset(uint32_t slot) {
         acc_slot_=slot;indoor_=rh_=outdoor_=power_=price_=Sum{};

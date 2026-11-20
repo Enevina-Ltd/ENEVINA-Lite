@@ -1,6 +1,7 @@
 // History ring, recorder, range queries and flash persistence (torn writes,
 // corruption, compaction, wear bounds). Memory-backed files stand in for LittleFS.
 #include "cottage/history_persist.hpp"
+#include "cottage/ota_history_policy.hpp"
 #include "cottage/history_query.hpp"
 #include "forecast/met_norway.hpp"      // strict JSON validator for the output
 #include <cmath>
@@ -486,6 +487,186 @@ static void bounded_file_growth_and_compaction() {
 }
 
 
+static void update_before_clock_sync() {
+    HistoryStore store(2880);EventLog ev;HistoryRecorder recorder;
+    auto in=sample(T0);
+    in.clock_trusted=false;in.utc=0;in.ota_good_version=20261101;
+    CHECK(!recorder.observe(in,store,ev)&&ev.count()==0);
+    // Signed OTA confirms the new version before NTP becomes available.
+    in.ota_good_version=20261119;
+    CHECK(!recorder.observe(in,store,ev)&&ev.count()==0);
+    in=sample(T0+900);in.ota_good_version=20261119;
+    recorder.observe(in,store,ev);
+    CHECK(ev.count()==2); // trusted Boot and deferred UpdateConfirmed
+    CHECK(ev.newest(0).kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed));
+    CHECK(ev.newest(0).arg==20261119 && ev.newest(0).utc==T0+900);
+    in=sample(T0+915);in.ota_good_version=20261119;
+    recorder.observe(in,store,ev);
+    CHECK(ev.count()==2); // no duplicated confirmation
+    // A rollback before clock synchronization must cancel the pending success.
+    HistoryStore s2(2880);EventLog e2;HistoryRecorder r2;
+    in.clock_trusted=false;in.utc=0;in.ota_good_version=20261101;
+    r2.observe(in,s2,e2);
+    in.ota_good_version=20261119;r2.observe(in,s2,e2);
+    in.ota_good_version=20261101;r2.observe(in,s2,e2);
+    in=sample(T0+900);in.ota_good_version=20261101;r2.observe(in,s2,e2);
+    CHECK(e2.count()==1);
+}
+
+static void update_confirmation_events() {
+    HistoryStore store(2880);EventLog ev;HistoryRecorder rec_;
+    int64_t t=T0;
+    HistoryInputs in=sample(t);
+    in.ota_good_version=20261101;
+    rec_.observe(in,store,ev);
+    CHECK(ev.count()==1);                                     // boot only: a normal reboot is not an update
+    in=sample(t+15);in.ota_good_version=20261101;rec_.observe(in,store,ev);
+    CHECK(ev.count()==1);
+    // the signed OTA confirms the new version after the boot health check
+    in=sample(t+400);in.ota_good_version=20261119;rec_.observe(in,store,ev);
+    CHECK(ev.count()==2);
+    CHECK(ev.newest(0).kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed)&&ev.newest(0).arg==20261119);
+    CHECK(ev.newest(0).utc==static_cast<uint32_t>(t+400));
+    in=sample(t+500);in.ota_good_version=20261119;rec_.observe(in,store,ev);
+    CHECK(ev.count()==2);                                     // not repeated
+    // an unknown (0) reading never logs, and re-bases so the next real value is compared fairly
+    in=sample(t+600);in.ota_good_version=0;rec_.observe(in,store,ev);
+    CHECK(ev.count()==2);
+    in=sample(t+700);in.ota_good_version=20261119;rec_.observe(in,store,ev);
+    CHECK(ev.count()==2);                                     // 0 is "unknown", never a baseline: no false update
+    // a boot where the OTA store is read late (0 first, then the stored version) is not an update
+    HistoryStore sb(2880);EventLog eb;HistoryRecorder rb;
+    in=sample(T0+10);in.ota_good_version=0;rb.observe(in,sb,eb);
+    in=sample(T0+25);in.ota_good_version=20261101;rb.observe(in,sb,eb);
+    CHECK(eb.count()==1);
+    in=sample(T0+40);in.ota_good_version=20261119;rb.observe(in,sb,eb);
+    CHECK(eb.count()==2&&eb.newest(0).arg==20261119);
+    // the 32-bit argument survives flash and reload
+    MemFile rf,ef;HistoryPersistence p(rf,ef);
+    HistoryStore s2(2880);EventLog e2;
+    p.load(s2,e2);
+    s2.put(rec(static_cast<uint32_t>(T0/900)));
+    CHECK(p.flush(s2,ev));
+    HistoryStore s3(2880);EventLog e3;MemFile rf3=rf,ef3=ef;HistoryPersistence p3(rf3,ef3);
+    CHECK(p3.load(s3,e3).events==ev.count());
+    bool found=false;
+    for(size_t i=0;i<e3.count();++i) found|=e3.newest(i).kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed)&&e3.newest(i).arg==20261119;
+    CHECK(found);
+    // JSON carries it as "a"
+    std::string out;
+    std::vector<HistoryPoint> pts(kMaxHistoryPoints);HistorySummary sum;
+    HistoryStore s4(2880);
+    for(uint32_t i=0;i<100;++i) s4.put(rec(static_cast<uint32_t>(T0/900)+i));
+    const size_t n=build_history_series(s4,(T0/900+99)*900,96,1,pts.data(),pts.size(),sum);
+    history_json("24h",1,pts.data(),n,sum,ev,pts[0].t-100000,"EUR","unknown",true,[&](const char* part){out+=part;});
+    CHECK(out.find("\"k\":7")!=std::string::npos&&out.find("\"a\":20261119")!=std::string::npos);
+}
+
+static void ota_update_summary_survives_rotating_history() {
+    using enevina::cottage::make_ota_history_last;
+    using enevina::cottage::valid_ota_history_last;
+    const auto summary=make_ota_history_last(20261119,T0+900);
+    CHECK(valid_ota_history_last(summary));
+    auto invalid=summary;invalid.utc=0;
+    CHECK(!valid_ota_history_last(invalid));
+    invalid=summary;invalid.version=0;
+    CHECK(!valid_ota_history_last(invalid));
+    invalid=summary;invalid.seal^=1;
+    CHECK(!valid_ota_history_last(invalid));
+    EventLog events;
+    events.put({static_cast<uint32_t>(summary.utc),
+      static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed),0,0,summary.version});
+    for(size_t i=0;i<kEventSlots+25;++i)
+        events.put({static_cast<uint32_t>(summary.utc+i+1),
+             static_cast<uint8_t>(HistoryEventKind::Boot),0,0,0});
+    bool found=false;
+    for(size_t i=0;i<events.count();++i)
+        found|=events.newest(i).kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed);
+    CHECK(!found);
+    CHECK(valid_ota_history_last(summary)&&summary.version==20261119&&
+          summary.utc==T0+900); // independent of evictions and reboots
+}
+static void ota_history_ack_survives_event_ring_eviction() {
+    using enevina::cottage::ota_pending_history_upgrade;
+    CHECK(ota_pending_history_upgrade(20261119,20261119,0)==20261119);
+    CHECK(ota_pending_history_upgrade(20261119,20261119,20261119)==0);
+    CHECK(ota_pending_history_upgrade(20261101,20261119,0)==0);
+    CHECK(ota_pending_history_upgrade(0,20261119,0)==0);
+    CHECK(ota_pending_history_upgrade(20261119,0,0)==0);
+    CHECK(ota_pending_history_upgrade(20261120,20261120,20261119)==20261120);
+    HistoryStore store(20);EventLog events;HistoryRecorder original;
+    auto in=sample(T0);in.ota_good_version=20261119;
+    in.ota_upgrade_event_version=20261119;
+    original.observe(in,store,events);
+    CHECK(events.count()==2);
+    for(size_t i=0;i<kEventSlots+1;i++)
+        events.put({static_cast<uint32_t>(T0+100+i),
+                   static_cast<uint8_t>(HistoryEventKind::Boot),0,0,0});
+    unsigned old_events=0;
+    for(size_t i=0;i<events.count();++i)
+        old_events+=events.newest(i).kind==
+            static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed);
+    CHECK(old_events==0); // verified update event has been evicted
+    HistoryRecorder restarted;
+    in=sample(T0+900);in.ota_good_version=20261119;
+    // The durable ack suppresses the already recorded event despite eviction.
+    in.ota_upgrade_event_version=ota_pending_history_upgrade(
+        20261119,20261119,20261119);
+    restarted.observe(in,store,events);
+    unsigned repeated=0;
+    for(size_t i=0;i<events.count();++i)
+        repeated+=events.newest(i).kind==
+            static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed);
+    CHECK(repeated==0);
+}
+static void ota_confirmed_before_first_history_sample_is_recorded() {
+    HistoryStore s;EventLog e;HistoryRecorder rec_;
+    auto in=sample(T0);in.ota_good_version=20261119;
+    in.ota_upgrade_event_version=20261119;
+    rec_.observe(in,s,e);
+    CHECK(e.count()==2);
+    CHECK(e.newest(0).kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed));
+    CHECK(e.newest(0).arg==20261119);
+    rec_.observe(sample(T0+15),s,e);
+    CHECK(e.count()==2);
+    // Persist and reload the history while the signed-OTA NVS hint remains.
+    MemFile records,events;HistoryPersistence p(records,events);
+    CHECK(p.flush(s,e));
+    HistoryStore restored;EventLog old_events;HistoryPersistence pr(records,events);
+    const auto loaded=pr.load(restored,old_events);
+    CHECK(loaded.events==2);
+    HistoryRecorder next_boot;
+    in=sample(T0+900);in.ota_good_version=20261119;
+    in.ota_upgrade_event_version=20261119;
+    next_boot.observe(in,restored,old_events);
+    unsigned confirmations=0;
+    for(size_t i=0;i<old_events.count();++i)
+        confirmations+=old_events.newest(i).kind==
+            static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed);
+    CHECK(confirmations==1); // no duplicate across reboot
+    // If NVS had no prior good release, a first installed version is
+    // NOT an upgrade and has no signed-OTA event hint.
+    HistoryStore fresh;EventLog baseline;HistoryRecorder first;
+    in=sample(T0+10);in.ota_good_version=20261119;
+    in.ota_upgrade_event_version=0;
+    first.observe(in,fresh,baseline);
+    CHECK(baseline.count()==1); // Boot only
+    // A future/stale NVS hint cannot falsely claim a rollback was success.
+    HistoryStore rolled;EventLog rb;HistoryRecorder rr;
+    in=sample(T0+10);in.ota_good_version=20261101;
+    in.ota_upgrade_event_version=20261119;
+    rr.observe(in,rolled,rb);
+    CHECK(rb.count()==1);
+    // No trusted time until after successful OTA: defer, then log exactly once.
+    HistoryStore s3;EventLog ev3;HistoryRecorder r3;
+    in=sample(T0);in.clock_trusted=false;in.utc=0;
+    in.ota_good_version=20261119;in.ota_upgrade_event_version=20261119;
+    r3.observe(in,s3,ev3);
+    CHECK(ev3.count()==0);
+    in.clock_trusted=true;in.utc=T0+900;
+    r3.observe(in,s3,ev3);
+    CHECK(ev3.count()==2&&ev3.newest(0).arg==20261119);
+}
 static HistoryInputs meter_reading(int64_t t,double w,uint8_t scope) {
     auto in=sample(t);in.power_valid=true;in.power_w=w;in.power_scope=scope;return in;
 }
@@ -568,7 +749,67 @@ static void historical_prices_retain_currency_without_cross_currency_mean() {
     CHECK(std::string(history_detail::currency_of_range(sum))=="unknown");
 }
 
+
+static void legacy_event_log_migration_preserves_old_entries() {
+    using namespace persist_detail;
+    MemFile records,legacy_events;
+    legacy_events.present=true;
+    const Header h=header(kEvtMagic,kLegacyEvtDisk);
+    const auto* hp=reinterpret_cast<const uint8_t*>(&h);
+    legacy_events.data.insert(legacy_events.data.end(),hp,hp+sizeof(h));
+    const LegacyHistoryEvent previous[]={
+        {static_cast<uint32_t>(T0),1,0,3},
+        {static_cast<uint32_t>(T0+60),2,1,0},
+        {static_cast<uint32_t>(T0+360),3,1,300},
+        {static_cast<uint32_t>(T0+720),4,0,2}
+    };
+    for(const auto& e:previous) {
+        const auto* p=reinterpret_cast<const uint8_t*>(&e);
+        legacy_events.data.insert(legacy_events.data.end(),p,p+sizeof(e));
+        const uint16_t crc=history_crc16(p,sizeof(e));
+        const auto* c=reinterpret_cast<const uint8_t*>(&crc);
+        legacy_events.data.insert(legacy_events.data.end(),c,c+sizeof(crc));
+    }
+    CHECK(legacy_events.data.size()==sizeof(Header)+sizeof(previous)/sizeof(previous[0])*kLegacyEvtDisk);
+    HistoryStore store;EventLog events;
+    HistoryPersistence migration(records,legacy_events);
+    const auto loaded=migration.load(store,events);
+    CHECK(loaded.event_header_ok && !loaded.event_tail_cut && loaded.events==4);
+    CHECK(events.count()==4);
+    CHECK(events.newest(0).utc==T0+720 && events.newest(0).kind==4 && events.newest(0).value==2);
+    CHECK(events.newest(1).utc==T0+360 && events.newest(1).value==300);
+    CHECK(events.newest(3).utc==T0 && events.newest(3).arg==0);
+    // Even with no newly appended events, load must trigger atomic rewrite
+    // of legacy events to the current format. No data is silently discarded.
+    CHECK(migration.flush(store,events));
+    Header migrated{};
+    std::memcpy(&migrated,legacy_events.data.data(),sizeof(migrated));
+    CHECK(migrated.record_size==kEvtDisk);
+    CHECK(legacy_events.replaces>0);
+    HistoryStore reread;EventLog old_log;
+    HistoryPersistence restored(records,legacy_events);
+    const auto after=restored.load(reread,old_log);
+    CHECK(after.event_header_ok && after.events==4 && !after.event_tail_cut);
+    CHECK(old_log.newest(0).utc==T0+720 && old_log.newest(0).arg==0);
+    CHECK(old_log.newest(1).value==300);
+    // A torn old-format file still returns the valid prefix and migrates it.
+    MemFile truncated=legacy_events;truncated.data.clear();
+    truncated.data.insert(truncated.data.end(),hp,hp+sizeof(h));
+    const auto* p=reinterpret_cast<const uint8_t*>(&previous[0]);
+    truncated.data.insert(truncated.data.end(),p,p+sizeof(previous[0]));
+    uint16_t crc=history_crc16(p,sizeof(previous[0]));
+    const auto* cp=reinterpret_cast<const uint8_t*>(&crc);
+    truncated.data.insert(truncated.data.end(),cp,cp+2);
+    truncated.data.push_back(0xAA);
+    HistoryStore sr;EventLog er;HistoryPersistence pr(records,truncated);
+    const auto r=pr.load(sr,er);
+    CHECK(r.event_header_ok&&r.event_tail_cut&&r.events==1);
+    CHECK(pr.flush(sr,er));
+    CHECK(er.newest(0).utc==T0);
+}
+
 int main() {
+    legacy_event_log_migration_preserves_old_entries();
     mount_failure_never_formats_nonblank_partition();
     measured_energy_requires_verifiable_coverage();
     historical_prices_retain_currency_without_cross_currency_mean();
@@ -583,6 +824,11 @@ int main() {
     persistence_roundtrip_and_wear();
     torn_and_corrupt_files();
     bounded_file_growth_and_compaction();
+    update_before_clock_sync();
+    update_confirmation_events();
+    ota_update_summary_survives_rotating_history();
+    ota_history_ack_survives_event_ring_eviction();
+    ota_confirmed_before_first_history_sample_is_recorded();
     if(failures) {std::fprintf(stderr,"%d failures\n",failures);return 1;}
     std::puts("history_tests OK");
     return 0;

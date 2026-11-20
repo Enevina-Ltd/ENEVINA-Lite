@@ -10,6 +10,7 @@
 #include <cstring>
 #include "cottage_history.hpp"
 #include "cottage_site_settings.hpp"
+#include "cottage_secure_ota.hpp"
 #include "cottage_wifi.hpp"
 #include "cottage/history_persist.hpp"
 #include "cottage/history_query.hpp"
@@ -131,6 +132,19 @@ void history_initialize() {
     if(!persistence) {persistent=false;return;}
     const LoadResult r=persistence->load(*store,events);
     last_load_records=r.records;
+    // Migrate an already-durable UpdateConfirmed event into the independent
+    // NVS summary. This includes legacy installs where hist_done was written
+    // before hist_last existed: pending_ota is then zero, but the event is
+    // still the signed-confirmed history evidence. The OTA transaction
+    // service itself verifies good==hist_upg==e.arg before accepting it.
+    const uint32_t pending_ota=cottage_ota_recorded_upgrade_version();
+    for(size_t i=0;i<events.count();++i) {
+        const HistoryEvent& e=events.newest(i);
+        if(e.kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed) &&
+           e.arg!=0 && (pending_ota==0 || e.arg==pending_ota) &&
+           cottage_ota_acknowledge_history_upgrade(e.arg,e.utc))
+            break;
+    }
     last_flush_ms=millis();
     last_attempt_ms=last_flush_ms;
     persistence_healthy=true;
@@ -156,11 +170,37 @@ void history_observe(const HistoryInputs& inputs) {
         if(ok) {
             last_flush_ms=now;
             events_total_at_flush=events.total();
+            // A ring event can be evicted. Ack ONLY after the new event file
+            // was durably flushed; this makes release history idempotent even
+            // when its original event ages out before the next reboot.
+            const uint32_t pending_ota=cottage_ota_recorded_upgrade_version();
+            if(pending_ota) {
+                for(size_t i=0;i<events.count();++i) {
+                    const HistoryEvent& e=events.newest(i);
+                    if(e.kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed) &&
+                       e.arg==pending_ota) {
+                        cottage_ota_acknowledge_history_upgrade(pending_ota,e.utc);
+                        break;
+                    }
+                }
+            }
         } else {
             ESP_LOGE(tag,"history flush failed: measurements are RAM-only until retry succeeds");
         }
     }
     xSemaphoreGive(guard);
+}
+
+bool history_last_event(uint8_t kind,uint32_t& utc,uint32_t& arg) {
+    if(!guard||!store) return false;
+    bool found=false;
+    xSemaphoreTake(guard,portMAX_DELAY);
+    for(size_t i=0;i<events.count();++i) {
+        const HistoryEvent& e=events.newest(i);
+        if(e.kind==kind) {utc=e.utc;arg=e.arg;found=true;break;}
+    }
+    xSemaphoreGive(guard);
+    return found;
 }
 
 void history_http(WebServer& web) {

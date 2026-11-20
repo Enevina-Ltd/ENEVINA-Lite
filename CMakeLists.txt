@@ -377,6 +377,17 @@ add_executable(history_cli tools/history_cli.cpp)
 target_include_directories(history_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(history_cli PRIVATE enevina_cottage enevina_core)
 
+# Data freshness / offline report must agree with the live controller.
+add_executable(data_freshness_tests tests/data_freshness_tests.cpp)
+target_include_directories(data_freshness_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(data_freshness_tests PRIVATE enevina_core)
+add_test(NAME data_freshness_tests COMMAND data_freshness_tests)
+
+# Emits /api/freshness JSON for a scenario with the real assessment code (UI simulator).
+add_executable(freshness_cli tools/freshness_cli.cpp)
+target_include_directories(freshness_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(freshness_cli PRIVATE enevina_core)
+
 # Live MPC chain: automatic building identification (RLS + walk-forward
 # validation), receding-horizon bridge, MPC -> price -> thermostat arbiter,
 # and the closed-loop comparison harness (SIMULATION, host only).

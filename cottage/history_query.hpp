@@ -202,7 +202,7 @@ inline void history_json(const char* range_name,size_t step_slots,const HistoryP
     for(size_t i=0;i<events.count()&&shown<60;++i) {
         const HistoryEvent& e=events.newest(i);
         if(static_cast<int64_t>(e.utc)<from_utc) continue;
-        std::snprintf(b,sizeof(b),"%s{\"t\":%u,\"k\":%u,\"s\":%u,\"v\":%d}",shown?",":"",e.utc,e.kind,e.source,e.value);
+        std::snprintf(b,sizeof(b),"%s{\"t\":%u,\"k\":%u,\"s\":%u,\"v\":%d,\"a\":%u}",shown?",":"",e.utc,e.kind,e.source,e.value,e.arg);
         emit(b);
         ++shown;
     }

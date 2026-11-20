@@ -18,6 +18,13 @@ bool cottage_ota_runtime_ready();
 // True only after durable good-version and pending-transaction cleanup.
 bool cottage_ota_confirm_boot();
 uint32_t cottage_ota_good_version();
+// Last upgrade proven by signed-OTA confirmation, durable NVS marker when
+// available. Zero on factory first boot, unconfirmed image or rollback.
+uint32_t cottage_ota_recorded_upgrade_version();
+// Called after the history events file has been durably flushed to LittleFS.
+bool cottage_ota_acknowledge_history_upgrade(uint32_t version,uint32_t event_utc);
+// Durable last update (signed version + trusted time) independent of event ring.
+bool cottage_ota_last_successful_update(uint32_t& utc,uint32_t& version);
 uint32_t cottage_ota_last_candidate();
 int cottage_ota_status();
 // Temporary read-only worker pause during eligible signed-image download.
