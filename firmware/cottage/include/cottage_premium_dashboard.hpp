@@ -780,6 +780,10 @@ async function wzSaveComfort(skip){
       if(matches(oldFields))throw siteError; // verified no durable site change
       throw Error(WT('Tallennus epäonnistui')+' (site status unverified)');
     }
+    // Mirror wzPost's normal successful reload. Back-navigation must use
+    // the VERIFIED newly saved band as its next compensation baseline, not
+    // the stale pre-save state.site snapshot (Codex P2 #57).
+    state.site=persisted;
     // The site write succeeded; finish the target update even if its
     // response was lost. Do not roll back a successfully saved profile.
   }
