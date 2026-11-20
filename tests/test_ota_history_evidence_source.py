@@ -6,6 +6,8 @@ R=Path(__file__).resolve().parents[1]
 OTA=(R/"firmware/cottage/src/cottage_secure_ota.cpp").read_text(encoding="utf-8")
 MAIN=(R/"firmware/cottage/src/main.cpp").read_text(encoding="utf-8")
 HISTORY=(R/"cottage/history_store.hpp").read_text(encoding="utf-8")
+HISTORY_FW=(R/"firmware/cottage/src/cottage_history.cpp").read_text(encoding="utf-8")
+POLICY=(R/"cottage/ota_history_policy.hpp").read_text(encoding="utf-8")
 FRESH=(R/"cottage/data_freshness.hpp").read_text(encoding="utf-8")
 DASH=(R/"firmware/cottage/include/cottage_premium_dashboard.hpp").read_text(encoding="utf-8")
 
@@ -22,13 +24,23 @@ class ConfirmedOtaHistoryAndNoHeat(unittest.TestCase):
         init=OTA.split("void cottage_ota_initialize() {",1)[1].split(
             "bool cottage_ota_confirmation_pending()",1)[0]
         self.assertIn("marker>0 && marker==good?marker:0",init)
-        self.assertIn("marker>0&&marker==good?marker:0",OTA)
+        self.assertIn("ota_pending_history_upgrade(",OTA)
         self.assertIn("cottage_ota_recorded_upgrade_version()",MAIN)
     def test_event_log_dedup_and_deferred_clock(self):
         self.assertIn("ota_upgrade_event_version",HISTORY)
         self.assertIn("confirmed_upgrade==version",HISTORY)
         self.assertIn("already_logged",HISTORY)
         self.assertIn("ota_pending_version_",HISTORY)
+    def test_event_ack_only_after_durable_history_flush(self):
+        self.assertIn('ota_pending_history_upgrade(',OTA)
+        self.assertIn('ota_pending_history_upgrade(',POLICY)
+        self.assertIn('cottage_ota_acknowledge_history_upgrade',OTA)
+        self.assertIn('p.putUInt(kHistoryAckKey,version)',OTA)
+        self.assertIn('p.getUInt(kHistoryAckKey,0)==version',OTA)
+        self.assertIn('last_history_ack.store(p.getUInt(kHistoryAckKey,0))',OTA)
+        flush=HISTORY_FW.split('const bool ok=persistence->flush(*store,events)',1)[1]
+        self.assertLess(flush.index('if(ok)'),flush.index('cottage_ota_acknowledge_history_upgrade(pending_ota)'))
+        self.assertIn('cottage_ota_acknowledge_history_upgrade(pending_ota)',HISTORY_FW)
     def test_no_heat_fallback_agrees_with_actual_action(self):
         self.assertIn("no_heating_requested=actual.action==BootstrapAction::Off",MAIN)
         self.assertIn("actual.reason==BootstrapReason::NoHeatingRequested",MAIN)

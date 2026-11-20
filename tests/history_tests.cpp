@@ -1,6 +1,7 @@
 // History ring, recorder, range queries and flash persistence (torn writes,
 // corruption, compaction, wear bounds). Memory-backed files stand in for LittleFS.
 #include "cottage/history_persist.hpp"
+#include "cottage/ota_history_policy.hpp"
 #include "cottage/history_query.hpp"
 #include "forecast/met_norway.hpp"      // strict JSON validator for the output
 #include <cmath>
@@ -560,6 +561,39 @@ static void update_confirmation_events() {
     CHECK(out.find("\"k\":7")!=std::string::npos&&out.find("\"a\":20261119")!=std::string::npos);
 }
 
+static void ota_history_ack_survives_event_ring_eviction() {
+    using enevina::cottage::ota_pending_history_upgrade;
+    CHECK(ota_pending_history_upgrade(20261119,20261119,0)==20261119);
+    CHECK(ota_pending_history_upgrade(20261119,20261119,20261119)==0);
+    CHECK(ota_pending_history_upgrade(20261101,20261119,0)==0);
+    CHECK(ota_pending_history_upgrade(0,20261119,0)==0);
+    CHECK(ota_pending_history_upgrade(20261119,0,0)==0);
+    CHECK(ota_pending_history_upgrade(20261120,20261120,20261119)==20261120);
+    HistoryStore store(20);EventLog events;HistoryRecorder original;
+    auto in=sample(T0);in.ota_good_version=20261119;
+    in.ota_upgrade_event_version=20261119;
+    original.observe(in,store,events);
+    CHECK(events.count()==2);
+    for(size_t i=0;i<kEventSlots+1;i++)
+        events.put({static_cast<uint32_t>(T0+100+i),
+                   static_cast<uint8_t>(HistoryEventKind::Boot),0,0,0});
+    unsigned old_events=0;
+    for(size_t i=0;i<events.count();++i)
+        old_events+=events.newest(i).kind==
+            static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed);
+    CHECK(old_events==0); // verified update event has been evicted
+    HistoryRecorder restarted;
+    in=sample(T0+900);in.ota_good_version=20261119;
+    // The durable ack suppresses the already recorded event despite eviction.
+    in.ota_upgrade_event_version=ota_pending_history_upgrade(
+        20261119,20261119,20261119);
+    restarted.observe(in,store,events);
+    unsigned repeated=0;
+    for(size_t i=0;i<events.count();++i)
+        repeated+=events.newest(i).kind==
+            static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed);
+    CHECK(repeated==0);
+}
 static void ota_confirmed_before_first_history_sample_is_recorded() {
     HistoryStore s;EventLog e;HistoryRecorder rec_;
     auto in=sample(T0);in.ota_good_version=20261119;
@@ -767,6 +801,7 @@ int main() {
     bounded_file_growth_and_compaction();
     update_before_clock_sync();
     update_confirmation_events();
+    ota_history_ack_survives_event_ring_eviction();
     ota_confirmed_before_first_history_sample_is_recorded();
     if(failures) {std::fprintf(stderr,"%d failures\n",failures);return 1;}
     std::puts("history_tests OK");

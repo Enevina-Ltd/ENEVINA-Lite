@@ -118,3 +118,17 @@ the last-update event may still be unavailable after reboot, though OTA
 confirmation itself remains valid. Hardware fault injection is still
 required before claiming that window closed. No physical pump/OTA test
 was performed for this work.
+
+### Persistent history acknowledgement after signed OTA
+
+The OTA service retains two separate NVS values: hist_upg (signed confirmed
+new version) and hist_done (last history event durably written to LittleFS).
+History acknowledges the version only after an events.bin flush succeeds, or
+after the already-flushed event is reloaded following a power cut between
+flash and NVS writes. Acknowledged versions are never replayed, including
+after the bounded 128-event ring evicts the original confirmation event.
+
+The acknowledgement has no effect on the signed image verification, safety
+gates, pump controls, OTA rollback eligibility or the result of OTA boot
+confirmation. Failed NVS acknowledgement remains pending for retry; a
+physical fault injection is still required to confirm every cut point.

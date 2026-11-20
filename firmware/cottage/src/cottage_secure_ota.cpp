@@ -17,6 +17,7 @@
 #include "cottage_secure_ota.hpp"
 #include "cottage_network_budget.hpp"
 #include "cottage/ota_runtime_policy.hpp"
+#include "cottage/ota_history_policy.hpp"
 
 #if __has_include("cottage_ota_private.hpp")
 #include "cottage_ota_private.hpp"
@@ -42,8 +43,9 @@ namespace {
 constexpr const char* magic="ENEVINA_C24_OTA_V1\nmodel=esp32s3-n16r8\n";
 constexpr uint32_t max_image_size=0x640000u;
 std::atomic<uint32_t> last_good{0}, last_candidate{0};
-std::atomic<uint32_t> last_history_upgrade{0};
+std::atomic<uint32_t> last_history_upgrade{0},last_history_ack{0};
 constexpr char kHistoryUpgradeKey[]="hist_upg";
+constexpr char kHistoryAckKey[]="hist_done";
 std::atomic<int> last_status{0}; // 0 idle; 1 disabled; 2 transient; 3 refused; 4 rejected; 5 downloading; 6 rebooting
 std::atomic<bool> pause_readers{false};
 std::atomic<uint32_t> ota_written_bytes{0};
@@ -348,6 +350,7 @@ void cottage_ota_initialize() {
     // signed-OTA good version must already have been durably confirmed.
     const uint32_t marker=p.getUInt(kHistoryUpgradeKey,0);
     last_history_upgrade.store(marker>0 && marker==good?marker:0);
+    last_history_ack.store(p.getUInt(kHistoryAckKey,0));
     const uint32_t legacy=p.getUInt("pending",0);
     ota::Transaction tx{};
     bool has_tx=read_transaction(p,tx);
@@ -463,8 +466,23 @@ bool cottage_ota_confirm_boot() {
 }
 uint32_t cottage_ota_good_version(){return last_good.load();}
 uint32_t cottage_ota_recorded_upgrade_version(){
-    const auto good=last_good.load(),marker=last_history_upgrade.load();
-    return marker>0&&marker==good?marker:0;
+    return enevina::cottage::ota_pending_history_upgrade(
+        last_good.load(),last_history_upgrade.load(),last_history_ack.load());
+}
+bool cottage_ota_acknowledge_history_upgrade(uint32_t version) {
+    if(version==0 || cottage_ota_recorded_upgrade_version()!=version)
+        return false;
+    Preferences p;
+    if(!p.begin("c24_ota",false))return false;
+    // Never acknowledge another firmware version or a volatile-only marker.
+    const bool matching=p.getUInt("good",0)==version &&
+        p.getUInt(kHistoryUpgradeKey,0)==version;
+    const bool acknowledged=matching &&
+        p.putUInt(kHistoryAckKey,version)==sizeof(uint32_t) &&
+        p.getUInt(kHistoryAckKey,0)==version;
+    p.end();
+    if(acknowledged)last_history_ack.store(version);
+    return acknowledged;
 }
 uint32_t cottage_ota_last_candidate(){return last_candidate.load();}
 int cottage_ota_status(){return last_status.load();}
