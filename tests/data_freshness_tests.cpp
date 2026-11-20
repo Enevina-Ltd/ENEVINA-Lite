@@ -24,6 +24,12 @@ static FreshnessInputs healthy() {
 
 // What the controller does with the same facts (mirrors main.cpp's eligibility).
 static BootstrapDecision controller(const FreshnessInputs& in) {
+    if(in.no_heating_requested) {
+        BootstrapDecision d{};
+        d.action=BootstrapAction::Off;
+        d.reason=BootstrapReason::NoHeatingRequested;
+        return d;
+    }
     BootstrapInput b{};
     b.indoor_fresh=in.sensor_fresh;b.indoor_c=20.0;b.desired_room_c=21.0;
     static const double prices[8]={0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1};
@@ -41,9 +47,27 @@ static void agrees_with_controller(const FreshnessInputs& in,ControllerFallback 
     case ControllerFallback::PriceControl:CHECK(d.price_data_valid&&d.action!=BootstrapAction::Unavailable);break;
     case ControllerFallback::Thermostat:CHECK(!d.price_data_valid&&d.action!=BootstrapAction::Unavailable);break;
     case ControllerFallback::Blocked:CHECK(d.action==BootstrapAction::Unavailable);break;
+    case ControllerFallback::NoHeatingRequested:
+        CHECK(d.action==BootstrapAction::Off&&d.reason==BootstrapReason::NoHeatingRequested);break;
     }
 }
 
+static void no_heating_mode_report_is_not_thermostat() {
+    auto in=healthy();
+    in.no_heating_requested=true;
+    CHECK(assess_freshness(in).fallback==ControllerFallback::NoHeatingRequested);
+    agrees_with_controller(in,ControllerFallback::NoHeatingRequested);
+    in.price_decision_valid=false;in.price_current_valid=false;
+    CHECK(assess_freshness(in).fallback==ControllerFallback::NoHeatingRequested);
+    agrees_with_controller(in,ControllerFallback::NoHeatingRequested);
+    // Cold mode remains OFF even without a room sensor; it does not
+    // become an active thermostat simply because prices are missing.
+    in.sensor_fresh=false;
+    CHECK(assess_freshness(in).fallback==ControllerFallback::NoHeatingRequested);
+    agrees_with_controller(in,ControllerFallback::NoHeatingRequested);
+    in.no_heating_requested=false;
+    CHECK(assess_freshness(in).fallback==ControllerFallback::Blocked);
+}
 static void healthy_device() {
     const Freshness f=assess_freshness(healthy());
     CHECK(f.prices.state==SourceState::Ok&&f.weather.state==SourceState::Ok&&f.sensor.state==SourceState::Ok&&f.pump.state==SourceState::Ok);
@@ -180,6 +204,7 @@ static void json_output() {
 }
 
 int main() {
+    no_heating_mode_report_is_not_thermostat();
     healthy_device();
     going_offline_changes_nothing_until_data_expires();
     thirty_six_hour_rule();

@@ -15,6 +15,9 @@ bool cottage_ota_confirmation_pending();
 // True only after durable good-version and pending-transaction cleanup.
 bool cottage_ota_confirm_boot();
 uint32_t cottage_ota_good_version();
+// Last upgrade proven by signed-OTA confirmation, durable NVS marker when
+// available. Zero on factory first boot, unconfirmed image or rollback.
+uint32_t cottage_ota_recorded_upgrade_version();
 uint32_t cottage_ota_last_candidate();
 int cottage_ota_status();
 // Temporary read-only worker pause during eligible signed-image download.

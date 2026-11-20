@@ -560,6 +560,54 @@ static void update_confirmation_events() {
     CHECK(out.find("\"k\":7")!=std::string::npos&&out.find("\"a\":20261119")!=std::string::npos);
 }
 
+static void ota_confirmed_before_first_history_sample_is_recorded() {
+    HistoryStore s;EventLog e;HistoryRecorder rec_;
+    auto in=sample(T0);in.ota_good_version=20261119;
+    in.ota_upgrade_event_version=20261119;
+    rec_.observe(in,s,e);
+    CHECK(e.count()==2);
+    CHECK(e.newest(0).kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed));
+    CHECK(e.newest(0).arg==20261119);
+    rec_.observe(sample(T0+15),s,e);
+    CHECK(e.count()==2);
+    // Persist and reload the history while the signed-OTA NVS hint remains.
+    MemFile records,events;HistoryPersistence p(records,events);
+    CHECK(p.flush(s,e));
+    HistoryStore restored;EventLog old_events;HistoryPersistence pr(records,events);
+    const auto loaded=pr.load(restored,old_events);
+    CHECK(loaded.events==2);
+    HistoryRecorder next_boot;
+    in=sample(T0+900);in.ota_good_version=20261119;
+    in.ota_upgrade_event_version=20261119;
+    next_boot.observe(in,restored,old_events);
+    unsigned confirmations=0;
+    for(size_t i=0;i<old_events.count();++i)
+        confirmations+=old_events.newest(i).kind==
+            static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed);
+    CHECK(confirmations==1); // no duplicate across reboot
+    // If NVS had no prior good release, a first installed version is
+    // NOT an upgrade and has no signed-OTA event hint.
+    HistoryStore fresh;EventLog baseline;HistoryRecorder first;
+    in=sample(T0+10);in.ota_good_version=20261119;
+    in.ota_upgrade_event_version=0;
+    first.observe(in,fresh,baseline);
+    CHECK(baseline.count()==1); // Boot only
+    // A future/stale NVS hint cannot falsely claim a rollback was success.
+    HistoryStore rolled;EventLog rb;HistoryRecorder rr;
+    in=sample(T0+10);in.ota_good_version=20261101;
+    in.ota_upgrade_event_version=20261119;
+    rr.observe(in,rolled,rb);
+    CHECK(rb.count()==1);
+    // No trusted time until after successful OTA: defer, then log exactly once.
+    HistoryStore s3;EventLog ev3;HistoryRecorder r3;
+    in=sample(T0);in.clock_trusted=false;in.utc=0;
+    in.ota_good_version=20261119;in.ota_upgrade_event_version=20261119;
+    r3.observe(in,s3,ev3);
+    CHECK(ev3.count()==0);
+    in.clock_trusted=true;in.utc=T0+900;
+    r3.observe(in,s3,ev3);
+    CHECK(ev3.count()==2&&ev3.newest(0).arg==20261119);
+}
 static HistoryInputs meter_reading(int64_t t,double w,uint8_t scope) {
     auto in=sample(t);in.power_valid=true;in.power_w=w;in.power_scope=scope;return in;
 }
@@ -719,6 +767,7 @@ int main() {
     bounded_file_growth_and_compaction();
     update_before_clock_sync();
     update_confirmation_events();
+    ota_confirmed_before_first_history_sample_is_recorded();
     if(failures) {std::fprintf(stderr,"%d failures\n",failures);return 1;}
     std::puts("history_tests OK");
     return 0;

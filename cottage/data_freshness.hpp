@@ -42,13 +42,15 @@ inline const char* source_state_name(SourceState s) {
 enum class ControllerFallback : uint8_t {
     PriceControl=0,   // fresh prices + fresh room sensor
     Thermostat=1,     // room sensor fresh, prices unusable
-    Blocked=2         // no fresh room measurement: no proposal
+    Blocked=2,        // no fresh room measurement: no proposal
+    NoHeatingRequested=3 // Cold mode or Drying humidity gate prohibits heat
 };
 inline const char* fallback_name(ControllerFallback f) {
     switch(f) {
     case ControllerFallback::PriceControl:return "price_control";
     case ControllerFallback::Thermostat:return "thermostat";
     case ControllerFallback::Blocked:return "blocked";
+    case ControllerFallback::NoHeatingRequested:return "no_heating_requested";
     }
     return "blocked";
 }
@@ -63,6 +65,7 @@ struct FreshnessInputs {
     bool price_zone_configured=false;
     bool price_current_valid=false;
     bool price_decision_valid=false; // ACTUAL bootstrap decision validated tariff and 8-slot totals
+    bool no_heating_requested=false; // ACTUAL bootstrap Off/NoHeatingRequested action
     int64_t price_last_fetch=0,price_valid_until=0;
     uint8_t price_error=0;
     // weather forecast
@@ -132,7 +135,8 @@ inline Freshness assess_freshness(const FreshnessInputs& in) {
     u.state=!in.pump_configured?SourceState::NotConfigured:in.pump_fresh?SourceState::Ok:SourceState::Stale;
     // ---- what the controller does (same conditions as main.cpp) ----
     const bool prices_usable=p.state==SourceState::Ok && in.price_decision_valid;
-    if(s.state!=SourceState::Ok) f.fallback=ControllerFallback::Blocked;
+    if(in.no_heating_requested) f.fallback=ControllerFallback::NoHeatingRequested;
+    else if(s.state!=SourceState::Ok) f.fallback=ControllerFallback::Blocked;
     else if(prices_usable) f.fallback=ControllerFallback::PriceControl;
     else f.fallback=ControllerFallback::Thermostat;
     f.last_contact_utc=std::max(in.price_last_fetch,in.weather_fetched);

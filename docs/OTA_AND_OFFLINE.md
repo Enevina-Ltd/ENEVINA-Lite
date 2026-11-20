@@ -89,3 +89,32 @@ HTTP GET/readback cannot send commands. Conversely, a fresh telemetry snapshot
 never proves that commands are authorized: disabled, no-proposal and unverified
 gates are explained as *suggestion only*. Neither report changes or bypasses
 the existing controller safety decisions.
+
+
+## Independently verified review fixes (20 November 2026)
+
+The actual bootstrap action now distinguishes intentionally disabled heating
+from ordinary price-outage thermostat fallback. User-selected Cold mode and
+Drying with a blocking humidity gate report
+no_heating_requested, even if the room sensor and prices are stale. This is
+only the controller proposal, not proof that a real pump has stopped.
+A normal Hold/Occupied price outage still reports thermostat.
+
+The confirmed OTA upgrade history no longer depends solely on observing
+the old good version in RAM before the new one. Signed-OTA confirmation
+provides the proven new version to the history worker. After a successful
+good-version NVS commit, the OTA service best-effort stores hist_upg in the
+same c24_ota namespace. A fresh HistoryRecorder can then report the event
+on its FIRST trusted observation, including if NTP synchronized only after
+OTA confirmation. Repeated boots do not re-log the same event when it is
+already present in the persisted LittleFS event log; rollback or factory
+first installation is never mistaken for an upgrade.
+
+This optional history hint is written AFTER, not before, successful
+confirmation so a nearly-full NVS cannot prevent confirming a healthy OTA
+image. If power is lost in the extremely short window after confirmation
+but before the hint is persisted (or the optional hint NVS write fails),
+the last-update event may still be unavailable after reboot, though OTA
+confirmation itself remains valid. Hardware fault injection is still
+required before claiming that window closed. No physical pump/OTA test
+was performed for this work.

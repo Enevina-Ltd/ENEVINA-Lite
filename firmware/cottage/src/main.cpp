@@ -1736,6 +1736,7 @@ static enevina::cottage::HistoryInputs history_collect() {
     in.commands_failed=control_commands_failed.load();
     in.reset_reason=boot_reset_reason_code;
     in.ota_good_version=cottage_ota_good_version();
+    in.ota_upgrade_event_version=cottage_ota_recorded_upgrade_version();
     return in;
 }
 // GET /api/freshness: which data the device is using, how old it is, when it
@@ -1754,7 +1755,11 @@ static void freshness_endpoint() {
     // Reuse the live controller's validated total-price path, not spot-only
     // metadata. This checks the confirmed tariff, contiguous 8 slots and
     // actual proposal mode; never claim price control if bootstrap falls back.
-    in.price_decision_valid=bootstrap_preview(now,c23_temperature_sample()).price_data_valid;
+    const TemperatureSample te=c23_temperature_sample();
+    const BootstrapDecision actual=bootstrap_preview(now,te);
+    in.price_decision_valid=actual.price_data_valid;
+    in.no_heating_requested=actual.action==BootstrapAction::Off &&
+        actual.reason==BootstrapReason::NoHeatingRequested;
     in.price_last_fetch=market.last_fetch_utc;in.price_valid_until=market.valid_until_utc;
     in.price_error=market.last_error;
     const auto ws=enevina_firmware::weather_status();
@@ -1765,7 +1770,6 @@ static void freshness_endpoint() {
     xSemaphoreTake(lock_data,portMAX_DELAY);
     cp=pump;observed=sse_observed_pump;climate_time=climate_utc;
     xSemaphoreGive(lock_data);
-    const TemperatureSample te=c23_temperature_sample();
     in.sensor_bound=c23_indoor_bound();
     in.sensor_fresh=valid_temperature(te,now);
     in.sensor_age_s=te.received&&now>=te.captured_utc?now-te.captured_utc:-1;

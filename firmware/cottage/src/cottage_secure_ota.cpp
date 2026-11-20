@@ -42,6 +42,8 @@ namespace {
 constexpr const char* magic="ENEVINA_C24_OTA_V1\nmodel=esp32s3-n16r8\n";
 constexpr uint32_t max_image_size=0x640000u;
 std::atomic<uint32_t> last_good{0}, last_candidate{0};
+std::atomic<uint32_t> last_history_upgrade{0};
+constexpr char kHistoryUpgradeKey[]="hist_upg";
 std::atomic<int> last_status{0}; // 0 idle; 1 disabled; 2 transient; 3 refused; 4 rejected; 5 downloading; 6 rebooting
 std::atomic<bool> pause_readers{false};
 std::atomic<uint32_t> ota_written_bytes{0};
@@ -339,6 +341,11 @@ void cottage_ota_initialize() {
     }
     const uint32_t good=p.getUInt("good",0);
     last_good.store(good);
+    // Unlike the volatile HistoryRecorder baseline, this record survives
+    // reboot after confirmation. It never proves success by itself: the
+    // signed-OTA good version must already have been durably confirmed.
+    const uint32_t marker=p.getUInt(kHistoryUpgradeKey,0);
+    last_history_upgrade.store(marker>0 && marker==good?marker:0);
     const uint32_t legacy=p.getUInt("pending",0);
     ota::Transaction tx{};
     bool has_tx=read_transaction(p,tx);
@@ -431,11 +438,26 @@ bool cottage_ota_confirm_boot() {
     if(success) {
         last_good.store(std::max(good,tx.version));
         confirmation_pending.store(false);
+        if(good>0 && tx.version>good) {
+            // Persist an optional history hint AFTER durable OTA confirmation;
+            // a full NVS partition must never prevent confirming a healthy
+            // image just because the history card could not be updated.
+            const bool recorded=p.putUInt(kHistoryUpgradeKey,tx.version)==
+                    sizeof(uint32_t) &&
+                p.getUInt(kHistoryUpgradeKey,0)==tx.version;
+            last_history_upgrade.store(tx.version); // in-boot fallback
+            if(!recorded)
+                Serial.println("C24_OTA_HISTORY: event hint volatile only");
+        }
     }
     p.end();
     return success;
 }
 uint32_t cottage_ota_good_version(){return last_good.load();}
+uint32_t cottage_ota_recorded_upgrade_version(){
+    const auto good=last_good.load(),marker=last_history_upgrade.load();
+    return marker>0&&marker==good?marker:0;
+}
 uint32_t cottage_ota_last_candidate(){return last_candidate.load();}
 int cottage_ota_status(){return last_status.load();}
 bool cottage_ota_network_maintenance(){return pause_readers.load();}

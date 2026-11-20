@@ -191,6 +191,7 @@ struct HistoryInputs {
     uint32_t commands_sent=0,commands_confirmed=0,commands_failed=0;   // monotone counters
     int reset_reason=0;
     uint32_t ota_good_version=0;   // last version the signed OTA confirmed good (0 = unknown)
+    uint32_t ota_upgrade_event_version=0; // signed OTA proof, not just a new observed number
 };
 
 class HistoryRecorder {
@@ -200,7 +201,7 @@ public:
     bool observe(const HistoryInputs& in,HistoryStore& store,EventLog& events) {
         // OTA boot confirmation may precede NTP. Remember the previously
         // observed confirmed version even while event timestamps are unknown.
-        track_ota_version(in.ota_good_version);
+        track_ota_version(in.ota_good_version,in.ota_upgrade_event_version,events);
         if(!in.clock_trusted||in.utc<=1700000000) return false;
         const uint32_t now_slot=static_cast<uint32_t>(in.utc/kHistoryStepS);
         bool finalized=false;
@@ -258,10 +259,28 @@ private:
     uint32_t ota_good_=0,ota_pending_version_=0;
     Track tracks_[5];
 
-    void track_ota_version(uint32_t version) {
-        if(version==0) return; // OTA store not loaded yet, not a transition
-        if(ota_good_!=0 && version>ota_good_) ota_pending_version_=version;
-        else if(ota_good_!=0 && version<ota_good_) ota_pending_version_=0; // rollback, not success
+    void track_ota_version(uint32_t version,uint32_t confirmed_upgrade,
+                           const EventLog& events) {
+        if(version==0)return; // OTA store has not loaded
+        // A confirmed upgrade can already be the FIRST version observed by
+        // this in-memory recorder after boot. The persisted signed-OTA hint
+        // proves it was a transition, not just a factory first boot. Dedup
+        // against existing flash history on reboot while the hint remains.
+        const bool explicitly_confirmed=confirmed_upgrade!=0 &&
+            confirmed_upgrade==version;
+        const bool observed_transition=ota_good_!=0 && version>ota_good_;
+        bool already_logged=false;
+        for(size_t i=0;i<events.count();++i) {
+            const auto& e=events.newest(i);
+            if(e.kind==static_cast<uint8_t>(HistoryEventKind::UpdateConfirmed) &&
+               e.arg==version) {already_logged=true;break;}
+        }
+        if((explicitly_confirmed||observed_transition)&&!already_logged)
+            ota_pending_version_=version;
+        else if(already_logged && ota_pending_version_==version)
+            ota_pending_version_=0;
+        if(ota_good_!=0 && version<ota_good_)
+            ota_pending_version_=0; // rollback, not success
         ota_good_=version;
     }
 

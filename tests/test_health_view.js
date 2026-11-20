@@ -75,6 +75,9 @@ const gateBlocked=A.frOverall(report({control_armed:true,control_gate:'INPUTS_UN
 assert(gateBlocked.headline.includes('Vain lämmitysehdotus'));
 assert(gateBlocked.detail.includes('Ohjausportti ei tällä hetkellä salli'));
 assert(A.frOverall(report({control_armed:true,control_gate:'NO_PROPOSAL'}),fmt).headline.includes('Vain lämmitysehdotus'));
+assert(A.frOverall(report({fallback:'no_heating_requested'}),fmt).headline.includes('Lämmitystä ei pyydetä'));
+assert(A.frOverall(report({fallback:'no_heating_requested',sources:[
+  src_('prices','missing'),src_('weather','missing'),src_('sensor','stale'),src_('pump','stale')]}),fmt).kind==='warn');
 assert(A.frOverall(report({control_armed:true,control_gate:'MODE_DWELL'}),fmt).kind==='warn');
 assert(A.frOverall(report({control_armed:true,control_gate:'MODE_DWELL'}),fmt).detail.includes('vähimmäiskestoa'));
 o=A.frOverall(report({offline:true,wifi_ok:false}),fmt);
