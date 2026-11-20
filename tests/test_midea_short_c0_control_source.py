@@ -1,4 +1,4 @@
-"""A short Midea C0 must support the explicit setpoint pilot."""
+"""Unknown short C0 bits must never be silently cleared on a full-state write."""
 from pathlib import Path
 import unittest
 ROOT=Path(__file__).resolve().parents[1]
@@ -6,16 +6,13 @@ PROTO=(ROOT/"pump/midea_v3_protocol.cpp").read_text()
 TCP=(ROOT/"firmware/cottage/src/cottage_midea.cpp").read_text()
 SERVICE=(ROOT/"firmware/cottage/src/cottage_midea_service.cpp").read_text()
 class ShortC0ControlTests(unittest.TestCase):
- def test_readback_retained_and_short_state_not_globally_rejected(self):
+ def test_short_state_blocks_full_state_write_and_unproven_readback(self):
   setter=PROTO.split("bool set_state_command(",1)[1].split("bool control_patch_observed(",1)[0]
   readback=PROTO.split("bool preserved_state_observed(",1)[1].split("bool inner_encode(",1)[0]
-  self.assertNotIn("!existing.freeze_protection_known)return false",setter)
-  self.assertIn("patch.changed!=ControlTemperature",setter)
-  self.assertIn("existing.setpoint_c<16.0",setter)
-  self.assertIn("patch.setpoint_c<16.0",setter)
-  self.assertIn("existing.freeze_protection",setter)
+  self.assertIn("!existing.freeze_protection_known)return false",setter)
+  self.assertNotIn("patch.changed!=ControlTemperature",setter)
   self.assertIn("existing.freeze_protection?0x80:0",setter)
-  self.assertIn("before.freeze_protection_known && after.freeze_protection_known",readback)
+  self.assertIn("!before.freeze_protection_known || !after.freeze_protection_known",readback)
   self.assertIn("before.power!=after.power",readback)
   self.assertIn("before.mode!=after.mode",readback)
   self.assertIn("before.independent_aux_heat!=after.independent_aux_heat",readback)
