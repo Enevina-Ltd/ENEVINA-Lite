@@ -113,19 +113,33 @@ corrupt/truncated records, v4 edits after probation rollback, and NVS read
 failures. These are **host simulations**; a physical v4→v5 OTA, power-cut and
 rollback sequence remains to be verified on the ESP32-S3.
 
-## Comfort wizard: power-loss recovery for site and air NVS (v4)
 
-When Comfort changes optimization limits and the Hold/Occupied target, the first
-site POST writes one durable, versioned site/comfort_txn intent before writing
-the new site profile and bounds. /api/air/config removes the intent only
-after verifying the target and site data. The firmware retains the existing
-v4 settings layout, with no new passwords or pump commands.
+## Comfort wizard: crash-safe two-stage journal
 
-After a reset before site commit, the old site and target remain authoritative
-and the intent is discarded. After site commit but before air commit,
-c23_initialize resumes the target write and verifies all four mode NVS keys
-before removing the marker. The case after both commits is idempotent.
-Unreadable journals, mismatched modes and failed NVS recovery fail closed
-to block physical commands rather than using inconsistent settings.
-Host tests cover transaction states, wizard parameters and firmware ordering.
-Physical NVS reset/fault injection remains a separate release criterion.
+When the wizard changes Hold/Occupied target and profile/bounds, the first
+HTTP POST writes site/comfort_txn as a durable PREPARED record including
+the previous site profile, limits, setup step and previous mode target.
+It saves and reads back the new site record, then rewrites the same journal
+atomically as SITE_COMMITTED before returning success. The subsequent air
+POST persists the mode target and verifies all four air mode NVS keys before
+clearing the journal.
+
+On reboot with PREPARED, a verified old air configuration allows the old site
+profile/bounds to be restored and checked against NVS; no new target is
+replayed. With SITE_COMMITTED and matching site+mode, the desired air target
+is completed and verified. A mismatching mode or a failed air save triggers
+verified rollback to the previous site band when safe; partial/unreadable NVS
+remains blocked, never falsely reported as a successful recovery. Repeating
+the same committed site step is idempotent; a different target first rolls
+back a verified old in-flight journal. The wizard can retry after a dropped
+HTTP response without guessing a half-write was successful.
+
+Hard comfort limits are checked against the selected Hold/Occupied target
+in both site and air POST handlers and in the controller before a proposal.
+For example a 19 C owner minimum with a 12 C Hold target is rejected rather
+than silently dropped. No new passwords, physical pump writes or automatic
+restarts are introduced. Site v4 layout remains unchanged; journal version 2.
+
+Host tests cover phase transitions, target-only unchanged-site ambiguity,
+hard lower/upper limits, retries, and source ordering. Real power-cut
+injection against ESP32-S3 NVS is a separate release criterion.
