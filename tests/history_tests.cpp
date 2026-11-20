@@ -262,7 +262,8 @@ static void events_debounce_and_commands() {
           ev.newest(1).source==static_cast<uint8_t>(HistorySource::Pump));
     CHECK(std::llabs(static_cast<int64_t>(ev.newest(1).utc)-(lost_at+10))<=20);
     CHECK(ev.newest(0).kind==static_cast<uint8_t>(HistoryEventKind::SourceBack)&&
-          ev.newest(0).value>=380&&ev.newest(0).value<=460);
+          ev.newest(0).utc==static_cast<uint32_t>(lost_at+400)&&
+          ev.newest(0).value==400); // do not add recovery debounce duration
     // commands: counter deltas become events; a counter that resets (reboot) does not
     in=sample(t+10);in.commands_sent=2;in.commands_confirmed=1;rec_.observe(in,store,ev);
     CHECK(ev.count()==5&&ev.newest(1).kind==static_cast<uint8_t>(HistoryEventKind::CommandSent)&&ev.newest(1).value==2);

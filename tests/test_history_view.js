@@ -3,6 +3,13 @@
 "use strict";
 const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict'),path=require('path');
 const header=fs.readFileSync(path.join(__dirname,'../firmware/cottage/include/cottage_premium_dashboard.hpp'),'utf8');
+// Initial deep-link to #history must issue a valid 24h request immediately.
+const initialRange=header.indexOf("state.histRange='24h';");
+const initialRoute=header.indexOf("switchView(location.hash.slice(1)||'home');");
+assert(initialRange>=0&&initialRoute>initialRange,
+  'history range must be initialized before the first #history route');
+assert.equal(header.match(/state\.histRange='24h';/g)?.length,1,
+  'do not reset the range after navigation');
 const m=/<script id="history-script">([\s\S]*?)<\/script>/.exec(header);
 assert(m,'history script block missing');
 const src=m[1];

@@ -342,7 +342,9 @@ private:
                             static_cast<uint8_t>(src),0});
                 t.lost_reported=true;t.lost_at=t.since;
             } else {
-                const int64_t down=in.utc-(t.lost_reported?t.lost_at:t.since);
+                // Confirm recovery after debounce, but measure downtime through
+                // the FIRST healthy observation, not the later debounce tick.
+                const int64_t down=t.since-(t.lost_reported?t.lost_at:t.since);
                 events.put({static_cast<uint32_t>(t.since),static_cast<uint8_t>(HistoryEventKind::SourceBack),
                             static_cast<uint8_t>(src),static_cast<int16_t>(std::min<int64_t>(down,32000))});
                 t.lost_reported=false;

@@ -1736,6 +1736,8 @@ document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',(
 window.addEventListener('hashchange',()=>switchView(location.hash.slice(1)));
 $('go-prices').addEventListener('click',()=>switchView('prices'));
 $('go-weather').addEventListener('click',()=>switchView('weather'));
+// Initialize the active history range BEFORE the initial hash route can load it.
+state.histRange='24h';
 switchView(location.hash.slice(1)||'home');
 function drawBars(target,items){
   const box=$(target);box.replaceChildren();
@@ -2090,7 +2092,6 @@ function showTimeline(){
   else chip.append(span('Rajoja ei ole asetettu (tavoite ±0,5 °C)'));
 }
 
-state.histRange='24h';
 async function reloadHistoryView(){
   try{state.hist=await fetchJSON('/api/history?range='+state.histRange);}catch(e){state.hist=null;}
   showHistoryView();
