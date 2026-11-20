@@ -13,6 +13,7 @@ MARKET = (ROOT / "firmware/main/market.cpp").read_text(encoding="utf-8")
 SITE = (ROOT / "firmware/cottage/src/cottage_site_settings.cpp").read_text(encoding="utf-8")
 GEO = (ROOT / "firmware/cottage/src/cottage_geocode.cpp").read_text(encoding="utf-8")
 ROOTS = (ROOT / "firmware/main/tls_roots.hpp").read_text(encoding="utf-8")
+ROLLBACK_POLICY = (ROOT / "cottage/site_rollback_policy.hpp").read_text(encoding="utf-8")
 
 
 class RegionalWiring(unittest.TestCase):
@@ -28,7 +29,9 @@ class RegionalWiring(unittest.TestCase):
         self.assertIn("xTaskNotifyGive(reader_task)", MARKET)
         self.assertIn("ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(next_ms))", MARKET)
         self.assertIn("price_limit_scale=currency_limit_scale(market.currency)", (ROOT / "firmware/cottage/src/main.cpp").read_text())
-        self.assertIn("priced_model.currency_limit_scale=currency_limit_scale(ms.currency)", (ROOT / "firmware/cottage/src/main.cpp").read_text())
+        # The live MPC planner receives the market currency scale (the model's
+        # Parameters are built from it in BuildingIdentifier::build_parameters).
+        self.assertIn("pi.currency_scale=currency_limit_scale(ms.currency)", (ROOT / "firmware/cottage/src/main.cpp").read_text())
 
     def test_region_change_invalidates_cache_and_inflight_fetch(self):
         self.assertIn("++region_generation", MARKET)
@@ -66,6 +69,9 @@ class RegionalWiring(unittest.TestCase):
         self.assertIn('site_old_keys_reclaimable(',SITE)
         self.assertIn('state==ESP_OTA_IMG_VALID',SITE)
         self.assertIn('cottage_ota_confirmation_pending()',SITE)
+        self.assertIn('cottage_ota_runtime_ready()',SITE)
+        self.assertIn('running_image_valid && ota_service_initialized &&',ROLLBACK_POLICY)
+        self.assertIn('!ota_confirmation_pending',ROLLBACK_POLICY)
         self.assertLess(SITE.index('p.putBytes("v5"'),SITE.index('p.remove("v1")'))
         self.assertIn('if(p.isKey("v4")) p.remove("v4")',SITE)
         self.assertIn('if(p.isKey("v3")) p.remove("v3")',SITE)
@@ -213,6 +219,12 @@ class HistoryWiring(unittest.TestCase):
         self.assertIn("in.outdoor_is_forecast=false", body)
         self.assertIn("sse_fresh", body)
         self.assertIn("in.clock_trusted=clock_ok()", body)
+        # The history proposal must agree with the physical command's
+        # arbitration (MPC > price > thermostat), not show fallback prices
+        # when an active MPC plan chose the opposite action.
+        self.assertIn("const BootstrapDecision d=active_control_proposal(now,te);", body)
+        self.assertNotIn("bootstrap_preview(now,te)", body.split("static void freshness_endpoint()",1)[0])
+        self.assertIn("d.action==BootstrapAction::HeatSetpoint?2", body)
 
     def test_setpoint_comes_from_the_verified_snapshot_and_scope_is_recorded(self):
         # Codex P2/P1 (#60): sse_observed_pump is never marked received, so the

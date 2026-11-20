@@ -21,7 +21,15 @@ class ShadowSurfaceTests(unittest.TestCase):
         self.assertIn('web.on("/api/control/arm",HTTP_POST',self.main)
         self.assertIn('c23_authorize_local_setting(web.arg("token").c_str())',self.main)
         self.assertIn('control_armed.store(false)',self.main)
-        self.assertIn('if(prefs.getBool("armed",false))prefs.putBool("armed",false)',self.main)
+        # Old always-disarm assertion predates the signed-image-bound intent
+        # record. A same-image reboot may restore the owner choice, but an OTA
+        # image change or mismatching pump identity must fail closed.
+        reg=self.main.split('static void cottage_control_registration() {',1)[1].split(
+            'web.on("/api/control/arm"',1)[0]
+        self.assertIn('control_armed.store(false)',reg)
+        self.assertIn('valid_image && !activating_ota',reg)
+        self.assertIn('control_intent_restorable(saved,site_settings_snapshot()',reg)
+        self.assertIn('control_armed.store(restore && !must_revoke)',reg)
         self.assertIn('mode.mode==CottageMode::Drying',self.main)
         self.assertIn('valid_temperature(sample,now)',self.main)
         self.assertIn('control_last_bridge_read_utc',self.main)
@@ -39,10 +47,17 @@ class ShadowSurfaceTests(unittest.TestCase):
         self.assertIn("HTTPC_DISABLE_FOLLOW_REDIRECTS", self.main)
 
     def test_no_production_calibration_bypass(self):
+        # The synthetic bench model stays off and never reaches control. The
+        # only MPC proposal path is a plan from the measured-data identifier
+        # whose calibration state is CALIBRATED (walk-forward validated).
         self.assertRegex(self.config, r"#define COTTAGE_SYNTHETIC_TEST_MODEL 0")
-        # the guard is still the compile-time flag; the model variable was renamed to
-        # priced_model when regional tariffs were added
-        self.assertIn("COTTAGE_SYNTHETIC_TEST_MODEL && valid(priced_model)", self.main)
+        self.assertIn("in.calibrated=calibration_snapshot.state==CalibrationState::Calibrated;", self.main)
+        self.assertIn("const PlannerOutput po=plan_mpc(pi,rows);", self.main)
+        self.assertIn("pi.identifier=id;", self.main)
+        worker = self.main.split("static void optimizer_worker(void*) {", 1)[1].split(
+            "static void status_endpoint()", 1)[0]
+        self.assertNotIn("optimize(priced_model", worker)
+        self.assertNotIn("setup_model", worker)
 
     def test_n16r8_psram_is_initialized_and_checked(self):
         pio=(ROOT / "firmware/cottage/platformio.ini").read_text(encoding="utf8")

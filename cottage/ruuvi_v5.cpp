@@ -113,12 +113,7 @@ RuuviAccept RuuviBinding::accept(const RuuviV5& sample,uint64_t ms) {
         } else {
             restart_candidate_=false;
         }
-        if(elapsed_ms<300000 &&
-           std::fabs(sample.temperature_c-latest_.temperature_c)>5)
-            return RuuviAccept::Implausible;
-        if(elapsed_ms<60000 &&
-           std::fabs(sample.relative_humidity_pct-
-                     latest_.relative_humidity_pct)>20)
+        if(!ruuvi_plausible_progress(latest_,sample,elapsed_ms))
             return RuuviAccept::Implausible;
     }
     latest_=sample;accepted_ms_=ms;has_sample_=true;

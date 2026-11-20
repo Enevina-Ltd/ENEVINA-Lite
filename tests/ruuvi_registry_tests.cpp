@@ -85,6 +85,40 @@ static void replayed_frames_are_heard_but_not_measurements() {
     n=r.snapshot(stale+3001,out,8);CHECK(out[0].measured.sequence==8&&out[0].measured_ms==stale+3000);
 }
 
+static void advancing_but_implausible_frames_do_not_refresh_measurements() {
+    RuuviRegistry registry;
+    RuuviBinding binding;
+    RuuviV5 first=sensor(0x01,-65,20.0,50.0);
+    first.sequence=100;
+    binding.bind(first.mac);
+    CHECK(registry.observe(first,1000));
+    CHECK(binding.accept(first,1000)==RuuviAccept::Accepted);
+    RuuviV5 bad_temp=first;
+    bad_temp.sequence=101;
+    bad_temp.temperature_c=30.0; // +10 C in 9 seconds: implausible
+    CHECK(registry.observe(bad_temp,10000));
+    CHECK(binding.accept(bad_temp,10000)==RuuviAccept::Implausible);
+    RuuviV5 bad_humidity=first;
+    bad_humidity.sequence=102;
+    bad_humidity.relative_humidity_pct=75.0; // +25% RH in <60 s
+    CHECK(registry.observe(bad_humidity,30000));
+    CHECK(binding.accept(bad_humidity,30000)==RuuviAccept::Implausible);
+    RuuviSeen out[8]{};
+    CHECK(registry.snapshot(35000,out,8)==1);
+    CHECK(out[0].last_ms==30000 && out[0].latest.sequence==102);
+    CHECK(out[0].measured_ms==1000 && out[0].measured.sequence==100);
+    CHECK(out[0].measured.temperature_c==20.0 && out[0].measured.relative_humidity_pct==50.0);
+    // After 2 minutes, replayed/rejected frames do not keep "live" status.
+    CHECK(registry.snapshot(125000,out,8)==1);
+    CHECK(125000-out[0].measured_ms>kRuuviFreshMs);
+    RuuviV5 good=first;
+    good.sequence=103;good.temperature_c=21.0;good.relative_humidity_pct=51.0;
+    CHECK(registry.observe(good,126000));
+    CHECK(binding.accept(good,126000)==RuuviAccept::Accepted);
+    CHECK(registry.snapshot(127000,out,8)==1);
+    CHECK(out[0].measured.sequence==103 && out[0].measured_ms==126000);
+}
+
 static void registry_evicts_the_stalest_not_the_freshest() {
     RuuviRegistry r;
     for(uint8_t i=1;i<=8;++i) CHECK(r.observe(sensor(i,-60),static_cast<uint64_t>(i)*1000));
@@ -169,6 +203,7 @@ static void names_table_is_bounded_and_load_is_strict() {
 int main() {
     registry_lists_and_ages();
     replayed_frames_are_heard_but_not_measurements();
+    advancing_but_implausible_frames_do_not_refresh_measurements();
     registry_evicts_the_stalest_not_the_freshest();
     registry_rejects_implausible_values();
     names_are_validated_labels();

@@ -458,21 +458,26 @@ bool cottage_ota_confirm_boot() {
     }
     const uint32_t good=p.getUInt("good",0);
     NvsConfirm store{p};
-    const bool success=ota::confirm_persistence(store,tx,good);
+    const auto record_confirmed_version=[&](uint32_t version) {
+        // The callback runs AFTER good is durable but BEFORE txv2 cleanup.
+        // On a reboot good can already equal tx.version after an interrupted
+        // confirmation. Retrying the same idempotent hint recovers that case.
+        // The rollback-verified transaction and running image identity were
+        // checked above; only a good-version match can create history intent.
+        if(p.getUInt("good",0)!=version)return;
+        const bool recorded=p.getUInt(kHistoryUpgradeKey,0)==version ||
+            (p.putUInt(kHistoryUpgradeKey,version)==sizeof(uint32_t) &&
+             p.getUInt(kHistoryUpgradeKey,0)==version);
+        last_history_upgrade.store(version); // same-boot fallback on NVS failure
+        if(!recorded)
+            Serial.println("C24_OTA_HISTORY: event hint volatile only");
+    };
+    // History writes are explicitly non-gating; the OTA version/transaction
+    // durable sequence is still controlled only by confirm_persistence().
+    const bool success=ota::confirm_persistence(store,tx,good,record_confirmed_version);
     if(success) {
         last_good.store(std::max(good,tx.version));
         confirmation_pending.store(false);
-        if(good>0 && tx.version>good) {
-            // Persist an optional history hint AFTER durable OTA confirmation;
-            // a full NVS partition must never prevent confirming a healthy
-            // image just because the history card could not be updated.
-            const bool recorded=p.putUInt(kHistoryUpgradeKey,tx.version)==
-                    sizeof(uint32_t) &&
-                p.getUInt(kHistoryUpgradeKey,0)==tx.version;
-            last_history_upgrade.store(tx.version); // in-boot fallback
-            if(!recorded)
-                Serial.println("C24_OTA_HISTORY: event hint volatile only");
-        }
     }
     p.end();
     return success;

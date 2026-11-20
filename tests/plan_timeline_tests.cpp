@@ -146,6 +146,7 @@ static void json_is_valid_and_honest() {
     CHECK(timeline_setup(OptimizationProfile::Saving,21,19,23,0.10,params,meta));
     CHECK(std::fabs(meta.preheat_c-0.8*(22.25-21))<1e-9&&std::fabs(meta.coast_c-0.8*(21-19.75))<1e-9);   // same call as the controller
     meta.currency="SEK";meta.area="SE3";meta.decision_action="HEAT_SETPOINT";meta.decision_reason="LOW_COST_WINDOW";
+    meta.decision_source="MPC";
     meta.decision_setpoint_c=22.5;meta.decision_price_valid=true;
     Timeline t;
     CHECK(build_timeline(utc.data()+40,total.data()+40,192,params,t));
@@ -163,6 +164,9 @@ static void json_is_valid_and_honest() {
     CHECK(drying.find("\"target_c\":21.0")!=std::string::npos);
     meta.heating_permitted=true;
     CHECK(j.find("\"currency\":\"SEK\"")!=std::string::npos&&j.find("\"setpoint_c\":22.5")!=std::string::npos);
+    CHECK(j.find("\"source\":\"MPC\"")!=std::string::npos);
+    meta.decision_source="PRICE_CONTROL";
+    CHECK(json_of(meta,t).find("\"source\":\"PRICE_CONTROL\"")!=std::string::npos);
     // there is NO predicted indoor temperature or cost in the document
     for(const char* forbidden:{"\"indoor_c\":","\"predicted\"","\"cost\"","\"savings\""}) CHECK(j.find(forbidden)==std::string::npos);
     // 192 slots: output stays small enough to stream

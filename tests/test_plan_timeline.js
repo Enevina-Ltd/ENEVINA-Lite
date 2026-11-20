@@ -21,7 +21,7 @@ assert(card.includes('ei käytä sitä päätöksessään'),'outdoor-not-used no
 
 const ctx={document:{},state:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={tlValidate,tlLayout,tlSlotIndex,tlOutdoorAt,tlOutdoorRuns,tlControlText,tlNowText,tlSegmentText,tlTicks,tlDeg};',ctx);
+vm.runInContext(src+';this.api={tlValidate,tlLayout,tlSlotIndex,tlOutdoorAt,tlOutdoorRuns,tlControlText,tlNowText,tlSegmentText,tlTicks,tlDeg,tlMarketKey,tlMatchesMarket};',ctx);
 const A=ctx.api;
 
 const slot=(i,total,cls='neutral')=>({utc:1794999600+i*900,total,class:cls,median:0.2});
@@ -33,6 +33,20 @@ for(const bad of [null,{},{valid:false,slots:good.slots,segments:[]},{valid:true
     {valid:true,slots:[slot(0,0.1),{...slot(1,0.2),class:5}],segments:[]},
     {valid:true,slots:good.slots}])
   assert.equal(A.tlValidate(bad),null,JSON.stringify(bad).slice(0,60));
+
+// Market identity includes the area, not only currency. FI and EE share EUR.
+const regionFI={price_region_resolved:true,nordpool_area:'FI',currency:'EUR'};
+const regionEE={price_region_resolved:true,nordpool_area:'EE',currency:'EUR'};
+const regionSE={price_region_resolved:true,nordpool_area:'SE3',currency:'SEK'};
+assert.equal(A.tlMarketKey(regionFI),'FI|EUR');
+assert.equal(A.tlMarketKey(regionEE),'EE|EUR');
+assert.equal(A.tlMarketKey(regionSE),'SE3|SEK');
+assert.equal(A.tlMarketKey({price_region_resolved:false,nordpool_area:'FI',currency:'EUR'}),null);
+assert(A.tlMatchesMarket({...good,area:'FI',currency:'EUR'},regionFI));
+assert(!A.tlMatchesMarket({...good,area:'FI',currency:'EUR'},regionEE));
+assert(!A.tlMatchesMarket({...good,area:'FI',currency:'EUR'},regionSE));
+assert(!A.tlMatchesMarket({...good,area:'SE3',currency:'EUR'},regionSE));
+assert(!A.tlMatchesMarket({...good,area:'FI',currency:'EUR'},null));
 
 // layout: bars within the plot, baseline at zero, negative prices handled
 const L=A.tlLayout(good.slots,720,270,{left:46,right:42,top:16,bottom:46});
@@ -109,6 +123,12 @@ assert.equal(A.tlNowText({action:'HEAT_SETPOINT',setpoint_c:22.5,reason:'LOW_COS
 assert.equal(A.tlNowText({action:'OFF',setpoint_c:null,reason:'HIGH_COST_WINDOW'}),'Ehdotus: lämmitys pois — sähkö on nyt kallista');
 assert.equal(A.tlNowText({action:'WAT',reason:'???'}),'Ei päätöstä — syy ei tiedossa');
 assert.equal(A.tlNowText(null),'Ei päätöstä');
+assert.equal(A.tlNowText({action:'HEAT_SETPOINT',setpoint_c:16,reason:'BELOW_ROOM_TARGET',source:'MPC'}),
+  'MPC-ohjaus: Ehdotus: lämmitys 16,0 °C');
+assert.equal(A.tlNowText({action:'OFF',setpoint_c:null,reason:'ABOVE_ROOM_TARGET',source:'MPC'}),
+  'MPC-ohjaus: Ehdotus: lämmitys pois');
+assert(!A.tlNowText({action:'OFF',reason:'ABOVE_ROOM_TARGET',source:'MPC'}).includes('huone on tavoitetta lämpimämpi'));
+
 
 // segment sentence carries the real numbers
 const seg={class:'cheap',start:1794999600,end:1795007100,avg_total:0.1,avg_median:0.2,slots:7};
@@ -126,4 +146,20 @@ assert(ticks.length>=3&&ticks.length<=5);
 for(const t of ticks){assert.equal(hour(t)%6,0);assert.equal(t%3600,0);}
 assert.equal(A.tlDeg(21.04),'21,0');assert.equal(A.tlDeg(-3.26),'-3,3');
 for(const k of ['Profiili','Tavoite','Rajat','Säästö','Tasapainoinen','Mukavuus','Rajoja ei ole asetettu (tavoite ±0,5 °C)','Tavoitelämpötilaa ei ole tässä tilassa'])assert(k in dict,'chip label not translated: '+k);
+// The actual OTA/MPC firmware arbitration, not price bootstrap alone, is
+// the source for "now". Guard the wiring as well as the pure UI format.
+const fw=fs.readFileSync(path.join(__dirname,'../firmware/cottage/src/main.cpp'),'utf8');
+const endpoint=fw.split('static void timeline_endpoint() {',2)[1].split('static void prices_endpoint()',1)[0];
+assert(endpoint.includes('active_control_proposal(now,indoor,&active)'));
+assert(endpoint.includes('meta.decision_source=proposal_source_name(active.source)'));
+assert(endpoint.includes('meta.decision_price_valid=bootstrap_preview(now,indoor).price_data_valid'));
+const refresh=header.split('let timelineRequestSequence=0;')[1].split('function showTimeline()',1)[0];
+const site=header.split('async function reloadSite(){')[1].split("document.getElementById('site-adapter')")[0];
+assert(refresh.includes('expectedMarket!==tlMarketKey(state.site&&state.site.region)'));
+assert(refresh.includes('tlMatchesMarket(response,state.site&&state.site.region)'));
+assert(site.includes('++timelineRequestSequence'));
+assert(site.includes('state.timeline=null;state.prices={valid:false,slots:[]}'));
+assert(site.includes('if(marketChanged){await reloadPrices();await reloadTimeline();}'));
+assert(header.includes('d=tlMatchesMarket(state.timeline,state.site&&state.site.region)?'));
+
 console.log('test_plan_timeline OK ('+literals.length+' literals checked)');

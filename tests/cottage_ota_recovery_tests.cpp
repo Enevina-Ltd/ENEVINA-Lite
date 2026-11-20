@@ -123,6 +123,44 @@ int main(){
         assert(confirm_persistence(nvs,tx,nvs.good));
         assert(!nvs.txn&&!nvs.pending&&nvs.good==tx.version);
     }
+    // P2 #62: a crash can happen after good is written but before the
+    // transaction is cleared. The history intent must have been attempted
+    // while the signed tx is still available and must be retried on reboot.
+    for(int fault=0;fault<3;++fault) {
+        Store nvs{};
+        nvs.fail_good=fault==0;
+        nvs.fail_pending=fault==1;
+        nvs.fail_txn=fault==2;
+        uint32_t hint=0;
+        int hint_writes=0;
+        bool hint_fail=true; // optional history cannot gate OTA confirmation
+        auto record=[&](uint32_t version) {
+            assert(nvs.good==version && nvs.txn);
+            ++hint_writes;
+            if(!hint_fail) hint=version;
+        };
+        assert(!confirm_persistence(nvs,tx,nvs.good,record));
+        assert(nvs.txn);
+        if(fault==0) assert(hint_writes==0); // bad NVS good cannot create hint
+        else assert(hint_writes==1); // GOOD is durable before hint
+        // Simulate reboot. The old good is now the new version after any
+        // partial write; the persisted transaction survives for retry.
+        nvs.fail_good=nvs.fail_pending=nvs.fail_txn=false;
+        hint_fail=false;
+        assert(confirm_persistence(nvs,tx,nvs.good,record));
+        assert(hint==tx.version && hint_writes==(fault==0?1:2));
+        assert(!nvs.txn && !nvs.pending && nvs.good==tx.version);
+    }
+    // The optional history callback failing must NOT block healthy signed
+    // image confirmation. It is retried if a transaction remains.
+    Store no_history{};
+    bool attempted=false;
+    assert(confirm_persistence(no_history,tx,no_history.good,
+        [&](uint32_t version) {
+            assert(version==tx.version && no_history.txn && no_history.good==version);
+            attempted=true;
+        }));
+    assert(attempted && !no_history.txn && no_history.good==tx.version);
     // Interrupted after good write and after pending removal: idempotent.
     Store prior{};prior.good=tx.version;prior.pending=false;
     assert(confirm_persistence(prior,tx,prior.good));

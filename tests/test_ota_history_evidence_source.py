@@ -15,11 +15,17 @@ class ConfirmedOtaHistoryAndNoHeat(unittest.TestCase):
     def test_confirmation_never_depends_on_optional_history_nvs(self):
         func=OTA.split("bool cottage_ota_confirm_boot() {",1)[1].split(
             "uint32_t cottage_ota_good_version()",1)[0]
-        self.assertLess(func.index("ota::confirm_persistence(store,tx,good)"),
-                        func.index("p.putUInt(kHistoryUpgradeKey,tx.version)"))
-        self.assertIn("good>0 && tx.version>good",func)
-        self.assertIn("last_history_upgrade.store(tx.version)",func)
-        self.assertIn('p.getUInt(kHistoryUpgradeKey,0)==tx.version',func)
+        policy=(R/"cottage/ota_recovery.hpp").read_text(encoding="utf-8")
+        self.assertIn("ota::confirm_persistence(store,tx,good,record_confirmed_version)",func)
+        self.assertIn("if(p.getUInt(\"good\",0)!=version)return;",func)
+        self.assertIn("last_history_upgrade.store(version)",func)
+        self.assertIn("p.putUInt(kHistoryUpgradeKey,version)",func)
+        self.assertIn("on_durable_good(tx.version)",policy)
+        self.assertLess(policy.index("on_durable_good(tx.version)"),
+                        policy.index("if(!store.remove_transaction())"))
+        self.assertLess(policy.index("if(current_good<tx.version && !store.write_good(tx.version))"),
+                        policy.index("on_durable_good(tx.version)"))
+        self.assertNotIn("if(!recorded)return false",func)
     def test_reboot_only_accepts_confirmed_good_version(self):
         init=OTA.split("void cottage_ota_initialize() {",1)[1].split(
             "bool cottage_ota_confirmation_pending()",1)[0]
