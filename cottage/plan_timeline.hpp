@@ -131,7 +131,8 @@ struct TimelineMeta {
     double target_c=-1;          // < 0: no target (mode without one)
     double comfort_min_c=0;      // 0: not set
     double comfort_max_c=0;
-    bool heating_permitted=true; // mode's separate humidity gate, even with a valid target
+    bool heating_permitted=true; // mode and physical prerequisites for proposed heating
+    bool indoor_fresh=true;       // false prevents price advice independent of humidity
     double preheat_c=0;
     double coast_c=0;
     size_t window_slots=8;
@@ -194,6 +195,7 @@ inline void timeline_json(const TimelineMeta& m,const Timeline& t,Emit emit) {
     emit(b);
     emit("\"target_c\":");opt(emit,m.target_c,m.target_c>=0,"%.1f");
     emit(m.heating_permitted?",\"heating_permitted\":true":",\"heating_permitted\":false");
+    emit(m.indoor_fresh?",\"indoor_fresh\":true":",\"indoor_fresh\":false");
     emit(",\"comfort_min_c\":");opt(emit,m.comfort_min_c,m.comfort_min_c>0,"%.1f");
     emit(",\"comfort_max_c\":");opt(emit,m.comfort_max_c,m.comfort_max_c>0,"%.1f");
     emit(",\"preheat_c\":");num(emit,m.preheat_c,"%.2f");

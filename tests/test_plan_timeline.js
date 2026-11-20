@@ -73,6 +73,13 @@ for(const meta of [{target_c:null,preheat_c:2,coast_c:2},{preheat_c:2,coast_c:2}
     assert(!/lämmitetään|lämmitys sallittu|termostaatti|ei lämmitetä|lämmitys pidetään/.test(t),t);
   }
 assert(A.tlControlText('unknown',{target_c:null}).includes('ei ole riittävästi'));
+// Stale Ruuvi indoors is not a price-optimization opportunity.
+for(const cls of ['cheap','neutral','expensive']){
+ const text=A.tlControlText(cls,{target_c:21,preheat_c:2,coast_c:2,
+   indoor_fresh:false,heating_permitted:false});
+ assert(text.includes('Huoneanturin mittaus ei ole tuore'),text);
+ assert(!text.includes('lämmitys sallittu'),text);
+}
 // A valid Drying target is NOT permission to heat until humidity allows it.
 for(const cls of ['cheap','neutral','expensive']){
   const text=A.tlControlText(cls,{target_c:14,preheat_c:2,coast_c:2,heating_permitted:false});

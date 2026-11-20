@@ -178,6 +178,8 @@ class TimelineWiring(unittest.TestCase):
         timeline = self.MAIN.split("static void timeline_endpoint()")[1].split("static void prices_endpoint()")[0]
         self.assertIn("meta.heating_permitted=has_target", timeline)
         self.assertIn("drying_blocks_heat(plan)", timeline)
+        self.assertIn("meta.indoor_fresh=valid_temperature(indoor,now)", timeline)
+        self.assertIn("has_target && meta.indoor_fresh", timeline)
         self.assertIn("bootstrap_preview(now,c23_temperature_sample())", timeline)
         self.assertIn('heating_permitted', self.TL)
         dashboard = (ROOT / "firmware/cottage/include/cottage_premium_dashboard.hpp").read_text(encoding="utf-8")
