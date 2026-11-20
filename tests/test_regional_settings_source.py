@@ -13,6 +13,7 @@ MARKET = (ROOT / "firmware/main/market.cpp").read_text(encoding="utf-8")
 SITE = (ROOT / "firmware/cottage/src/cottage_site_settings.cpp").read_text(encoding="utf-8")
 GEO = (ROOT / "firmware/cottage/src/cottage_geocode.cpp").read_text(encoding="utf-8")
 ROOTS = (ROOT / "firmware/main/tls_roots.hpp").read_text(encoding="utf-8")
+ROLLBACK_POLICY = (ROOT / "cottage/site_rollback_policy.hpp").read_text(encoding="utf-8")
 
 
 class RegionalWiring(unittest.TestCase):
@@ -66,6 +67,9 @@ class RegionalWiring(unittest.TestCase):
         self.assertIn('site_old_keys_reclaimable(',SITE)
         self.assertIn('state==ESP_OTA_IMG_VALID',SITE)
         self.assertIn('cottage_ota_confirmation_pending()',SITE)
+        self.assertIn('cottage_ota_runtime_ready()',SITE)
+        self.assertIn('running_image_valid && ota_service_initialized &&',ROLLBACK_POLICY)
+        self.assertIn('!ota_confirmation_pending',ROLLBACK_POLICY)
         self.assertLess(SITE.index('p.putBytes("v5"'),SITE.index('p.remove("v1")'))
         self.assertIn('if(p.isKey("v4")) p.remove("v4")',SITE)
         self.assertIn('if(p.isKey("v3")) p.remove("v3")',SITE)
