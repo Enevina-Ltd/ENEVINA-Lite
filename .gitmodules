@@ -1,0 +1,8 @@
+[submodule "third_party/midea-local/lua"]
+	path = third_party/midea-local/lua
+	url = https://github.com/midea-lan/midea-lua-lib.git
+	branch = main
+[submodule "third_party/midea-local/plugin"]
+	path = third_party/midea-local/plugin
+	url = https://github.com/midea-lan/midea-plugin.git
+	branch = main

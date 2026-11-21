@@ -1,0 +1,544 @@
+"""Test C3 Device."""
+
+from unittest.mock import patch
+
+import pytest
+
+from midealocal.const import ProtocolVersion
+from midealocal.const.climate_exceptions import C3_EXCEPTIONS, ClimateExceptions
+from midealocal.devices.c3 import (
+    DEFAULT_ZONE_MAX_TARGET_TEMPERATURE,
+    DEFAULT_ZONE_MIN_TARGET_TEMPERATURE,
+    DeviceAttributes,
+    MideaC3Device,
+)
+from midealocal.devices.c3.message import (
+    C3DeviceMode,
+    C3SilentLevel,
+    MessageQueryBasic,
+    MessageQueryDisinfect,
+    MessageQueryECO,
+    MessageQuerySilence,
+)
+from tests.base_classes.climate_test import DummyHVACMode
+
+
+class TestMideaC3Device:
+    """Test Midea C3 Device."""
+
+    device: MideaC3Device
+
+    @pytest.fixture(autouse=True)
+    def _setup_device(self) -> None:
+        """Midea C3 Device setup."""
+        with patch.dict(C3_EXCEPTIONS, {"test_model": {"temperature_step": 1.0}}):
+            self.device = self._make_device()
+
+    def _make_device(self) -> MideaC3Device:
+        """Create a device for the test model."""
+        return MideaC3Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="test_model",
+            subtype=1,
+        )
+
+    def test_initial_attributes(self) -> None:
+        """Test initial attributes."""
+        assert self.device.attributes[DeviceAttributes.zone1_power] is False
+        assert self.device.attributes[DeviceAttributes.zone2_power] is False
+        assert self.device.attributes[DeviceAttributes.dhw_power] is False
+        assert self.device.attributes[DeviceAttributes.zone1_curve] is False
+        assert self.device.attributes[DeviceAttributes.zone2_curve] is False
+        assert self.device.attributes[DeviceAttributes.disinfect] is False
+        assert self.device.attributes[DeviceAttributes.fast_dhw] is False
+        assert self.device.attributes[DeviceAttributes.zone_temp_type] == [False, False]
+        assert self.device.attributes[DeviceAttributes.zone1_room_temp_mode] is False
+        assert self.device.attributes[DeviceAttributes.zone2_room_temp_mode] is False
+        assert self.device.attributes[DeviceAttributes.zone1_water_temp_mode] is False
+        assert self.device.attributes[DeviceAttributes.zone2_water_temp_mode] is False
+        assert self.device.attributes[DeviceAttributes.silent_mode] is False
+        assert (
+            self.device.attributes[DeviceAttributes.silent_level]
+            == C3SilentLevel.OFF.name.lower()
+        )
+        assert self.device.attributes[DeviceAttributes.eco_mode] is False
+        assert self.device.attributes[DeviceAttributes.tbh] is False
+        assert self.device.attributes[DeviceAttributes.mode] == 1
+        assert self.device.attributes[DeviceAttributes.mode_auto] == 1
+        assert self.device.attributes[DeviceAttributes.zone_target_temp] == [25, 25]
+        assert self.device.attributes[DeviceAttributes.dhw_target_temp] == 25
+        assert self.device.attributes[DeviceAttributes.room_target_temp] == 30
+        assert self.device.attributes[DeviceAttributes.zone_heating_temp_max] == [
+            55,
+            55,
+        ]
+        assert self.device.attributes[DeviceAttributes.zone_heating_temp_min] == [
+            25,
+            25,
+        ]
+        assert self.device.attributes[DeviceAttributes.zone_cooling_temp_max] == [
+            25,
+            25,
+        ]
+        assert self.device.attributes[DeviceAttributes.zone_cooling_temp_min] == [5, 5]
+        assert self.device.attributes[DeviceAttributes.room_temp_max] == 60
+        assert self.device.attributes[DeviceAttributes.room_temp_min] == 34
+        assert self.device.attributes[DeviceAttributes.dhw_temp_max] == 60
+        assert self.device.attributes[DeviceAttributes.dhw_temp_min] == 20
+        assert self.device.attributes[DeviceAttributes.tank_actual_temperature] is None
+        assert self.device.attributes[DeviceAttributes.target_temperature] == [25, 25]
+        assert self.device.attributes[DeviceAttributes.temperature_max] == [0, 0]
+        assert self.device.attributes[DeviceAttributes.temperature_min] == [0, 0]
+        assert self.device.attributes[DeviceAttributes.total_energy_consumption] is None
+        assert self.device.attributes[DeviceAttributes.status_heating] is None
+        assert self.device.attributes[DeviceAttributes.status_dhw] is None
+        assert self.device.attributes[DeviceAttributes.status_tbh] is None
+        assert self.device.attributes[DeviceAttributes.status_ibh] is None
+        assert self.device.attributes[DeviceAttributes.total_produced_energy] is None
+        assert self.device.attributes[DeviceAttributes.outdoor_temperature] is None
+        assert self.device.attributes[DeviceAttributes.error_code] == 0
+        assert self.device.temperature_step == 1
+        assert len(self.device.silent_modes) == 3
+        assert self.device.target_temperature(0) == 25
+        assert self.device.target_temperature(1) == 25
+        assert self.device.target_temperature(2) is None
+        assert self.device.target_temperature() is None
+        assert self.device.current_humidity() is None
+        assert self.device.current_temperature() is None
+
+    def test_turn_on_turn_off(self) -> None:
+        """Test turn on and turn off."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            for zone in [0, 1]:
+                self.device.turn_on(zone)
+                assert mock_build_send.call_count == 1
+                assert (
+                    getattr(
+                        mock_build_send.call_args[0][0],
+                        self.device._power_attributes[zone],
+                    )
+                    is True
+                )
+                mock_build_send.reset_mock()
+                self.device.turn_off(zone)
+                assert mock_build_send.call_count == 1
+                assert (
+                    getattr(
+                        mock_build_send.call_args[0][0],
+                        self.device._power_attributes[zone],
+                    )
+                    is False
+                )
+                mock_build_send.reset_mock()
+
+            with pytest.raises(ValueError, match="`zone` must be set"):
+                self.device.turn_on()
+            with pytest.raises(ValueError, match="`zone` must be set"):
+                self.device.turn_off()
+            with pytest.raises(ValueError, match="`zone` must be between 0"):
+                self.device.turn_on(2)
+            with pytest.raises(ValueError, match="`zone` must be between 0"):
+                self.device.turn_off(2)
+
+    def test_set_attribute(self) -> None:
+        """Test set attribute."""
+        with patch.object(self.device, "send_message_v2") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.zone1_power.value, True)
+            mock_build_send.assert_called()
+
+            self.device.set_attribute(DeviceAttributes.zone1_power.value, False)
+            mock_build_send.assert_called()
+
+            self.device.set_attribute(DeviceAttributes.eco_mode.value, True)
+            mock_build_send.assert_called()
+
+            self.device.set_attribute(DeviceAttributes.disinfect.value, True)
+            mock_build_send.assert_called()
+
+            self.device.set_attribute(DeviceAttributes.silent_mode.value, True)
+            mock_build_send.assert_called()
+
+            self.device.set_attribute(
+                DeviceAttributes.silent_level.value,
+                C3SilentLevel.SILENT.name.lower(),
+            )
+
+    @pytest.mark.parametrize(
+        ("attr", "value"),
+        [
+            pytest.param("unknown", True, id="unknown_attribute"),
+            pytest.param(
+                DeviceAttributes.silent_mode.value, "on", id="silent_mode_str"
+            ),
+            pytest.param(DeviceAttributes.silent_level.value, 1, id="silent_level_int"),
+        ],
+    )
+    def test_set_attribute_not_sent(self, attr: str, value: bool | float | str) -> None:
+        """Test an unknown attribute or a wrong value type sends nothing."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(attr, value)
+        mock_build_send.assert_not_called()
+
+    def test_build_query(self) -> None:
+        """Test build query."""
+        queries = self.device.build_query()
+        assert len(queries) == 5
+        assert isinstance(queries[0], MessageQueryBasic)
+        assert isinstance(queries[1], MessageQueryDisinfect)
+        assert isinstance(queries[2], MessageQuerySilence)
+        assert isinstance(queries[3], MessageQueryECO)
+
+    def test_process_eco_query_reply(self) -> None:
+        """Test a real 0x07 ECO query reply updates eco_mode."""
+        self.device._attributes[DeviceAttributes.eco_mode] = True
+        # reply from a 171H120F, ECO function off
+        result = self.device.process_message(
+            bytes.fromhex("aa10c30000000000000307000800130008"),
+        )
+        assert result == {DeviceAttributes.eco_mode.value: False}
+        assert self.device.attributes[DeviceAttributes.eco_mode] is False
+
+    def test_process_message(self) -> None:
+        """Test process message."""
+        with patch("midealocal.devices.c3.MessageC3Response") as mock_message_response:
+            mock_message = mock_message_response.return_value
+            mock_message.zone1_power = True
+            mock_message.zone2_power = False
+            mock_message.dhw_power = True
+            mock_message.zone1_curve = False
+            mock_message.zone2_curve = True
+            mock_message.disinfect = False
+            mock_message.fast_dhw = True
+            mock_message.zone_temp_type = [True, False]
+            mock_message.zone1_room_temp_mode = True
+            mock_message.zone2_room_temp_mode = False
+            mock_message.zone1_water_temp_mode = False
+            mock_message.zone2_water_temp_mode = True
+            mock_message.mode = 2
+            mock_message.mode_auto = C3DeviceMode.COOL
+            mock_message.zone_target_temp = [25, 30]
+            mock_message.dhw_target_temp = 40
+            mock_message.room_target_temp = 22
+            mock_message.zone_heating_temp_max = [55, 55]
+            mock_message.zone_heating_temp_min = [25, 25]
+            mock_message.zone_cooling_temp_max = [25, 25]
+            mock_message.zone_cooling_temp_min = [5, 5]
+            mock_message.room_temp_max = 60
+            mock_message.room_temp_min = 34
+            mock_message.dhw_temp_max = 60
+            mock_message.dhw_temp_min = 20
+            mock_message.tank_actual_temperature = 50
+            mock_message.target_temperature = [25, 25]
+            mock_message.temperature_max = [0, 0]
+            mock_message.temperature_min = [0, 0]
+            mock_message.total_energy_consumption = 100
+            mock_message.status_heating = 1
+            mock_message.status_dhw = 1
+            mock_message.status_tbh = 0
+            mock_message.status_ibh = 0
+            mock_message.total_produced_energy = 200
+            mock_message.outdoor_temperature = 18
+            mock_message.error_code = 0
+
+            result = self.device.process_message(b"")
+
+            assert result[DeviceAttributes.zone1_power.value] is True
+            assert result[DeviceAttributes.zone2_power.value] is False
+            assert result[DeviceAttributes.dhw_power.value] is True
+            assert result[DeviceAttributes.zone1_curve.value] is False
+            assert result[DeviceAttributes.zone2_curve.value] is True
+            assert result[DeviceAttributes.disinfect.value] is False
+            assert result[DeviceAttributes.fast_dhw.value] is True
+            assert result[DeviceAttributes.zone_temp_type.value] == [True, False]
+            assert result[DeviceAttributes.zone1_room_temp_mode.value] is False
+            assert result[DeviceAttributes.zone2_room_temp_mode.value] is False
+            assert result[DeviceAttributes.zone1_water_temp_mode.value] is True
+            assert result[DeviceAttributes.zone2_water_temp_mode.value] is False
+            assert result[DeviceAttributes.mode.value] == 2
+            assert result[DeviceAttributes.mode_auto.value] == 2
+            assert result[DeviceAttributes.zone_target_temp.value] == [25, 30]
+            assert result[DeviceAttributes.dhw_target_temp.value] == 40
+            assert result[DeviceAttributes.room_target_temp.value] == 22
+            assert result[DeviceAttributes.zone_heating_temp_max.value] == [55, 55]
+            assert result[DeviceAttributes.zone_heating_temp_min.value] == [25, 25]
+            assert result[DeviceAttributes.zone_cooling_temp_max.value] == [25, 25]
+            assert result[DeviceAttributes.zone_cooling_temp_min.value] == [5, 5]
+            assert result[DeviceAttributes.room_temp_max.value] == 60
+            assert result[DeviceAttributes.room_temp_min.value] == 34
+            assert result[DeviceAttributes.dhw_temp_max.value] == 60
+            assert result[DeviceAttributes.dhw_temp_min.value] == 20
+            assert result[DeviceAttributes.tank_actual_temperature.value] == 50
+            assert result[DeviceAttributes.total_energy_consumption.value] == 100
+            assert result[DeviceAttributes.status_heating.value] == 1
+            assert result[DeviceAttributes.status_dhw.value] == 1
+            assert result[DeviceAttributes.status_tbh.value] == 0
+            assert result[DeviceAttributes.status_ibh.value] == 0
+            assert result[DeviceAttributes.total_produced_energy.value] == 200
+            assert result[DeviceAttributes.outdoor_temperature.value] == 18
+            assert result[DeviceAttributes.error_code.value] == 0
+
+            mock_message.zone2_power = True
+            mock_message.zone_temp_type = [False, True]
+            mock_message.mode = C3DeviceMode.HEAT
+            mock_message.mode_auto = C3DeviceMode.HEAT
+
+            result = self.device.process_message(b"")
+
+            mock_message.zone1_power = False
+            mock_message.zone2_power = False
+
+            result = self.device.process_message(b"")
+
+            assert result[DeviceAttributes.mode.value] == 3
+
+    @pytest.mark.parametrize(
+        ("power", "hvac_mode", "mode"),
+        [
+            (False, "off", 0),
+            (True, "auto", 1),
+            (True, "heat", 3),
+        ],
+    )
+    def test_set_target_temperature(
+        self,
+        power: bool,
+        hvac_mode: str | None,
+        mode: int,
+    ) -> None:
+        """Test set target temperature."""
+        with pytest.raises(ValueError, match="`zone` must be set"):
+            self.device.set_raw_target_temperature(22.5, hvac_mode)
+        with pytest.raises(ValueError, match="`zone` must be between 0"):
+            self.device.set_raw_target_temperature(22.5, hvac_mode, -1)
+        with patch("midealocal.devices.c3.MessageC3Response") as mock_message_response:
+            mock_message = mock_message_response.return_value
+            mock_message.zone_temp_type = [True, False]
+            self.device.process_message(b"")
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_target_temperature(22.5, hvac_mode, 0)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert message.mode == mode
+            assert message.zone1_power == power
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_target_temperature(23, hvac_mode, 1)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert message.room_target_temp == 23
+            assert message.mode == mode
+            assert message.zone2_power == power
+
+    @pytest.mark.parametrize(
+        ("temperature", "expected_step_whole", "expected_step_half"),
+        [
+            (20.2, 20.0, 20.0),
+            (20.3, 20.0, 20.5),
+            (20.5, 20.0, 20.5),
+            (20.7, 21.0, 20.5),
+            (20.8, 21.0, 21.0),
+        ],
+    )
+    def test_set_target_temperature_rounded(
+        self,
+        temperature: float,
+        expected_step_whole: float,
+        expected_step_half: float,
+    ) -> None:
+        """Test set target temperature to be rounded."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_target_temperature(temperature, "auto", 0)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert message.room_target_temp == expected_step_whole
+
+        step_half_device = self._make_device()
+        with patch.object(step_half_device, "build_send") as mock_build_send:
+            step_half_device.set_raw_target_temperature(temperature, "auto", 0)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert message.room_target_temp == expected_step_half
+
+    def test_set_target_temperature_without_hvac(
+        self,
+    ) -> None:
+        """Test set target temperature without HVAC Mode."""
+        with pytest.raises(ValueError):  # noqa: PT011
+            self.device.set_raw_target_temperature(22.5, None)
+        with patch("midealocal.devices.c3.MessageC3Response") as mock_message_response:
+            mock_message = mock_message_response.return_value
+            mock_message.zone_temp_type = [True, False]
+            self.device.process_message(b"")
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_target_temperature(22.5, None, 0)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_target_temperature(23, None, 1)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert message.room_target_temp == 23
+
+    def test_set_mode(self) -> None:
+        """Test set mode."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device._set_mode(0, C3DeviceMode.COOL)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert message.zone1_power is True
+            assert message.mode == C3DeviceMode.COOL
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device._set_mode(1, C3DeviceMode.HEAT)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert message.zone2_power is True
+            assert message.mode == C3DeviceMode.HEAT
+
+    @pytest.mark.parametrize(
+        ("exceptions", "expected_step"),
+        [
+            pytest.param({}, 0.5, id="default"),
+            pytest.param(
+                {"test_model": {"temperature_step": 1.0}},
+                1.0,
+                id="model_exception",
+            ),
+        ],
+    )
+    def test_temperature_step_exception(
+        self,
+        exceptions: dict[str, ClimateExceptions],
+        expected_step: float,
+    ) -> None:
+        """Test per-model temperature step exceptions."""
+        with patch.dict(C3_EXCEPTIONS, exceptions):
+            device = self._make_device()
+
+        assert device.temperature_step == expected_step
+
+    def test_hvac_modes(self) -> None:
+        """Test hvac_modes lists every generic HVAC mode name."""
+        assert self.device.raw_hvac_modes == ["off", "auto", "cool", "heat"]
+
+    def test_target_temperature_bounds_per_zone(self) -> None:
+        """Test min/max target temperature are read per zone from the list attrs."""
+        self.device._attributes[DeviceAttributes.temperature_min] = [16.0, 17.0]
+        self.device._attributes[DeviceAttributes.temperature_max] = [30.0, 29.0]
+        assert self.device.min_temperature(0) == 16.0
+        assert self.device.max_temperature(0) == 30.0
+        assert self.device.min_temperature(1) == 17.0
+        assert self.device.max_temperature(1) == 29.0
+
+    def test_target_temperature_bounds_fallback(self) -> None:
+        """Test a zone reported as 0.0 or a short list falls back to the defaults."""
+        # per-zone 0.0 -> that zone falls back independently
+        self.device._attributes[DeviceAttributes.temperature_min] = [0.0, 18.0]
+        self.device._attributes[DeviceAttributes.temperature_max] = [0.0, 45.0]
+        assert self.device.min_temperature(0) == DEFAULT_ZONE_MIN_TARGET_TEMPERATURE
+        assert self.device.max_temperature(0) == DEFAULT_ZONE_MAX_TARGET_TEMPERATURE
+        assert self.device.min_temperature(1) == 18.0
+        # list with fewer than one entry per zone -> fall back
+        self.device._attributes[DeviceAttributes.temperature_min] = [20.0]
+        assert self.device.min_temperature(0) == DEFAULT_ZONE_MIN_TARGET_TEMPERATURE
+
+    def test_target_temperature_bounds_require_zone(self) -> None:
+        """Test min/max target temperature raise without a valid zone."""
+        with pytest.raises(ValueError, match="`zone` must be set"):
+            self.device.min_temperature()
+        with pytest.raises(ValueError, match="`zone` must be between 0"):
+            self.device.max_temperature(2)
+
+    def test_hvac_mode_requires_zone(self) -> None:
+        """Test hvac_mode raises when zone isn't set."""
+        with pytest.raises(ValueError, match="`zone` must be set"):
+            self.device.raw_hvac_mode()
+
+    @pytest.mark.parametrize(
+        ("zone"),
+        [(-1), (2), (99)],
+    )
+    def test_hvac_mode_invalid_zone(self, zone: int) -> None:
+        """Test hvac_mode raises when zone isn't valid."""
+        with pytest.raises(ValueError, match="`zone` must be between 0"):
+            self.device.raw_hvac_mode(zone)
+
+    @pytest.mark.parametrize(
+        ("zone", "power_attr"),
+        [(0, DeviceAttributes.zone1_power), (1, DeviceAttributes.zone2_power)],
+    )
+    def test_hvac_mode_per_zone_power(
+        self,
+        zone: int,
+        power_attr: DeviceAttributes,
+    ) -> None:
+        """Test hvac_mode reads the zone-specific power attribute."""
+        self.device._attributes[power_attr] = False
+        assert self.device.raw_hvac_mode(zone) == "off"
+
+        self.device._attributes[power_attr] = True
+        self.device._attributes[DeviceAttributes.mode] = C3DeviceMode.HEAT
+        assert self.device.raw_hvac_mode(zone) == "heat"
+
+    def test_set_hvac_mode_unsupported(self) -> None:
+        """Test unsupported MideaHVACMode."""
+        with pytest.raises(ValueError, match="Unsupported hvac mode"):
+            self.device.set_hvac_mode(DummyHVACMode.INVALID, 0)
+
+    def test_hvac_mode_invalid_type_returns_none(self) -> None:
+        """Test hvac_mode returns None for an unexpected attribute type."""
+        self.device._attributes[DeviceAttributes.zone1_power] = "not_a_bool"
+        assert self.device.raw_hvac_mode(0) is None
+
+    def test_hvac_mode_invalid_mode_index_returns_none(self) -> None:
+        """Test hvac_mode returns None for a mode index out of range."""
+        self.device._attributes[DeviceAttributes.zone1_power] = True
+        self.device._attributes[DeviceAttributes.mode] = 999
+        assert self.device.raw_hvac_mode(0) is None
+
+    def test_set_hvac_mode_requires_zone(self) -> None:
+        """Test set_hvac_mode raises when zone isn't set."""
+        with pytest.raises(ValueError, match="`zone` must be set"):
+            self.device.set_raw_hvac_mode("heat")
+
+    @pytest.mark.parametrize(
+        ("zone"),
+        [(-1), (2), (99)],
+    )
+    def test_set_hvac_mode_invalid_zone(self, zone: int) -> None:
+        """Test set_hvac_mode raises when zone isn't valid."""
+        with pytest.raises(ValueError, match="`zone` must be between 0"):
+            self.device.set_raw_hvac_mode("heat", zone)
+
+    def test_set_hvac_mode_off_powers_off_the_zone(self) -> None:
+        """Test set_hvac_mode with off powers off only the requested zone."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_hvac_mode("off", 1)
+            message = mock_build_send.call_args[0][0]
+            assert message.zone2_power is False
+
+    def test_set_hvac_mode_sets_mode_via_set_mode(self) -> None:
+        """Test set_hvac_mode delegates to set_mode with the protocol index."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_hvac_mode("heat", 0)
+            message = mock_build_send.call_args[0][0]
+            assert message.zone1_power is True
+            assert message.mode == C3DeviceMode.HEAT
+
+    def test_set_hvac_mode_unsupported_value_raises(self) -> None:
+        """Test set_hvac_mode raises for a mode not in hvac_modes."""
+        with (
+            patch.object(self.device, "build_send") as mock_build_send,
+            pytest.raises(ValueError, match="Unsupported hvac mode"),
+        ):
+            self.device.set_raw_hvac_mode("not_a_real_mode", 0)
+        mock_build_send.assert_not_called()

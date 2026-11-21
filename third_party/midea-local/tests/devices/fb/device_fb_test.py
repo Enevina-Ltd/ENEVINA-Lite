@@ -1,0 +1,342 @@
+"""Test FB Device."""
+
+from unittest.mock import patch
+
+import pytest
+
+from midealocal.base_classes.climate import MideaPreset
+from midealocal.const import ProtocolVersion
+from midealocal.devices.fb import (
+    FB_MAX_TARGET_TEMPERATURE,
+    FB_MIN_TARGET_TEMPERATURE,
+    DeviceAttributes,
+    DeviceHumidityMode,
+    MideaFBDevice,
+)
+from midealocal.devices.fb.message import MessageQuery, MessageSet
+from midealocal.message import MessageType
+from tests.base_classes.climate_test import DummyHVACMode
+
+
+class TestMideaFBDevice:
+    """Test Midea FB Device."""
+
+    device: MideaFBDevice
+
+    @pytest.fixture(autouse=True)
+    def _setup_device(self) -> None:
+        """Midea FB Device setup."""
+        self.device = MideaFBDevice(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="test_model",
+            subtype=1,
+        )
+
+    def test_initial_attributes(self) -> None:
+        """Test initial attributes."""
+        assert self.device.attributes[DeviceAttributes.power] is False
+        assert self.device.attributes[DeviceAttributes.mode] is None
+        assert self.device.attributes[DeviceAttributes.humidity_mode] is None
+        assert self.device.attributes[DeviceAttributes.heating_level] == 0
+        assert self.device.attributes[DeviceAttributes.target_temperature] is None
+        assert self.device.attributes[DeviceAttributes.current_temperature] is None
+        assert self.device.attributes[DeviceAttributes.child_lock] is False
+        assert self.device.modes == [
+            "auto",
+            "eco",
+            "sleep",
+            "anti_freezing",
+            "comfort",
+            "constant_temperature",
+            "normal",
+            "fast_heating",
+            "standby",
+        ]
+        assert self.device.current_temperature() is None
+        assert self.device.current_humidity() is None
+        assert self.device.target_temperature() is None
+
+    @pytest.mark.parametrize(
+        ("mode", "expected_value"),
+        [
+            (DeviceHumidityMode.CLOSE, 0x10),
+            (DeviceHumidityMode.CONST, 0x20),
+            (DeviceHumidityMode.ONE, 0x30),
+            (DeviceHumidityMode.TWO, 0x40),
+            (DeviceHumidityMode.THREE, 0x50),
+        ],
+    )
+    def test_set_humidity_mode(
+        self,
+        mode: DeviceHumidityMode,
+        expected_value: int,
+    ) -> None:
+        """Test set humidity mode."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.humidity_mode.value,
+                mode,
+            )
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageSet)
+            assert message.humidity_mode == expected_value
+
+    def test_set_humidity_mode_invalid(self) -> None:
+        """Test set humidity mode with an invalid mode is rejected."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            with pytest.raises(ValueError, match="Unsupported humidity mode"):
+                self.device.set_attribute(
+                    DeviceAttributes.humidity_mode.value,
+                    "invalid",
+                )
+            mock_build_send.assert_not_called()
+
+    def test_power_on_power_off(self) -> None:
+        """Test power on and power off."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.turn_on()
+            assert mock_build_send.call_count == 1
+            assert mock_build_send.call_args[0][0].power is True
+            mock_build_send.reset_mock()
+            self.device.turn_off()
+            assert mock_build_send.call_count == 1
+            assert mock_build_send.call_args[0][0].power is False
+
+    def test_build_query(self) -> None:
+        """Test build query."""
+        queries = self.device.build_query()
+        assert len(queries) == 1
+        assert isinstance(queries[0], MessageQuery)
+
+    @pytest.mark.parametrize(
+        "message_type",
+        [MessageType.query, MessageType.set, MessageType.notify1],
+    )
+    def test_process_message(self, message_type: MessageType) -> None:
+        """Test process message with a full body."""
+        header = bytearray(
+            [0xAA] + ([0x0] * 7) + [ProtocolVersion.V1] + [message_type],
+        )
+        body = bytearray(22)
+        body[0] = 0x01  # power on
+        body[4] = 0x02  # mode eco
+        body[5] = 3  # heating_level
+        body[6] = 66  # target_temperature = 25
+        body[7] = 50  # target_humidity
+        body[9] = 0x40  # humidity_mode
+        body[12] = 45  # current_humidity
+        body[13] = 45  # current_temperature = 25
+        body[18] = 0x01  # child_lock
+        body[20] = 0x10
+        body[21] = 0x01  # energy_consumption = 272
+        crc = bytearray([0x00])
+        new_status = self.device.process_message(bytes(header + body + crc))
+        assert self.device.attributes[DeviceAttributes.power] is True
+        assert self.device.attributes[DeviceAttributes.mode] == "eco"
+        assert self.device.attributes[DeviceAttributes.heating_level] == 3
+        assert self.device.attributes[DeviceAttributes.target_temperature] == 25
+        assert self.device.attributes[DeviceAttributes.current_temperature] == 25
+        assert self.device.attributes[DeviceAttributes.child_lock] is True
+        assert self.device.attributes[DeviceAttributes.humidity_mode] == "two"
+        assert new_status[DeviceAttributes.mode.value] == "eco"
+        assert self.device.current_temperature() == 25.0
+        assert self.device.target_temperature() == 25.0
+        assert self.device.current_humidity() == 45.0
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power, False)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageSet)
+            assert message.power is False
+            assert message.mode == 2
+            assert message.humidity_mode == 0x40
+
+    def test_process_message_unknown_mode_and_short_body(self) -> None:
+        """Test process message with an unknown mode and a short body."""
+        header = bytearray(
+            [0xAA] + ([0x0] * 7) + [ProtocolVersion.V1] + [MessageType.query],
+        )
+        body = bytearray(18)
+        body[0] = 0x00  # power off
+        body[4] = 0x09  # unknown mode
+        body[12] = 0  # current_humidity = 0
+        body[13] = 40  # current_temperature = 20
+        crc = bytearray([0x00])
+        self.device.process_message(bytes(header + body + crc))
+        assert self.device.attributes[DeviceAttributes.power] is False
+        assert self.device.attributes[DeviceAttributes.mode] is None
+        assert self.device.attributes[DeviceAttributes.current_temperature] == 20
+        # short body has no child_lock byte, attribute keeps its default
+        assert self.device.attributes[DeviceAttributes.child_lock] is False
+        assert self.device.attributes[DeviceAttributes.current_humidity] is None
+        assert self.device.current_humidity() is None
+
+    def test_process_message_unhandled_type(self) -> None:
+        """Test process message with an unhandled message type updates nothing."""
+        header = bytearray(
+            [0xAA] + ([0x0] * 7) + [ProtocolVersion.V1] + [MessageType.notify2],
+        )
+        body = bytearray(22)
+        body[0] = 0x01
+        crc = bytearray([0x00])
+        new_status = self.device.process_message(bytes(header + body + crc))
+        assert new_status == {}
+
+    def test_set_attribute_mode(self) -> None:
+        """Test set attribute mode with a valid mode name."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.mode.value, "eco")
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageSet)
+            assert message.mode == 0x02
+
+    def test_set_attribute_mode_invalid(self) -> None:
+        """Test set attribute mode with an invalid mode name is rejected.
+
+        Previously an unrecognized mode still reached build_send with
+        mode left at None, which MessageSet.body then encodes as a real
+        mode=0 byte on the wire instead of the write being rejected.
+        """
+        with patch.object(self.device, "build_send") as mock_build_send:
+            with pytest.raises(ValueError, match="Unsupported mode"):
+                self.device.set_attribute(DeviceAttributes.mode.value, "invalid")
+            mock_build_send.assert_not_called()
+
+    def test_preset_modes(self) -> None:
+        """Test preset modes expose the device's named heating modes."""
+        assert self.device.preset_modes == self.device.modes
+
+        self.device._attributes[DeviceAttributes.mode] = MideaPreset.ECO
+        active_preset = self.device.preset_mode
+        assert active_preset == "eco"
+
+        self.device._attributes[DeviceAttributes.mode] = 5
+        invalid_preset = self.device.preset_mode
+        assert invalid_preset is None
+
+        with patch.object(self.device, "set_attribute") as mock_set:
+            self.device.set_preset_mode("comfort")
+        mock_set.assert_called_once_with(attr=DeviceAttributes.mode, value="comfort")
+
+        with pytest.raises(ValueError, match="Unsupported preset mode: bogus"):
+            self.device.set_preset_mode("bogus")
+
+    def test_target_temperature_bounds(self) -> None:
+        """Test FB exposes its fixed target temperature range."""
+        assert self.device.min_temperature() == FB_MIN_TARGET_TEMPERATURE
+        assert self.device.max_temperature() == FB_MAX_TARGET_TEMPERATURE
+
+    @pytest.mark.parametrize(
+        ("attr", "value"),
+        [
+            (DeviceAttributes.power, True),
+            (DeviceAttributes.heating_level, 5),
+            (DeviceAttributes.target_temperature, 25),
+            (DeviceAttributes.child_lock, True),
+        ],
+    )
+    def test_set_attribute(self, attr: DeviceAttributes, value: bool | int) -> None:
+        """Test set attribute sends a set message."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(attr.value, value)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageSet)
+            assert getattr(message, attr.value) == value
+
+    def test_set_target_temperature(self) -> None:
+        """Test set target temperature."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_target_temperature(25, None)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageSet)
+            assert message.target_temperature == 25
+            assert message.power is None
+
+    @pytest.mark.parametrize(
+        ("temperature", "expected_step_whole"),
+        [
+            (20.2, 20.0),
+            (20.3, 20.0),
+            (20.5, 20.0),
+            (20.7, 21.0),
+            (20.8, 21.0),
+        ],
+    )
+    def test_set_target_temperature_rounded(
+        self,
+        temperature: float,
+        expected_step_whole: float,
+    ) -> None:
+        """Test set target temperature to be rounded."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_target_temperature(temperature, "auto")
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert message.target_temperature == expected_step_whole
+            mock_build_send.reset_mock()
+
+    def test_set_target_temperature_with_mode_powers_on(self) -> None:
+        """Setting temperature alongside a mode also powers the device on."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_target_temperature(25, "heat")
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageSet)
+            assert message.target_temperature == 25
+            assert message.power is True
+
+    def test_hvac_modes(self) -> None:
+        """Test hvac_modes lists off/heat."""
+        assert self.device.raw_hvac_modes == ["off", "heat"]
+
+    @pytest.mark.parametrize(
+        ("power", "expected"),
+        [
+            (True, "heat"),
+            (False, "off"),
+            ("not_a_bool", None),
+        ],
+    )
+    def test_hvac_mode(self, power: bool | str, expected: str | None) -> None:
+        """Test hvac_mode is derived from power."""
+        self.device._attributes[DeviceAttributes.power] = power
+        assert self.device.raw_hvac_mode() == expected
+
+    def test_set_hvac_mode_unsupported(self) -> None:
+        """Test unsupported MideaHVACMode."""
+        with pytest.raises(ValueError, match="Unsupported hvac mode"):
+            self.device.set_hvac_mode(DummyHVACMode.INVALID)
+
+    def test_set_hvac_mode_heat_powers_on(self) -> None:
+        """Test set_hvac_mode with heat powers the device on."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_hvac_mode("heat")
+            message = mock_build_send.call_args[0][0]
+            assert message.power is True
+
+    def test_set_hvac_mode_off_powers_off(self) -> None:
+        """Test set_hvac_mode with off powers the device off."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_hvac_mode("off")
+            message = mock_build_send.call_args[0][0]
+            assert message.power is False
+
+    def test_set_hvac_mode_unsupported_value_raises(self) -> None:
+        """Test set_hvac_mode raises for a mode not in hvac_modes."""
+        with (
+            patch.object(self.device, "build_send") as mock_build_send,
+            pytest.raises(ValueError, match="Unsupported hvac mode"),
+        ):
+            self.device.set_raw_hvac_mode("not_a_real_mode")
+        mock_build_send.assert_not_called()
