@@ -41,6 +41,9 @@ struct PumpRoomState {
     PumpRoomProtocol protocol=PumpRoomProtocol::Unknown;
     HeatPumpType type=HeatPumpType::Unknown;
     uint32_t endpoint_generation=0,configuration_generation=0,link_generation=0;
+    uint32_t request_generation=0;
+    unsigned mode_minutes=0,request_minutes=0;
+    int64_t automatic_confirmed_utc=0,automatic_queued_utc=0;
     PumpRoomMode mode=PumpRoomMode::Unknown;
     double setpoint_c=std::numeric_limits<double>::quiet_NaN();
     double indoor_c=std::numeric_limits<double>::quiet_NaN();

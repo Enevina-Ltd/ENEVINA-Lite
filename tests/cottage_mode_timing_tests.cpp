@@ -8,6 +8,20 @@ static void check(bool ok, const char* message) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(1); }
 }
 int main() {
+    using enevina::PumpRoomMode;
+    ObservedHeatingRequest request;
+    request.observe(PumpRoomMode::Heat,21,0,false);
+    const auto initial_revision=request.generation();
+    request.observe(PumpRoomMode::Heat,21,1800000,true);
+    check(request.mode_minutes(1800000)==30 && request.request_minutes(1800000)==30,
+          "stable heating request provides continuous sampling evidence");
+    request.observe(PumpRoomMode::Heat,22,1800000,true);
+    check(request.mode_minutes(1800000)==30 && request.request_minutes(1800000)==0,
+          "external setpoint change revokes request continuity but keeps mode dwell");
+    check(request.generation()==initial_revision+1,"setpoint change advances request generation");
+    request.observe(PumpRoomMode::Heat,22,1980000,false);
+    check(request.mode_minutes(1980000)==0 && request.request_minutes(1980000)==0,
+          "a link gap invalidates both ages even when the returned setting matches");
     ObservedModeDuration tracker;
     check(tracker.minutes(ObservedPumpMode::Off, 180000, true)==0,
           "initial unknown age is zero");

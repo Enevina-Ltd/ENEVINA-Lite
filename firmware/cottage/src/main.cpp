@@ -82,6 +82,7 @@ static CN105Telemetry sse_observed_pump{};
 static ObservedModeDuration observed_mode_duration{};
 // Protected by lock_data. Reject MPC results computed before an SSE mode change.
 static uint32_t observed_mode_generation=0;
+static uint64_t verified_cn105_request_since_ms=0;
 static ShellyTelemetry consumption{};
 static TemperatureSample temperature{};
 static int64_t climate_utc=0,compressor_utc=0;
@@ -378,6 +379,7 @@ static bool parse_cn105_proof_event(const cJSON* root,int64_t now,
         const bool heating_target_changed=verified.mode==ObservedPumpMode::Heat &&
             std::fabs(verified.setpoint_c-pump.setpoint_c)>0.001;
         if(verified.mode!=pump.mode || !continuous || heating_target_changed) {
+            verified_cn105_request_since_ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
             ++observed_mode_generation;
             plan_count=0;
             last_plan.status=MpcStatus::InvalidInput;
@@ -753,15 +755,33 @@ static void mpc_mode_target(bool& heating_allowed,double& target_c) {
 // proof). An ESPHome GET/SSE receipt can repeat cached state while the pump
 // link is down, so it is never used as evidence here (Codex P1, PR #63).
 // `minutes` is the verified, uninterrupted time in that mode.
-struct PumpView {bool known=false,heat=false;double setpoint=0;unsigned minutes=0;};
-static PumpView pump_view(const CN105Telemetry& cp,int64_t now,unsigned verified_minutes) {
-    PumpView v{};
-    if(valid_cn105(cp,now) && cp.evidence.source_time_verified &&
-       (cp.mode==ObservedPumpMode::Heat || cp.mode==ObservedPumpMode::Off)) {
-        v.known=true;v.heat=cp.mode==ObservedPumpMode::Heat;v.setpoint=cp.setpoint_c;
-        v.minutes=verified_minutes;
+static enevina::PumpRoomState optimizer_pump_state(int64_t now,bool midea) {
+    using namespace enevina;
+    if(midea)return cottage_midea_room_state();
+    PumpRoomState state{};
+    xSemaphoreTake(lock_data,portMAX_DELAY);
+    if(verified_cn105_link.current() && valid_cn105(pump,now) &&
+       (pump.mode==ObservedPumpMode::Off || pump.mode==ObservedPumpMode::Heat)) {
+        const auto ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
+        state.protocol=PumpRoomProtocol::Cn105EspHome;
+        state.source=PumpStateSource::VerifiedBus;
+        state.mode=pump.mode==ObservedPumpMode::Heat?PumpRoomMode::Heat:PumpRoomMode::Off;
+        state.mode_minutes=observed_mode_duration.minutes(pump.mode,ms,true);
+        state.request_minutes=static_cast<unsigned>(
+            std::min<uint64_t>((ms-verified_cn105_request_since_ms)/60000,600));
+        state.setpoint_c=pump.setpoint_c;
+        state.request_generation=observed_mode_generation;
+        state.endpoint_generation=verified_cn105_link.endpoint;
+        state.link_generation=verified_cn105_link.wifi;
+        state.heating=mitsubishi_heating_limits;
+        state.evidence=pump.evidence;
     }
-    return v;
+    xSemaphoreGive(lock_data);
+    return state;
+}
+static bool known_heating_mode(const enevina::PumpRoomState& state) {
+    return state.mode==enevina::PumpRoomMode::Off ||
+        (state.mode==enevina::PumpRoomMode::Heat && std::isfinite(state.setpoint_c));
 }
 // ONE proposal for the physical control path: a calibrated, current MPC
 // plan's first decision, otherwise the price controller, which itself falls
@@ -775,22 +795,31 @@ static ArbiterInput build_arbiter_input(int64_t now,const TemperatureSample& t) 
     in.config_generation=c23_config_generation();
     in.settings_generation=site_settings_generation();
     in.limits=owner_comfort_limits();
+    const bool midea=cottage_midea_selected();
+    const auto state=optimizer_pump_state(now,midea);
     xSemaphoreTake(lock_data,portMAX_DELAY);
-    const CN105Telemetry cp=pump;
-    const unsigned minutes=observed_mode_duration.minutes(cp.mode,
-        static_cast<uint64_t>(esp_timer_get_time()/1000),valid_cn105(cp,now));
     in.calibration=calibration_snapshot.state;
     in.calibrated=calibration_snapshot.state==CalibrationState::Calibrated;
     in.plan=mpc_plan;
-    in.mode_generation=observed_mode_generation;
     xSemaphoreGive(lock_data);
-    const PumpView view=pump_view(cp,now,minutes);
-    in.pump_state_known=view.known && !cottage_midea_selected();
-    in.pump_heat=view.heat;
-    in.own_transition_confirmed=in.plan.has_plan &&
+    in.mode_generation=state.request_generation;
+    in.pump_state_known=known_heating_mode(state);
+    in.pump_heat=state.mode==enevina::PumpRoomMode::Heat;
+    in.pump_setpoint_c=state.setpoint_c;
+    in.own_transition_confirmed=in.plan.has_plan && (midea?
+        state.automatic_queued_utc>=in.plan.computed_utc &&
+        state.automatic_confirmed_utc>=state.automatic_queued_utc &&
+        state.automatic_confirmed_utc<=now &&
+        state.automatic_confirmed_utc<in.plan.first_utc+900:
         mpc_confirmed_slot_utc.load()==in.plan.first_utc &&
-        mpc_confirmed_heat.load()==(in.plan.first_heat?1:0);
+        mpc_confirmed_heat.load()==(in.plan.first_heat?1:0));
     return in;
+}
+static bool mpc_state_read_back(const ArbiterInput& in) {
+    return in.own_transition_confirmed && in.pump_state_known &&
+        in.pump_heat==in.plan.first_heat &&
+        (!in.plan.first_heat ||
+         std::fabs(in.pump_setpoint_c-in.plan.first_setpoint_c)<=0.001);
 }
 static BootstrapDecision active_control_proposal(int64_t now,const TemperatureSample& t,
                                                  ArbiterOutput* detail=nullptr) {
@@ -1284,11 +1313,11 @@ static void cottage_control_tick() {
         control_commands_confirmed.fetch_add(1);
         control_last_ack_utc.store(time(nullptr));
         // An MPC decision counts as executed only when the readback shows
-        // the planned state itself (HEAT at 16 C, or OFF), not merely an
+        // the planned state itself (the requested HEAT setpoint or OFF), not merely an
         // intermediate setpoint step.
         const bool planned_heat=proposal.action==BootstrapAction::HeatSetpoint;
         if(arbitration.source==ProposalSource::Mpc &&
-           (planned_heat?(last_heating && std::fabs(last_setpoint-16.0)<0.01):!last_heating)) {
+           (planned_heat?(last_heating && std::fabs(last_setpoint-proposal.heat_setpoint_c)<0.01):!last_heating)) {
             mpc_confirmed_slot_utc.store((now/900)*900);
             mpc_confirmed_heat.store(planned_heat?1:0);
         }
@@ -1410,6 +1439,13 @@ static bool cottage_cancel(void*) {
 // ---- Building identification persistence (NVS "cottage_mdl"/"rls1") -------
 // Bound to the pump adapter, pump endpoint and weather location: a changed
 // pump or site restarts learning instead of reusing another building's model.
+static bool variable_setpoint_model_selected() {
+    const auto cfg=c23_mode_config();
+    ComfortBand legacy{};
+    return cottage_midea_selected() || cfg.mode==CottageMode::Occupied ||
+        (cfg.mode==CottageMode::Hold && !mpc_comfort_band(cfg.hold_target_c,legacy));
+}
+static const char* model_blob_key(bool variable) {return variable?"rls2":"rls1";}
 static uint32_t identifier_identity() {
     const auto s=site_settings_snapshot();
     uint32_t h=2166136261u;
@@ -1431,18 +1467,23 @@ static uint32_t identifier_identity() {
         h^=correction&0xFFu;h*=16777619u;
         h^=correction>>8;h*=16777619u;
     }
+    if(std::strcmp(s.pump_adapter,"midea_lan")==0) {
+        const uint32_t pump_id=cottage_midea_calibration_identity();
+        for(int i=0;i<4;++i) {h^=(pump_id>>(8*i))&0xFFu;h*=16777619u;}
+    }
     return h;
 }
 static std::atomic<bool> identifier_reset_requested{false};
 static bool identifier_load(BuildingIdentifier& id,uint32_t identity) {
     Preferences prefs;
     if(!prefs.begin("cottage_mdl",true)) return false;
-    const size_t n=prefs.getBytesLength("rls1");
+    const char* key=model_blob_key(id.variable_setpoints());
+    const size_t n=prefs.getBytesLength(key);
     bool ok=false;
     if(n>0 && n<=BuildingIdentifier::blob_capacity) {
         auto* buf=static_cast<uint8_t*>(heap_caps_malloc(n,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
         if(buf) {
-            ok=prefs.getBytes("rls1",buf,n)==n && id.load(identity,buf,n);
+            ok=prefs.getBytes(key,buf,n)==n && id.load(identity,buf,n);
             heap_caps_free(buf);
         }
     }
@@ -1471,7 +1512,7 @@ static ModelStore identifier_store(const BuildingIdentifier& id,uint32_t identit
         nvs_handle_t handle=0;
         esp_err_t err=nvs_open("cottage_mdl",NVS_READWRITE,&handle);
         if(err==ESP_OK) {
-            err=nvs_set_blob(handle,"rls1",buf,used);
+            err=nvs_set_blob(handle,model_blob_key(id.variable_setpoints()),buf,used);
             if(err==ESP_OK) err=nvs_commit(handle);
             nvs_close(handle);
         }
@@ -1484,13 +1525,15 @@ static ModelStore identifier_store(const BuildingIdentifier& id,uint32_t identit
 // the learned model is bound to a persistent "reset epoch" so that a failed
 // erase can never bring the old calibration back after a reboot.
 struct NvsModelStore {
+    bool variable=false;
+    const char* epoch_key() const {return variable?"epoch2":"epoch";}
     EpochRead read_epoch(uint32_t& out) {
         nvs_handle_t handle=0;
         esp_err_t err=nvs_open("cottage_mdl",NVS_READONLY,&handle);
         if(err==ESP_ERR_NVS_NOT_FOUND) return EpochRead::Missing;   // namespace never created
         if(err!=ESP_OK) return EpochRead::Error;
         uint32_t value=0;
-        err=nvs_get_u32(handle,"epoch",&value);
+        err=nvs_get_u32(handle,epoch_key(),&value);
         nvs_close(handle);
         if(err==ESP_OK) {out=value;return EpochRead::Ok;}
         return err==ESP_ERR_NVS_NOT_FOUND?EpochRead::Missing:EpochRead::Error;
@@ -1498,7 +1541,7 @@ struct NvsModelStore {
     bool write_epoch(uint32_t value) {
         nvs_handle_t handle=0;
         if(nvs_open("cottage_mdl",NVS_READWRITE,&handle)!=ESP_OK) return false;
-        esp_err_t err=nvs_set_u32(handle,"epoch",value);
+        esp_err_t err=nvs_set_u32(handle,epoch_key(),value);
         if(err==ESP_OK) err=nvs_commit(handle);
         nvs_close(handle);
         return err==ESP_OK;
@@ -1506,7 +1549,7 @@ struct NvsModelStore {
     bool erase_model() {
         nvs_handle_t handle=0;
         if(nvs_open("cottage_mdl",NVS_READWRITE,&handle)!=ESP_OK) return false;
-        esp_err_t err=nvs_erase_key(handle,"rls1");
+        esp_err_t err=nvs_erase_key(handle,model_blob_key(variable));
         bool ok=err==ESP_OK || err==ESP_ERR_NVS_NOT_FOUND;
         if(err==ESP_OK) ok=nvs_commit(handle)==ESP_OK;
         nvs_close(handle);
@@ -1518,7 +1561,7 @@ struct NvsModelStore {
         if(err==ESP_ERR_NVS_NOT_FOUND) return false;
         if(err!=ESP_OK) return true;
         size_t n=0;
-        err=nvs_get_blob(handle,"rls1",nullptr,&n);
+        err=nvs_get_blob(handle,model_blob_key(variable),nullptr,&n);
         nvs_close(handle);
         return err!=ESP_ERR_NVS_NOT_FOUND;
     }
@@ -1561,14 +1604,15 @@ static void optimizer_worker(void*) {
     auto* trend=static_cast<TrendPoint*>(heap_caps_malloc(
         sizeof(TrendPoint)*BuildingIdentifier::trend_slots,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     void* id_mem=heap_caps_malloc(sizeof(BuildingIdentifier),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    BuildingIdentifier* id=id_mem?new(id_mem) BuildingIdentifier():nullptr;
+    const bool initial_variable=variable_setpoint_model_selected();
+    BuildingIdentifier* id=id_mem?new(id_mem) BuildingIdentifier(initial_variable):nullptr;
     if(hz) new(hz) HorizonResult();
     if(rows) for(size_t i=0;i<max_horizon_slots;++i) new(rows+i) PlanRow();
     uint32_t identity=identifier_identity();
     // The stored model is bound to site identity AND the persistent reset
     // epoch; an unreadable epoch means the blob may be a reset-away model.
     uint32_t model_epoch=0;
-    NvsModelStore model_store;
+    NvsModelStore model_store{initial_variable};
     bool epoch_known=load_model_epoch(model_store,model_epoch);
     const bool restored=id && epoch_known &&
         identifier_load(*id,model_store_identity(identity,model_epoch));
@@ -1598,7 +1642,31 @@ static void optimizer_worker(void*) {
             // still come back after a reboot (Codex P2, PR #63).
             const uint32_t current_identity=identifier_identity();
             const bool owner_reset=identifier_reset_requested.exchange(false);
-            if(owner_reset || current_identity!=identity) {
+            const bool variable=variable_setpoint_model_selected();
+            const bool domain_changed=variable!=id->variable_setpoints();
+            if(domain_changed && !reset_unpersisted) {
+                // Keep the other operating range's calibration in its own NVS
+                // record. Never train or restore one domain from the other.
+                identity=current_identity;
+                id->~BuildingIdentifier();
+                new(id) BuildingIdentifier(variable);
+                model_store.variable=variable;
+                epoch_known=load_model_epoch(model_store,model_epoch);
+                const bool domain_restored=epoch_known && !owner_reset &&
+                    identifier_load(*id,model_store_identity(identity,model_epoch));
+                reset_unpersisted=false;reset_by_owner=false;
+                slot=LearningSlot{};
+                saved_revision=id->report(now).revision;
+                boundaries_since_save=0;
+                xSemaphoreTake(lock_data,portMAX_DELAY);
+                identifier_restored=domain_restored;
+                mpc_plan=MpcPlanRecord{};
+                plan_count=0;
+                last_plan.status=MpcStatus::InvalidInput;
+                calibration_snapshot=id->report(now);
+                xSemaphoreGive(lock_data);
+            }
+            if(owner_reset || (variable==id->variable_setpoints() && current_identity!=identity)) {
                 identity=current_identity;
                 id->reset();
                 reset_unpersisted=persist_model_reset(model_store,model_epoch,epoch_known)!=
@@ -1633,21 +1701,19 @@ static void optimizer_worker(void*) {
             }
         }
         if(wifi_ok.load() && clock_ok() && prices && weather && aligned && hz && rows &&
-           legacy && trend && id) {
+           legacy && trend && id && id->variable_setpoints()==variable_setpoint_model_selected()) {
             // A fresh indoor measurement is not a forecast for an entire
             // unfinished quarter-hour: learn and plan only at the boundary.
             boundary=(now-slot_start)<=60 && slot_start!=last_boundary;
         }
         CN105Telemetry cp;TemperatureSample ts;ShellyTelemetry meter;
-        unsigned observed_mode_minutes=0;
-        uint32_t optimizer_mode_generation=0;
         xSemaphoreTake(lock_data,portMAX_DELAY);
         cp=pump;meter=consumption;
-        optimizer_mode_generation=observed_mode_generation;
-        observed_mode_minutes=observed_mode_duration.minutes(
-            cp.mode,static_cast<uint64_t>(esp_timer_get_time()/1000),valid_cn105(cp,now));
         xSemaphoreGive(lock_data);
         const uint32_t optimizer_site_generation=site_settings_generation();
+        const bool midea=cottage_midea_selected();
+        const auto view=boundary?optimizer_pump_state(now,midea):enevina::PumpRoomState{};
+        const bool view_heat=view.mode==enevina::PumpRoomMode::Heat;
         ts=selected_room_sample(now);
         if(site_settings_generation()!=optimizer_site_generation ||
            (id && identifier_identity()!=identity))ts={};
@@ -1657,7 +1723,6 @@ static void optimizer_worker(void*) {
         const size_t wc=boundary?enevina_firmware::future_weather(weather,64):0;
         if(boundary) {
             last_boundary=slot_start;
-            const PumpView view=pump_view(cp,now,observed_mode_minutes);
             // (1) Close the previous slot: one identification observation.
             if(slot.open && slot.utc==slot_start-900 &&
                slot.config_generation==c23_config_generation() &&
@@ -1671,11 +1736,12 @@ static void optimizer_worker(void*) {
                 // (source-verified polls, gaps reset the duration) since at
                 // most ~1 min after the slot began, and no command sent
                 // during the slot. A gateway receipt never labels data.
-                o.heat_valid=view.known && view.minutes>=14 &&
+                o.heat_valid=known_heating_mode(view) && view.request_minutes>=14 &&
                     control_commands_sent.load()==slot.commands_sent;
-                o.heat_requested=view.heat;
-                // HEAT above the 16 C operating point is outside the model.
-                o.in_model_domain=!view.heat || view.setpoint<=16.01;
+                o.heat_requested=view_heat;
+                o.setpoint_c=view.setpoint_c;
+                o.in_model_domain=id->variable_setpoints() || !view_heat ||
+                    view.setpoint_c<=16.01;
                 const int64_t dt=meter.captured_utc-slot.energy_utc;
                 o.electric_valid=slot.energy_ok && valid_shelly(meter,now,60) &&
                     meter.total_wh>=slot.total_wh && dt>=600 && dt<=1200;
@@ -1718,13 +1784,16 @@ static void optimizer_worker(void*) {
             pi.heating_allowed=heating_allowed;pi.target_valid=heating_allowed;
             pi.target_c=target_c;
             pi.temperature_fresh=valid_temperature(ts,now);pi.indoor_c=ts.indoor_c;
-            pi.pump_state_known=view.known;pi.pump_heat=view.heat;
-            pi.minutes_in_mode=view.minutes;
+            pi.pump_state_known=known_heating_mode(view);pi.pump_heat=view_heat;
+            pi.pump_setpoint_c=view.setpoint_c;
+            pi.pump_limits=view.heating;
+            pi.minutes_in_mode=view.mode_minutes;
             pi.horizon=hz;
-            pi.mode_generation=optimizer_mode_generation;
+            pi.mode_generation=view.request_generation;
             pi.config_generation=c23_config_generation();
             pi.settings_generation=optimizer_site_generation;
             pi.limits=owner_comfort_limits();
+            pi.profile=site_settings_snapshot().profile;
             pi.controls.runtime_budget_ms=1800;
             pi.controls.monotonic_now_ms=cottage_now_ms;
             pi.controls.cancel_requested=cottage_cancel;
@@ -1737,13 +1806,17 @@ static void optimizer_worker(void*) {
             for(size_t i=0;i<po.rows;++i)
                 legacy[i]={rows[i].utc,rows[i].indoor_c,rows[i].energy_kwh,rows[i].cost,rows[i].heat};
             const MpcResult result=po.result;
+            const auto after=optimizer_pump_state(time(nullptr),midea);
             xSemaphoreTake(lock_data,portMAX_DELAY);
             // The optimization ran without holding lock_data. A pump mode
             // transition may have invalidated its input snapshot while the
             // solver was busy; never publish that old plan, even if
             // HEAT -> OFF -> HEAT returned to the same mode.
-            const bool mode_changed=optimizer_mode_generation!=
-                observed_mode_generation || cp.mode!=pump.mode ||
+            const bool mode_changed=after.request_generation!=view.request_generation ||
+                after.mode!=view.mode || after.endpoint_generation!=view.endpoint_generation ||
+                after.link_generation!=view.link_generation ||
+                after.configuration_generation!=view.configuration_generation ||
+                (!midea && known_heating_mode(view) && view.request_generation!=observed_mode_generation) ||
                 site_settings_generation()!=optimizer_site_generation;
             MpcPlanRecord record=po.record;
             if(mode_changed) {
@@ -2056,11 +2129,11 @@ static void status_endpoint() {
     cJSON_AddStringToObject(root,"reason",reason);
     cJSON_AddNumberToObject(root,"bad_reads",failed_reads.load());
     {   // Live MPC chain: which controller would act now, and why.
-        ArbiterOutput arb{};
-        (void)active_control_proposal(now,te,&arb);
-        CalibrationReport cal;MpcPlanRecord mp;
+        const auto inputs=build_arbiter_input(now,selected);
+        const auto arb=arbitrate(inputs);
+        const auto& mp=inputs.plan;
         xSemaphoreTake(lock_data,portMAX_DELAY);
-        cal=calibration_snapshot;mp=mpc_plan;
+        const auto cal=calibration_snapshot;
         xSemaphoreGive(lock_data);
         const int64_t current_slot=(now/900)*900;
         cJSON_AddBoolToObject(root,"model_calibrated",cal.state==CalibrationState::Calibrated);
@@ -2075,8 +2148,7 @@ static void status_endpoint() {
         // Executed = the pump bridge read back this slot's planned state.
         cJSON_AddBoolToObject(root,"mpc_decision_confirmed",
             arb.source==ProposalSource::Mpc && mp.first_utc==current_slot &&
-            mpc_confirmed_slot_utc.load()==current_slot &&
-            mpc_confirmed_heat.load()==(mp.first_heat?1:0));
+            mpc_state_read_back(inputs));
         cJSON_AddBoolToObject(root,"shelly_meter_pump_only",shelly_meter_pump_only());
         cJSON_AddBoolToObject(root,"mpc_pump_source_verified",
             valid_cn105(cp,now) && cp.evidence.source_time_verified);
@@ -2209,8 +2281,8 @@ static void plan_endpoint() {
     // The same predicate the controller uses: a plan invalidated by a mode
     // change (Cold, drying block), a rebound sensor, new settings or an
     // external pump change is never shown as valid (Codex P2, PR #63).
-    const MpcFallback validity=plan_validity(
-        build_arbiter_input(current_utc,selected_room_sample(current_utc)));
+    const auto inputs=build_arbiter_input(current_utc,selected_room_sample(current_utc));
+    const MpcFallback validity=plan_validity(inputs);
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.sendHeader("Cache-Control","no-store");
     web.send(200,"application/json; charset=utf-8","");
@@ -2218,7 +2290,7 @@ static void plan_endpoint() {
     // Only the CURRENT slot's plan from a calibrated model is ever shown:
     // a plan from an earlier slot is stale and never displayed as valid.
     const bool ok=rows_mem && calibrated && record.has_plan && record.status==MpcStatus::Ok &&
-        validity==MpcFallback::None &&
+        validity==MpcFallback::None && inputs.plan.computed_utc==record.computed_utc &&
         n>0 && n<=max_horizon_slots && current_utc>=record.first_utc &&
         current_utc<record.first_utc+900;
     double minimum_c=0;
@@ -2241,8 +2313,9 @@ static void plan_endpoint() {
         else strlcpy(kwh,"null",sizeof(kwh));
         if(energy && std::isfinite(r.cost)) snprintf(eur,sizeof(eur),"%.7f",r.cost);
         else strlcpy(eur,"null",sizeof(eur));
-        snprintf(buf,sizeof(buf),"%s{\"utc\":%lld,\"heat\":%s,\"indoor_c\":%.5f,\"kwh\":%s,\"eur\":%s}",
-            i?",":"",static_cast<long long>(r.utc),r.heat?"true":"false",r.indoor_c,kwh,eur);
+        snprintf(buf,sizeof(buf),"%s{\"utc\":%lld,\"heat\":%s,\"setpoint_c\":%.2f,\"indoor_c\":%.5f,\"kwh\":%s,\"eur\":%s}",
+            i?",":"",static_cast<long long>(r.utc),r.heat?"true":"false",
+            r.setpoint_c,r.indoor_c,kwh,eur);
         web.sendContent(buf);
     }
     web.sendContent("]}");
@@ -2294,11 +2367,12 @@ static void mpc_endpoint() {
     const int64_t current_slot=(now/900)*900;
     // Never display a plan from an earlier slot or from an uncalibrated model.
     const bool plan_ok=cal.state==CalibrationState::Calibrated && plan.has_plan &&
-        validity==MpcFallback::None && plan.first_utc==current_slot && row_count>0;
+        validity==MpcFallback::None && arb_in.plan.computed_utc==plan.computed_utc &&
+        plan.first_utc==current_slot && row_count>0;
     const bool energy_ok=plan_ok && energy;
     const bool confirmed=plan_ok && arb.source==ProposalSource::Mpc &&
-        mpc_confirmed_slot_utc.load()==current_slot &&
-        mpc_confirmed_heat.load()==(plan.first_heat?1:0);
+        mpc_state_read_back(arb_in);
+    const bool midea=cottage_midea_selected();
     const ModelEstimate& m=cal.model;
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.sendHeader("Cache-Control","no-store");
@@ -2307,7 +2381,7 @@ static void mpc_endpoint() {
     snprintf(buf,sizeof(buf),
         "{\"evidence\":\"MODEL_FROM_LOCAL_MEASUREMENTS\",\"now_utc\":%lld,\"state\":\"%s\","
         "\"fallback\":\"%s\",\"source\":\"%s\",\"armed\":%s,\"decision_confirmed\":%s,"
-        "\"pump_source_verified\":%s,"
+        "\"pump_source_verified\":%s,\"pump_connection_ready\":%s,"
         "\"calibration\":{\"state\":\"%s\",\"block\":\"%s\",\"samples\":%u,\"heating_slots\":%u,"
         "\"off_slots\":%u,\"starts\":%u,\"stops\":%u,\"skipped\":%u,\"outliers\":%u,"
         "\"windows\":%u,\"windows_with_switch\":%u,\"windows_needed\":%u,\"restored\":%s,"
@@ -2315,8 +2389,9 @@ static void mpc_endpoint() {
         "\"reset_state\":\"%s\",\"reset_failures\":%u,",
         static_cast<long long>(now),mpc_run_state_name(arb.mpc_state),
         mpc_fallback_name(arb.fallback),proposal_source_name(arb.source),
-        control_armed.load()?"true":"false",confirmed?"true":"false",
-        pump_verified?"true":"false",calibration_state_name(cal.state),calibration_block_name(cal.block),cal.samples,
+        (midea?cottage_midea_automatic_enabled():control_armed.load())?"true":"false",
+        confirmed?"true":"false",pump_verified?"true":"false",
+        arb_in.pump_state_known?"true":"false",calibration_state_name(cal.state),calibration_block_name(cal.block),cal.samples,
         cal.heating_slots,cal.off_slots,cal.starts,cal.stops,cal.skipped,cal.outliers,
         cal.windows,cal.windows_with_switch,CalibrationLimits::windows_needed,
         restored?"true":"false",saves,save_failures,save_skips,
@@ -2395,9 +2470,9 @@ static void mpc_endpoint() {
         json_number_or_null(a,sizeof(a),r.energy_kwh,"%.5f",energy_ok);
         json_number_or_null(b,sizeof(b),r.cost,"%.6f",energy_ok);
         snprintf(buf,sizeof(buf),
-            "%s{\"utc\":%lld,\"heat\":%s,\"indoor_c\":%.3f,\"outdoor_c\":%.2f,"
+            "%s{\"utc\":%lld,\"heat\":%s,\"setpoint_c\":%.2f,\"indoor_c\":%.3f,\"outdoor_c\":%.2f,"
             "\"price\":%.6f,\"kwh\":%s,\"cost\":%s}",i?",":"",
-            static_cast<long long>(r.utc),r.heat?"true":"false",r.indoor_c,r.outdoor_c,
+            static_cast<long long>(r.utc),r.heat?"true":"false",r.setpoint_c,r.indoor_c,r.outdoor_c,
             r.price,a,b);
         web.sendContent(buf);
         if(i%24==23) delay(1);

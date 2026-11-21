@@ -24,6 +24,7 @@ bool cottage_midea_service_needs_worker();
 // Nonblocking identity guards for the transport's cached negotiation and final
 // command gate. A transition in progress is never a current configuration.
 uint32_t cottage_midea_configuration_generation();
+uint32_t cottage_midea_calibration_identity();
 bool cottage_midea_configuration_current(uint32_t expected_generation);
 #endif
 // Wi-Fi event callback: invalidate queued physical commands immediately.

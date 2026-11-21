@@ -1,6 +1,7 @@
 // Building identification: parameter recovery, honest calibration states,
 // meter-scope rule, walk-forward validation, degradation and persistence.
 #include "cottage/building_identification.hpp"
+#include "cottage/optimization_profile.hpp"
 #include "tests/cottage_closed_loop.hpp"
 #include <cassert>
 #include <cmath>
@@ -141,6 +142,167 @@ void test_recovers_truth_and_calibrates() {
     CHECK(std::fabs(heat.electric_kwh-slot_hours)<1e-6);
 }
 
+struct ResidentialRun {
+    double cost=0,equalized_cost=0,final_c=21;
+    double minimum_c=21,maximum_c=21;
+    unsigned starts=0,predictive_slots=0;
+};
+ResidentialRun residential_run(const Sim& sim,const BuildingIdentifier& id,
+                               bool use_prices,bool predictive) {
+    constexpr ComfortLimits limits{19,23};
+    constexpr size_t count=96;
+    const auto period=[](size_t i) {
+        const size_t hour=(i%96)/4;
+        const double spot=hour<6?0.03:hour<16?0.13:hour<20?0.42:0.13;
+        const double tariff=hour>=7 && hour<22?0.052:0.028;
+        return Period{8+2*std::sin(6.283185307179586*i/96),
+            (spot+tariff+0.035)*1.255,0,1};
+    };
+    State state{21,true,120};
+    ResidentialRun metrics{};
+    double setpoint=21,mean_price=0;
+    HorizonResult forecast{};
+    for(size_t i=0;i<count;++i) {
+        const int64_t now=sim.utc+static_cast<int64_t>(i)*900;
+        const Period actual=period(i);
+        mean_price+=actual.total_price_eur_per_kwh/count;
+        double prices[16]{};
+        for(size_t j=0;j<16;++j)prices[j]=period(i+j).total_price_eur_per_kwh;
+        BootstrapInput boot{};
+        boot.indoor_fresh=true;boot.indoor_c=state.indoor_c;boot.desired_room_c=21;
+        size_t window=8;
+        CHECK(apply_profile(boot,OptimizationProfile::Balanced,limits.min_c,limits.max_c,0.10,window));
+        boot.next_total_prices=prices;boot.price_count=window;boot.prices_contiguous_and_fresh=use_prices;
+        BootstrapDecision decision=bootstrap_price_decision(boot);
+        if(predictive) {
+            forecast.bridge.status=BridgeStatus::Ready;
+            forecast.bridge.first_utc=now;
+            forecast.bridge.count=count;
+            for(size_t j=0;j<count;++j)forecast.bridge.periods[j]=period(i+j);
+            PlannerInput input{};
+            input.now_utc=now;input.identifier=&id;input.horizon=&forecast;
+            input.heating_allowed=input.target_valid=input.temperature_fresh=input.pump_state_known=true;
+            input.target_c=21;input.limits=limits;input.indoor_c=state.indoor_c;
+            input.pump_heat=state.heat_requested;input.pump_setpoint_c=setpoint;
+            input.minutes_in_mode=state.minutes_in_mode;input.pump_limits={16,26,0.5,true,true};
+            const auto plan=plan_mpc(input,nullptr);
+            ArbiterInput current{};
+            current.now_utc=now;current.plan=plan.record;current.limits=limits;
+            current.calibrated=id.calibrated(now);
+            current.temperature_fresh=current.pump_state_known=true;
+            current.pump_heat=state.heat_requested;current.pump_setpoint_c=setpoint;
+            current.indoor_c=state.indoor_c;current.bootstrap=decision;
+            const auto arbitration=arbitrate(current);
+            decision=arbitration.proposal;
+            if(arbitration.source==ProposalSource::Mpc)++metrics.predictive_slots;
+        }
+        double requested=setpoint;
+        if(decision.action==BootstrapAction::Off)requested=0;
+        else if(decision.action==BootstrapAction::HeatSetpoint)requested=decision.heat_setpoint_c;
+        if((requested>0)!=state.heat_requested && state.minutes_in_mode<30)requested=setpoint;
+        if(requested>0 && !state.heat_requested)++metrics.starts;
+        Period plant_period=actual;
+        plant_period.internal_gain_kw=sim.gain_kw;
+        const auto step=advance_setpoint(sim.truth,state,plant_period,requested);
+        state=step.next;setpoint=requested;
+        metrics.cost+=step.cost_eur;
+        metrics.minimum_c=std::min(metrics.minimum_c,state.indoor_c);
+        metrics.maximum_c=std::max(metrics.maximum_c,state.indoor_c);
+    }
+    metrics.final_c=state.indoor_c;
+    const auto ending=period(count-1);
+    // Match the plant's final stored heat to the common 21 C state, as in
+    // the original maintenance comparison. This is simulation truth only.
+    metrics.equalized_cost=metrics.cost+mean_price*sim.truth.thermal_mass_kwh_per_c*
+        (21-metrics.final_c)/heat_cop(sim.truth,ending.outdoor_c);
+    return metrics;
+}
+
+void test_residential_identification_and_planning() {
+    Sim sim;
+    sim.truth.variable_setpoints=true;
+    sim.truth.thermostat_band_c=1.15;
+    sim.truth.maximum_indoor_c=24;
+    State state{21,false,120};
+    BuildingIdentifier id(true);
+    for(int i=0;i<16*96;++i,sim.utc+=900) {
+        const double to=sim.outdoor(sim.utc)+10;
+        const double setpoint=i%20<4?0:i%20<9?21.0:i%20<14?22.5:21.5;
+        const Period period{to,0.20,sim.gain_kw,1};
+        const Step step=advance_setpoint(sim.truth,state,period,setpoint);
+        SlotObservation observed{};
+        observed.slot_utc=sim.utc;
+        observed.indoor_valid=observed.outdoor_valid=observed.heat_valid=true;
+        observed.heat_requested=setpoint>0;
+        observed.setpoint_c=setpoint;
+        observed.indoor_start_c=state.indoor_c;
+        observed.indoor_end_c=step.next.indoor_c;
+        observed.outdoor_c=to;
+        id.add(observed);
+        state=step.next;
+    }
+    const auto report=id.report(sim.utc);
+    std::printf("residential: %s rms=%.3f K samples=%u\n",
+        calibration_state_name(report.state),report.validation_rms_c,report.samples);
+    CHECK(report.state==CalibrationState::Calibrated && report.validation_rms_c<0.2);
+    ComfortBand band{};
+    CHECK(mpc_comfort_band(21,band,{19,23},true));
+    CHECK(band.lower_c==19 && band.upper_c==23);
+    Parameters p{};
+    bool kwh=true;
+    CHECK(id.build_parameters(sim.utc,band,false,1,p,kwh)==ModelBuildError::None);
+    CHECK(p.variable_setpoints && !kwh);
+    uint8_t blob[BuildingIdentifier::blob_capacity]{};
+    size_t used=0;
+    CHECK(id.save(42,blob,sizeof(blob),used));
+    BuildingIdentifier restored(true),legacy;
+    CHECK(restored.load(42,blob,used) && restored.calibrated(sim.utc));
+    CHECK(!legacy.load(42,blob,used));
+
+    HorizonResult forecast{};
+    forecast.bridge.status=BridgeStatus::Ready;
+    forecast.bridge.first_utc=sim.utc;
+    forecast.bridge.count=96;
+    for(size_t i=0;i<forecast.bridge.count;++i)
+        forecast.bridge.periods[i]={8.0,i>=28 && i<64?0.48:0.08,0,1};
+    PlannerInput input{};
+    input.now_utc=sim.utc;input.identifier=&restored;input.horizon=&forecast;
+    input.heating_allowed=input.target_valid=input.temperature_fresh=input.pump_state_known=true;
+    input.target_c=21;input.limits={19,23};input.indoor_c=21;
+    input.pump_heat=true;input.pump_setpoint_c=21;input.minutes_in_mode=120;
+    input.pump_limits={20,23,1,true,true};
+    std::vector<PlanRow> rows(max_horizon_slots);
+    const auto plan=plan_mpc(input,rows.data());
+    CHECK(plan.record.has_plan && plan.rows==forecast.bridge.count);
+    CHECK(!plan.energy_in_kwh && std::isnan(plan.cost));
+    for(size_t i=0;i<plan.rows;++i) {
+        CHECK(!rows[i].heat || input.pump_limits.accepts(rows[i].setpoint_c));
+        CHECK(std::isnan(rows[i].energy_kwh) && std::isnan(rows[i].cost));
+    }
+    ArbiterInput current{};
+    current.now_utc=sim.utc;current.plan=plan.record;current.limits=input.limits;
+    current.calibrated=current.temperature_fresh=current.pump_state_known=current.pump_heat=true;
+    current.pump_setpoint_c=21;current.indoor_c=21;
+    current.bootstrap.requested_room_c=21;
+    CHECK(arbitrate(current).source==ProposalSource::Mpc);
+    current.pump_setpoint_c=24;
+    CHECK(plan_validity(current)==MpcFallback::PlanInputsChanged);
+
+    input.pump_limits={};
+    CHECK(plan_mpc(input,nullptr).record.planning_fallback==MpcFallback::PumpStateUnknown);
+    const auto thermostat=residential_run(sim,restored,false,false);
+    const auto price=residential_run(sim,restored,true,false);
+    const auto mpc=residential_run(sim,restored,true,true);
+    const std::pair<const char*,ResidentialRun> comparisons[]{
+        {"thermostat",thermostat},{"price",price},{"mpc",mpc}};
+    for(const auto& comparison:comparisons) {
+        const auto& r=comparison.second;
+        std::printf("residential %-10s cost=%.3f EUR equalized=%.3f EUR end=%.2f C range=%.2f..%.2f starts=%u MPC=%u/96\n",
+            comparison.first,r.cost,r.equalized_cost,r.final_c,r.minimum_c,r.maximum_c,r.starts,r.predictive_slots);
+        CHECK(r.minimum_c>=19 && r.maximum_c<=23 && std::isfinite(r.equalized_cost));
+    }
+    CHECK(mpc.predictive_slots>0);
+}
 void test_no_heating_never_calibrates() {
     Sim sim;sim.always_off=true;sim.st.indoor_c=12;sim.meas=12;
     BuildingIdentifier id;
@@ -465,6 +627,7 @@ int main() {
     test_no_data_is_honest();
     test_comfort_band();
     test_recovers_truth_and_calibrates();
+    test_residential_identification_and_planning();
     test_no_heating_never_calibrates();
     test_meter_scope_rule();
     test_rejects_replay_gap_and_outlier();

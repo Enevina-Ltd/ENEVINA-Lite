@@ -87,8 +87,60 @@ static void room_temperature_uses_the_selected_fresh_source() {
     check(valid_temperature(c,now) && c.captured_utc==now-8,"original verified UART time");
 }
 
+static void optimize_residential_setpoint_schedule() {
+    auto p=param();
+    p.variable_setpoints=true;
+    p.thermostat_band_c=1.0;
+    p.planning_min_c=20;
+    p.critical_c=18;
+    p.maximum_indoor_c=23;
+    const State start{21,true,120};
+    const Period period{8,0.20,0,1};
+    const auto reduced=advance_setpoint(p,start,period,21.5);
+    const auto full=advance_setpoint(p,start,period,22.0);
+    check(reduced.delivered_thermal_kw>0 && reduced.delivered_thermal_kw<full.delivered_thermal_kw,
+          "the thermostat reduces output as the room approaches the requested temperature");
+    check(advance_setpoint(p,start,period,21).delivered_thermal_kw==0,
+          "pump can stay in heat mode with thermostat off");
+
+    std::vector<Period> horizon(96,period);
+    for(size_t i=0;i<horizon.size();++i) {
+        horizon[i].total_price_eur_per_kwh=(i>=26 && i<62)?0.48:0.08;
+    }
+    MpcRunControls control;
+    control.heat_setpoints_c={20.5,21,21.5,22};
+    control.heat_setpoint_count=4;
+    control.initial_setpoint_c=21;
+    control.setpoint_change_penalty=0.02;
+    const auto plan=optimize(p,start,horizon.data(),horizon.size(),3*1024*1024,control);
+    check(plan.status==MpcStatus::Ok && plan.count==horizon.size(),"feasible residential schedule");
+    State room=start;
+    double cost=0;
+    double first_heat=0;
+    bool varied=false;
+    for(size_t i=0;i<plan.count;++i) {
+        const double selected=plan.setpoint_c100[i]/100.0;
+        check(selected==0 || selected==20.5 || selected==21 || selected==21.5 || selected==22,
+              "planner chooses a device-supported grid value");
+        if(selected!=0) {
+            if(first_heat==0)first_heat=selected;
+            else varied=varied || selected!=first_heat;
+        }
+        const Step step=advance_setpoint(p,room,horizon[i],selected);
+        room=step.next;
+        cost+=step.cost_eur;
+        check(room.indoor_c>=20-1e-8 && room.indoor_c<=23+1e-8,
+              "predicted room stays inside the same comfort limits");
+    }
+    check(varied,"price-responsive schedule uses multiple heating setpoints");
+    check(room.indoor_c>=21-1e-8,"matched terminal temperature");
+    check(std::fabs(cost-plan.cost_eur)<1e-8,"residential cost replays exactly");
+    const auto budget=optimize(p,start,horizon.data(),horizon.size(),1024,control);
+    check(budget.status==MpcStatus::ResourceLimit && budget.count==0,"residential search obeys byte budget");
+}
 int main() {
     room_temperature_uses_the_selected_fresh_source();
+    optimize_residential_setpoint_schedule();
     auto p=param();
     check(valid(p),"parameter validation");
     State s{10,false,180};

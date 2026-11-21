@@ -2311,7 +2311,7 @@ function showPlan(){
   text('plan-time',ok?'Laskettu '+time(s.optimized_utc):'Ei kelvollista laskelmaa');
   text('plan-cost',ok&&number(p.cost_eur)!==null?fmt(p.cost_eur,2)+' '+priceDisplayCurrency():'—');
   text('plan-min',ok&&number(p.minimum_c)!==null?fmt(p.minimum_c,1)+' °C':'—');
-  text('home-plan-next',ok?'Seuraava jakso '+time(p.slots[0].utc)+': '+(p.slots[0].heat?'HEAT 16 °C':'OFF'):
+  text('home-plan-next',ok?'Seuraava jakso '+time(p.slots[0].utc)+': '+(p.slots[0].heat?'HEAT '+fmt(p.slots[0].setpoint_c??16,1)+' °C':'OFF'):
     hasFallback?'Lähtötason ehdotus: '+proposed:'Hyväksytty optimointisuunnitelma puuttuu.');
   text('home-plan-reason',ok?'Simuloitu MPC-ehdotus. Automaattiohjaus toimii erillisellä hintaohjauspolulla.':
     hasFallback?(priced?'Ruuvi + 15 min kokonaishinnat; ':'Hintadata puuttuu: Ruuvi-huonetermostaatti; ')+
@@ -2329,7 +2329,7 @@ function showPlan(){
       'Suunnitelma ei saatavilla.';
     return;
   }
-  p.slots.slice(0,96).forEach(x=>{const tr=body.insertRow();[time(x.utc),x.heat?'HEAT 16 °C':'OFF',fmt(number(x.indoor_c),1),fmt(number(x.kwh),3),fmt(number(x.eur),3)].forEach((v,i)=>{const cell=tr.insertCell();cell.textContent=v;if(i===1)cell.className=x.heat?'heat':'off';});});
+  p.slots.slice(0,96).forEach(x=>{const tr=body.insertRow();[time(x.utc),x.heat?'HEAT '+fmt(x.setpoint_c??16,1)+' °C':'OFF',fmt(number(x.indoor_c),1),fmt(number(x.kwh),3),fmt(number(x.eur),3)].forEach((v,i)=>{const cell=tr.insertCell();cell.textContent=v;if(i===1)cell.className=x.heat?'heat':'off';});});
 }
 function showHistory(){
   const points=state.history&&Array.isArray(state.history.hours)?state.history.hours.filter(x=>x.clock_valid&&Number.isFinite(x.temp)):[];
@@ -3122,7 +3122,7 @@ fi:{title:'Ennakoiva säätö (MPC)',active:'Käytössä',calibrating:'Kalibroid
  plan:'Lämmityssuunnitelma',updated:'Päivitetty',horizon:'Ennustejakso',next:'Seuraava päätös',
  heat:'HEAT 16 °C',off:'OFF',confirmed:'pumppu vahvisti tilan',unconfirmed:'ei vielä vahvistettu pumpulta',
  shadow:'varjotila: komentoja ei lähetetä',noplan:'Voimassa olevaa MPC-suunnitelmaa ei ole tälle varttitunnille.',
- energy:'Ennustettu sähkö ja kustannus',energyno:'Ei näytetä: lämpöpumppukohtaista sähkömittaria ei ole vahvistettu, joten malli käyttää vain suhteellista energiaa.',
+ energy:'Ennustettu sähkö ja kustannus',energyno:'Luotettavaa pumppukohtaista kulutusmallia ei ole saatavilla. Optimointi käyttää suhteellista energiaa.',
  meter:'Mitattu kulutus nyt (Shelly)',scopeU:'mittauskohde vahvistamaton – voi sisältää muuta kulutusta',scopeP:'vain lämpöpumppu',
  measured:'Mitattu sisälämpö',predicted:'Mallin ennuste (testi)',planned:'Suunniteltu sisälämpö',outdoor:'Ulkolämpö (MET Norway)',
  price:'Kokonaishinta',heating:'Lämmitys (suunnitelma)',band:'Mukavuusalue',now:'nyt',h:'h',
@@ -3130,7 +3130,7 @@ fi:{title:'Ennakoiva säätö (MPC)',active:'Käytössä',calibrating:'Kalibroid
  limit_MAX_48H:'48 h',limit_PRICES_END:'hinnat loppuvat',limit_PRICE_GAP:'hinnoissa aukko',limit_BAD_PRICE:'hinta ei kelpaa',
  limit_WEATHER_END:'sääennuste loppuu',limit_WEATHER_GAP:'sääennusteessa aukko',limit_NONE:'—',
  rejected:'Aiempi suunnitelma ei ole käytössä: ',
- unverified:'Pumpun tilaa ei ole lähdetodennettu (CN105-lukutodiste puuttuu): malli ei opi eikä MPC ohjaa, ennen kuin pumpun omat mittaukset ovat todennettuja.'},
+ unverified:'Pumpulta ei ole tuoretta tilalukemaa. MPC odottaa seuraavaa kelvollista lukemaa.'},
 en:{title:'Predictive control (MPC)',active:'Active',calibrating:'Calibrating',fallback:'Fallback',
  source:'Control source now',MPC:'MPC plan',PRICE_CONTROL:'Price control',THERMOSTAT:'Thermostat',NONE:'No proposal',
  calib:'Building model calibration',samples:'Measured slots',windows:'Prediction tests',model:'Identified model',
@@ -3140,7 +3140,7 @@ en:{title:'Predictive control (MPC)',active:'Active',calibrating:'Calibrating',f
  plan:'Heating plan',updated:'Updated',horizon:'Horizon',next:'Next decision',
  heat:'HEAT 16 °C',off:'OFF',confirmed:'confirmed by the pump',unconfirmed:'not yet confirmed by the pump',
  shadow:'shadow mode: no commands are sent',noplan:'There is no valid MPC plan for this quarter-hour.',
- energy:'Predicted electricity and cost',energyno:'Not shown: no heat-pump-only meter has been confirmed, so the model uses relative energy only.',
+ energy:'Predicted electricity and cost',energyno:'A reliable heat-pump consumption model is unavailable. Optimization uses relative energy.',
  meter:'Measured consumption now (Shelly)',scopeU:'measurement scope unconfirmed – may include other loads',scopeP:'heat pump only',
  measured:'Measured indoor',predicted:'Model prediction (test)',planned:'Planned indoor',outdoor:'Outdoor (MET Norway)',
  price:'Total price',heating:'Heating (plan)',band:'Comfort band',now:'now',h:'h',
@@ -3148,11 +3148,11 @@ en:{title:'Predictive control (MPC)',active:'Active',calibrating:'Calibrating',f
  limit_MAX_48H:'48 h',limit_PRICES_END:'prices end',limit_PRICE_GAP:'gap in prices',limit_BAD_PRICE:'invalid price',
  limit_WEATHER_END:'weather forecast ends',limit_WEATHER_GAP:'gap in weather forecast',limit_NONE:'—',
  rejected:'The earlier plan is not being executed: ',
- unverified:'The pump state is not source-verified (no CN105 read proof): the model does not learn and the MPC does not control until the pump’s own measurements are verified.'}};
+ unverified:'A fresh pump reading is unavailable. MPC waits for the next valid reading.'}};
 const WHY={
 fi:{NONE:'',MODEL_LEARNING:'malli oppii vielä mittauksista',MODEL_VALIDATING:'mallin ennusteita testataan',
  MODEL_DEGRADED:'malli ei enää ennusta riittävän tarkasti',NO_HEATING_MODE:'valittu tila ei lämmitä',
- TARGET_OUTSIDE_MODEL:'tavoite ei ole HEAT 16 °C -mallin alueella',OUTDOOR_OUTSIDE_LEARNED_RANGE:'ennustettu ulkolämpö on opitun alueen ulkopuolella',
+ TARGET_OUTSIDE_MODEL:'tavoite ei ole lämpömallin alueella',OUTDOOR_OUTSIDE_LEARNED_RANGE:'ennustettu ulkolämpö on opitun alueen ulkopuolella',
  FORECAST_UNAVAILABLE:'hinta- tai sääennuste puuttuu tai on vanhentunut',HORIZON_TOO_SHORT:'ennustejakso on liian lyhyt',
  PUMP_STATE_UNKNOWN:'pumpun tilaa ei ole luettu',TEMPERATURE_STALE:'sisälämpötila puuttuu tai on vanha',
  SOLVER_FAILED:'suunnitelmaa ei löytynyt rajoissa',SOLVER_TIMEOUT:'laskenta-aika ylittyi',PLAN_STALE:'suunnitelma on vanhentunut',
@@ -3161,7 +3161,7 @@ fi:{NONE:'',MODEL_LEARNING:'malli oppii vielä mittauksista',MODEL_VALIDATING:'m
  COMFORT_LIMITS_INVALID:'omat lämpötilarajat ovat ristiriitaiset tai liian lähellä tavoitetta'},
 en:{NONE:'',MODEL_LEARNING:'the model is still learning from measurements',MODEL_VALIDATING:'the model’s predictions are being tested',
  MODEL_DEGRADED:'the model no longer predicts accurately enough',NO_HEATING_MODE:'the selected mode does not heat',
- TARGET_OUTSIDE_MODEL:'the target is outside the HEAT 16 °C model range',OUTDOOR_OUTSIDE_LEARNED_RANGE:'forecast outdoor temperature is outside the learned range',
+ TARGET_OUTSIDE_MODEL:'the target is outside the thermal model range',OUTDOOR_OUTSIDE_LEARNED_RANGE:'forecast outdoor temperature is outside the learned range',
  FORECAST_UNAVAILABLE:'price or weather forecast missing or stale',HORIZON_TOO_SHORT:'forecast horizon too short',
  PUMP_STATE_UNKNOWN:'pump state has not been read',TEMPERATURE_STALE:'indoor temperature missing or stale',
  SOLVER_FAILED:'no plan within the limits',SOLVER_TIMEOUT:'computation time exceeded',PLAN_STALE:'plan is stale',
@@ -3283,7 +3283,7 @@ function render(){
     if(num(m.ua_lower_kw_per_c)!==null)extra.push(t('bounds')+': UA ≥ '+f(m.ua_lower_kw_per_c,3)+' kW/K, C ≥ '+f(m.capacity_lower_kwh_per_c,2)+' kWh/K');
     c.append(node('p','tiny muted',extra.join(' ')));
   } else c.append(node('p','callout',t('nomodel')));
-  if(d.pump_source_verified===false)c.append(node('p','callout warn',t('unverified')));
+  if((d.pump_connection_ready??d.pump_source_verified)===false)c.append(node('p','callout warn',t('unverified')));
   const ch=chart(d);
   if(ch){c.append(ch,legend());}
   const p=d.plan||{};
@@ -3291,7 +3291,7 @@ function render(){
   if(p.valid&&p.slots&&p.slots.length){
     const first=p.slots[0];
     let status=d.decision_confirmed?t('confirmed'):d.armed?t('unconfirmed'):t('shadow');
-    g3.append(box(t('next'),(first.heat?t('heat'):t('off'))+' · '+hm(first.utc),status));
+    g3.append(box(t('next'),(first.heat&&num(first.setpoint_c)!==null?'HEAT '+f(first.setpoint_c,1)+' °C':first.heat?t('heat'):t('off'))+' · '+hm(first.utc),status));
     g3.append(box(t('updated'),day(p.computed_utc),t('horizon')+' '+f(p.horizon_slots/4,1)+' '+t('h')+' ('+t('limit_'+p.horizon_limit)+')'));
     g3.append(box(t('energy'),p.energy_valid?f(p.energy_kwh,2)+' kWh · '+f(p.cost,2)+' '+(p.currency||''):'—',p.energy_valid?null:t('energyno')));
   } else {

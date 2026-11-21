@@ -30,6 +30,8 @@ struct Parameters {
     // Thermal energy released into the room in the first OFF slot after HEAT
     // (fan run-on / hot coil). Identified from measurements; 0 = not modelled.
     double stop_afterheat_kwh = 0;
+    bool variable_setpoints=false;
+    double thermostat_band_c=0.5;
 };
 struct State {
     double indoor_c = 0;
@@ -55,4 +57,7 @@ bool valid(const Parameters& p, const State& s, const Period& d);
 double heat_capacity_kw(const Parameters& p, double outdoor_c);
 double heat_cop(const Parameters& p, double outdoor_c);
 Step advance(const Parameters& p, const State& s, const Period& d, bool heat_16_c);
+// Zero is OFF. A positive setpoint requests HEAT, even when the thermostat
+// elects to deliver no heat at the current indoor temperature.
+Step advance_setpoint(const Parameters& p,const State& s,const Period& d,double setpoint_c);
 } // namespace enevina::cottage

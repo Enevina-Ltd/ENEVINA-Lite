@@ -9,6 +9,7 @@
 #include "cottage/forecast_bridge.hpp"
 #include "cottage/mpc.hpp"
 #include "cottage/mpc_arbiter.hpp"
+#include "pump/pump_adapter.hpp"
 #include <cstddef>
 #include <cstdint>
 
@@ -25,10 +26,13 @@ struct PlannerInput {
     bool target_valid=false;
     double target_c=0;
     ComfortLimits limits{};          // owner's hard comfort limits (0 = unset)
+    OptimizationProfile profile=OptimizationProfile::Balanced;
     bool temperature_fresh=false;
     double indoor_c=0;
     bool pump_state_known=false;
     bool pump_heat=false;
+    double pump_setpoint_c=0;
+    PumpHeatingLimits pump_limits{};
     unsigned minutes_in_mode=0;      // conservative (0 when unknown)
     // Mutable: the identified constant gain is written into its periods in
     // place (no 6-KiB copy on the 16-KiB optimizer task stack).
@@ -47,6 +51,7 @@ struct PlanRow {
     double price=0;          // total price per kWh, site currency
     double energy_kwh=0;     // NaN unless a heat-pump-only meter calibrated it
     double cost=0;           // NaN likewise
+    double setpoint_c=0;     // chosen by the model, zero for OFF
 };
 
 struct PlannerOutput {

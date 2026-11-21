@@ -17,6 +17,8 @@
 #include <cmath>
 #include <cJSON.h>
 #include "cottage_midea_service.hpp"
+#include "cottage/mode_timing.hpp"
+#include <esp_timer.h>
 #include "cottage_midea.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_site_settings.hpp"
@@ -86,6 +88,9 @@ enevina::midea::ControlPatch pending_patch{}; // guarded by mutex
 AutomaticWriteContext pending_automatic{};
 bool pending_is_automatic=false;
 MitsubishiModeHistory midea_mode_history{};
+enevina::cottage::ObservedHeatingRequest observed_request{};
+uint32_t automatic_confirmation_generation=0;
+int64_t automatic_confirmed_utc=0,automatic_queued_utc=0;
 std::atomic<int64_t> control_sent_utc{0};
 struct ConfirmedCommand {
     bool available=false,power=false;
@@ -394,6 +399,14 @@ enevina::PumpRoomState room_state_locked(int64_t now) {
     out.mode=!observed.power?PumpRoomMode::Off:
         observed.mode==4?PumpRoomMode::Heat:PumpRoomMode::Other;
     out.setpoint_c=observed.setpoint_c;
+    out.request_generation=observed_request.generation();
+    const uint64_t monotonic_ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
+    out.mode_minutes=observed_request.mode_minutes(monotonic_ms);
+    out.request_minutes=observed_request.request_minutes(monotonic_ms);
+    if(automatic_confirmation_generation==out.request_generation) {
+        out.automatic_confirmed_utc=automatic_confirmed_utc;
+        out.automatic_queued_utc=automatic_queued_utc;
+    }
     if(observed.has_indoor)out.indoor_c=observed.indoor_c;
     if(observed.has_outdoor)out.outdoor_c=observed.outdoor_c;
     const auto& caps=observed.profile.capabilities;
@@ -651,7 +664,7 @@ enevina::cottage::ControlBlock cottage_midea_submit_automatic(
            current.endpoint_generation!=expected.endpoint_generation ||
            current.configuration_generation!=expected.configuration_generation ||
            current.link_generation!=expected.link_generation ||
-           current.mode!=expected.mode ||
+           current.mode!=expected.mode || current.request_generation!=expected.request_generation ||
            std::fabs(current.setpoint_c-expected.setpoint_c)>0.001 ||
            !pilot_current_locked(current.endpoint_generation) ||
            (current.mode!=PumpRoomMode::Off && current.mode!=PumpRoomMode::Heat))
@@ -698,6 +711,24 @@ enevina::cottage::ControlBlock cottage_midea_submit_automatic(
 
 uint32_t cottage_midea_configuration_generation() {
     return revision.load();
+}
+uint32_t cottage_midea_calibration_identity() {
+    if(!mutex)return 0;
+    xSemaphoreTake(mutex,portMAX_DELAY);
+    uint32_t identity=0;
+    if(configured) {
+        identity=2166136261u^saved.protocol;
+        for(const char* field:{saved.device_id,saved.host}) {
+            for(;*field;++field) {
+                identity^=static_cast<uint8_t>(*field);
+                identity*=16777619u;
+            }
+            identity^=0xffu;
+            identity*=16777619u;
+        }
+    }
+    xSemaphoreGive(mutex);
+    return identity;
 }
 bool cottage_midea_configuration_current(uint32_t expected_generation) {
     return !config_updating.load() && revision.load()==expected_generation;
@@ -1305,10 +1336,21 @@ void cottage_midea_service_worker(void*) {
             if(action || attempted) {
                 last_result.store(static_cast<int>(result));
                 if(result==enevina::midea::ReadStatus::Ok) {
-                    observed=sample;
                     const auto sample_link=action?expected_link:read_link;
                     const auto sample_endpoint=action?expected_endpoint:read_endpoint;
+                    const int64_t sampled_utc=time(nullptr);
                     const uint32_t sampled_at_ms=millis();
+                    const auto mode=!sample.power?enevina::PumpRoomMode::Off:
+                        sample.mode==4?enevina::PumpRoomMode::Heat:enevina::PumpRoomMode::Other;
+                    observed_request.observe(mode,sample.setpoint_c,
+                        static_cast<uint64_t>(esp_timer_get_time()/1000),
+                        fresh_locked(sampled_utc,sample_link,sample_endpoint));
+                    if(action && automatic && receipt.sent) {
+                        automatic_confirmation_generation=observed_request.generation();
+                        automatic_queued_utc=control_queued_utc.load();
+                        automatic_confirmed_utc=sampled_utc;
+                    }
+                    observed=sample;
                     if(observed_wifi_generation!=sample_link ||
                        observed_endpoint_generation!=sample_endpoint)
                         midea_mode_history.reset(sampled_at_ms);

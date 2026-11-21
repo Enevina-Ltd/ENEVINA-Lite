@@ -115,23 +115,25 @@ bool valid_comfort_limits_for_mpc(const ComfortLimits& l) {
     return l.min_c==0 || l.max_c==0 || l.max_c-l.min_c>=1.0;
 }
 
-bool mpc_comfort_band(double target_c,ComfortBand& out,const ComfortLimits& limits) {
+bool mpc_comfort_band(double target_c,ComfortBand& out,const ComfortLimits& limits,
+                      bool variable_setpoints) {
     out=ComfortBand{};
-    if(!id_finite(target_c) || !valid_comfort_limits_for_mpc(limits)) return false;
+    if(!id_finite(target_c) || !valid_comfort_limits_for_mpc(limits) ||
+       (variable_setpoints && target_c>26)) return false;
     // Same lower edge as the thermostat/price controller (target - 0.5).
     // HEAT 16 C / OFF physics are only valid up to 15.8 C indoors.
     double lower=std::max(5.0,target_c-0.5);
-    double upper=std::min(15.8,target_c+1.0);
+    double upper=variable_setpoints?target_c+0.5:std::min(15.8,target_c+1.0);
     // The owner's limits are HARD: they can only tighten the band. A limit
     // that is not at least 0.5 C beyond the target on its own side (the
     // thermostat deadband) is contradictory, not a limit to be ignored.
     if(limits.min_c>0) {
         if(limits.min_c>target_c-0.5+1e-9) return false;
-        lower=std::max(lower,limits.min_c);
+        lower=variable_setpoints?limits.min_c:std::max(lower,limits.min_c);
     }
     if(limits.max_c>0) {
         if(limits.max_c<target_c+0.5-1e-9) return false;
-        upper=std::min(upper,limits.max_c);
+        upper=variable_setpoints?limits.max_c:std::min(upper,limits.max_c);
     }
     if(target_c<5.0 || upper-lower<0.8) return false;
     out.target_c=target_c;out.lower_c=lower;out.upper_c=upper;
@@ -139,7 +141,9 @@ bool mpc_comfort_band(double target_c,ComfortBand& out,const ComfortLimits& limi
 }
 
 void BuildingIdentifier::reset() {
+    const bool variable=variable_setpoints_;
     *this=BuildingIdentifier(NoInit{});
+    variable_setpoints_=variable;
     // Weak generic prior: 30 h time constant, no heating lift known.
     const double thermal0[thermal_n]={std::exp(-slot_hours/30.0),0,0,0,0,0};
     rls_init(thermal_,thermal0,prior_p);
@@ -182,9 +186,16 @@ size_t BuildingIdentifier::trend(TrendPoint* out,size_t capacity) const {
     return n;
 }
 
-void BuildingIdentifier::validation_step(const SlotObservation& o,const double* phi,
-                                         bool start,bool stop) {
-    (void)phi;
+namespace {
+constexpr double residential_thermostat_band_c=1.0;
+}
+double BuildingIdentifier::requested_heat_fraction(const SlotObservation& o,double indoor_c) const {
+    if(!o.heat_requested)return 0.0;
+    return variable_setpoints_?
+        std::clamp((o.setpoint_c-indoor_c)/residential_thermostat_band_c,0.0,1.0):1.0;
+}
+
+void BuildingIdentifier::validation_step(const SlotObservation& o,bool start,bool stop) {
     if(!learning_ok_) {window_active_=false;return;}
     if(window_active_ && o.slot_utc!=window_next_utc_) {
         window_active_=false;windows_aborted_++;
@@ -196,10 +207,10 @@ void BuildingIdentifier::validation_step(const SlotObservation& o,const double* 
         window_next_utc_=o.slot_utc;
         window_active_=true;
     }
-    const double to=o.outdoor_c,u=o.heat_requested?1.0:0.0;
+    const double to=o.outdoor_c,u=requested_heat_fraction(o,window_pred_);
     const double* t=window_theta_;
     window_pred_=to+t[0]*(window_pred_-to)+t[1]*u+t[2]*u*to+
-        t[3]*(start?1.0:0.0)+t[4]*(stop?1.0:0.0)+t[5];
+        t[3]*(start?u:0.0)+t[4]*(stop?1.0:0.0)+t[5];
     const double err=window_pred_-o.indoor_end_c;
     window_sq_+=err*err;
     window_max_=std::max(window_max_,std::fabs(err));
@@ -229,8 +240,9 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
     const bool heat=o.heat_valid && o.heat_requested;
     const bool start=contiguous && o.heat_valid && heat && prev_heat_==0;
     const bool stop=contiguous && o.heat_valid && !heat && prev_heat_==1;
-    // Does THIS slot, taken alone, qualify for the HEAT 16 C / OFF fit?
-    const bool slot_ok=o.heat_valid && o.indoor_valid &&
+    const bool known_setpoint=!variable_setpoints_ || !heat ||
+        (id_finite(o.setpoint_c) && o.setpoint_c>=5.0 && o.setpoint_c<=35.0);
+    const bool slot_ok=known_setpoint && o.heat_valid && o.indoor_valid &&
         o.outdoor_valid && o.in_model_domain &&
         id_finite(o.indoor_start_c) && id_finite(o.indoor_end_c) && id_finite(o.outdoor_c) &&
         o.indoor_start_c>-10 && o.indoor_start_c<40 &&
@@ -238,7 +250,7 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
         o.outdoor_c>=-55 && o.outdoor_c<=45 &&
         std::fabs(o.indoor_end_c-o.indoor_start_c)<3.0 &&
         // The pump's own 16 C thermostat throttles above ~15.5 C indoors.
-        !(heat && o.indoor_start_c>15.3);
+        (variable_setpoints_ || !(heat && o.indoor_start_c>15.3));
     const bool thermal_ok=contiguous && slot_ok;
     last_sample_utc_=o.slot_utc;
     prev_slot_utc_=o.slot_utc;
@@ -250,19 +262,20 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
     prev_heat_=slot_ok?(heat?1:0):-1;
     bool updated=false;
     if(thermal_ok) {
-        const double to=o.outdoor_c,u=heat?1.0:0.0;
+        const double to=o.outdoor_c,u=requested_heat_fraction(o,o.indoor_start_c);
         const double phi[thermal_n]={o.indoor_start_c-to,u,u*to,
-            start?1.0:0.0,stop?1.0:0.0,1.0};
+            start?u:0.0,stop?1.0:0.0,1.0};
         const double y=o.indoor_end_c-to;
         const double one_step=samples_>0?to+rls_dot(thermal_,phi):nan;
-        validation_step(o,phi,start,stop);
+        validation_step(o,start,stop);
         const double open_loop=window_active_||window_count_>=window_slots?
             window_pred_:nan;
         updated=rls_update(thermal_,phi,y,thermal_lambda,true);
         push_trend(o.slot_utc+900,o.indoor_end_c,one_step,learning_ok_?open_loop:nan);
         if(updated) {
             samples_++;
-            if(heat) heating_++; else off_++;
+            if(u>0.05) heating_++;
+            else if(!heat) off_++;
             if(start) {starts_++;start_outdoor_sum_+=to;}
             if(stop) {stops_++;stop_outdoor_sum_+=to;}
             outdoor_min_=std::min(outdoor_min_,to);
@@ -277,16 +290,17 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
     }
     // Electric fit: ONLY an owner-confirmed heat-pump-only meter.
     if(o.meter_pump_only && o.electric_valid && contiguous && o.heat_valid &&
+       (!variable_setpoints_ || slot_ok) &&
        o.outdoor_valid && o.in_model_domain && id_finite(o.electric_kwh) &&
        o.electric_kwh>=0 && o.electric_kwh<=5.0 && id_finite(o.outdoor_c)) {
-        const double to=o.outdoor_c,u=heat?1.0:0.0;
-        const double phi[electric_n]={u,u*to,start?1.0:0.0,1.0};
+        const double to=o.outdoor_c,u=requested_heat_fraction(o,o.indoor_start_c);
+        const double phi[electric_n]={u,u*to,start?(variable_setpoints_?u:1.0):0.0,1.0};
         const double y=o.electric_kwh/slot_hours;
         if(electric_.updates>=48) {
             const double e=y-rls_dot(electric_,phi);
             elec_err_sq_+=e*e;elec_sq_+=y*y;
         }
-        if(rls_update(electric_,phi,y,electric_lambda,true) && heat) elec_on_++;
+        if(rls_update(electric_,phi,y,electric_lambda,true) && u>0.05) elec_on_++;
     }
     refresh_state();
     return updated;
@@ -464,7 +478,8 @@ ModelBuildError BuildingIdentifier::build_parameters(int64_t now_utc,
     const ModelEstimate& m=r.model;
     if(!m.plausible) return ModelBuildError::Implausible;
     if(!id_finite(band.lower_c) || !id_finite(band.upper_c) ||
-       band.upper_c<=band.lower_c+r.planning_uncertainty_c+0.1 || band.upper_c>15.8 ||
+       band.upper_c<=band.lower_c+r.planning_uncertainty_c+0.1 ||
+       band.upper_c>(variable_setpoints_?27.0:15.8) ||
        band.lower_c<5.0)
         return ModelBuildError::OutsideDomain;
     if(!id_finite(currency_scale) || currency_scale<1 || currency_scale>12)
@@ -530,6 +545,8 @@ ModelBuildError BuildingIdentifier::build_parameters(int64_t now_utc,
     out.critical_c=5.0;
     out.planning_uncertainty_c=r.planning_uncertainty_c;
     out.maximum_indoor_c=band.upper_c;
+    out.variable_setpoints=variable_setpoints_;
+    if(variable_setpoints_)out.thermostat_band_c=residential_thermostat_band_c;
     out.currency_limit_scale=currency_scale;
     out.switching_penalty_eur=0.02*currency_scale;
     // Owner decision 18.11.2026: >= 30 min between HEAT<->OFF changes; the
@@ -568,7 +585,7 @@ bool BuildingIdentifier::save(uint32_t identity,uint8_t* out,size_t capacity,siz
     if(!out || capacity<sizeof(IdentifierImage)) return false;
     IdentifierImage b;
     std::memset(static_cast<void*>(&b),0,sizeof(b));
-    b.magic=identifier_magic;b.version=blob_version;b.identity=identity;
+    b.magic=identifier_magic;b.version=blob_version+(variable_setpoints_?1u:0u);b.identity=identity;
     b.size=sizeof(IdentifierImage);
     b.thermal=thermal_;b.electric=electric_;
     b.prev_slot_utc=prev_slot_utc_;b.window_next_utc=window_next_utc_;
@@ -596,7 +613,7 @@ bool BuildingIdentifier::load(uint32_t identity,const uint8_t* in,size_t size) {
     if(!in || size!=sizeof(IdentifierImage)) return false;
     IdentifierImage b;
     std::memcpy(&b,in,sizeof(b));
-    if(b.magic!=identifier_magic || b.version!=blob_version ||
+    if(b.magic!=identifier_magic || b.version!=blob_version+(variable_setpoints_?1u:0u) ||
        b.size!=sizeof(IdentifierImage) || b.identity!=identity ||
        b.crc!=id_crc32(reinterpret_cast<const uint8_t*>(&b),offsetof(IdentifierImage,crc)))
         return false;
@@ -611,7 +628,7 @@ bool BuildingIdentifier::load(uint32_t identity,const uint8_t* in,size_t size) {
     if(b.ring_count>window_ring || b.ring_head>=window_ring || b.window_count>window_slots ||
        b.prev_heat<-1 || b.prev_heat>1 || !id_finite(b.window_pred))
         return false;
-    BuildingIdentifier x;
+    BuildingIdentifier x(variable_setpoints_);
     x.thermal_=b.thermal;x.electric_=b.electric;
     x.prev_slot_utc_=b.prev_slot_utc;x.window_next_utc_=b.window_next_utc;
     x.last_sample_utc_=b.last_sample_utc;x.prev_heat_=static_cast<int8_t>(b.prev_heat);
