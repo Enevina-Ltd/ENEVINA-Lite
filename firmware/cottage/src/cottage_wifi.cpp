@@ -154,7 +154,8 @@ void status_route() {
     if(!root) {send_json(nullptr);return;}
     cJSON_AddStringToObject(root,"phase",wifi_phase_name(machine.phase(now)));
     cJSON_AddStringToObject(root,"last_result",wifi_result_name(machine.last_result()));
-    cJSON_AddStringToObject(root,"network",machine.has_stored()?machine.stored().ssid:"");
+    cJSON_AddStringToObject(root,"network",machine.active_network());
+    cJSON_AddStringToObject(root,"storage",wifi_storage_name(machine.storage()));
     cJSON_AddBoolToObject(root,"setup_ap_active",ap_active);
     cJSON_AddStringToObject(root,"setup_ap_ssid",ap_ssid);
     cJSON_AddBoolToObject(root,"mdns",mdns_started);
@@ -232,6 +233,18 @@ void connect_route() {
     }
     server->send(202,"application/json","{\"accepted\":true}");
 }
+void retry_save_route() {
+    if(!server->hasArg("token") ||
+       !c23_authorize_local_setting(server->arg("token").c_str())) {
+        server->send(403,"application/json","{\"accepted\":false,\"error\":\"TOKEN\"}");
+        return;
+    }
+    if(!got_ip.load() || !machine.retry_commit()) {
+        server->send(409,"application/json","{\"accepted\":false}");
+        return;
+    }
+    server->send(202,"application/json","{\"accepted\":true}");
+}
 // Registered FIRST, so it sees every request before any other route. Only
 // requests that arrive through the setup AP AND are not Wi-Fi provisioning
 // routes are intercepted; the home-network interface is never touched.
@@ -298,6 +311,7 @@ void cottage_wifi_begin(WebServer& web) {
     web.on("/api/wifi/status",HTTP_GET,status_route);
     web.on("/api/wifi/scan",HTTP_GET,scan_route);
     web.on("/api/wifi/connect",HTTP_POST,connect_route);
+    web.on("/api/wifi/retry-save",HTTP_POST,retry_save_route);
     // Android / iOS / Windows captive-portal probes open the setup page.
     for(const char* probe:{"/generate_204","/gen_204","/hotspot-detect.html",
                            "/library/test/success.html","/connecttest.txt","/ncsi.txt"})
@@ -317,11 +331,21 @@ void cottage_wifi_loop() {
     case ConnectTarget::None: break;
     }
     machine.tick(now,got_ip.load(),last_reason.load());
-    if(machine.take_commit() && !persist(machine.stored()))
-        Serial.println("WIFI_WARN: verified network could not be stored in NVS");
-    if(legacy_migration_pending && got_ip.load() && machine.has_stored() &&
-       persist(machine.stored()))
-        legacy_migration_pending=false;
+    if(machine.take_commit()) {
+        const bool saved=persist(machine.candidate());
+        machine.finish_commit(saved,millis());
+        if(saved) legacy_migration_pending=false;
+        else Serial.println("WIFI_WARN: verified network could not be stored in NVS");
+    }
+    // A boot migration must never race a newly submitted network. Space
+    // retries out when NVS is unavailable, without touching the legacy keys.
+    static uint32_t last_migration_attempt_ms=now-60000;
+    if(legacy_migration_pending && got_ip.load() &&
+       machine.phase(now)==WifiPhase::Online && machine.storage()==WifiStorage::Idle &&
+       machine.has_stored() && now-last_migration_attempt_ms>=60000) {
+        last_migration_attempt_ms=now;
+        if(persist(machine.stored())) legacy_migration_pending=false;
+    }
     if(machine.ap_should_run() && !ap_active) start_ap();
     else if(!machine.ap_should_run() && ap_active) stop_ap();
     if(got_ip.load() && !mdns_started) {

@@ -24,7 +24,8 @@ static void first_boot_ap_then_success() {
     w.tick(6000,true,0);
     assert(w.last_result()==WifiResult::Connected);
     assert(w.take_commit() && !w.take_commit());
-    assert(std::strcmp(w.stored().ssid,"Koti")==0);
+    w.finish_commit(true,6000);
+    assert(w.storage()==WifiStorage::Saved && std::strcmp(w.stored().ssid,"Koti")==0);
     // AP stays during the grace period so the phone sees the result...
     w.tick(6000+60000,true,0);
     assert(w.ap_should_run() && w.phase(66000)==WifiPhase::Online);
@@ -46,7 +47,9 @@ static void wrong_password_keeps_ap_and_retries() {
     assert(w.submit(creds("Koti","oikeasalasana"),4000));
     assert(w.take_connect_request()==ConnectTarget::Candidate);
     w.tick(9000,true,0);
-    assert(w.take_commit() && std::strcmp(w.stored().password,"oikeasalasana")==0);
+    assert(w.take_commit());
+    w.finish_commit(true,9000);
+    assert(std::strcmp(w.stored().password,"oikeasalasana")==0);
 }
 static void not_found_and_timeout() {
     WifiProvisioning w;
@@ -163,7 +166,9 @@ static void retry_not_decided_by_previous_failure_reason() {
     assert(w.phase(2001)==WifiPhase::Trying);
     assert(w.take_connect_request()==ConnectTarget::Candidate);
     w.tick(5000,true,0);
-    assert(w.take_commit() && std::strcmp(w.stored().password,"oikeasalasana")==0);
+    assert(w.take_commit());
+    w.finish_commit(true,5000);
+    assert(std::strcmp(w.stored().password,"oikeasalasana")==0);
     // Timeout counts from the actual start of the attempt.
     w.submit(creds("Muu","salasana123"),10000);
     w.tick(40000,false,0);          // not started yet: no timeout
@@ -177,7 +182,7 @@ static void retry_not_decided_by_previous_failure_reason() {
 // Codex P1 (PR #30): the open setup AP exposes only Wi-Fi provisioning.
 static void setup_ap_only_provisions_wifi() {
     for(const char* ok:{"/","/setup","/api/wifi/status","/api/wifi/scan",
-                        "/api/wifi/connect","/generate_204","/hotspot-detect.html"})
+                        "/api/wifi/connect","/api/wifi/retry-save","/generate_204","/hotspot-detect.html"})
         assert(setup_ap_route_allowed(ok));
     for(const char* no:{"/api/control/arm","/api/settings","/api/status","/api/air/config",
                         "/api/air/bind","/api/plan","/api/prices","/api/ota","/setup/x",
@@ -185,7 +190,57 @@ static void setup_ap_only_provisions_wifi() {
         assert(!setup_ap_route_allowed(no));
     assert(!setup_ap_route_allowed(nullptr));
 }
+static void failed_save_keeps_fallback_and_can_be_retried() {
+    WifiProvisioning w;
+    const auto old=creds("Vanha","vanhasalasana");
+    w.begin(&old,0);
+    assert(w.take_connect_request()==ConnectTarget::Stored);
+    w.tick(1000,true,0);
+    assert(w.submit(creds("Uusi","uusisalasana"),2000));
+    assert(w.take_connect_request()==ConnectTarget::Candidate);
+    w.tick(3000,true,0);
+    assert(w.last_result()==WifiResult::Connected);
+    assert(w.take_commit());
+    w.finish_commit(false,3000);
+    assert(w.storage()==WifiStorage::Failed && w.phase(3000)==WifiPhase::Online);
+    assert(std::strcmp(w.active_network(),"Uusi")==0);
+    assert(std::strcmp(w.stored().ssid,"Vanha")==0);
+    assert(!w.take_commit()); // no tight loop of flash retries
+    w.tick(3000+120000,true,0);
+    assert(w.ap_should_run());
+    assert(w.retry_commit() && !w.retry_commit());
+    assert(w.take_commit());
+    w.finish_commit(true,123010);
+    assert(w.storage()==WifiStorage::Saved);
+    assert(std::strcmp(w.stored().ssid,"Uusi")==0);
+    w.tick(123010+119999,true,0);
+    assert(w.ap_should_run());
+    w.tick(123010+120000,true,0);
+    assert(!w.ap_should_run());
+}
+static void unsaved_attempt_cannot_replace_fallback_on_next_join_failure() {
+    WifiProvisioning w;
+    const auto old=creds("Vanha","vanhasalasana");
+    w.begin(&old,0);
+    w.take_connect_request();
+    w.tick(100,true,0);
+    w.submit(creds("Uusi","uusisalasana"),200);
+    w.take_connect_request();
+    w.tick(300,true,0);
+    assert(w.take_commit());
+    w.finish_commit(false,300);
+    w.tick(400,false,201);
+    assert(!w.retry_commit());
+    assert(w.submit(creds("Toinen","vaarasalasana"),500));
+    assert(!w.retry_commit());
+    w.take_connect_request();
+    w.tick(600,false,204);
+    assert(w.take_connect_request()==ConnectTarget::Stored);
+    assert(std::strcmp(w.stored().ssid,"Vanha")==0 && !w.take_commit());
+}
 int main() {
+    failed_save_keeps_fallback_and_can_be_retried();
+    unsaved_attempt_cannot_replace_fallback_on_next_join_failure();
     setup_ap_only_provisions_wifi();
     online_submit_not_decided_by_old_connection();
     retry_not_decided_by_previous_failure_reason();

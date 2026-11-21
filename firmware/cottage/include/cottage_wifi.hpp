@@ -5,7 +5,7 @@
 class WebServer;
 
 // setup(): load the stored network (NVS, else compile-time default), start
-// STA and, when needed, the per-device WPA2 setup AP; register /setup and
+// STA and, when needed, the per-device open setup AP; register /setup and
 // /api/wifi/* routes. Call before web.begin().
 void cottage_wifi_begin(WebServer& web);
 // loop(): captive DNS, state machine tick, AP open/close, NVS commit, mDNS.

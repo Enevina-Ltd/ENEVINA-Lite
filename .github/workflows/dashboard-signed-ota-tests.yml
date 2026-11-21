@@ -11,6 +11,10 @@ on:
       - 'tests/test_dashboard_signed_ota.py'
       - 'tests/test_dashboard_translations.py'
       - 'tests/test_ota_runtime_source.py'
+      - 'tests/test_wifi_onboarding_source.py'
+      - 'tests/test_wifi_setup_ui.js'
+      - 'tests/wifi_provisioning_tests.cpp'
+      - 'cottage/wifi_provisioning.hpp'
 
 permissions:
   contents: read
@@ -31,7 +35,9 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_dashboard_signed_ota.py' -v
           python3 -m unittest discover -s tests -p 'test_dashboard_translations.py' -v
           python3 -m unittest discover -s tests -p 'test_ota_runtime_source.py' -v
+          python3 -m unittest discover -s tests -p 'test_wifi_onboarding_source.py' -v
           node tests/test_c25_dashboard_ui.js
+          node tests/test_wifi_setup_ui.js
       - name: Native CMake suite
         run: |
           cmake -S . -B build-dashboard-ota-ci -DCMAKE_BUILD_TYPE=Release

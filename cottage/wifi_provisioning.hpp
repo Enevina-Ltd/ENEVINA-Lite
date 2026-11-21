@@ -44,6 +44,7 @@ struct WifiTimings {
     uint32_t recovery_after_ms=5u*60u*1000u;
 };
 enum class ConnectTarget : uint8_t { None, Stored, Candidate, Disconnect };
+enum class WifiStorage : uint8_t { Idle, Pending, Saving, Failed, Saved };
 
 inline bool valid_ssid(const char* s) {
     if(!s) return false;
@@ -100,6 +101,17 @@ inline const char* wifi_phase_name(WifiPhase p) {
     return "SETUP";
 }
 
+inline const char* wifi_storage_name(WifiStorage state) {
+    switch(state) {
+    case WifiStorage::Idle:return "IDLE";
+    case WifiStorage::Pending:
+    case WifiStorage::Saving:return "PENDING";
+    case WifiStorage::Failed:return "FAILED";
+    case WifiStorage::Saved:return "SAVED";
+    }
+    return "FAILED";
+}
+
 class WifiProvisioning {
 public:
     explicit WifiProvisioning(WifiTimings t={}) : timings_(t) {}
@@ -116,6 +128,7 @@ public:
     bool submit(const WifiCredentials& c,uint32_t now_ms) {
         if(!valid_ssid(c.ssid) || !valid_wifi_password(c.password)) return false;
         candidate_=c;
+        storage_=WifiStorage::Idle;
         trying_=true;
         attempt_started_=false; // evidence counts only after the attempt starts
         try_started_ms_=now_ms;
@@ -136,9 +149,7 @@ public:
                 return;
             }
             if(sta_has_ip) {
-                stored_=candidate_;
-                has_stored_=true;
-                commit_pending_=true;
+                storage_=WifiStorage::Pending;
                 trying_=false;
                 result_=WifiResult::Connected;
                 online_since_ms_=last_online_ms_=now_ms;
@@ -161,7 +172,8 @@ public:
             if(!was_online_) online_since_ms_=now_ms;
             was_online_=true;
             last_online_ms_=now_ms;
-            if(ap_ && now_ms-online_since_ms_>=timings_.ap_close_grace_ms) ap_=false;
+            if(ap_ && (storage_==WifiStorage::Idle || storage_==WifiStorage::Saved) &&
+               now_ms-online_since_ms_>=timings_.ap_close_grace_ms) ap_=false;
             return;
         }
         was_online_=false;
@@ -170,8 +182,8 @@ public:
     }
     WifiPhase phase(uint32_t now_ms) const {
         if(trying_) return WifiPhase::Trying;
-        if(!has_stored_) return WifiPhase::Setup;
         if(was_online_) return WifiPhase::Online;
+        if(!has_stored_) return WifiPhase::Setup;
         return now_ms-last_online_ms_>=timings_.recovery_after_ms ?
             WifiPhase::Recovery:WifiPhase::Reconnecting;
     }
@@ -186,8 +198,32 @@ public:
         if(t==ConnectTarget::Candidate) attempt_started_=true;
         return t;
     }
-    // One-shot: persist stored() to NVS now (only after a verified join).
-    bool take_commit() { const bool c=commit_pending_; commit_pending_=false; return c; }
+    // Persist candidate() only after its verified join. The saved credentials
+    // remain the fallback until the single atomic write succeeds.
+    bool take_commit() {
+        if(storage_!=WifiStorage::Pending || !was_online_) return false;
+        storage_=WifiStorage::Saving;
+        return true;
+    }
+    void finish_commit(bool saved,uint32_t now_ms) {
+        if(storage_!=WifiStorage::Saving) return;
+        storage_=saved?WifiStorage::Saved:WifiStorage::Failed;
+        if(saved) {
+            stored_=candidate_;
+            has_stored_=true;
+            online_since_ms_=now_ms; // leave time to read success after a retry
+        }
+    }
+    bool retry_commit() {
+        if(storage_!=WifiStorage::Failed || !was_online_) return false;
+        storage_=WifiStorage::Pending;
+        return true;
+    }
+    WifiStorage storage() const { return storage_; }
+    const char* active_network() const {
+        if(!was_online_ || trying_) return "";
+        return result_==WifiResult::Connected?candidate_.ssid:stored_.ssid;
+    }
     const WifiCredentials& stored() const { return stored_; }
     const WifiCredentials& candidate() const { return candidate_; }
     bool has_stored() const { return has_stored_; }
@@ -195,7 +231,8 @@ public:
 private:
     WifiTimings timings_;
     WifiCredentials stored_{},candidate_{};
-    bool has_stored_=false,trying_=false,ap_=false,commit_pending_=false,was_online_=false;
+    bool has_stored_=false,trying_=false,ap_=false,was_online_=false;
+    WifiStorage storage_=WifiStorage::Idle;
     bool attempt_started_=false;
     uint32_t try_started_ms_=0,last_online_ms_=0,online_since_ms_=0;
     WifiResult result_=WifiResult::None;
@@ -210,7 +247,7 @@ private:
 inline bool setup_ap_route_allowed(const char* uri) {
     if(!uri) return false;
     static const char* const exact[]={"/","/setup","/api/wifi/status","/api/wifi/scan",
-        "/api/wifi/connect","/generate_204","/gen_204","/hotspot-detect.html",
+        "/api/wifi/connect","/api/wifi/retry-save","/generate_204","/gen_204","/hotspot-detect.html",
         "/library/test/success.html","/connecttest.txt","/ncsi.txt"};
     for(const char* e:exact) if(std::strcmp(uri,e)==0) return true;
     return false;
