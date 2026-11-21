@@ -998,3 +998,253 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
         with patch.object(self.cli, "_get_cloud", return_value=mock_cloud_instance):
             self.namespace.host = None
             self.namespace.device_sn = None
+            await self.cli.download()
+
+        assert mock_cloud_instance.download_lua.call_count == 2
+        # The failed device skips its plugin; only the healthy one downloads it.
+        mock_cloud_instance.download_plugin.assert_called_once_with(
+            str(Path()),
+            appliance_b["type"],
+            appliance_b["sn"],
+        )
+
+    async def test_download_by_sn_non_hex_type_byte(self) -> None:
+        """A --device-sn whose type byte is not hex falls back to type 0."""
+        # 32 chars (SERIAL_TYPE1_LENGTH) with a non-hex "ZZ" at sn[4:6].
+        bad_sn = "0000ZZ00ABCD1234000000000000000A"
+        mock_cloud_instance = AsyncMock()
+        mock_cloud_instance.login.return_value = True
+        mock_cloud_instance.list_appliances.return_value = {}
+        with patch.object(self.cli, "_get_cloud", return_value=mock_cloud_instance):
+            self.namespace.host = None
+            self.namespace.device_sn = bad_sn
+            # Must not raise a ValueError from bytes.fromhex.
+            await self.cli.download()
+
+        mock_cloud_instance.download_lua.assert_called_once_with(
+            str(Path()),
+            0,
+            bad_sn,
+            bad_sn[9:17],
+            "0000",
+        )
+
+    async def test_download_by_sn_short_serial(self) -> None:
+        """A --device-sn shorter than a type-1 serial defaults to type 0."""
+        short_sn = "SHORTSN"
+        mock_cloud_instance = AsyncMock()
+        mock_cloud_instance.login.return_value = True
+        mock_cloud_instance.list_appliances.return_value = {}
+        with patch.object(self.cli, "_get_cloud", return_value=mock_cloud_instance):
+            self.namespace.host = None
+            self.namespace.device_sn = short_sn
+            await self.cli.download()
+
+        mock_cloud_instance.download_lua.assert_called_once_with(
+            str(Path()),
+            0,
+            short_sn,
+            short_sn[9:17],
+            "0000",
+        )
+
+    async def test_set_attribute(self) -> None:
+        """Test set attribute."""
+        mock_device_instance = _mock_device()
+        with (
+            patch.object(
+                self.cli,
+                "discover",
+                side_effect=[
+                    [],
+                    [mock_device_instance],
+                    [mock_device_instance],
+                    [mock_device_instance],
+                ],
+            ),
+        ):
+            await self.cli.set_attribute()
+            mock_device_instance.set_attribute.assert_not_called()
+
+            await self.cli.set_attribute()
+            mock_device_instance.set_attribute.assert_called_once_with("power", False)
+            mock_device_instance.reset_mock()
+
+            self.namespace.attribute = "mode"
+            self.namespace.value = "2"
+            self.namespace.attr_type = "int"
+
+            await self.cli.set_attribute()
+            mock_device_instance.set_attribute.assert_called_once_with("mode", 2)
+            mock_device_instance.reset_mock()
+
+            self.namespace.attribute = "attr"
+            self.namespace.value = "string"
+            self.namespace.attr_type = "str"
+
+            await self.cli.set_attribute()
+            mock_device_instance.set_attribute.assert_called_once_with("attr", "string")
+
+    def test_run(self) -> None:
+        """Test run."""
+        mock_logger = MagicMock()
+        with (
+            patch("logging.basicConfig") as mock_basic_config,
+            patch("logging.getLogger", return_value=mock_logger),
+            patch.object(mock_logger, "setLevel") as mock_set_level,
+        ):
+            self.cli.session = AsyncMock()
+            self.cli.run(self.namespace)
+            mock_basic_config.assert_called_once_with(level=logging.DEBUG)
+            mock_basic_config.reset_mock()
+            mock_set_level.assert_called_with(logging.INFO)
+            mock_set_level.reset_mock()
+            self.namespace.func.assert_called_once()
+
+            # Test coroutine function
+            self.namespace.func = AsyncMock()
+            self.namespace.debug = False
+            self.cli.run(self.namespace)
+            mock_basic_config.assert_called_once_with(level=logging.INFO)
+            mock_set_level.assert_called_with(logging.WARNING)
+            self.namespace.func.assert_called_once()
+
+    def test_run_without_session(self) -> None:
+        """Test run does not create a session only to close it."""
+        with patch("logging.basicConfig"), patch("logging.getLogger"):
+            self.cli.run(self.namespace)
+        self.namespace.func.assert_called_once()
+        assert not hasattr(self.cli, "session")
+
+    def test_run_log_file(self) -> None:
+        """Test run also writes logs to a file when --log-file is set."""
+        mock_logger = MagicMock()
+        mock_file_handler = MagicMock()
+        with TemporaryDirectory() as tmpdir:
+            log_file = str(Path(tmpdir) / "midea-local-test.log")
+            with (
+                patch("logging.basicConfig"),
+                patch("logging.getLogger", return_value=mock_logger),
+                patch(
+                    "logging.FileHandler",
+                    return_value=mock_file_handler,
+                ) as mock_file_handler_cls,
+            ):
+                self.cli.session = AsyncMock()
+                self.namespace.log_file = log_file
+                self.cli.run(self.namespace)
+
+        mock_file_handler_cls.assert_called_once_with(
+            log_file,
+            mode="w",
+            encoding="utf-8",
+        )
+        mock_file_handler.setFormatter.assert_called_once()
+        mock_logger.addHandler.assert_called_once_with(mock_file_handler)
+
+    def test_main_call(self) -> None:
+        """Test main call."""
+        # Command to run the script
+        cmd = [
+            sys.executable,
+            "-m",
+            "midealocal.cli",
+        ]
+        clear_config = False
+        if not get_config_file_path().exists():
+            clear_config = True
+            subprocess.run([*cmd, "save"], capture_output=True, text=True, check=False)  # noqa: S603
+
+        # Run the command and capture the output
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)  # noqa: S603
+
+        # Check if the script executed without errors
+        assert result.returncode == 2
+
+        result = subprocess.run(  # noqa: S603
+            [*cmd, "save"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0
+
+        if clear_config:
+            get_config_file_path().unlink()
+
+    def test_main(self) -> None:
+        """Test main entry parses args and merges config file values."""
+        with TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "midea-local.json"
+            config_file.write_text(
+                json.dumps({"username": "configuser", "password": "configpass"}),
+                encoding="utf-8",
+            )
+            exit_code: int | str | None = None
+            with (
+                patch.object(sys, "argv", ["midealocal", "discover", "-p", "argpass"]),
+                patch(
+                    "midealocal.cli.get_config_file_path",
+                    return_value=config_file,
+                ),
+                patch.object(MideaCLI, "run") as mock_run,
+            ):
+                try:
+                    main()
+                except SystemExit as exc:
+                    exit_code = exc.code
+
+            assert exit_code == 0
+            mock_run.assert_called_once()
+            namespace = mock_run.call_args[0][0]
+            # username not passed on command line: filled from the config file
+            assert namespace.username == "configuser"
+            # password passed on command line: config value is not applied
+            assert namespace.password == "argpass"
+            assert namespace.func.__name__ == "discover"
+
+    def test_main_without_config_file(self) -> None:
+        """Test main entry keeps command line values when no config file exists."""
+        with (
+            TemporaryDirectory() as tmpdir,
+            patch.object(sys, "argv", ["midealocal", "discover", "-p", "argpass"]),
+            patch(
+                "midealocal.cli.get_config_file_path",
+                return_value=Path(tmpdir) / "missing.json",
+            ),
+            patch.object(MideaCLI, "run") as mock_run,
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            main()
+
+        assert exit_info.value.code == 0
+        namespace = mock_run.call_args[0][0]
+        assert namespace.username is None
+        assert namespace.password == "argpass"
+
+    def test_main_module_entry(self) -> None:
+        """Test the __main__ guard when running the module as a script."""
+        with (
+            patch.object(sys, "argv", ["midealocal.cli", "--version"]),
+            warnings.catch_warnings(),
+        ):
+            # runpy warns when re-executing an already imported module
+            warnings.simplefilter("ignore", RuntimeWarning)
+            with pytest.raises(SystemExit) as exit_info:
+                runpy.run_module("midealocal.cli", run_name="__main__")
+
+        assert exit_info.value.code == 0
+
+    def test_get_config_file_path(self) -> None:
+        """Test get config file path."""
+        mock_path = MagicMock()
+        with (
+            patch("midealocal.cli.Path", return_value=mock_path),
+            patch.object(mock_path, "exists", return_value=False),
+        ):
+            get_config_file_path()
+
+    def test_get_devices_cache_path(self) -> None:
+        """Test get devices cache path."""
+        assert get_devices_cache_path() == Path("midea-devices.json")
