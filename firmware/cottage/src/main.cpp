@@ -2020,8 +2020,13 @@ static void status_endpoint() {
         room.source==RoomTemperatureSource::Pump?"pump":"ruuvi");
     cJSON_AddNumberToObject(root,"room_temperature_correction_c",
         static_cast<double>(room.correction_c100)/100.0);
-    if(selected.received)cJSON_AddNumberToObject(root,"room_temperature_c",selected.indoor_c);
-    else cJSON_AddNullToObject(root,"room_temperature_c");
+    if(selected.received) {
+        cJSON_AddNumberToObject(root,"room_temperature_c",selected.indoor_c);
+        cJSON_AddNumberToObject(root,"room_temperature_age_s",static_cast<double>(now-selected.captured_utc));
+    } else {
+        cJSON_AddNullToObject(root,"room_temperature_c");
+        cJSON_AddNullToObject(root,"room_temperature_age_s");
+    }
     cJSON_AddBoolToObject(root,"shelly_relay_on",relay_on);
     if(valid_shelly(st,now))cJSON_AddNumberToObject(root,"shelly_w",st.watts);
     else cJSON_AddNullToObject(root,"shelly_w");

@@ -195,7 +195,7 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
   <section class="view active" id="view-home">
     <div class="heading"><div><div class="eyebrow">Yleisnäkymä</div><h1>Sisäilman olosuhteet</h1><p>Mittaukset, sähkön hinta ja tuleva lämmityssuunnitelma.</p></div></div>
     <div class="grid">
-      <article class="card temperature span7"><div><div class="eyebrow" style="color:#c5ded1">Sisälämpötila · RuuviTag</div><div class="metric" id="home-temp">—</div></div><div><span class="pill" id="home-mode">Tila ei tiedossa</span><p class="tiny muted" id="home-sensor" style="margin:12px 0 0">Odotetaan mittausta</p></div></article>
+      <article class="card temperature span7"><div><div class="eyebrow" style="color:#c5ded1">Sisälämpötila</div><div class="metric" id="home-temp">—</div></div><div><span class="pill" id="home-mode">Tila ei tiedossa</span><p class="tiny muted" id="home-sensor" style="margin:12px 0 0">Odotetaan mittausta</p></div></article>
       <article class="card span5"><div class="eyebrow">Sähkön hinta nyt</div><div class="metric small" id="home-price">—</div><p class="muted tiny" id="home-price-label">Spot-hinta · ilman arvonlisäveroa</p><div class="statline"><span>Arvio kokonaishinnasta</span><span id="home-total">—</span></div><div class="statline"><span>Ulkolämpötila / ennuste</span><span id="home-outside">—</span></div><div class="statline"><span>Mittauskulutus</span><span id="home-watts">—</span></div></article>
       <article class="card span4"><div class="eyebrow">Ilmankosteus</div><div class="metric small" id="home-rh">—</div><p class="muted tiny">RuuviTag · suhteellinen kosteus</p><div class="statline"><span>Kastepiste</span><span id="home-dew">—</span></div><div class="statline"><span>Anturin tila</span><span id="home-air-status">—</span></div></article>
       <article class="card span8"><div class="flex"><h2>Sähkön tulevat hinnat</h2><span class="muted tiny">15 minuutin jaksot</span></div><div id="home-chart" class="chart"><div class="empty">Hintadataa odotetaan</div></div><div class="flex" style="margin-top:12px"><span class="muted tiny" id="home-cheap">Halvinta jaksoa ei tiedossa</span><button class="primary" id="go-prices" type="button">Kaikki hinnat</button></div></article>
@@ -2118,13 +2118,17 @@ function showFirmwareUpdate(s){
 }
 function showStatus(){
   const s=state.status;if(!s)return;
-  text('connection',s.air&&s.air.sensor_fresh?'Mittaukset käytössä':'Yhteys muodostettu');
-  $('connection-dot').className='dot '+(s.air&&s.air.sensor_fresh?'ok':'bad');
-  text('clock',time(Math.floor(Date.now()/1000)));
   const a=s.air||{},fresh=a.sensor_fresh===true,mode=Number.isInteger(a.mode)?a.mode:0;
-  text('home-temp',fresh?fmt(number(a.temperature_c),1)+' °C':'Ei tuoretta mittausta');
+  const room=s.room_temperature_c===undefined?(fresh?number(a.temperature_c):null):
+    number(s.room_temperature_c);
+  const age=s.room_temperature_age_s===undefined?number(a.age_s):number(s.room_temperature_age_s);
+  const sensor=s.room_temperature_source==='pump'?translateFi('Pumpun oma anturi'):'RuuviTag';
+  text('connection',room!==null?'Mittaukset käytössä':'Yhteys muodostettu');
+  $('connection-dot').className='dot '+(room!==null?'ok':'bad');
+  text('clock',time(Math.floor(Date.now()/1000)));
+  text('home-temp',room!==null?fmt(room,1)+' °C':'Ei tuoretta mittausta');
   text('home-mode',modes[mode]||'Ei tietoa');
-  text('home-sensor',fresh?'RuuviTag · '+fmt(number(a.age_s),0)+' s vanha':'RuuviTag ei ole tuore tai anturia ei ole sidottu');
+  text('home-sensor',room!==null&&age!==null?sensor+' · '+fmt(age,0)+' s':sensor);
   text('home-rh',fresh&&number(a.rh_pct)!==null?fmt(a.rh_pct,1)+' %':'—');
   text('home-dew',fresh&&number(a.dewpoint_c)!==null?fmt(a.dewpoint_c,1)+' °C':'—');
   text('home-air-status',fresh?'Tuore':'Puuttuu / vanhentunut');
@@ -2133,9 +2137,7 @@ function showStatus(){
   text('price-total-heading','Kokonaishinta '+priceDisplayMinorUnit()+'/kWh');
   text('price-area-chip','Nord Pool · '+(s.price_area||'—')+' · '+priceDisplayCurrency());
   if(refreshRoomTempSettings)refreshRoomTempSettings(s);
-  const room=number(s.room_temperature_c);
-  text('room-temperature-value',room===null?'—':
-    fmt(room,2)+' °C · '+(s.room_temperature_source==='pump'?translateFi('Pumpun oma anturi'):'RuuviTag'));
+  text('room-temperature-value',room===null?'—':fmt(room,2)+' °C · '+sensor);
   text('home-price',priceFmt(s.spot));text('home-total',priceFmt(s.total_price));
   text('home-outside',number(a.outside_temperature_c)!==null?fmt(a.outside_temperature_c,1)+' °C':number(s.weather_c)!==null?fmt(s.weather_c,1)+' °C':'—');
   text('home-watts',number(s.shelly_w)!==null?fmt(s.shelly_w,0)+' W':'—');
