@@ -9,7 +9,7 @@ Enevina Lite is a source-available project by **Enevina Ltd** (registered in Fin
 [connection methods](docs/integrations/LOCAL_WIFI_CONNECTION_GUIDE.md) ·
 [ground-source / air-to-water / air-to-air protocols](docs/integrations/GSHP_ASHP_ILP_LOCAL_PROTOCOLS.md) ·
 [basement Frezzer Nordic / Midea pilot](docs/integrations/MIDEA_CELLAR_PILOT.md).
-Midea V2/V3 readers and experimental manual controls exist in source, but have not passed Lite-to-pump physical field testing.
+Midea V2/V3 AC readers now discover model capabilities and select classic/BB/property controls. Earlier V3 telemetry has field evidence; the new model-discovery behavior is host/build tested and awaits physical verification.
 
 [English](#english) · [Suomi](#suomi) · [Developer preview v0.1.0-alpha.2](https://github.com/Enevina-Ltd/ENEVINA-Lite/releases/tag/v0.1.0-alpha.2) · [Compatibility](docs/COMPATIBILITY.md) · [Getting started](docs/GETTING_STARTED.md)
 
@@ -33,7 +33,7 @@ Midea V2/V3 readers and experimental manual controls exist in source, but have n
 | 15-min electricity prices | Acquisition, caching and pricing logic in source | Accuracy for every electricity contract |
 | FMI weather forecast | Local forecast integration and 48-hour display development | Calibrated use in production MPC control |
 | RuuviTag and Shelly | Adapter/parser and integration work, selected device tests | Universal sensor compatibility or pump-only power measurement |
-| Midea V2/V3 LAN | Native C++ local V2/V3 Wi-Fi readers, experimental manual control and dashboard panel, [details](docs/MIDEA_V3_LOCAL_WIFI.md) | ESP32 firmware build passed; no physical Midea control field test and no automated optimizer control |
+| Midea V2/V3 AC LAN | Native model/capability discovery, classic/BB controls, B0 properties and dynamic dashboard, [details](docs/MIDEA_LIBRARY_INTEGRATION.md) | Protocol/transport/UI tests and ESP32 build; new model support awaits physical verification; optimizer dispatch not connected |
 | Mitsubishi CN105 | First model-specific experimental integration | Certified or universally safe control of Mitsubishi models |
 | Thermal model + MPC | Automatic identification, calibration gate and MPC in the control chain; host tests, closed-loop simulation and MILP comparisons | Field calibration on a real pump; verified real-world cost savings |
 | Signed OTA / recovery | Implementation and targeted regression/device tests | A universally approved end-user firmware update |

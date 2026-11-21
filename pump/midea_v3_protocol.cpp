@@ -218,8 +218,12 @@ bool valid_control_patch(const ControlPatch& patch) {
 }
 bool set_state_command(const State& existing,const ControlPatch& patch,
                        uint8_t msg,Bytes& frame) {
-    // This is a whole-state 0x40 command: never overwrite protection
-    // when the C0 reply did not contain its state (17-21 byte C0).
+    // Midea 0x40 writes the full AC state, including the optional 8 C
+    // heat-preservation bit. Short C0 reads do not report this bit. Even
+    // when the visible setpoint is >=16 C, its actual value is unknown on
+    // some OEM firmware; never serialize a guessed zero. A model-specific
+    // read or verified field-only write is required for short-C0 devices.
+    // This is an optional heating preset, not the firmware's defrost logic.
     if(!valid_control_patch(patch) || !valid_state(existing) ||
        !existing.freeze_protection_known)return false;
     const bool power=(patch.changed&ControlPower)?patch.power:existing.power;
@@ -291,6 +295,8 @@ bool preserved_state_observed(const State& before,const State& after,
                               const ControlPatch& patch) {
     if(!valid_control_patch(patch) ||
        !valid_state(before) || !valid_state(after) ||
+       // Do not report confirmed state when the post-write C0 omits the
+       // preserved flag: matching visible setpoints cannot prove its value.
        !before.freeze_protection_known || !after.freeze_protection_known ||
        before.freeze_protection!=after.freeze_protection ||
        before.independent_aux_heat!=after.independent_aux_heat ||
@@ -431,12 +437,16 @@ bool parse_state(const uint8_t* f,size_t n,State& out) {
     s.fan=p[3]&0x7f; s.swing=p[7]&15;
     s.turbo=(p[8]&0x20)!=0 || (p[10]&2)!=0;
     s.independent_aux_heat=(p[8]&0x40)!=0;
+    s.classic_aux_bit_ambiguous=s.independent_aux_heat;
+    s.independent_aux_heat_known=!s.classic_aux_bit_ambiguous;
     s.follow_me=(p[8]&0x80)!=0; s.eco=(p[9]&0x10)!=0;
+    s.follow_me_known=true;
     s.aux_heat=(p[9]&8)!=0; s.purifier=(p[9]&0x20)!=0;
     s.sleep=(p[10]&1)!=0; s.fahrenheit=(p[10]&4)!=0;
+    s.fahrenheit_known=true;
     s.has_indoor= temp_byte(p[11],paylen>15?p[15]&15:0,s.fahrenheit,s.indoor_c);
     s.has_outdoor=temp_byte(p[12],paylen>15?p[15]>>4:0,s.fahrenheit,s.outdoor_c);
-    if(paylen>19)s.humidity=p[19]&127;
+    if(paylen>19) { s.humidity=p[19]&127;s.target_humidity_known=true; }
     if(paylen>21) {
         s.freeze_protection_known=true;
         s.freeze_protection=(p[21]&0x80)!=0;

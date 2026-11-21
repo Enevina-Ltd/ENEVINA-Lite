@@ -9,15 +9,15 @@ PROTOCOL=(ROOT/"pump/midea_v3_protocol.cpp").read_text()
 
 class MideaV3LiveRead(unittest.TestCase):
     def test_post_auth_stabilization_before_read_only_state_query(self):
-        start=TRANSPORT.index("ReadStatus read_device(const char* host")
-        end=TRANSPORT.index("ReadStatus write_device_v2(",start)
-        section=TRANSPORT[start:end]
-        self.assertLess(section.index("handshake_response("),
-                        section.index("vTaskDelay(pdMS_TO_TICKS(1100));"))
-        self.assertLess(section.index("vTaskDelay(pdMS_TO_TICKS(1100));"),
-                        section.index("const Bytes query=state_query(1);"))
-        self.assertIn("read_8370(tcp,packet)",section)
-        self.assertIn("parse_state(frame.data(),frame.size(),value)",section)
+        # Authentication and its stabilization wait are shared by both the
+        # read and write sessions. Real transport behavior is tested natively.
+        section=TRANSPORT.split('ReadStatus open(',1)[1].split('bool send(',1)[0]
+        self.assertLess(section.index('handshake_response('),
+                        section.index('vTaskDelay(pdMS_TO_TICKS(1100));'))
+        reader=TRANSPORT.split('ReadStatus read_model(',1)[1].split('ReadStatus write_model(',1)[0]
+        self.assertIn('session.open(ip,cache.port)',reader)
+        self.assertIn('ac_state_query(sample.profile,message_id++)',reader)
+        self.assertIn('ResponseKind::BasicState',reader)
 
     def test_nonsecret_diagnostics_only(self):
         self.assertIn("parse_state_failure_code(",PROTOCOL)
@@ -29,7 +29,7 @@ class MideaV3LiveRead(unittest.TestCase):
         self.assertNotIn('key_hex',SERVICE.split('void send_status(WebServer& web)',1)[1].split('} // namespace',1)[0])
 
     def test_no_automatic_pump_control(self):
-        section=TRANSPORT.split('ReadStatus read_device(const char* host',1)[1].split('ReadStatus write_device_v2(',1)[0]
+        section=TRANSPORT.split('ReadStatus read_model(',1)[1].split('ReadStatus write_model(',1)[0]
         self.assertNotIn("set_state_command(",section)
         self.assertNotIn("write_device(",section)
 

@@ -16,24 +16,24 @@ class NativeMideaV2(unittest.TestCase):
     def test_explicit_selection_and_no_silent_downgrade(self):
         self.assertIn('proto=="2"?2:proto=="3"?3:0',SRV)
         self.assertIn('if(cfg.protocol==2)',SRV)
-        self.assertIn('read_device_v2(cfg.host,id,sample)',SRV)
-        self.assertIn('read_device(cfg.host,auth,sample)',SRV)
+        self.assertIn('read_device_v2(cfg.host,id,sample,before)',SRV)
+        self.assertIn('read_device(cfg.host,auth,sample,before)',SRV)
         self.assertNotIn('read_device_v2(',TCP.split('ReadStatus read_device(const char* host,',1)[1].split('ReadStatus write_device_v2(',1)[0])
         self.assertIn('bool v2_packet_matches_device(',CODEC)
 
     def test_v2_only_queries_and_rejects_untrusted_data(self):
         v2=TCP.split('ReadStatus read_device_v2(',1)[1].split('ReadStatus read_device(',1)[0]
-        self.assertIn('state_query(1)',v2)
-        self.assertIn('inner_encode(device_id',v2)
-        self.assertIn('read_5a5a(tcp,packet)',v2)
-        self.assertIn('v2_packet_matches_device(',v2)
-        self.assertIn('inner_decode(',v2)
-        self.assertIn('parse_state(',v2)
+        self.assertIn('read_model(host,id,nullptr,reading,true,configuration_generation)',v2)
+        session=TCP.split('class LanSession {',1)[1].split('ReadStatus read_model(',1)[0]
+        reader=TCP.split('ReadStatus read_model(',1)[1].split('ReadStatus write_model(',1)[0]
+        self.assertIn('if(!creds_)return ReadStatus::Ok',session)
+        self.assertIn('v2_packet_matches_device(',session)
+        self.assertIn('inner_decode(',session)
+        self.assertIn('ingest_ac_response(',session)
         self.assertNotIn('handshake_request(',v2)
-        self.assertNotIn('encrypted_request(',v2)
-        self.assertNotIn('SetState',v2)
-        self.assertNotIn('send_control(',v2)
-        self.assertIn('allowed_lan_address(ip)',v2)
+        self.assertNotIn('write_model(',reader)
+        self.assertNotIn('set_state_command(',reader)
+        self.assertIn('allowed_lan_address(ip)',reader)
         self.assertIn('ReadStatus read_device_v2(',API)
         self.assertIn('FirmwareControlExperimental',CAT)
 

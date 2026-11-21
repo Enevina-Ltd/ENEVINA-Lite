@@ -6,10 +6,25 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include "pump/midea_ac_capabilities.hpp"
 
 namespace enevina::midea {
 using Bytes=std::vector<uint8_t>;
+enum class AcProtocol : uint8_t { Legacy, Subprotocol };
+struct AcProfile {
+    AcCapabilities capabilities{};
+    AcProtocol family=AcProtocol::Legacy;
+    uint8_t protocol_version=0;
+    bool protocol_version_known=false; // Negotiated by the appliance query.
+    uint16_t subtype=0;
+    bool subtype_known=false;
+    std::array<char,9> model{};
+    bool model_known=false;
+    bool new_temperature_layout=false;
+};
 struct State {
+    AcProfile profile{};
+    bool has_basic=true; // Legacy callers construct explicit states by hand.
     bool power=false;
     uint8_t mode=0xff;    // Midea mode value (HEAT=4)
     double setpoint_c=0;
@@ -20,22 +35,47 @@ struct State {
     bool turbo=false,eco=false,sleep=false,fahrenheit=false;
     bool follow_me=false,purifier=false,aux_heat=false,freeze_protection=false;
     bool freeze_protection_known=false; // absent on short C0, never assume off
-    bool independent_aux_heat=false; // C0 byte 8 bit 0x40
-    uint8_t humidity=40;
+    bool freeze_protection_inferred=false; // Explicit B5 unsupported, not a live bit.
+    bool independent_aux_heat=false;
+    uint8_t humidity=40; // Target humidity, separate from the ambient sensor.
+    // A0 does not report these fields, but the classic 0x40 writer includes
+    // them. Values initialized above are not evidence of appliance state.
+    bool fahrenheit_known=false,follow_me_known=false;
+    bool independent_aux_heat_known=false,target_humidity_known=false;
+    // Public C0 references disagree on byte 8 bit 0x40: independent heater
+    // versus smart-eye. An active unresolved bit cannot safely be rewritten.
+    bool classic_aux_bit_ambiguous=false;
+    // Only the fields present in this observation are marked known. Capability
+    // flags are separate from live state and never imply a property is enabled.
+    uint32_t properties_known=0;
+    bool display=false,breezeless=false,indirect_wind=false,self_clean=false,sound=false;
+    uint8_t vertical_angle=0,horizontal_angle=0,rate_select=0;
+    bool dry=false,power_saving=false,natural_wind=false,smart_eye=false,comfort_mode=false;
+    bool comfort_mode_known=false; // C0 byte 22 or A0 byte 14 was observed.
+    bool bb_sn8=false,bb_timer=false,bb_sn8_known=false,bb_timer_known=false;
+    bool has_humidity=false;
+    uint8_t indoor_humidity=0;
 };
 // The AC 0x40 command sets the full unit state. Only explicitly named
 // fields change; other known values originate from the last verified C0.
-enum ControlField : uint8_t {
+enum ControlField : uint32_t {
     ControlPower=1u, ControlMode=2u, ControlTemperature=4u,
-    ControlFan=8u, ControlSwing=16u
+    ControlFan=8u, ControlSwing=16u,ControlEco=32u,ControlTurbo=64u,
+    ControlSleep=128u,ControlFreezeProtection=256u,ControlDisplay=512u,
+    ControlVerticalAngle=1024u,ControlHorizontalAngle=2048u,
+    ControlRateSelect=4096u,ControlAnion=8192u,ControlBreezeless=16384u,
+    ControlIndirectWind=32768u,ControlSelfClean=65536u,ControlSound=131072u
 };
 struct ControlPatch {
-    uint8_t changed=0;
+    uint32_t changed=0;
     bool power=false;
     uint8_t mode=0xff;
     double setpoint_c=0.0;
     uint8_t fan=102;
     uint8_t swing=0;
+    bool eco=false,turbo=false,sleep=false,freeze_protection=false,display=false;
+    uint8_t vertical_angle=0,horizontal_angle=0,rate_select=0;
+    bool anion=false,breezeless=false,indirect_wind=false,self_clean=false,sound=false;
 };
 bool valid_control_patch(const ControlPatch& patch);
 bool set_state_command(const State& observed,const ControlPatch& patch,
