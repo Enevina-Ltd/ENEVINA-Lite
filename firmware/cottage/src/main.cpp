@@ -75,6 +75,8 @@ struct Cn105LinkIdentity {
     }
 };
 static Cn105LinkIdentity verified_cn105_link{}; // protected by lock_data
+static Cn105LinkIdentity cn105_command_link{};
+static MitsubishiCommandReadback cn105_command_readback{}; // protected by lock_data
 // Legacy ESPHome /events exposes real device state as SSE, but the receipt
 // does not prove a new UART poll. Keep the last observed values separately
 // from the source-verified sample used by the optimizer/safety gate.
@@ -388,6 +390,9 @@ static bool parse_cn105_proof_event(const cJSON* root,int64_t now,
             static_cast<uint64_t>(esp_timer_get_time()/1000),continuous);
         pump=verified;
         verified_cn105_link=link;
+        if(cn105_command_link.current() && cn105_command_link.endpoint==link.endpoint &&
+           cn105_command_link.wifi==link.wifi)
+            cn105_command_readback.observe(verified,now);
         xSemaphoreGive(lock_data);
         cn105_source_proof_good.fetch_add(1);
     } else if(proof!=enevina::PumpReadProofStatus::Replay) {
@@ -1076,10 +1081,15 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     req.addHeader("Content-Length","0");
     control_post_stage.store(5);
     // Last cancellation point after all potentially blocking preparation.
-    if(!control_armed.load() || !c23_config_storage_verified() ||
-       c23_config_generation()!=config_generation ||
-       site_settings_generation()!=site_generation ||
-       cottage_wifi_link_generation()!=link_generation) {
+    xSemaphoreTake(lock_data,portMAX_DELAY);
+    const bool dispatch=control_armed.load() && c23_config_storage_verified() &&
+        c23_config_generation()==config_generation &&
+        site_settings_generation()==site_generation &&
+        cn105_command_link.current() && cn105_command_link.wifi==link_generation &&
+        control_armed_endpoint.load()==cn105_command_link.endpoint;
+    if(dispatch)cn105_command_readback.sent={step,required_target,time(nullptr)};
+    xSemaphoreGive(lock_data);
+    if(!dispatch) {
         req.end();
         return false;
     }
@@ -1279,6 +1289,11 @@ static void cottage_control_tick() {
         decision.step==ControlStep::SetHeat?MitsubishiMode::Heat:
                                             MitsubishiMode::Off);
     if(!request.valid || !control_armed.load())return;
+    xSemaphoreTake(lock_data,portMAX_DELAY);
+    if(!cn105_command_link.current())cn105_command_readback={};
+    cn105_command_link={current.endpoint_generation,current.link_generation};
+    cn105_command_readback.requested={decision.step,decision.target_c,now};
+    xSemaphoreGive(lock_data);
     control_last_step.store(static_cast<int>(decision.step));
     control_last_command_utc.store(now);
     control_commands_sent.fetch_add(1);
@@ -1325,6 +1340,11 @@ static void cottage_control_tick() {
         if(control_post_stage.load()==6)control_post_stage.store(-8);
         control_commands_failed.fetch_add(1);
     }
+}
+static String control_connection_key(bool midea) {
+    return String(site_settings_endpoint_generation())+"/"+
+        String(cottage_wifi_link_generation())+"/"+
+        String(midea?cottage_midea_configuration_generation():0);
 }
 static void cottage_control_registration() {
     // User's previously chosen automation survives a same-image restart.
@@ -1379,6 +1399,10 @@ static void cottage_control_registration() {
         }
         const bool requested=web.arg("enabled")=="true";
         const bool midea=cottage_midea_selected();
+        if(web.hasArg("connection") && web.arg("connection")!=control_connection_key(midea)) {
+            web.send(409,"application/json","{\"saved\":false,\"error\":\"CONNECTION_CHANGED\"}");
+            return;
+        }
         if(requested && !midea && !cn105_selected()) {
             web.send(409,"application/json",
                 "{\"saved\":false,\"error\":\"ADAPTER_READ_ONLY\"}");
@@ -1903,7 +1927,16 @@ static void optimizer_worker(void*) {
         vTaskDelay(pdMS_TO_TICKS(std::max(5,sleep_s)*1000));
     }
 }
+static void add_control_phase(cJSON* root,const char* key,const MitsubishiCommandPhase& phase) {
+    if(phase.utc<=0 || phase.step==ControlStep::None)return;
+    if(auto* entry=cJSON_AddObjectToObject(root,key)) {
+        cJSON_AddStringToObject(entry,"step",control_step_name(phase.step));
+        cJSON_AddNumberToObject(entry,"utc",static_cast<double>(phase.utc));
+        if(phase.step!=ControlStep::SetOff)cJSON_AddNumberToObject(entry,"target_c",phase.target_c);
+    }
+}
 static void status_endpoint() {
+    MitsubishiCommandReadback cn105_command{};
     CN105Telemetry cp;ShellyTelemetry st;TemperatureSample te;
     CN105Telemetry observed; // SSE-only values, never source-verified
     BridgeStatus bs;MpcResult plan;MpcStatus plan_record_status=MpcStatus::InvalidInput;Decision current_safety;
@@ -1914,6 +1947,7 @@ static void status_endpoint() {
     uint32_t ms,worst,heap,psram,stack;
     xSemaphoreTake(lock_data,portMAX_DELAY);
     cp=pump;observed=sse_observed_pump;
+    if(cn105_command_link.current())cn105_command=cn105_command_readback;
     st=consumption;/* C2.3 temperature read outside lock */bs=bridge_status;
     relay_on=shelly_relay_on;
     current_safety=safety;
@@ -1944,6 +1978,7 @@ static void status_endpoint() {
         (midea?"MIDEA_AUTOMAATIO_KAYTOSSA":"CN105_AUTOMAATIO_KAYTOSSA"):"VARJOTILA_EI_KOMENTOJA");
     cJSON_AddBoolToObject(root,"physical_writes",armed);
     cJSON_AddBoolToObject(root,"control_armed",armed);
+    cJSON_AddStringToObject(root,"control_connection",control_connection_key(midea).c_str());
     cJSON_AddNumberToObject(root,"control_arm_nvs_reclaimed",
                             control_arm_nvs_reclaimed.load());
     cJSON_AddNumberToObject(root,"control_arm_nvs_save_failures",
@@ -1954,6 +1989,11 @@ static void status_endpoint() {
         control_gate_name(static_cast<ControlBlock>(control_gate.load())));
     cJSON_AddStringToObject(root,"control_last_step",
         control_step_name(static_cast<ControlStep>(control_last_step.load())));
+    if(!midea && cn105_selected()) {
+        add_control_phase(root,"cn105_control_requested",cn105_command.requested);
+        add_control_phase(root,"cn105_control_sent",cn105_command.sent);
+        add_control_phase(root,"cn105_control_confirmed",cn105_command.confirmed);
+    }
     cJSON_AddNumberToObject(root,"control_commands_sent",control_commands_sent.load());
     cJSON_AddNumberToObject(root,"control_commands_confirmed",control_commands_confirmed.load());
     cJSON_AddNumberToObject(root,"control_commands_failed",control_commands_failed.load());

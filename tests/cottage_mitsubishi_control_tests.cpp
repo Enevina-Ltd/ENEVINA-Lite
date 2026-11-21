@@ -154,6 +154,49 @@ int main() {
     }
     s=base();s.current_setpoint_c=std::numeric_limits<double>::quiet_NaN();
     assert(choose_mitsubishi_control(s).step==ControlStep::Setpoint);
+    {
+        MitsubishiCommandReadback r{};
+        r.sent={ControlStep::Setpoint,21.5,100};
+        CN105Telemetry obs{};
+        obs.received=true;
+        obs.mode=ObservedPumpMode::Off;
+        obs.setpoint_c=21.5;
+        obs.evidence={104,99,true};
+        r.observe(obs,104);
+        assert(r.confirmed.step==ControlStep::None); // buffered pre-write data
+        obs.evidence={104,100,true};
+        r.observe(obs,104);
+        assert(r.confirmed.step==ControlStep::None); // second-level ambiguity
+        obs.evidence={104,103,false};
+        r.observe(obs,104);
+        assert(r.confirmed.step==ControlStep::None); // network receipt only
+        obs.evidence.source_time_verified=true;
+        obs.setpoint_c=21;
+        r.observe(obs,104);
+        assert(r.confirmed.step==ControlStep::None);
+        obs.setpoint_c=21.5;
+        r.observe(obs,104);
+        assert(r.confirmed.step==ControlStep::Setpoint && r.confirmed.utc==103);
+        r.sent={ControlStep::SetHeat,21.5,110};
+        obs.mode=ObservedPumpMode::Heat;
+        obs.evidence={115,114,true};
+        obs.setpoint_c=21;
+        r.observe(obs,115);
+        assert(r.confirmed.step==ControlStep::Setpoint);
+        obs.setpoint_c=21.5;
+        r.observe(obs,115);
+        assert(r.confirmed.step==ControlStep::SetHeat && r.confirmed.utc==114);
+        r.sent={ControlStep::SetOff,0,120};
+        obs.mode=ObservedPumpMode::Other;
+        obs.evidence={124,123,true};
+        r.observe(obs,124);
+        assert(r.confirmed.step==ControlStep::SetHeat); // cooling is not off
+        obs.mode=ObservedPumpMode::Off;
+        r.observe(obs,300);
+        assert(r.confirmed.step==ControlStep::SetHeat); // late delivery
+        r.observe(obs,124);
+        assert(r.confirmed.step==ControlStep::SetOff && r.confirmed.utc==123);
+    }
     // Real cottage field case, 2026-11-19: Ruuvi 11.585 C, user hold 12 C,
     // heat pump currently OFF and its setpoint 21 C. The hysteresis boundary
     // is 11.5 C. A HOLD creates NO physical writes; after crossing 11.5 C

@@ -21,9 +21,9 @@ for(const a of [...wizHtml.matchAll(/aria-label="([^"]+)"/g)].map(x=>x[1]))
   assert(a in dict,'aria-label not translated: '+a);
 assert.deepEqual(missing,[],'missing English translations');
 
-const ctx={document:{},state:{},uiLanguage:'fi',siteErrors:{},maturityText:{}};
+const ctx={document:{},state:{},translateFi:s=>s,uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,wzSavePump,roomTempFields,saveRoomTemp,WZ};',ctx);
+vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,wzSavePump,wzFinish,roomTempFields,saveRoomTemp,WZ};',ctx);
 const A=ctx.api;
 
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
@@ -403,5 +403,38 @@ console.log('devices step helpers ok');
   await A.wzSaveComfort(false);
   assert.equal(ctx.state.status.air.hold_target_c,13);
   assert(ctx.state.statusRequestSequence>200);
-  console.log('wizard rollback-order and ambiguous-response tests OK');
+  // Completing setup alone never opts the owner into physical writes.
+  events.length=0;
+  ctx.state.site.pump_adapter='mitsubishi_cn105_esphome';
+  ctx.wzPost=async fields=>events.push(['setup',fields.setup_complete]);
+  ctx.fetchJSON=async path=>{assert.equal(path,'/api/status');return {control_armed:false,control_connection:'12/8/0',air:{mode:3,config_token:'current'}};};
+  ctx.requestControlPermission=async (enabled,token)=>events.push(['permission',enabled,token]);
+  A.WZ.controlBasis='12/8/0';
+  A.WZ.controlChoice=null;
+  await A.wzFinish();
+  assert.deepEqual(events,[['setup','true']]);
+  events.length=0;
+  A.WZ.controlChoice=true;
+  await A.wzFinish();
+  assert.deepEqual(events,[['permission',true,'current'],['setup','true']]);
+  events.length=0;
+  A.WZ.controlChoice=false;
+  ctx.fetchJSON=async()=>({control_connection:'12/8/0',control_armed:true,air:{mode:3,config_token:'current'}});
+  await A.wzFinish();
+  assert.deepEqual(events,[['permission',false,'current'],['setup','true']]);
+  events.length=0;
+  ctx.state.site.pump_adapter='midea_lan';
+  A.WZ.controlChoice=true;
+  ctx.fetchJSON=async()=>({control_connection:'12/8/0',control_armed:false,air:{mode:3,config_token:'current'}});
+  ctx.requestControlPermission=async()=>{throw Error('MIDEA_NOT_READY');};
+  await assert.rejects(A.wzFinish(),/MIDEA_NOT_READY/);
+  assert.deepEqual(events,[],'keep the wizard open if automatic control is refused');
+  ctx.state.site.pump_adapter='mitsubishi_cn105_esphome';
+  ctx.fetchJSON=async()=>({control_connection:'12/8/0',control_armed:false,air:{mode:1,config_token:'current'}});
+  await assert.rejects(A.wzFinish(),/Ylläpitolämpö/);
+  assert.deepEqual(events,[],'unsupported mode cannot request automatic heating');
+  A.WZ.controlBasis='12/7/0';
+  await assert.rejects(A.wzFinish(),/yhteysasetukset ovat muuttuneet/);
+  assert.deepEqual(events,[],'a changed pump connection cannot be armed by an older setup page');
+  console.log('wizard rollback-order, ambiguous-response and control-choice tests OK');
 })().catch(e=>{console.error(e);process.exitCode=1;});
