@@ -33,9 +33,17 @@ class WifiOnboardingSource(unittest.TestCase):
     def test_credentials_stored_only_after_verified_join(self):
         self.assertIn("WiFi.persistent(false)", WIFI)
         loop = WIFI.split("void cottage_wifi_loop()", 1)[1]
-        self.assertIn("machine.take_commit() && !persist(machine.stored())", loop)
+        self.assertIn("if(machine.take_commit())", loop)
+        self.assertIn("const bool saved=persist(machine.candidate());", loop)
+        self.assertIn("machine.finish_commit(saved,millis());", loop)
         connect = WIFI.split("void connect_route()", 1)[1].split("void captive_redirect()", 1)[0]
         self.assertNotIn("persist(", connect)
+
+    def test_retry_save_uses_existing_token_and_setup_ap(self):
+        retry = WIFI.split("void retry_save_route()", 1)[1].split("class SetupApGuard", 1)[0]
+        self.assertLess(retry.index("c23_authorize_local_setting"), retry.index("machine.retry_commit()"))
+        self.assertIn('web.on("/api/wifi/retry-save",HTTP_POST,retry_save_route);', WIFI)
+        self.assertIn('"storage",wifi_storage_name(machine.storage())', WIFI)
 
     def test_credentials_stored_as_one_atomic_blob(self):
         # Codex P2 (PR #30): never two writes that can split SSID/password.
@@ -58,7 +66,7 @@ class WifiOnboardingSource(unittest.TestCase):
         self.assertNotIn('persist(c)', read)
         loop = WIFI.split("void cottage_wifi_loop() {", 1)[1]
         self.assertIn('if(legacy_migration_pending && got_ip.load()', loop)
-        self.assertIn('persist(machine.stored()))', loop)
+        self.assertIn('if(persist(machine.stored()))', loop)
         self.assertNotIn('Serial.printf', read)
         self.assertNotIn('Serial.print(legacy_', read)
         # Never replace a newer but invalid record with potentially stale keys.

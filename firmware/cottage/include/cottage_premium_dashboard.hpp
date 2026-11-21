@@ -1699,6 +1699,16 @@ function otaLastUpdateText(s,fmt){
 // Finnish and English are bundled in flash. No browser translation service,
 // external network calls, firmware settings or heat-pump writes are involved.
 let uiLanguage=(()=>{
+  const query=new URLSearchParams(location.search);
+  const fromSetup=query.get('ui_lang');
+  if(fromSetup==='fi'||fromSetup==='en'){
+    try{
+      localStorage.setItem('enevina_lite_language',fromSetup);
+      query.delete('ui_lang');
+      history.replaceState(null,'',location.pathname+(query.size?'?'+query:'')+location.hash);
+    }catch(_){}
+    return fromSetup;
+  }
   try {return localStorage.getItem('enevina_lite_language')==='en'?'en':'fi';}
   catch(_){return 'fi';}
 })();
