@@ -867,12 +867,10 @@ async function wzSavePump(skip){
     await wzPost({setup_step:'5'});return;
   }
   if(WZ.adapter==='gree_ewpe_lan'){
-    if(state.site?.pump_adapter!=='gree_ewpe_lan')
-      throw Error(WT('Yhdistä Gree ja odota tuoretta tilanlukua ennen jatkamista.'));
     const s=await fetchJSON('/api/gree/status');
     if(greeDraft || greeBusy || s.configured!==true || s.fresh!==true)
       throw Error(WT('Yhdistä Gree ja odota tuoretta tilanlukua ennen jatkamista.'));
-    await wzPost({setup_step:'5'});return;
+    await wzPost({pump_adapter:'gree_ewpe_lan',setup_step:'5'});return;
   }
   const f={pump_adapter:WZ.adapter,setup_step:'5'};
   if(WZ.adapter==='mitsubishi_cn105_esphome')f.cn105_url=(WZ.cn105||'').trim();
@@ -3218,12 +3216,16 @@ function showGree(s){
     menu.hidden=!list.length;
   }
 }
+function greePanelActive(){
+  return state.site?.pump_adapter==='gree_ewpe_lan' ||
+    (WZ.open&&WZ.step===4&&WZ.adapter==='gree_ewpe_lan');
+}
 async function reloadGree(){
-  if(state.site?.pump_adapter!=='gree_ewpe_lan'){greeStatus=null;return null;}
+  if(!greePanelActive()){greeStatus=null;return null;}
   const seq=++greeSequence;
   try {
     const s=await fetchJSON('/api/gree/status');
-    if(seq!==greeSequence||state.site?.pump_adapter!=='gree_ewpe_lan')return null;
+    if(seq!==greeSequence||!greePanelActive())return null;
     greeStatus=s;showGree(s);return s;
   } catch(e) {
     if(seq===greeSequence){greeStatus=null;text('gree-status','Gree-pumpulta ei saatu tuoretta tilaa.');}
@@ -3246,8 +3248,6 @@ async function greeJob(action){
   const fields=['gree-ip','gree-id','gree-cipher','gree-discovered','gree-scan','gree-pair','gree-test'];
   fields.forEach(id=>{$(id).disabled=true;});
   try {
-    if(WZ.open&&WZ.step===4&&WZ.adapter==='gree_ewpe_lan'&&state.site?.pump_adapter!=='gree_ewpe_lan')
-      await wzPost({pump_adapter:'gree_ewpe_lan'});
     const params=action==='pair'?{host:$('gree-ip').value.trim(),device:$('gree-id').value.trim(),cipher:$('gree-cipher').value}:{};
     const token=state.status?.air?.config_token;
     if(!token)throw Error('authorization');

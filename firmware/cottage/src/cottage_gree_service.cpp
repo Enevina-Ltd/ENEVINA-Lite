@@ -254,8 +254,8 @@ void status(WebServer& web) {
 
 bool web_ready(WebServer& web,bool write) {
     if(!cottage_wifi_require_home_lan(web))return false;
-    if(!guard || !cottage_gree_selected()) {
-        web.send(409,"application/json","{\"error\":\"not_selected\"}");return false;
+    if(!guard) {
+        web.send(503,"application/json","{\"error\":\"unavailable\"}");return false;
     }
     if(write && (!web.hasArg("token") ||
        !enevina::cottage::c23_authorize_local_setting(web.arg("token").c_str()))) {
@@ -277,7 +277,12 @@ bool cottage_gree_selected() {
     return std::strcmp(site_settings_snapshot().pump_adapter,adapter_id)==0;
 }
 bool cottage_gree_needs_worker() {
-    return guard && cottage_gree_selected();
+    if(!guard)return false;
+    if(cottage_gree_selected())return true;
+    xSemaphoreTake(guard,portMAX_DELAY);
+    const bool requested=state.queued.work!=Work::None;
+    xSemaphoreGive(guard);
+    return requested;
 }
 void cottage_gree_register_routes(WebServer& web) {
     guard=xSemaphoreCreateMutex();
@@ -335,15 +340,15 @@ enevina::PumpRoomState cottage_gree_room_state() {
 void cottage_gree_worker(void*) {
     uint32_t last_poll=0,last_wifi=0,last_endpoint=0;
     for(;;) {
-        if(!cottage_gree_selected() || WiFi.status()!=WL_CONNECTED ||
-           cottage_ota_network_maintenance()) {
+        if(WiFi.status()!=WL_CONNECTED || cottage_ota_network_maintenance()) {
             vTaskDelay(pdMS_TO_TICKS(400));
             continue;
         }
         const auto link=active_link();
+        const bool selected=cottage_gree_selected();
         xSemaphoreTake(guard,portMAX_DELAY);
         Job job=state.queued;
-        if(job.work==Work::None && configured(state.saved) &&
+        if(job.work==Work::None && selected && configured(state.saved) &&
            (millis()-last_poll>=poll_ms || last_wifi!=link.wifi || last_endpoint!=link.endpoint))
             job={Work::Read,{},link};
         const Config old=state.saved;
@@ -368,14 +373,16 @@ void cottage_gree_worker(void*) {
             } else if(job.work==Work::Pair) {
                 const bool same=configured(old) && !std::strcmp(candidate.host,old.host) &&
                     candidate.cipher==old.cipher && device_id(candidate.device)==device_id(old.device);
-                const auto key=same?std::optional<Key>(old.key):bind(candidate,job.link);
-                if(key) {
-                    if(same)candidate=old;
+                if(same)reading=read(old,job.link);
+                if(reading) {
+                    candidate=old;
+                    result="paired";
+                } else if(const auto key=bind(candidate,job.link)) {
                     candidate.version=config_version;
                     candidate.key=*key;
                     reading=read(candidate,job.link);
-                }
-                result=!key?"bind_failed":!reading?"read_failed":"paired";
+                    result=reading?"paired":"read_failed";
+                } else result="bind_failed";
             } else {
                 if(configured(old))reading=read(old,job.link);
                 result=!configured(old)?"not_configured":reading?"ok":"read_failed";
@@ -383,7 +390,7 @@ void cottage_gree_worker(void*) {
         }
         xSemaphoreTake(guard,portMAX_DELAY);
         state.busy=false;
-        if(job.link.current() && cottage_gree_selected()) {
+        if(job.link.current()) {
             if(job.work==Work::Scan) {
                 state.candidates=found;
                 state.candidate_count=count;

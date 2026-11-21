@@ -1,6 +1,6 @@
 # Gree and EWPE Smart LAN
 
-Select **Gree / EWPE Smart OEM** in the pump step. Discover the module on the home network or enter its IPv4 address, device ID and V1/V2. Select **Pair Gree** and wait for a fresh state read. The same controls are available in Settings. The pump's reported indoor temperature can serve as the room temperature input when it is available.
+Select **Gree / EWPE Smart OEM** in the pump step. Discover the module on the home network or enter its IPv4 address, device ID and V1/V2. Select **Pair Gree** and wait for a fresh state read, then select **Continue** to activate the connection. Discovery and pairing leave the currently active pump unchanged. The same controls are available in Settings. The pump's reported indoor temperature can serve as the room temperature input when it is available.
 
 Lite sends bounded UDP requests on port 7000 on the local subnet. It distinguishes V1 AES-ECB and V2 AES-GCM at discovery, matches the selected module and completes a read using the module's device key before saving the enrollment in NVS. The key is local to the device and never returned to the browser. Changing networks invalidates the old read; polling resumes when the configured module is reachable.
 

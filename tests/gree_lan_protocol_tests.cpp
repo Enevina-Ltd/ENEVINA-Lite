@@ -31,6 +31,14 @@ int main() {
         const auto key=bound_key(variant,*unit,binding_reply);
         assert(key);
         assert(!bound_key(variant,"012345abcdee",binding_reply));
+        const auto refreshed_binding=pack(variant,binding_key(variant),true,*unit,"app",
+            R"({"t":"bindok","mac":"012345abcdef","key":"new-key-16-bytes","r":200})");
+        const auto new_key=bound_key(variant,*unit,refreshed_binding);
+        assert(new_key && *new_key!=*key);
+        const auto newer=pack(variant,*new_key,false,*unit,"app",
+            R"({"t":"dat","cols":["Pow","Mod"],"dat":[0,4]})");
+        assert(!parse_status(variant,*key,*unit,newer));
+        assert(parse_status(variant,*new_key,*unit,newer));
         const auto bind=bind_request(variant,*unit);
         const auto decoded_bind=unpack(variant,binding_key(variant),true,"app",*unit,bind);
         assert(decoded_bind && decoded_bind->find("\"t\":\"bind\"")!=std::string::npos);
