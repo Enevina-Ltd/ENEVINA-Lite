@@ -12,6 +12,10 @@ The experimental native C++ code in this change lives in:
 
 - `pump/midea_v3_protocol.{hpp,cpp}`: V3 AES-256-CBC/8370 handshake,
   authenticated encrypted frames, nested signed 5A5A AC query and state parser.
+- `pump/midea_ac_capabilities.*`, `pump/midea_ac_protocol.*`: B5 model capabilities,
+  per-mode limits, C0/A0/BB state, family-specific commands and B0/B1 properties.
+- `pump/midea_discovery_info.*`, `pump/midea_read_plan.hpp`: validated model/subtype
+  metadata, identity-bound negotiation and command deadline arithmetic.
 - `firmware/cottage/include/cottage_midea.hpp` and
   `firmware/cottage/src/cottage_midea.cpp`: ESP32-S3 TCP/6444 **status + experimental manual control**
   transport.
@@ -43,6 +47,57 @@ not connect to a manufacturer service or issue a pump state/write command.
 - No automatic Midea control or background DHCP re-enrollment is enabled.
   A later IP change can be handled through this manual discovery again.
 
+## Native model and capability discovery (21 November 2026)
+
+Normal polling now discovers the selected AC device's model/subtype, appliance
+protocol version, classic or BB family, and primary/additional B5 capability
+pages. The dashboard follows the resulting mode/fan/swing choices, per-mode
+temperature ranges, step and supported optional controls. Metadata and current
+state are separate: an optional reply cannot refresh a missing basic-state read.
+
+`/api/midea/status` includes `profile`, `capabilities`, `state_known` and
+`control_policy`. Missing live optional values are null. Capability defaults are
+labelled as defaults, not observed device reports. Mode transitions use the
+destination range and a visible proposed target if the current target is invalid.
+
+Commands select classic `0x40`, BB/20 or selective B0 properties. General and
+selective-property changes cannot be mixed into one partly executed transaction.
+The API and UI share the codec's supported-field constraints. This covers AC
+`0xAC` over V2/V3, not all Midea appliance types or every upstream entity. See
+[the model/capability implementation and limits](MIDEA_LIBRARY_INTEGRATION.md).
+
+## Short C0 and whole-state preservation
+
+Some units omit the 8 °C heat-preservation preset from a short C0 response.
+A classic `0x40` command writes the whole state. A visible normal target or an
+upstream default of false does not prove the omitted preset is off.
+
+Lite tries a validated A0 response. The frost requirement can be met by an
+observed current bit, an explicit B5 report that the feature is unsupported, or
+an explicit user-requested supported preset value. Missing B5 tags are unknown;
+support alone never supplies the current value. Readback must independently
+show the requested result before success is reported.
+
+All other fields serialized by the whole-state command also need preservation
+evidence. A0-only basic telemetry does not prove its omitted C0 fields. A
+same-acquisition C0 can supply Follow Me, Fahrenheit, independent auxiliary heat,
+target humidity and ambient readings, with explicit knowledge flags. A missing
+humidity byte remains unknown; a missing comfort tail triggers an A0 query. An active C0 bit with conflicting Smart Eye /
+independent-auxiliary-heat interpretations is not guessed. Selective B0 properties
+can remain available when general whole-state evidence is incomplete.
+
+The earlier pilot demonstrated 22 → 22.5 → 22 °C with power off on firmware
+2026112025. That experiment did not prove preservation of an unreported preset
+and is not field evidence for this model-discovery implementation.
+
+The manual pilot, fresh state and original 15-second queue deadline remain in
+place. Resource-lease retries use the original deadline and configuration/link
+identity. The deadline is checked after connection/handshake and immediately
+before the single SET. A device/configuration change cancels old work. An
+ambiguous physical write is never retried; a SET echo does not count as the
+independent query response. Selecting/discovering a device does not activate
+physical control.
+
 ## Verified Lite-to-Midea V3 local telemetry (20 November 2026)
 
 On the Core machine's connected ESP32-S3 N16R8 test board, **Enevina Lite
@@ -68,13 +123,12 @@ compatibility with all Midea OEM variants. The Midea manual pilot approval
 remained false, and CN105 automation was not armed. A separate physical
 write experiment requires owner approval and model-specific limits.
 
-**State now:** V2/V3 local telemetry and experimental manual control of
-power, mode, setpoint, fan and swing are implemented in firmware source.
-Each manual command is built from fresh pump status, sent only once and
-checked with an independent readback. This has passed host protocol vectors
-and firmware builds, but NOT a real Lite-to-Midea physical write test.
-Automatic electricity-price optimization is NOT connected to Midea yet,
-and Mitsubishi CN105 controls remain separate.
+**Current source (21 November 2026):** capability-driven V2/V3 AC telemetry and
+manual controls now cover classic and BB families and supported B0 properties.
+The new behavior has host, dashboard and ESP32-S3 build evidence. It has not
+been flashed or physically exercised as part of this change. The earlier dated
+telemetry/setpoint observations above are narrower evidence. Automatic price
+optimization is not connected to Midea, and CN105 controls stay separate.
 
 ## Midea V2 local LAN (legacy modules)
 
@@ -93,7 +147,7 @@ Nordic uses V2. The owner's already-tested Frezzer uses **V3 in Core**.
   and interpreted as V3; on the next edit, a versioned `config_v2` record
   is written. An up-to-date `config_v1` V3 mirror remains available for
   rollback to the previous V3 firmware; switching to V2 leaves any existing
-  V3 mirror untouched because older V3 images cannot interpret V2. No
+  V3 mirror untouched because older V3 images cannot interpret V2.
   The loader also detects changed valid V3 legacy settings when upgrading
   again after an OTA rollback: modifications to `config_v1` made by the
   older V3 firmware take precedence over stale V3 settings in `config_v2`.
@@ -105,11 +159,10 @@ Nordic uses V2. The owner's already-tested Frezzer uses **V3 in Core**.
 - V2 is **not cryptographically authenticated per device**: the shared
   fixed key is a public protocol constant. Use only a trusted LAN; do not
   confuse a signed packet with an authenticated manufacturer endpoint.
-- Experimental manual control uses the shared Midea AC 0x40 full-state
-  command, following a fresh 0x41 status read. The command is transmitted
-  once and confirmed with a new query. A complete control packet may alter
-  native timers or undiscovered model-specific flags; this needs a physical
-  test before use on a connected home heat pump.
+- Experimental manual control selects classic 0x40, BB/20 or selective B0
+  according to the negotiated AC family and requested fields. It reads fresh
+  state, checks preservation evidence, transmits once and obtains an independent
+  query readback. New model/family behavior still needs physical verification.
 - Automatic price optimizer to Midea commands is NOT yet wired. It must be
   validated on the actual device before being declared operational.
 - There has not yet been a real Lite ↔ V2 Wi-Fi-module field test, so no

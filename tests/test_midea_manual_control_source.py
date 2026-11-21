@@ -25,12 +25,13 @@ class MideaManualControl(unittest.TestCase):
         self.assertIn('ReadStatus write_device_v2(',TCP)
         self.assertIn('ReadStatus write_device(',TCP)
         self.assertIn('ReadStatus::ControlNotConfirmed',TCP)
-        for name in ("v2",""):
-            marker=f'ReadStatus write_device_{name}(' if name else 'ReadStatus write_device('
-            section=TCP.split(marker,1)[1].split('ReadStatus write_device',1)[0]
-            self.assertEqual(section.count('send_bytes(tcp,request)'),1)
-            self.assertIn('set_state_command(original,patch,2,control)',section)
-            self.assertIn('control_patch_observed(fresh,patch)',section)
+        section=TCP.split('ReadStatus write_model(',1)[1].split('} // namespace',1)[0]
+        self.assertEqual(section.count('session.send(control)'),1)
+        self.assertIn('ac_set_state_command(original,patch,2,control)',section)
+        self.assertIn('ac_control_confirmed(original,fresh,patch)',section)
+        compact=''.join(section.split())
+        self.assertIn('read_model(host,id,creds,original,false,expected_configuration_generation,patch.changed)',compact)
+        self.assertIn('read_model(host,id,creds,fresh,false,expected_configuration_generation,patch.changed)',compact)
         self.assertIn('write_device_v2(',HEADER)
         self.assertIn('write_device(',HEADER)
 
@@ -39,7 +40,8 @@ class MideaManualControl(unittest.TestCase):
             'web.on("/api/midea/test",HTTP_POST',1)[0]
         self.assertIn('cottage_wifi_request_via_ap(web)',endpoint)
         self.assertIn('c23_authorize_local_setting(',endpoint)
-        self.assertIn('valid_control_patch(patch)',endpoint)
+        self.assertIn('control_patch_fields_valid(patch)',endpoint)
+        self.assertIn('control_request_error(observed,patch)',endpoint)
         self.assertIn('control_pending.store(true)',endpoint)
         self.assertIn('web.send(202',endpoint)
         self.assertNotIn('write_device(',endpoint)
@@ -53,10 +55,10 @@ class MideaManualControl(unittest.TestCase):
         self.assertIn('if(control_pending.load())',worker)
         self.assertIn('control_busy=true',worker)
         self.assertIn('action?',worker)
-        self.assertIn('read_device_v2(cfg.host,id,sample)',worker)
+        self.assertIn('read_device_v2(cfg.host,id,sample,before)',worker)
         self.assertIn('write_device_v2(',worker)
-        self.assertIn('expected_link,min_c,max_c',worker)
-        self.assertIn('read_device(cfg.host,auth,sample)',worker)
+        self.assertIn('expected_link,expected_endpoint,before,queued+15,min_c,max_c',worker)
+        self.assertIn('read_device(cfg.host,auth,sample,before)',worker)
         self.assertIn('write_device(',worker)
         self.assertIn('NetworkBudgetLease lease',worker)
         self.assertNotIn('cottage_air_service_get_plan(',worker)
@@ -72,7 +74,11 @@ class MideaManualControl(unittest.TestCase):
         self.assertIn('pilot.config_revision==revision.load()',SERVICE)
         self.assertIn('requested>=pilot.min_c && requested<=pilot.max_c',SERVICE)
         self.assertIn('pilot_approved',SERVICE)
-        self.assertIn('existing.freeze_protection_known',CODEC)
+        # Short C0 responses lack the optional 8 C preset bit. Full-state
+        # writes must not clear a hidden state or claim unverifiable readback.
+        self.assertIn('existing.freeze_protection?0x80:0',CODEC)
+        self.assertIn('!before.freeze_protection_known || !after.freeze_protection_known',CODEC)
+        self.assertIn('!existing.freeze_protection_known)return false',CODEC)
         self.assertIn('existing.independent_aux_heat?0x08:0',CODEC)
         self.assertIn('before.independent_aux_heat!=after.independent_aux_heat',CODEC)
         self.assertIn('patch.setpoint_c>40',CODEC)

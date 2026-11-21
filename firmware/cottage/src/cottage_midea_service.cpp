@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cerrno>
 #include <cmath>
+#include <cJSON.h>
 #include "cottage_midea_service.hpp"
 #include "cottage_midea.hpp"
 #include "cottage_air_service.hpp"
@@ -23,6 +24,7 @@
 #include "cottage_network_budget.hpp"
 #include "pump/midea_config_migration.hpp"
 #include "pump/midea_discovery.hpp"
+#include "pump/midea_ac_protocol.hpp"
 
 namespace {
 // Keep the exact V3 legacy NVS layout readable after upgrading older Lite
@@ -70,16 +72,19 @@ struct PilotApproval {
     char device_id[22]{};
     uint8_t protocol=0;
     uint32_t config_revision=0;
+    uint32_t endpoint_generation=0;
     double min_c=0,max_c=0;
 };
 PilotApproval pilot{}; // guarded by mutex
 std::atomic<uint32_t> pending_wifi_generation{0};
+std::atomic<uint32_t> pending_endpoint_generation{0};
 enevina::midea::ControlPatch pending_patch{}; // guarded by mutex
 std::atomic<int> control_result{-1};
 std::atomic<int64_t> control_attempt{0};
 std::atomic<int64_t> control_success{0};
 std::atomic<int64_t> control_queued_utc{0};
 enevina::midea::State observed{};
+uint32_t observed_wifi_generation=0,observed_endpoint_generation=0;
 bool configured=false;
 bool is_midea_selected() {
     const auto s=site_settings_snapshot();
@@ -226,90 +231,304 @@ const char* read_code(int status) {
     }
     return "not_tested";
 }
+struct BooleanControl {
+    const char* name;
+    uint32_t field;
+    enevina::midea::AcFeature feature;
+    bool enevina::midea::State::*value;
+    bool enevina::midea::ControlPatch::*patch;
+};
+constexpr BooleanControl boolean_controls[]={
+    {"eco",enevina::midea::ControlEco,enevina::midea::AcFeature::Eco,&enevina::midea::State::eco,&enevina::midea::ControlPatch::eco},
+    {"turbo",enevina::midea::ControlTurbo,enevina::midea::AcFeature::TurboCool,&enevina::midea::State::turbo,&enevina::midea::ControlPatch::turbo},
+    {"sleep",enevina::midea::ControlSleep,enevina::midea::AcFeature::Sleep,&enevina::midea::State::sleep,&enevina::midea::ControlPatch::sleep},
+    {"freeze_protection",enevina::midea::ControlFreezeProtection,enevina::midea::AcFeature::FreezeProtection,&enevina::midea::State::freeze_protection,&enevina::midea::ControlPatch::freeze_protection},
+    {"display",enevina::midea::ControlDisplay,enevina::midea::AcFeature::Display,&enevina::midea::State::display,&enevina::midea::ControlPatch::display},
+    {"anion",enevina::midea::ControlAnion,enevina::midea::AcFeature::Anion,&enevina::midea::State::purifier,&enevina::midea::ControlPatch::anion},
+    {"breezeless",enevina::midea::ControlBreezeless,enevina::midea::AcFeature::Breezeless,&enevina::midea::State::breezeless,&enevina::midea::ControlPatch::breezeless},
+    {"indirect_wind",enevina::midea::ControlIndirectWind,enevina::midea::AcFeature::IndirectWind,&enevina::midea::State::indirect_wind,&enevina::midea::ControlPatch::indirect_wind},
+    {"self_clean",enevina::midea::ControlSelfClean,enevina::midea::AcFeature::SelfClean,&enevina::midea::State::self_clean,&enevina::midea::ControlPatch::self_clean},
+    {"sound",enevina::midea::ControlSound,enevina::midea::AcFeature::Sound,&enevina::midea::State::sound,&enevina::midea::ControlPatch::sound}
+};
+struct NumericControl {
+    const char* name;
+    uint32_t field;
+    enevina::midea::AcFeature feature;
+    uint8_t enevina::midea::State::*value;
+    uint8_t enevina::midea::ControlPatch::*patch;
+};
+constexpr NumericControl numeric_controls[]={
+    {"vertical_angle",enevina::midea::ControlVerticalAngle,enevina::midea::AcFeature::VerticalAngle,&enevina::midea::State::vertical_angle,&enevina::midea::ControlPatch::vertical_angle},
+    {"horizontal_angle",enevina::midea::ControlHorizontalAngle,enevina::midea::AcFeature::HorizontalAngle,&enevina::midea::State::horizontal_angle,&enevina::midea::ControlPatch::horizontal_angle},
+    {"rate_select",enevina::midea::ControlRateSelect,enevina::midea::AcFeature::RateSelect,&enevina::midea::State::rate_select,&enevina::midea::ControlPatch::rate_select}
+};
+bool control_patch_fields_valid(const enevina::midea::ControlPatch& patch) {
+    constexpr uint32_t fields=enevina::midea::AcGeneralFields|enevina::midea::AcPropertyFields;
+    return patch.changed && !(patch.changed&~fields);
+}
+bool observed_control_field(const enevina::midea::State& state,uint32_t field) {
+    // An unsupported feature may safely be encoded as off, but capability
+    // inference is not a live observation to publish as a device setting.
+    return (state.properties_known&field)!=0 &&
+        !(field==enevina::midea::ControlFreezeProtection && state.freeze_protection_inferred);
+}
+bool optional_control_supported(const enevina::midea::State& state,
+                                uint32_t field,enevina::midea::AcFeature feature) {
+    using namespace enevina::midea;
+    const auto& caps=state.profile.capabilities;
+    if(field==ControlTurbo)feature=state.mode==4?AcFeature::TurboHeat:AcFeature::TurboCool;
+    // An explicit negative report wins over a previously observed value.
+    bool supported=caps.reports(feature)?caps.supports(feature):
+        observed_control_field(state,field);
+    if(field==ControlRateSelect &&
+       (caps.supports(AcFeature::RateSelect2) || caps.supports(AcFeature::RateSelect5)))supported=true;
+    if(!supported)return false;
+    // The device may advertise a feature whose command is not implemented for
+    // its message family. Use the same pure field validator as the API writer.
+    ControlPatch probe{};probe.changed=field;
+    if(field==ControlVerticalAngle)probe.vertical_angle=25;
+    if(field==ControlHorizontalAngle)probe.horizontal_angle=25;
+    if(field==ControlRateSelect) {
+        for(const uint8_t value:{1u,20u,40u,50u,60u,75u,80u,100u}) {
+            probe.rate_select=value;
+            if(valid_ac_control_patch(state,probe))return true;
+        }
+        return false;
+    }
+    return valid_ac_control_patch(state,probe);
+}
+const char* control_request_error(const enevina::midea::State& state,
+                                  const enevina::midea::ControlPatch& patch) {
+    using namespace enevina::midea;
+    if((patch.changed&AcGeneralFields) && (patch.changed&AcPropertyFields))
+        return "MIXED_COMMAND_FAMILIES";
+    if(!valid_ac_control_patch(state,patch))return "UNSUPPORTED_CONTROL";
+    Bytes encoded;
+    if(ac_set_state_command(state,patch,2,encoded))return nullptr;
+    const auto& caps=state.profile.capabilities;
+    if(state.profile.family==AcProtocol::Legacy &&
+       (patch.changed&AcGeneralFields) &&
+       !(patch.changed&ControlFreezeProtection) &&
+       !state.freeze_protection_known &&
+       !(caps.reports(AcFeature::FreezeProtection) &&
+         !caps.supports(AcFeature::FreezeProtection))) {
+        // Only suggest an explicit frost choice when it actually supplies the
+        // remaining required evidence. A0-only/ambiguous preserved fields
+        // cannot be repaired by choosing an unrelated preset.
+        ControlPatch explicit_frost=patch;
+        explicit_frost.changed|=ControlFreezeProtection;
+        explicit_frost.freeze_protection=false;
+        if(ac_set_state_command(state,explicit_frost,2,encoded))return "MISSING_FROST_STATE";
+    }
+    return "UNSUPPORTED_STATE";
+}
+bool mode_control_available(const enevina::midea::State& state,uint8_t mode) {
+    using namespace enevina::midea;
+    const auto& caps=state.profile.capabilities;
+    if(!mode_supported(caps,mode))return false;
+    const auto range=temperature_range(caps,mode);
+    const double step=temperature_step(caps);
+    if(!std::isfinite(step) || step<=0 ||
+       !std::isfinite(range.minimum_c) || !std::isfinite(range.maximum_c))return false;
+    // Availability asks whether the destination mode has any encodable target,
+    // not whether it can inherit this mode's target. This pure probe never
+    // changes the observed state or relaxes validation of a submitted draft.
+    ControlPatch probe{};probe.changed=ControlMode|ControlTemperature;probe.mode=mode;
+    probe.setpoint_c=std::ceil(std::fmax(12.0,range.minimum_c)/step-0.00001)*step;
+    if(probe.setpoint_c>range.maximum_c)return false;
+    if(valid_ac_control_patch(state,probe))return true;
+    // Leaving Dry normally selects Auto. Devices without Auto can still
+    // change mode by supplying an explicit supported fan in the same command.
+    probe.changed|=ControlFan;
+    for(unsigned fan=0;fan<=102;++fan) {
+        probe.fan=static_cast<uint8_t>(fan);
+        if(fan_supported(caps,probe.fan) && valid_ac_control_patch(state,probe))return true;
+    }
+    return false;
+}
+void add_profile_status(cJSON* root,const enevina::midea::State& reading,bool fresh) {
+    using namespace enevina::midea;
+    const auto& caps=reading.profile.capabilities;
+    cJSON* profile=cJSON_AddObjectToObject(root,"profile");
+    cJSON_AddStringToObject(profile,"family",reading.profile.family==AcProtocol::Subprotocol?"subprotocol":"legacy");
+    cJSON_AddNumberToObject(profile,"protocol_version",reading.profile.protocol_version);
+    cJSON_AddBoolToObject(profile,"subtype_known",reading.profile.subtype_known);
+    cJSON_AddNumberToObject(profile,"subtype",reading.profile.subtype);
+    cJSON_AddBoolToObject(profile,"model_known",reading.profile.model_known);
+    cJSON_AddStringToObject(profile,"model",reading.profile.model_known?reading.profile.model.data():"");
+    cJSON* features=cJSON_AddObjectToObject(root,"capabilities");
+    cJSON_AddStringToObject(features,"source",caps.received?"reported":"default");
+    cJSON_AddBoolToObject(features,"reported",caps.received);
+    cJSON_AddNumberToObject(features,"temperature_step",temperature_step(caps));
+    cJSON* modes=cJSON_AddArrayToObject(features,"modes");
+    cJSON* fans=cJSON_AddArrayToObject(features,"fans");
+    cJSON* swings=cJSON_AddArrayToObject(features,"swings");
+    cJSON* limits=cJSON_AddObjectToObject(features,"temp_limits");
+    for(uint8_t mode=1;mode<=5;++mode) {
+        if(mode_control_available(reading,mode))
+            cJSON_AddItemToArray(modes,cJSON_CreateNumber(mode));
+        const auto range=temperature_range(caps,mode);
+        char key[2]={static_cast<char>('0'+mode),0};
+        cJSON* item=cJSON_AddObjectToObject(limits,key);
+        cJSON_AddBoolToObject(item,"known",range.known);
+        cJSON_AddNumberToObject(item,"min_c",range.minimum_c);
+        cJSON_AddNumberToObject(item,"max_c",range.maximum_c);
+    }
+    for(unsigned fan=0;fan<=102;++fan) {
+        ControlPatch probe{};probe.changed=ControlFan;probe.fan=static_cast<uint8_t>(fan);
+        if(fan_supported(caps,probe.fan) && valid_ac_control_patch(reading,probe))
+            cJSON_AddItemToArray(fans,cJSON_CreateNumber(fan));
+    }
+    for(const uint8_t swing:{0u,3u,12u,15u}) {
+        ControlPatch probe{};probe.changed=ControlSwing;probe.swing=swing;
+        if(swing_supported(caps,swing) && valid_ac_control_patch(reading,probe))
+            cJSON_AddItemToArray(swings,cJSON_CreateNumber(swing));
+    }
+    cJSON* controls=cJSON_AddArrayToObject(features,"controls");
+    cJSON* options=cJSON_AddObjectToObject(features,"property_options");
+    cJSON* known=cJSON_AddArrayToObject(root,"state_known");
+    constexpr uint32_t core_fields[]={ControlPower,ControlMode,ControlTemperature,ControlFan,ControlSwing};
+    const char* core_names[]={"power","mode","target_c","fan","swing"};
+    for(size_t index=0;index<5;++index) {
+        bool available=true;
+        if(core_fields[index]==ControlMode)available=cJSON_GetArraySize(modes)>0;
+        if(core_fields[index]==ControlFan)available=cJSON_GetArraySize(fans)>0;
+        if(core_fields[index]==ControlSwing)available=cJSON_GetArraySize(swings)>0;
+        if(available)cJSON_AddItemToArray(controls,cJSON_CreateString(core_names[index]));
+        if(fresh && observed_control_field(reading,core_fields[index]))
+            cJSON_AddItemToArray(known,cJSON_CreateString(core_names[index]));
+    }
+    cJSON* policy=cJSON_AddObjectToObject(root,"control_policy");
+    cJSON* writable=cJSON_AddArrayToObject(policy,"property_controls");
+    bool property_available=false;
+    for(const auto& field:boolean_controls) {
+        const bool supported=optional_control_supported(reading,field.field,field.feature);
+        if(supported)cJSON_AddItemToArray(controls,cJSON_CreateString(field.name));
+        const bool has_value=fresh && observed_control_field(reading,field.field);
+        if(has_value) {
+            cJSON_AddItemToArray(known,cJSON_CreateString(field.name));
+            cJSON_AddBoolToObject(root,field.name,reading.*(field.value));
+        } else cJSON_AddNullToObject(root,field.name);
+        if(supported && (field.field&AcPropertyFields)) {
+            ControlPatch probe{};probe.changed=field.field;probe.*(field.patch)=reading.*(field.value);
+            if(fresh && !control_request_error(reading,probe)) {
+                property_available=true;
+                cJSON_AddItemToArray(writable,cJSON_CreateString(field.name));
+            }
+        }
+    }
+    for(const auto& field:numeric_controls) {
+        const bool supported=optional_control_supported(reading,field.field,field.feature);
+        if(supported)cJSON_AddItemToArray(controls,cJSON_CreateString(field.name));
+        const bool has_value=fresh && observed_control_field(reading,field.field);
+        if(has_value) {
+            cJSON_AddItemToArray(known,cJSON_CreateString(field.name));
+            cJSON_AddNumberToObject(root,field.name,reading.*(field.value));
+        } else cJSON_AddNullToObject(root,field.name);
+        cJSON* choices=cJSON_AddArrayToObject(options,field.name);
+        bool writable_field=false;
+        if(supported)for(unsigned value=0;value<=100;++value) {
+            ControlPatch probe{};probe.changed=field.field;probe.*(field.patch)=static_cast<uint8_t>(value);
+            if(!valid_ac_control_patch(reading,probe))continue;
+            cJSON_AddItemToArray(choices,cJSON_CreateNumber(value));
+            if(fresh && !control_request_error(reading,probe))writable_field=true;
+        }
+        if(writable_field) {
+            property_available=true;
+            cJSON_AddItemToArray(writable,cJSON_CreateString(field.name));
+        }
+    }
+    ControlPatch probe{};probe.changed=ControlPower;probe.power=reading.power;
+    const char* blocked=fresh?control_request_error(reading,probe):"STALE_STATE";
+    const bool requires_freeze=blocked && !std::strcmp(blocked,"MISSING_FROST_STATE");
+    cJSON_AddBoolToObject(policy,"general_available",blocked==nullptr);
+    cJSON_AddBoolToObject(policy,"property_available",property_available);
+    cJSON_AddBoolToObject(policy,"requires_freeze_choice",requires_freeze &&
+        optional_control_supported(reading,ControlFreezeProtection,AcFeature::FreezeProtection));
+    cJSON_AddStringToObject(policy,"general_block",!blocked?"":requires_freeze?"missing_frost_state":
+                           !fresh?"stale_state":"unsupported_state");
+}
 void send_status(WebServer& web) {
     const bool selected=is_midea_selected();
     enevina::midea::State reading{};
-    bool stored=false;
+    bool stored=false,busy=false,writing=false,pilot_ok=false;
     uint8_t selected_protocol=3;
-    int64_t last=0;
+    int64_t last=0,attempted=0;
     int status=-1;
-    int64_t attempted=0;
-    bool busy=false;
-    bool writing=false;
-    // Read the sample and its metadata in one consistent critical section.
-    // Otherwise a fresh timestamp can be paired with the previous sample.
+    uint32_t sample_link=0,sample_endpoint=0;
+    double pilot_min=0,pilot_max=0;
+    // State, capability profile and their identity are one atomic snapshot.
     xSemaphoreTake(mutex,portMAX_DELAY);
-    reading=observed;
-    stored=configured;
-    selected_protocol=saved.protocol;
-    last=last_success.load();
-    status=last_result.load();
-    attempted=last_attempt.load();
-    busy=polling.load();
-    writing=control_busy;
+    reading=observed;stored=configured;selected_protocol=saved.protocol;
+    last=last_success.load();status=last_result.load();attempted=last_attempt.load();
+    busy=polling.load();writing=control_busy;
+    sample_link=observed_wifi_generation;sample_endpoint=observed_endpoint_generation;
+    pilot_ok=selected && pilot.enabled && pilot.config_revision==revision.load() &&
+            pilot.endpoint_generation==site_settings_endpoint_generation() &&
+            pilot.protocol==saved.protocol &&
+            !std::strcmp(pilot.device_id,saved.device_id) && !config_updating;
+    if(pilot_ok) {pilot_min=pilot.min_c;pilot_max=pilot.max_c;}
     xSemaphoreGive(mutex);
     const auto now=static_cast<int64_t>(time(nullptr));
-    const bool fresh=selected && stored && last>0 &&
-       now>=last && now-last<=90;
+    const bool fresh=selected && stored && last>0 && now>=last && now-last<=90 &&
+        WiFi.status()==WL_CONNECTED && sample_link==cottage_wifi_link_generation() &&
+        sample_endpoint==site_settings_endpoint_generation();
     const char* code=!selected?"not_selected":
         !stored?"not_configured":attempted<=0?"not_tested":read_code(status);
     const int write_status=control_result.load();
-    const bool queued=control_pending.load();
-    bool pilot_ok=false;
-    double pilot_min=0,pilot_max=0;
-    xSemaphoreTake(mutex,portMAX_DELAY);
-    pilot_ok=pilot.enabled && pilot.config_revision==revision.load() &&
-            pilot.protocol==saved.protocol &&
-            !std::strcmp(pilot.device_id,saved.device_id) &&
-            !config_updating;
-    if(pilot_ok) {pilot_min=pilot.min_c;pilot_max=pilot.max_c;}
-    xSemaphoreGive(mutex);
-    char data[1150];
-    const int written=snprintf(data,sizeof(data),
-        "{\"selected\":%s,\"configured\":%s,\"fresh\":%s,"
-        "\"protocol\":%u,\"read_only\":false,\"manual_control\":true,"
-        "\"pilot_approved\":%s,\"pilot_min_c\":%.1f,\"pilot_max_c\":%.1f,"
-        "\"control_pending\":%s,\"control_busy\":%s,"
-        "\"control_last_attempt_utc\":%lld,"
-        "\"control_last_confirmed_utc\":%lld,"
-        "\"control_code\":\"%s\","
-        "\"last_poll_utc\":%lld,\"last_attempt_utc\":%lld,"
-        "\"polling\":%s,\"read_code\":\"%s\",\"read_status\":%d,\"read_detail\":%u,\"read_opcode\":%u,\"power\":%s,"
-        "\"mode\":%u,\"target_c\":%.1f,"
-        "\"indoor_available\":%s,\"indoor_c\":%.2f,"
-        "\"outdoor_available\":%s,\"outdoor_c\":%.2f}",
-        selected?"true":"false",stored?"true":"false",fresh?"true":"false",
-        static_cast<unsigned>(selected_protocol),
-        pilot_ok?"true":"false",pilot_min,pilot_max,
-        queued?"true":"false",writing?"true":"false",
-        static_cast<long long>(control_attempt.load()),
-        static_cast<long long>(control_success.load()),
-        write_status<0?"not_requested":read_code(write_status),
-        static_cast<long long>(fresh?last:0),
-        static_cast<long long>(attempted>0?attempted:0),
-        busy?"true":"false",code,status,
-        selected && selected_protocol==3?
-            static_cast<unsigned>(enevina::midea::last_v3_read_detail()):0u,
-        selected && selected_protocol==3?
-            static_cast<unsigned>(enevina::midea::last_v3_reply_opcode()):0u,
-        fresh && reading.power?"true":"false",
-        fresh?static_cast<unsigned>(reading.mode):255u,
-        fresh?reading.setpoint_c:0.0,
-        fresh && reading.has_indoor?"true":"false",
-        fresh && reading.has_indoor?reading.indoor_c:0.0,
-        fresh && reading.has_outdoor?"true":"false",
-        fresh && reading.has_outdoor?reading.outdoor_c:0.0);
+    cJSON* root=cJSON_CreateObject();
+    if(!root){web.send(503,"application/json","{}");return;}
+    cJSON_AddBoolToObject(root,"selected",selected);
+    cJSON_AddBoolToObject(root,"configured",stored);
+    cJSON_AddBoolToObject(root,"fresh",fresh);
+    cJSON_AddNumberToObject(root,"protocol",selected_protocol);
+    cJSON_AddBoolToObject(root,"read_only",false);
+    cJSON_AddBoolToObject(root,"manual_control",true);
+    cJSON_AddBoolToObject(root,"pilot_approved",pilot_ok);
+    cJSON_AddNumberToObject(root,"pilot_min_c",pilot_min);
+    cJSON_AddNumberToObject(root,"pilot_max_c",pilot_max);
+    cJSON_AddBoolToObject(root,"control_pending",control_pending.load());
+    cJSON_AddBoolToObject(root,"control_busy",writing);
+    cJSON_AddNumberToObject(root,"control_last_attempt_utc",control_attempt.load());
+    cJSON_AddNumberToObject(root,"control_last_confirmed_utc",control_success.load());
+    cJSON_AddStringToObject(root,"control_code",write_status<0?"not_requested":read_code(write_status));
+    cJSON_AddNumberToObject(root,"last_poll_utc",fresh?last:0);
+    cJSON_AddNumberToObject(root,"last_attempt_utc",attempted>0?attempted:0);
+    cJSON_AddBoolToObject(root,"polling",busy);
+    cJSON_AddStringToObject(root,"read_code",code);
+    cJSON_AddNumberToObject(root,"read_status",status);
+    cJSON_AddNumberToObject(root,"read_detail",selected && selected_protocol==3?enevina::midea::last_v3_read_detail():0);
+    cJSON_AddNumberToObject(root,"read_opcode",selected && selected_protocol==3?enevina::midea::last_v3_reply_opcode():0);
+    cJSON_AddBoolToObject(root,"power",fresh && reading.power);
+    cJSON_AddNumberToObject(root,"mode",fresh?reading.mode:255);
+    cJSON_AddNumberToObject(root,"target_c",fresh?reading.setpoint_c:0);
+    cJSON_AddNumberToObject(root,"fan",fresh?reading.fan:0);
+    cJSON_AddNumberToObject(root,"swing",fresh?reading.swing:0);
+    cJSON_AddBoolToObject(root,"indoor_available",fresh && reading.has_indoor);
+    cJSON_AddNumberToObject(root,"indoor_c",fresh && reading.has_indoor?reading.indoor_c:0);
+    cJSON_AddBoolToObject(root,"outdoor_available",fresh && reading.has_outdoor);
+    cJSON_AddNumberToObject(root,"outdoor_c",fresh && reading.has_outdoor?reading.outdoor_c:0);
+    add_profile_status(root,reading,fresh);
+    char* data=cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
     web.sendHeader("Cache-Control","no-store");
-    web.send(200,"application/json; charset=utf-8",
-             written>0 && written<static_cast<int>(sizeof(data))?data:"{}");
+    web.send(data?200:503,"application/json; charset=utf-8",data?data:"{}");
+    if(data)cJSON_free(data);
 }
 } // namespace
 
+uint32_t cottage_midea_configuration_generation() {
+    return revision.load();
+}
+bool cottage_midea_configuration_current(uint32_t expected_generation) {
+    return !config_updating.load() && revision.load()==expected_generation;
+}
 void cottage_midea_link_disconnected() {
     // Invoked from Arduino Wi-Fi event task. No mutex/NVS or network calls.
     // Queued physical writes must never survive a Wi-Fi disconnect/reconnect.
     control_pending.store(false);
     pending_wifi_generation.store(0);
+    pending_endpoint_generation.store(0);
     control_result.store(static_cast<int>(
        enevina::midea::ReadStatus::ResourceBusy));
     last_success.store(0);
@@ -483,6 +702,7 @@ void cottage_midea_service_register_routes(WebServer& web) {
             config_updating=true;
             control_pending.store(false);
             pending_wifi_generation.store(0);
+            pending_endpoint_generation.store(0);
             pilot={};
         }
         xSemaphoreGive(mutex);
@@ -502,6 +722,8 @@ void cottage_midea_service_register_routes(WebServer& web) {
         saved=next;
         configured=true;
         observed={};
+        observed_wifi_generation=0;
+        observed_endpoint_generation=0;
         last_success.store(0);
         last_result.store(0);
         revision.fetch_add(1);
@@ -555,6 +777,7 @@ void cottage_midea_service_register_routes(WebServer& web) {
                             sizeof(pilot.device_id));
                 pilot.protocol=saved.protocol;
                 pilot.config_revision=revision.load();
+                pilot.endpoint_generation=site_settings_endpoint_generation();
                 pilot.min_c=min_c;pilot.max_c=max_c;
                 pilot.enabled=true;
             }
@@ -619,18 +842,44 @@ void cottage_midea_service_register_routes(WebServer& web) {
             patch.changed|=enevina::midea::ControlSwing;
             patch.swing=byte;
         }
-        if(!enevina::midea::valid_control_patch(patch)) {
+        for(const auto& field:boolean_controls) {
+            if(!web.hasArg(field.name))continue;
+            const String value=web.arg(field.name);
+            if(value!="true" && value!="false") {
+                web.send(400,"application/json","{\"queued\":false,\"error\":\"BOOLEAN\"}");
+                return;
+            }
+            patch.changed|=field.field;
+            patch.*(field.patch)=value=="true";
+        }
+        for(const auto& field:numeric_controls) {
+            if(!web.hasArg(field.name))continue;
+            if(!decimal_u8(web.arg(field.name),byte)) {
+                web.send(400,"application/json","{\"queued\":false,\"error\":\"PROPERTY\"}");
+                return;
+            }
+            patch.changed|=field.field;
+            patch.*(field.patch)=byte;
+        }
+        if((patch.changed&enevina::midea::AcGeneralFields) &&
+           (patch.changed&enevina::midea::AcPropertyFields)) {
+            web.send(400,"application/json","{\"queued\":false,\"error\":\"MIXED_COMMAND_FAMILIES\"}");
+            return;
+        }
+        if(!control_patch_fields_valid(patch)) {
             web.send(400,"application/json","{\"queued\":false,\"error\":\"INVALID\"}");
             return;
         }
         const auto now=static_cast<int64_t>(time(nullptr));
         bool ready=false;
+        const char* request_error=nullptr;
         // The existing service owns one pump, one worker and one queued
         // command. No HTTP callback writes directly to the heat pump.
         xSemaphoreTake(mutex,portMAX_DELAY);
         const auto previous=last_success.load();
         const bool pilot_matches=pilot.enabled &&
               pilot.config_revision==revision.load() &&
+              pilot.endpoint_generation==site_settings_endpoint_generation() &&
               pilot.protocol==saved.protocol &&
               !std::strcmp(pilot.device_id,saved.device_id);
         const double requested=(patch.changed&enevina::midea::ControlTemperature)?
@@ -640,15 +889,30 @@ void cottage_midea_service_register_routes(WebServer& web) {
               std::isfinite(requested) &&
               requested>=pilot.min_c && requested<=pilot.max_c &&
               previous>0 && now>=previous && now-previous<=90 &&
+              observed_wifi_generation==cottage_wifi_link_generation() &&
+              observed_endpoint_generation==site_settings_endpoint_generation() &&
               poll_task.load()!=nullptr;
         if(ready && is_midea_selected()) {
-            pending_patch=patch;
-            pending_wifi_generation.store(cottage_wifi_link_generation());
-            control_pending.store(true);
-            control_queued_utc.store(now);
-            control_result.store(-1);
+            // Feature support is not sufficient for a safe whole-state write.
+            // Validate this exact draft against the current observed profile
+            // without sending or changing the pump; the worker checks again.
+            request_error=control_request_error(observed,patch);
+            if(!request_error) {
+                pending_patch=patch;
+                pending_wifi_generation.store(cottage_wifi_link_generation());
+                pending_endpoint_generation.store(site_settings_endpoint_generation());
+                control_pending.store(true);
+                control_queued_utc.store(now);
+                control_result.store(-1);
+            } else ready=false;
         } else ready=false;
         xSemaphoreGive(mutex);
+        if(request_error) {
+            char error[112]{};
+            std::snprintf(error,sizeof(error),"{\"queued\":false,\"error\":\"%s\"}",request_error);
+            web.send(400,"application/json",error);
+            return;
+        }
         if(!ready) {
             web.send(409,"application/json","{\"queued\":false,\"error\":\"NOT_READY\"}");
             return;
@@ -688,6 +952,8 @@ bool cottage_midea_service_needs_worker() {
 void cottage_midea_service_worker(void*) {
     poll_task.store(xTaskGetCurrentTaskHandle());
     for(;;) {
+        const uint32_t read_link=cottage_wifi_link_generation();
+        const uint32_t read_endpoint=site_settings_endpoint_generation();
         const bool connected=WiFi.status()==WL_CONNECTED &&
                              !cottage_ota_network_maintenance();
         const bool selected=is_midea_selected();
@@ -695,24 +961,29 @@ void cottage_midea_service_worker(void*) {
         bool ready=false,action=false;
         uint32_t before=0;
         uint32_t expected_link=0;
+        uint32_t expected_endpoint=0;
         double min_c=0,max_c=0;
         bool approved=false;
         enevina::midea::ControlPatch patch{};
         xSemaphoreTake(mutex,portMAX_DELAY);
         cfg=saved;
-        ready=configured;
+        ready=configured && !config_updating.load();
         before=revision.load();
         if(control_pending.load()) {
             patch=pending_patch;
             expected_link=pending_wifi_generation.load();
+            expected_endpoint=pending_endpoint_generation.load();
             min_c=pilot.min_c;max_c=pilot.max_c;
             approved=pilot.enabled &&
                      pilot.config_revision==before &&
+                     pilot.endpoint_generation==expected_endpoint &&
+                     expected_endpoint==site_settings_endpoint_generation() &&
                      pilot.protocol==cfg.protocol &&
                      !std::strcmp(pilot.device_id,cfg.device_id);
             control_pending.store(false);
             if(approved && !config_updating &&
-               expected_link==cottage_wifi_link_generation()) {
+               expected_link==cottage_wifi_link_generation() &&
+               expected_endpoint==site_settings_endpoint_generation()) {
                 control_busy=true;
                 action=true;
             } else control_result.store(
@@ -723,6 +994,7 @@ void cottage_midea_service_worker(void*) {
             enevina::midea::ReadStatus::ResourceBusy;
         enevina::midea::State sample{};
         bool attempted=false;
+        bool deferred_for_budget=false;
         // A momentary Wi-Fi disconnection must NEVER lead to a delayed
         // command firing later when the connection returns.
         const auto now=static_cast<int64_t>(time(nullptr));
@@ -732,10 +1004,20 @@ void cottage_midea_service_worker(void*) {
         if(connected && selected && ready && !config_updating &&
            valid_config(cfg) && within_window &&
            (!action || (approved &&
-             expected_link==cottage_wifi_link_generation()))) {
+             expected_link==cottage_wifi_link_generation() &&
+             expected_endpoint==site_settings_endpoint_generation()))) {
             // Independent worker, shared RAM budget, no HTTP callback writes.
-            enevina_firmware::NetworkBudgetLease lease(300,60*1024,16*1024);
-            if(lease.held()) {
+            // A user-submitted command must not silently vanish because
+            // BLE/weather TLS held the shared mutex for 300 ms. Give it a
+            // short turn, then retry only while the SAME requested action
+            // remains fresh, connected, and explicitly approved.
+            enevina_firmware::NetworkBudgetLease lease(
+                action?2500u:300u,60*1024,16*1024);
+            if(!lease.held() && action)deferred_for_budget=true;
+            const int64_t after_lease=static_cast<int64_t>(time(nullptr));
+            if(lease.held() && (!action ||
+                (queued>0 && after_lease>=queued &&
+                 after_lease-queued<15))) {
                 attempted=true;
                 polling.store(true);
                 if(!action)last_attempt.store(time(nullptr));
@@ -746,8 +1028,8 @@ void cottage_midea_service_worker(void*) {
                         result=action?
                             enevina::midea::write_device_v2(
                                 cfg.host,id,patch,sample,
-                                expected_link,min_c,max_c):
-                            enevina::midea::read_device_v2(cfg.host,id,sample);
+                                expected_link,expected_endpoint,before,queued+15,min_c,max_c):
+                            enevina::midea::read_device_v2(cfg.host,id,sample,before);
                     } else result=enevina::midea::ReadStatus::InvalidCredentials;
                 } else {
                     enevina::midea::Credential auth{};
@@ -756,28 +1038,57 @@ void cottage_midea_service_worker(void*) {
                         result=action?
                             enevina::midea::write_device(
                                 cfg.host,auth,patch,sample,
-                                expected_link,min_c,max_c):
-                            enevina::midea::read_device(cfg.host,auth,sample);
+                                expected_link,expected_endpoint,before,queued+15,min_c,max_c):
+                            enevina::midea::read_device(cfg.host,auth,sample,before);
                     } else result=enevina::midea::ReadStatus::InvalidCredentials;
                 }
                 polling.store(false);
             }
         }
         xSemaphoreTake(mutex,portMAX_DELAY);
+        const bool same_identity=before==revision.load() &&
+            is_midea_selected() && WiFi.status()==WL_CONNECTED &&
+            (action?expected_link:read_link)==cottage_wifi_link_generation() &&
+            (action?expected_endpoint:read_endpoint)==site_settings_endpoint_generation();
         if(action) {
+            // Resource admission failures happen BEFORE any device write.
+            // Requeue the same command for a bounded retry; do not invent
+            // a new authorization, reset its 15 s TTL, or retry a write
+            // whose result is uncertain.
+            const int64_t at=static_cast<int64_t>(time(nullptr));
+            const int64_t issued=control_queued_utc.load();
+            const bool repeat=deferred_for_budget &&
+                before==revision.load() && !config_updating &&
+                pilot.enabled && pilot.config_revision==before &&
+                pilot.endpoint_generation==expected_endpoint &&
+                pilot.protocol==cfg.protocol &&
+                !std::strcmp(pilot.device_id,cfg.device_id) &&
+                is_midea_selected() && WiFi.status()==WL_CONNECTED &&
+                !cottage_ota_network_maintenance() &&
+                expected_link==cottage_wifi_link_generation() &&
+                expected_endpoint==site_settings_endpoint_generation() &&
+                issued>0 && at>=issued && at-issued<14;
+            if(repeat) {
+                pending_patch=patch;
+                control_pending.store(true);
+                // Preserve original queued UTC and WiFi generation.
+            }
+            if(result==enevina::midea::ReadStatus::Ok && !same_identity)
+                result=enevina::midea::ReadStatus::ControlNotConfirmed;
             control_result.store(static_cast<int>(result));
-            if(result==enevina::midea::ReadStatus::Ok &&
-               before==revision.load() && is_midea_selected()) {
+            if(result==enevina::midea::ReadStatus::Ok && same_identity) {
                 control_success.store(time(nullptr));
             }
             control_busy=false;
+            deferred_for_budget=repeat;
         }
-        if(connected && selected && ready && within_window &&
-           before==revision.load()) {
+        if(connected && selected && ready && within_window && same_identity) {
             if(action || attempted) {
                 last_result.store(static_cast<int>(result));
                 if(result==enevina::midea::ReadStatus::Ok) {
                     observed=sample;
+                    observed_wifi_generation=action?expected_link:read_link;
+                    observed_endpoint_generation=action?expected_endpoint:read_endpoint;
                     last_success.store(time(nullptr));
                 } else last_success.store(0);
             }
@@ -785,7 +1096,8 @@ void cottage_midea_service_worker(void*) {
         xSemaphoreGive(mutex);
         // A user action or settings change wakes the worker immediately.
         // Normal read polling remains every 30 seconds.
-        ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(30000));
+        ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(
+            deferred_for_budget?500u:30000u));
     }
 }
 

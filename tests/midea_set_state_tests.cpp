@@ -71,8 +71,40 @@ int main() {
     assert(!set_state_command(s,patch,7,frame));
     patch.setpoint_c=22;
     s.freeze_protection_known=false;
-    assert(!set_state_command(s,patch,8,frame)); // 17..21 byte C0
+    s.freeze_protection=false; // not a proven false: short C0 omits this flag
+    assert(!set_state_command(s,patch,8,frame)); // whole-state write rejected
+    // The same unknown flag must block every other full-state control.
+    patch.changed=ControlFan;patch.fan=80;
+    assert(!set_state_command(s,patch,8,frame));
+    patch.changed=ControlMode;patch.mode=2;
+    assert(!set_state_command(s,patch,8,frame));
+    patch.changed=ControlPower;patch.power=false;
+    assert(!set_state_command(s,patch,8,frame));
+    patch.changed=ControlSwing;patch.swing=12;
+    assert(!set_state_command(s,patch,8,frame));
+    patch.changed=ControlTemperature;patch.setpoint_c=22;
+    State freeze_preset=s;freeze_preset.setpoint_c=8;
+    assert(!set_state_command(freeze_preset,patch,8,frame));
+    freeze_preset.setpoint_c=12;
+    assert(!set_state_command(freeze_preset,patch,8,frame));
+    patch.setpoint_c=12;
+    assert(!set_state_command(s,patch,8,frame));
+    patch.setpoint_c=22;
+    // Contradictory unknown state must not be accepted.
+    freeze_preset=s;freeze_preset.freeze_protection=true;
+    assert(!set_state_command(freeze_preset,patch,8,frame));
+    State short_after=s;
+    short_after.setpoint_c=patch.setpoint_c;
+    assert(!preserved_state_observed(s,short_after,patch));
+    short_after.aux_heat=!short_after.aux_heat;
+    assert(!preserved_state_observed(s,short_after,patch));
     s.freeze_protection_known=true;
+    short_after=s;short_after.freeze_protection_known=false;
+    assert(!preserved_state_observed(s,short_after,patch));
+    short_after.freeze_protection_known=true;
+    assert(preserved_state_observed(s,short_after,patch));
+    short_after.freeze_protection=true;
+    assert(!preserved_state_observed(s,short_after,patch));
     s.freeze_protection=true;
     s.independent_aux_heat=true;
     s.swing=15;
