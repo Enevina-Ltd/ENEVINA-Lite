@@ -4,6 +4,30 @@
 #include <limits>
 
 namespace enevina::cottage {
+namespace {
+bool choose_setpoints(const PumpHeatingLimits& limits,const ComfortBand& band,
+                      double thermostat_band,MpcRunControls& controls) {
+    if(!limits.heating || !std::isfinite(limits.step_c) || limits.step_c<=0 ||
+       !std::isfinite(limits.minimum_c) || !std::isfinite(limits.maximum_c) ||
+       limits.minimum_c<5 || limits.maximum_c>35 || limits.minimum_c>limits.maximum_c)
+        return false;
+    const double lo=std::ceil(limits.minimum_c/limits.step_c)*limits.step_c;
+    const double hi=std::floor(limits.maximum_c/limits.step_c)*limits.step_c;
+    if(lo>hi)return false;
+    const double candidates[]={band.lower_c,band.target_c,
+        band.target_c+thermostat_band,band.upper_c+thermostat_band};
+    controls.heat_setpoint_count=0;
+    controls.permit_off=limits.off;
+    for(const auto raw:candidates) {
+        const double setpoint=std::clamp(std::round(raw/limits.step_c)*limits.step_c,lo,hi);
+        if(!limits.accepts(setpoint))return false;
+        if(controls.heat_setpoint_count==0 ||
+           setpoint>controls.heat_setpoints_c[controls.heat_setpoint_count-1])
+            controls.heat_setpoints_c[controls.heat_setpoint_count++]=setpoint;
+    }
+    return true;
+}
+}
 PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     PlannerOutput out{};
     constexpr double nan=std::numeric_limits<double>::quiet_NaN();
@@ -16,9 +40,12 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     rec.settings_generation=in.settings_generation;
     rec.target_c=in.target_c;
     rec.limits=in.limits;
+    rec.profile=in.profile;
     rec.initial_heat=in.pump_heat;
     const auto no_plan=[&](MpcFallback why) {rec.has_plan=false;rec.planning_fallback=why;return out;};
     if(!in.identifier) return no_plan(MpcFallback::ModelLearning);
+    rec.variable_setpoints=in.identifier->variable_setpoints();
+    if(rec.variable_setpoints)rec.initial_setpoint_c=in.pump_setpoint_c;
     const CalibrationReport cal=in.identifier->report(in.now_utc);
     rec.model_revision=cal.revision;
     if(cal.state!=CalibrationState::Calibrated)
@@ -31,11 +58,12 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
         // A target outside the HEAT 16 C model is reported as such; a target
         // inside it with malformed / contradictory owner limits is reported
         // as invalid limits. The MPC never invents other limits.
-        if(!in.target_valid || !mpc_comfort_band(in.target_c,model_band))
+        if(!in.target_valid || !mpc_comfort_band(in.target_c,model_band,{},rec.variable_setpoints))
             return no_plan(MpcFallback::TargetOutsideModel);
-        if(!mpc_comfort_band(in.target_c,band,in.limits))
+        if(!mpc_comfort_band(in.target_c,band,in.limits,rec.variable_setpoints))
             return no_plan(MpcFallback::ComfortLimitsInvalid);
     }
+    if(rec.variable_setpoints)apply_mpc_profile(band,in.profile);
     rec.band=band;
     if(!in.temperature_fresh || !std::isfinite(in.indoor_c))
         return no_plan(MpcFallback::TemperatureStale);
@@ -74,6 +102,13 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     for(size_t i=0;i<b.count;++i) periods[i].internal_gain_kw=gain_kw;
     const State initial{in.indoor_c,in.pump_heat,in.minutes_in_mode};
     MpcRunControls controls=in.controls;
+    if(rec.variable_setpoints) {
+        controls.initial_setpoint_c=in.pump_setpoint_c;
+        if(controls.setpoint_change_penalty==0)
+            controls.setpoint_change_penalty=p.switching_penalty_eur/2;
+        if(!choose_setpoints(in.pump_limits,band,p.thermostat_band_c,controls))
+            return no_plan(MpcFallback::PumpStateUnknown);
+    }
     // Receding horizon: end at the room target (inside the band), never
     // "at least as warm as now" (see MpcRunControls::terminal_min_c).
     controls.terminal_min_c=std::clamp(band.target_c,p.planning_min_c+p.planning_uncertainty_c,
@@ -86,17 +121,20 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     rec.has_plan=true;
     rec.planning_fallback=MpcFallback::None;
     rec.first_heat=out.result.heat_16_c[0]!=0;
+    rec.first_setpoint_c=out.result.setpoint_c100[0]/100.0;
     State s=initial;
     double energy=0,cost=0;
     for(size_t i=0;i<out.result.count;++i) {
-        const bool heat=out.result.heat_16_c[i]!=0;
-        const Step st=advance(p,s,periods[i],heat);
+        const double setpoint=out.result.setpoint_c100[i]/100.0;
+        const bool heat=setpoint>0;
+        const Step st=advance_setpoint(p,s,periods[i],setpoint);
         s=st.next;
         energy+=st.electric_kwh;cost+=st.cost_eur;
         if(rows) {
             PlanRow& r=rows[i];
             r.utc=b.first_utc+static_cast<int64_t>(i)*900;
-            r.heat=heat;r.indoor_c=s.indoor_c;r.outdoor_c=periods[i].outdoor_c;
+            r.heat=heat;r.setpoint_c=setpoint;
+            r.indoor_c=s.indoor_c;r.outdoor_c=periods[i].outdoor_c;
             r.price=periods[i].total_price_eur_per_kwh;
             r.energy_kwh=kwh?st.electric_kwh:nan;
             r.cost=kwh?st.cost_eur:nan;

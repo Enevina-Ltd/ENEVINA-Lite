@@ -59,6 +59,7 @@ struct SlotObservation {
     bool electric_valid=false;   // energy counter delta over the slot
     double electric_kwh=0;
     bool meter_pump_only=false;  // owner-confirmed heat-pump-only meter
+    double setpoint_c=0;         // verified request in the variable-setpoint domain
 };
 
 template<size_t N> struct RlsState {
@@ -142,7 +143,7 @@ bool valid_comfort_limits_for_mpc(const ComfortLimits& limits);
 // other limits). lower = max(target - 0.5, owner min), upper =
 // min(target + 1.0, 15.8, owner max).
 bool mpc_comfort_band(double target_c, ComfortBand& out,
-                      const ComfortLimits& limits=ComfortLimits{});
+                      const ComfortLimits& limits=ComfortLimits{},bool variable_setpoints=false);
 
 enum class ModelBuildError : uint8_t {
     None, NotCalibrated, Implausible, OutsideDomain, NumericalFailure
@@ -162,8 +163,10 @@ public:
     static constexpr size_t trend_slots=96;      // last 24 h for the UI
     static constexpr uint32_t blob_version=1;
 
-    BuildingIdentifier() { reset(); }
+    explicit BuildingIdentifier(bool variable_setpoints=false)
+        : variable_setpoints_(variable_setpoints) { reset(); }
     void reset();
+    bool variable_setpoints() const { return variable_setpoints_; }
     // Forget ONLY the electric model (the thermal model describes the building
     // and stays): called when the confirmed heat-pump-only meter changes or the
     // confirmation is withdrawn, so another meter's readings never blend in.
@@ -199,10 +202,12 @@ private:
     struct NoInit {};
     explicit BuildingIdentifier(NoInit) {}
     ModelEstimate estimate() const;
-    void validation_step(const SlotObservation& o, const double* phi, bool start, bool stop);
+    void validation_step(const SlotObservation& o,bool start,bool stop);
+    double requested_heat_fraction(const SlotObservation& o,double indoor_c) const;
     void push_trend(int64_t utc, double measured, double one_step, double open_loop);
     void refresh_state();
 
+    bool variable_setpoints_=false;
     RlsState<thermal_n> thermal_{};
     RlsState<electric_n> electric_{};
     // Continuity of the HEAT/OFF request for start/stop regressors.

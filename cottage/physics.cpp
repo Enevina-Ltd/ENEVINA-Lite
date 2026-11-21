@@ -29,7 +29,9 @@ bool valid(const Parameters& p) {
         p.planning_uncertainty_c <= 3.0 &&
         finite(p.maximum_indoor_c) &&
         p.maximum_indoor_c > p.planning_min_c + p.planning_uncertainty_c &&
-        p.maximum_indoor_c <= 16.0 && // Only HEAT 16 C / OFF permitted.
+        p.maximum_indoor_c <= (p.variable_setpoints?27.0:16.0) &&
+        finite(p.thermostat_band_c) && p.thermostat_band_c>=0.1 &&
+        p.thermostat_band_c<=5.0 &&
         finite(p.switching_penalty_eur) && p.switching_penalty_eur >= 0 &&
         p.min_heat_minutes >= slot_minutes && p.min_off_minutes >= slot_minutes &&
         p.min_heat_minutes <= 480 && p.min_off_minutes <= 480 &&
@@ -59,40 +61,42 @@ double heat_cop(const Parameters& p, double outdoor_c) {
     return std::clamp(p.cop_at_zero_c +
         p.cop_change_per_outdoor_c * outdoor_c, p.minimum_cop, p.maximum_cop);
 }
-Step advance(const Parameters& p, const State& s, const Period& d, bool heat_16_c) {
+Step advance_setpoint(const Parameters& p,const State& s,const Period& d,double setpoint_c) {
     Step out{};
     out.next = s;
-    if (!valid(p,s,d)) {
+    const bool heat=setpoint_c>0;
+    if (!valid(p,s,d) || !finite(setpoint_c) ||
+        !(setpoint_c==0 || (p.variable_setpoints?setpoint_c>=5 && setpoint_c<=35:setpoint_c==16))) {
         out.next.indoor_c = std::numeric_limits<double>::quiet_NaN();
         out.electric_kwh = std::numeric_limits<double>::quiet_NaN();
         out.cost_eur = std::numeric_limits<double>::quiet_NaN();
         return out;
     }
-    const bool starting = heat_16_c && !s.heat_requested;
-    double run_fraction = starting ?
-        1.0 - p.startup_delay_minutes / slot_minutes : 1.0;
-    // At 16 C, the pump's own thermostat may remove compressor demand.
-    // This simplified limit must be re-identified with actual CN105 readings.
-    if (s.indoor_c >= 16.0) run_fraction = 0;
-    else if (s.indoor_c > 15.5)
-        run_fraction *= (16.0 - s.indoor_c) / 0.5;
-    out.delivered_thermal_kw = heat_16_c ?
+    const bool starting=heat && !s.heat_requested;
+    const double startup=starting?1.0-p.startup_delay_minutes/slot_minutes:1.0;
+    const double width=p.variable_setpoints?p.thermostat_band_c:0.5;
+    const double demand=std::clamp((setpoint_c-s.indoor_c)/width,0.0,1.0);
+    const double run_fraction=startup*demand;
+    out.delivered_thermal_kw = heat ?
         heat_capacity_kw(p,d.outdoor_c) * d.defrost_capacity_factor * run_fraction : 0;
     const double alpha=std::exp(-p.loss_kw_per_c * slot_hours / p.thermal_mass_kwh_per_c);
     // After-heat of a HEAT->OFF transition is spread over that OFF slot.
-    const bool stopping = !heat_16_c && s.heat_requested;
+    const bool stopping = !heat && s.heat_requested;
     const double afterheat_kw = stopping ? p.stop_afterheat_kwh / slot_hours : 0;
     const double gain=out.delivered_thermal_kw + d.internal_gain_kw + afterheat_kw;
     out.next.indoor_c=d.outdoor_c + (s.indoor_c-d.outdoor_c)*alpha +
         gain / p.loss_kw_per_c * (1.0-alpha);
-    out.next.heat_requested=heat_16_c;
-    out.next.minutes_in_mode=heat_16_c==s.heat_requested ?
+    out.next.heat_requested=heat;
+    out.next.minutes_in_mode=heat==s.heat_requested ?
         std::min(600u,s.minutes_in_mode+slot_minutes) : slot_minutes;
-    out.electric_kwh=slot_hours * (heat_16_c ? p.heat_standby_kw : p.off_standby_kw);
-    if (heat_16_c) out.electric_kwh +=
+    out.electric_kwh=slot_hours * (heat ? p.heat_standby_kw : p.off_standby_kw);
+    if (heat) out.electric_kwh +=
         slot_hours*out.delivered_thermal_kw / heat_cop(p,d.outdoor_c);
-    if (starting) out.electric_kwh += p.startup_electric_kwh;
+    if (starting) out.electric_kwh += p.startup_electric_kwh*(p.variable_setpoints?demand:1.0);
     out.cost_eur=out.electric_kwh*d.total_price_eur_per_kwh;
     return out;
+}
+Step advance(const Parameters& p,const State& s,const Period& d,bool heat_16_c) {
+    return advance_setpoint(p,s,d,heat_16_c?16.0:0.0);
 }
 } // namespace enevina::cottage

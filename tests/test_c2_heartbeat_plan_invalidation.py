@@ -40,16 +40,16 @@ class HeartbeatGapTests(TestCase):
             self.assertEqual(result["serial_error"],0)
     def test_plan_source_invalidated_on_mode_switch(self):
         main=(ROOT/"firmware/cottage/src/main.cpp").read_text()
-        self.assertIn("if(copy.mode!=pump.mode || !continuous)",main)
+        self.assertIn("if(verified.mode!=pump.mode || !continuous || heating_target_changed)",main)
         self.assertIn("plan_count=0;\n                last_plan.status=MpcStatus::InvalidInput;",main)
-        self.assertIn("cp.mode==ObservedPumpMode::Heat || cp.mode==ObservedPumpMode::Off",main)
+        self.assertIn("pump.mode==ObservedPumpMode::Off || pump.mode==ObservedPumpMode::Heat",main)
 
     def test_solver_result_cannot_resurrect_pretransition_mode(self):
         main=(ROOT/"firmware/cottage/src/main.cpp").read_text()
         self.assertIn("++observed_mode_generation;",main)
-        self.assertIn("optimizer_mode_generation=observed_mode_generation;",main)
-        self.assertIn("const bool mode_changed=optimizer_mode_generation!=",main)
-        self.assertIn("observed_mode_generation || cp.mode!=pump.mode;",main)
+        self.assertIn("const auto view=boundary?optimizer_pump_state(now,midea)",main)
+        self.assertIn("const bool mode_changed=after.request_generation!=view.request_generation",main)
+        self.assertIn("view.request_generation!=observed_mode_generation",main)
         assert main.index("if(mode_changed) {") < main.index("last_plan=result;")
         assert main.index("last_plan=result;") < main.index("xSemaphoreGive(lock_data);",main.index("if(mode_changed) {"))
 
@@ -82,17 +82,16 @@ class HeartbeatGapTests(TestCase):
         start=main.index("if(proof==enevina::PumpReadProofStatus::NewRead)")
         end=main.index("pump=verified;",start)
         clause=main[start:end]
-        self.assertIn("if(verified.mode!=pump.mode || !continuous)",clause)
+        self.assertIn("if(verified.mode!=pump.mode || !continuous || heating_target_changed)",clause)
         self.assertIn("++observed_mode_generation;",clause)
         self.assertIn("last_plan.status=MpcStatus::InvalidInput;",clause)
 
     def test_climate_gap_invalidates_plan_even_if_mode_unchanged(self):
         main=(ROOT/"firmware/cottage/src/main.cpp").read_text()
-        event=main[main.index("if(climate_event) {"):
-                   main.index("observed_mode_duration.observe(",main.index("if(climate_event) {"))]
-        self.assertIn("const bool continuous=climate_utc>0",event)
-        self.assertIn("now-climate_utc<=180;",event)
-        self.assertIn("if(copy.mode!=pump.mode || !continuous)",event)
+        start=main.index("if(proof==enevina::PumpReadProofStatus::NewRead)")
+        event=main[start:main.index("pump=verified;",start)]
+        self.assertIn("verified_cn105_link.current() && valid_cn105(pump,now)",event)
+        self.assertIn("!continuous || heating_target_changed",event)
         self.assertIn("++observed_mode_generation;",event)
         self.assertIn("plan_count=0;",event)
         self.assertIn("last_plan.status=MpcStatus::InvalidInput;",event)

@@ -41,7 +41,7 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("const auto decision=choose_mitsubishi_control(candidate);", TICK)
         self.assertLess(TICK.index("cottage_midea_submit_automatic("), TICK.index("cn105_bridge_post("))
         self.assertIn("site_settings_generation()!=site_generation", MAIN)
-        self.assertIn("in.pump_state_known=view.known && !cottage_midea_selected();", MAIN)
+        self.assertIn("in.pump_state_known=known_heating_mode(state);", MAIN)
         self.assertIn("candidate.ms_since_mode_change=control_ms_since_mode_change();", TICK)
         # The MPC never adds a write path of its own.
         self.assertNotIn("cn105_bridge_post(", WORKER)
@@ -54,7 +54,7 @@ class MpcControlWiring(unittest.TestCase):
         self.assertGreater(stores[0], TICK and MAIN.index("decision.gate==ControlBlock::AlreadyApplied"))
         confirmed = MAIN.index("control_commands_confirmed.fetch_add(1);")
         self.assertGreater(stores[1], confirmed)
-        self.assertIn("planned_heat?(last_heating && std::fabs(last_setpoint-16.0)<0.01):!last_heating", MAIN)
+        self.assertIn("planned_heat?(last_heating && std::fabs(last_setpoint-proposal.heat_setpoint_c)<0.01):!last_heating", MAIN)
 
     def test_plan_bound_to_its_slot_and_calibration(self):
         self.assertIn("record.first_utc+900", MAIN)
@@ -75,17 +75,20 @@ class MpcControlWiring(unittest.TestCase):
     def test_pump_state_only_from_verified_source(self):
         # Codex P1 (PR #63): a gateway GET/SSE receipt may repeat cached
         # state; learning labels, planning state and plan validity use only
-        # a fresh source-verified CN105 poll.
-        view = MAIN.split("static PumpView pump_view(", 1)[1].split("\n}\n", 1)[0]
-        self.assertIn("cp.evidence.source_time_verified", view)
-        self.assertIn("valid_cn105(cp,now)", view)
+        # a fresh CN105 source proof or a fresh paired Midea LAN read.
+        view = MAIN.split("static enevina::PumpRoomState optimizer_pump_state(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("verified_cn105_link.current() && valid_cn105(pump,now)", view)
+        self.assertIn("state.source=PumpStateSource::VerifiedBus;", view)
+        self.assertIn("if(midea)return cottage_midea_room_state();", view)
         self.assertNotIn("cn105_bridge_get", view)
         self.assertNotIn("cn105_bridge_get", WORKER)
-        self.assertIn("o.heat_valid=view.known && view.minutes>=14 &&", WORKER)
-        self.assertIn("o.heat_requested=view.heat;", WORKER)
+        self.assertIn("o.heat_valid=known_heating_mode(view) && view.request_minutes>=14 &&", WORKER)
+        self.assertIn("o.heat_requested=view_heat;", WORKER)
         arb = MAIN.split("static ArbiterInput build_arbiter_input(", 1)[1].split("\n}\n", 1)[0]
-        self.assertIn("const PumpView view=pump_view(cp,now,minutes);", arb)
+        self.assertIn("const auto state=optimizer_pump_state(now,midea);", arb)
         self.assertIn("mpc_confirmed_slot_utc.load()==in.plan.first_utc", arb)
+        self.assertIn("state.automatic_queued_utc>=in.plan.computed_utc", arb)
+        self.assertIn("state.automatic_confirmed_utc<=now", arb)
         self.assertNotIn("bridge_observed", MAIN)
 
     def test_model_bound_to_indoor_sensor_and_plan_display_uses_controller_validity(self):
@@ -126,10 +129,12 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn('\\"reset_state\\":\\"%s\\"', MAIN)
         # The adapter verifies instead of trusting the erase call.
         store = MAIN.split("struct NvsModelStore {", 1)[1].split("\n};\n", 1)[0]
-        self.assertIn('nvs_erase_key(handle,"rls1")', store)
+        self.assertIn('nvs_erase_key(handle,model_blob_key(variable))', store)
         self.assertIn("nvs_commit(handle)", store)
-        self.assertIn("nvs_get_blob(handle,\"rls1\",nullptr,&n)", store)
-        self.assertIn("nvs_set_u32(handle,\"epoch\",value)", store)
+        self.assertIn("nvs_get_blob(handle,model_blob_key(variable),nullptr,&n)", store)
+        self.assertIn("nvs_set_u32(handle,epoch_key(),value)", store)
+        self.assertIn('variable?"rls2":"rls1"', MAIN)
+        self.assertIn('variable?"epoch2":"epoch"', store)
         # The existing local setting token guard is unchanged: no new auth.
         self.assertIn('c23_authorize_local_setting(web.arg("token").c_str())', reset)
         self.assertNotIn("password", reset.lower())
@@ -152,7 +157,7 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("in.limits=owner_comfort_limits();", arb)
         self.assertIn("pi.limits=owner_comfort_limits();", WORKER)
         self.assertIn("static ComfortLimits owner_comfort_limits()", MAIN)
-        self.assertIn("mpc_comfort_band(p.target_c,band,in.limits)", ARB)
+        self.assertIn("mpc_comfort_band(p.target_c,band,in.limits,p.variable_setpoints)", ARB)
         self.assertNotIn("p.band.lower_c-0.2", ARB)       # no tolerance beyond the limit
         self.assertNotIn("p.band.upper_c+0.3", ARB)
 

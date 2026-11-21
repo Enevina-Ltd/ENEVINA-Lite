@@ -81,9 +81,9 @@ const active={...learning,state:'ACTIVE',fallback:'NONE',source:'MPC',armed:true
   assert.ok(!text.includes('kWh ·'));
   assert.ok(!text.includes('lähdetodennettu'));      // field absent -> no claim
   r=await run({...learning,pump_source_verified:false},'en');
-  assert.ok(r.card.textContent.includes('not source-verified'));
+  assert.ok(r.card.textContent.includes('A fresh pump reading is unavailable.'));
   r=await run({...learning,pump_source_verified:true},'en');
-  assert.ok(!r.card.textContent.includes('not source-verified'));
+  assert.ok(!r.card.textContent.includes('A fresh pump reading is unavailable.'));
   // Learning, English.
   r=await run(learning,'en');
   text=r.card.textContent;
@@ -99,13 +99,20 @@ const active={...learning,state:'ACTIVE',fallback:'NONE',source:'MPC',armed:true
   assert.ok(text.includes('not yet confirmed by the pump'));
   assert.ok(!text.includes('confirmed by the pump')||text.includes('not yet confirmed'));
   assert.ok(text.includes('prices end'));
-  assert.ok(text.includes('no heat-pump-only meter has been confirmed'));
+  assert.ok(text.includes('A reliable heat-pump consumption model is unavailable.'));
   assert.ok(text.includes('16.7') && text.includes('26.0'));
   assert.ok(text.includes('COP is not estimated'));
   const svg=r.card.children.find(c=>c.tag==='svg');
   assert.ok(svg,'chart rendered');
   // Negative price slots are drawn (red bars) rather than dropped.
   assert.ok(JSON.stringify(svg.children.map(c=>c.attrs.fill)).includes('var(--red)'));
+  const residential={...active,pump_source_verified:false,pump_connection_ready:true,
+    plan:{...active.plan,slots:[{...slots[0],setpoint_c:21.5},...slots.slice(1)]}};
+  r=await run(residential,'en');
+  assert.ok(r.card.textContent.includes('HEAT 21.5 °C'));
+  assert.ok(!r.card.textContent.includes('A fresh pump reading is unavailable.'));
+  r=await run(residential,'fi');
+  assert.ok(r.card.textContent.includes('HEAT 21,5 °C'));
   // Shadow mode wording when not armed.
   r=await run({...active,armed:false},'fi');
   assert.ok(r.card.textContent.includes('varjotila: komentoja ei lähetetä'));

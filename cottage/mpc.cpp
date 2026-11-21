@@ -16,8 +16,8 @@ struct Node {
     float objective=std::numeric_limits<float>::infinity();
     float temperature=0;
 };
-size_t key(size_t bin, bool on, size_t age, size_t age_dimension) {
-    return (bin*2+(on?1u:0u))*age_dimension+age;
+size_t key(size_t bin,size_t action,size_t age,size_t actions,size_t ages) {
+    return (bin*actions+action)*ages+age;
 }
 uint64_t steady_now_ms(void*) {
     using namespace std::chrono;
@@ -44,6 +44,25 @@ MpcResult optimize(const Parameters& p, const State& initial,
         (std::isfinite(controls.terminal_min_c) &&
          controls.terminal_min_c > p.maximum_indoor_c))
         return result;
+    std::array<double,5> setpoints{0,16,0,0,0};
+    size_t actions=2;
+    if(p.variable_setpoints) {
+        if(controls.heat_setpoint_count==0 ||
+           controls.heat_setpoint_count>controls.heat_setpoints_c.size() ||
+           !std::isfinite(controls.setpoint_change_penalty) || controls.setpoint_change_penalty<0 ||
+           (initial.heat_requested && (!std::isfinite(controls.initial_setpoint_c) ||
+             controls.initial_setpoint_c<5 || controls.initial_setpoint_c>35)))
+            return result;
+        actions=1+controls.heat_setpoint_count;
+        for(size_t i=1;i<actions;++i) {
+            const double value=controls.heat_setpoints_c[i-1];
+            if(!std::isfinite(value) || value<5 || value>35 ||
+               value<=setpoints[i-1] ||
+               std::fabs(value*100-std::round(value*100))>1e-7)
+                return result;
+            setpoints[i]=value;
+        }
+    }
     const auto clock=controls.monotonic_now_ms ?
         controls.monotonic_now_ms : steady_now_ms;
     const uint64_t started=clock(controls.clock_context);
@@ -85,7 +104,7 @@ MpcResult optimize(const Parameters& p, const State& initial,
     const size_t min_off=p.min_off_minutes/slot_minutes;
     const size_t age_max=std::max(min_on,min_off);
     const size_t age_dim=age_max+1;
-    const double grid_min=p.critical_c-1.0;
+    const double grid_min=p.variable_setpoints?min_c-quantum_c:p.critical_c-1.0;
     const size_t bins=static_cast<size_t>(
         std::ceil((p.maximum_indoor_c-grid_min)/quantum_c))+2;
     // Keep two representatives per quantized bin/mode/dwell state:
@@ -93,7 +112,7 @@ MpcResult optimize(const Parameters& p, const State& initial,
     // alone can destroy the only exact terminal-feasible trajectory.
     // All allocations, including terminal indexes, obey the byte budget.
     constexpr size_t representatives=2;
-    const size_t age_multiplier=2*representatives;
+    const size_t age_multiplier=actions*representatives;
     if(age_dim==0 || age_dim>=no_parent/age_multiplier ||
        bins>=no_parent/(age_multiplier*age_dim)) {
         result.status=MpcStatus::ResourceLimit;
@@ -120,7 +139,7 @@ MpcResult optimize(const Parameters& p, const State& initial,
     const size_t initial_age=std::min<size_t>(
         initial.minutes_in_mode/slot_minutes,age_max);
     const size_t first=representatives*key(bin_of(initial.indoor_c),
-        initial.heat_requested,initial_age,age_dim);
+        initial.heat_requested?1:0,initial_age,actions,age_dim);
     current[first]={0.0f,static_cast<float>(initial.indoor_c)};
     // Traverse only reachable quantized states; a full-grid sweep
     // was the dominant runtime cost for cold/price-spike 48h cases.
@@ -140,6 +159,9 @@ MpcResult optimize(const Parameters& p, const State& initial,
     const float standby_off=static_cast<float>(p.off_standby_kw);
     const float startup_electric=static_cast<float>(p.startup_electric_kwh);
     const float switching_penalty=static_cast<float>(p.switching_penalty_eur);
+    const float width=static_cast<float>(p.variable_setpoints?p.thermostat_band_c:0.5);
+    const float setpoint_change_penalty=static_cast<float>(
+        p.variable_setpoints?controls.setpoint_change_penalty:0.0);
     // Same HEAT->OFF after-heat term as advance(); 0 leaves the search unchanged.
     const float afterheat=beta*static_cast<float>(p.stop_afterheat_kwh/slot_hours);
     const float search_min=static_cast<float>(min_c);
@@ -166,8 +188,11 @@ MpcResult optimize(const Parameters& p, const State& initial,
             if(!std::isfinite(node.objective)) continue;
             const size_t physical_state=from/representatives;
             const size_t age=physical_state%age_dim;
-            const bool prior_on=((physical_state/age_dim)%2)!=0;
-            for(unsigned choice=0;choice<2;choice++) {
+            const size_t prior_action=(physical_state/age_dim)%actions;
+            const bool prior_on=prior_action!=0;
+            const double prior_setpoint=t==0 && p.variable_setpoints?
+                controls.initial_setpoint_c:setpoints[prior_action];
+            for(size_t choice=controls.permit_off?0:1;choice<actions;choice++) {
                 if(const auto stop=check_interrupt();stop!=MpcStatus::Ok)
                     return interrupted(stop);
                 const bool on=choice!=0;
@@ -175,9 +200,9 @@ MpcResult optimize(const Parameters& p, const State& initial,
                 if(changed && age<(prior_on?min_on:min_off)) continue;
                 const bool starting=on && !prior_on;
                 float thermal=on ? thermal_max*(starting?startup_fraction:1.0f) : 0.0f;
-                if(on && node.temperature>=16.0f) thermal=0.0f;
-                else if(on && node.temperature>15.5f)
-                    thermal*=(16.0f-node.temperature)/0.5f;
+                const float demand=std::clamp(
+                    (static_cast<float>(setpoints[choice])-node.temperature)/width,0.0f,1.0f);
+                thermal*=demand;
                 const float temp=alpha*node.temperature+input+beta*thermal+
                     (prior_on && !on ? afterheat : 0.0f);
                 // Small FP32 search tolerance only. Exact FP64 replay below
@@ -186,13 +211,15 @@ MpcResult optimize(const Parameters& p, const State& initial,
                    temp<search_min-1e-4f || temp>search_max+1e-4f)
                     continue;
                 const size_t new_age=changed?1:std::min(age+1,age_max);
-                const size_t to=representatives*key(bin_of(temp),on,new_age,age_dim);
+                const size_t to=representatives*key(bin_of(temp),choice,new_age,actions,age_dim);
                 const float electricity=static_cast<float>(slot_hours) *
                     (on?standby_heat:standby_off) +
                     (on?thermal*thermal_to_electric:0.0f) +
-                    (starting?startup_electric:0.0f);
+                    (starting?startup_electric*(p.variable_setpoints?demand:1.0f):0.0f);
                 const float objective=node.objective+electricity*price+
-                    (changed?switching_penalty:0.0f);
+                    (changed?switching_penalty:0.0f)+
+                    (prior_on && on && std::fabs(setpoints[choice]-prior_setpoint)>0.001?
+                        setpoint_change_penalty:0.0f);
                 if(!std::isfinite(objective)) continue;
                 auto retain=[&](size_t slot) {
                     if(!std::isfinite(next[slot].objective))
@@ -258,8 +285,9 @@ MpcResult optimize(const Parameters& p, const State& initial,
             if(const auto stop=check_interrupt();stop!=MpcStatus::Ok)
                 return interrupted(stop);
             const size_t physical_state=at/representatives;
-            candidate.heat_16_c[t-1]=
-                static_cast<uint8_t>((physical_state/age_dim)%2);
+            const size_t action=(physical_state/age_dim)%actions;
+            candidate.heat_16_c[t-1]=action!=0;
+            candidate.setpoint_c100[t-1]=static_cast<uint16_t>(std::lround(setpoints[action]*100));
             const auto prev=parent[(t-1)*states+at];
             if(prev==no_parent) {replayable=false;break;}
             at=prev;
@@ -281,7 +309,7 @@ MpcResult optimize(const Parameters& p, const State& initial,
                 }
                 if(on) starts++;
             }
-            const auto step=advance(p,replay,periods[t],on);
+            const auto step=advance_setpoint(p,replay,periods[t],candidate.setpoint_c100[t]/100.0);
             replay=step.next;
             lowest=std::min(lowest,replay.indoor_c);
             electric+=step.electric_kwh;

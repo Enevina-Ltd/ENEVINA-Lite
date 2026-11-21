@@ -8,7 +8,7 @@
 // dwell and the readback confirmation unchanged.
 #include "cottage/building_identification.hpp"
 #include "cottage/mpc.hpp"
-#include "cottage/price_bootstrap.hpp"
+#include "cottage/optimization_profile.hpp"
 #include <cmath>
 #include <cstdint>
 
@@ -36,6 +36,10 @@ struct MpcPlanRecord {
     uint32_t model_revision=0;
     bool initial_heat=false;  // pump state the plan started from
     bool first_heat=false;    // plan decision for first_utc
+    bool variable_setpoints=false;
+    OptimizationProfile profile=OptimizationProfile::Balanced;
+    double initial_setpoint_c=16;
+    double first_setpoint_c=16;
     double target_c=0;
     ComfortBand band{};
     ComfortLimits limits{};   // owner's hard limits the band was built from
@@ -57,6 +61,7 @@ struct ArbiterInput {
     // HTTP/SSE receipt is not pump-origin evidence (Codex P1, PR #63).
     bool pump_state_known=false;
     bool pump_heat=false;
+    double pump_setpoint_c=0;
     // The pump readback confirmed THIS plan's first decision in its own slot
     // (set by the control path only after a matching readback).
     bool own_transition_confirmed=false;
@@ -87,6 +92,14 @@ inline MpcFallback fallback_for_status(MpcStatus s) {
     case MpcStatus::ReplayFailed:return MpcFallback::SolverFailed;
     }
     return MpcFallback::SolverFailed;
+}
+
+inline void apply_mpc_profile(ComfortBand& band,OptimizationProfile profile) {
+    const double share=profile_tuning(profile).headroom_share;
+    band.lower_c=std::max(band.lower_c,
+        band.target_c-std::max(0.5,(band.target_c-band.lower_c)*share));
+    band.upper_c=std::min(band.upper_c,
+        band.target_c+std::max(0.5,(band.upper_c-band.target_c)*share));
 }
 
 // THE single predicate for "may the MPC act now?". arbitrate() uses it and
@@ -127,10 +140,17 @@ inline MpcFallback plan_validity(const ArbiterInput& in) {
     // manual HEAT->OFF->HEAT that ends in the original state, a source gap)
     // re-plans.
     const uint32_t delta=in.mode_generation-p.mode_generation;   // wraps correctly
-    const bool expects_transition=p.first_heat!=p.initial_heat;
+    const bool expects_transition=p.first_heat!=p.initial_heat ||
+        (p.variable_setpoints && p.first_heat &&
+         std::fabs(p.first_setpoint_c-p.initial_setpoint_c)>0.001);
+    const bool at_first_setpoint=!p.variable_setpoints || !p.first_heat ||
+        std::fabs(in.pump_setpoint_c-p.first_setpoint_c)<=0.001;
     const bool own_transition=delta==1 && expects_transition &&
-        in.own_transition_confirmed && in.pump_heat==p.first_heat;
+        in.own_transition_confirmed && in.pump_heat==p.first_heat && at_first_setpoint;
     if(delta!=0 && !own_transition) return MpcFallback::PlanInputsChanged;
+    if(p.variable_setpoints && !own_transition && in.pump_heat &&
+       !(std::fabs(in.pump_setpoint_c-p.initial_setpoint_c)<=0.001))
+        return MpcFallback::PlanInputsChanged;
     if(!(in.bootstrap.requested_room_c>0) ||
        std::fabs(in.bootstrap.requested_room_c-p.target_c)>0.01)
         return MpcFallback::PlanInputsChanged;
@@ -141,8 +161,9 @@ inline MpcFallback plan_validity(const ArbiterInput& in) {
     // The owner's hard comfort limits. Malformed or contradictory limits: no
     // MPC (the existing controller takes over); changed limits revoke the plan.
     ComfortBand band{};
-    if(!mpc_comfort_band(p.target_c,band,in.limits))
+    if(!mpc_comfort_band(p.target_c,band,in.limits,p.variable_setpoints))
         return MpcFallback::ComfortLimitsInvalid;
+    if(p.variable_setpoints)apply_mpc_profile(band,p.profile);
     if(!(in.limits==p.limits) ||
        std::fabs(band.lower_c-p.band.lower_c)>1e-9 ||
        std::fabs(band.upper_c-p.band.upper_c)>1e-9)
@@ -177,7 +198,7 @@ inline ArbiterOutput arbitrate(const ArbiterInput& in) {
     d.executable=false;
     if(p.first_heat) {
         d.action=BootstrapAction::HeatSetpoint;
-        d.heat_setpoint_c=16.0; // the model's HEAT 16 C operating point
+        d.heat_setpoint_c=p.first_setpoint_c;
         d.reason=BootstrapReason::TemperatureLow; // internal; not displayed
     } else {
         d.action=BootstrapAction::Off;

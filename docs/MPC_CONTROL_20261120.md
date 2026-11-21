@@ -409,3 +409,51 @@ been run on a real heat pump and no board was flashed.**
   with flat prices. It never calibrates with an undersized pump, and it falls
   back under outages and outside the learned outdoor range. Its comfort
   violations are lower than or equal to the baselines in every scenario.
+
+## Asuinlämmön muuttuvan asetusarvon MPC (21.11.2026)
+
+Sama suunnittelija käyttää Mitsubishi Electricin lähdetodennettua CN105-lukua
+ja Midea V2/V3 0xAC:n tuoretta paikallista tilalukua. Se oppii vain
+varttijaksoista, joissa lämpötila, sää ja pyynnön yhtäjaksoisuus tunnetaan.
+Asetusarvon vaihtuminen tai katkos aloittaa uuden havaintojakson. Ohjaus
+tarkistaa suunnitelman ensimmäisen päätöksen uutta pumpputilaa vasten.
+
+Asuinmalli kuvaa pumpun termostaattia portaattomalla lämmityspyynnöllä.
+Sovitettava rakennusmalli käyttää eroa pumpun pyynnön ja mitatun
+huonelämpötilan välillä. Käytetty yhden asteen termostaattialue on mallin
+oletus, jonka sopivuutta arvioidaan samoilla 4 tunnin ennustetesteillä.
+Ylläpitolämmön alkuperäinen HEAT 16 °C / OFF -malli jää käyttöön sille
+sopivalla CN105-alueella. Mallit tallentuvat eri NVS-avaimiin ja asuinmalli
+ei peri ylläpitomallin kalibrointia.
+
+Haku valitsee enintään neljä ajurin sallimaa lämmityspyyntöä ja mallin
+tukiessa sammutuksen. Varttijaksoja on enintään 192. Optimointiprofiili
+määrittää suunnittelussa käytettävän osuuden sallituista lämpörajoista.
+Haku huomioi kokonaisenergian hinnan, pienimmän tilan keston ja
+asetusarvojen vaihdot. Laitteen laskenta-aikaraja on 1,8 s ja haun
+muistibudjetti 3 MiB. Virhe tai puuttuva kalibrointi jättää vanhan hinta-
+tai termostaattiohjauksen käytettäväksi. Käyttöliittymä näyttää suhteelliseen
+kulutukseen perustuvan suunnitelman ilman kWh- tai kustannuslukua, kun
+pumppukohtaista kulutusmallia ei voida vahvistaa.
+
+### Toistettava simulaatio
+
+Aja `cottage_identification_tests` natiivin CMake-buildin kautta.
+Kaikilla säätötavoilla on sama synteettinen rakennus, 21 °C:n alkutila ja
+tavoite, 19–23 °C:n omistajarajat sekä varttikohtaiset sää- ja kokonaishinnat.
+Loppulämmön oikaisu hinnoittelee erotuksen yhteiseen 21 °C:n loppulämpöön
+simulaation lämpökapasiteetilla, loppuhetken COP:lla ja vuorokauden
+keskihinnalla. Taulukko kuvaa tätä koetta.
+
+| Säätötapa | Suora kustannus | Loppulämpöön oikaistu kustannus | Loppulämpö | Min–max | Käynnistyksiä |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Termostaatti | 3,510 € | 3,511 € | 21,00 °C | 20,50–21,00 °C | 0 |
+| Hintaohjaus | 3,164 € | 3,321 € | 20,16 °C | 20,16–21,55 °C | 3 |
+| MPC, tasapainoinen profiili | 2,930 € | 3,021 € | 20,52 °C | 20,25–21,80 °C | 0 |
+
+Simuloitu asuinmalli kalibroitui 1 535 hyväksytyllä vartilla ja
+0,026 °C:n ennustetestin RMS-virheellä. MPC valittiin kaikissa 96
+vertailuvartissa. Alkuperäisen 16 °C:n ylläpitomallin regressiot ajetaan
+edelleen `cottage_tests`- ja `cottage_closed_loop_tests`-testeissä sen
+omalla käyttöalueella. Asuinlämmön ajot ovat host-simulaatioita.
+Fyysisen pumpun kalibrointi ja mallikohtainen automaattikoe ovat erillisiä.
