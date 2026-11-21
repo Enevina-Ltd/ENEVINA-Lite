@@ -76,7 +76,7 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
     {"midea_lan","Midea / OEM","Frezzer Nordic (V3 pilot); Midea/OEM AC 0xAC (V2/V3)",
      HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareControlExperimental,
      "V2/V3 AC state, model/capabilities and optional temperatures",
-     "manual 0x40 / BB / B0 controls with readback; Frezzer 22-23-22 C field test",
+     "manual 0x40 / BB / B0 with readback; automatic thermostat/price via the same queue",
      0,0,0,"V3 authenticated, V2 fixed shared key; no pump-origin timestamp",true,
      "docs/integrations/MIDEA_MODEL_CATALOG.md; docs/field/MIDEA_LAN_CONTROL_20261121.md"},
     {"gree_ewpe_lan","Gree / EWPE Smart OEM","Toyotomi Umi UTN/UTG-12CH reference (research)",
@@ -103,7 +103,7 @@ inline bool adapter_allowed_cn105_physical_writes(const char* id) {
 // Only adapters implemented in THIS ESP32-S3 cottage firmware may be selected.
 inline bool adapter_selectable_in_lite_firmware(const char* id) {
     const auto* e=find_adapter(id);
-    // Midea V2/V3 has its own manual LAN control, never CN105 writes.
+    // Midea V2/V3 writes use the local LAN worker.
     return e && (e->maturity==AdapterMaturity::FieldPilot ||
         (std::strcmp(e->id,"midea_lan")==0 &&
          e->maturity==AdapterMaturity::FirmwareControlExperimental));

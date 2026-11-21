@@ -72,7 +72,11 @@ bool now_stamp(uint8_t out[8]) {
     const time_t t=time(nullptr);
     if(t<1700000000)return false;
     struct tm utc{};
+#ifdef _WIN32
+    if(gmtime_s(&utc,&t)!=0)return false;
+#else
     if(!gmtime_r(&t,&utc))return false;
+#endif
     out[0]=0;out[1]=static_cast<uint8_t>(utc.tm_sec);
     out[2]=static_cast<uint8_t>(utc.tm_min);out[3]=static_cast<uint8_t>(utc.tm_hour);
     out[4]=static_cast<uint8_t>(utc.tm_mday);out[5]=static_cast<uint8_t>(utc.tm_mon+1);
@@ -368,7 +372,9 @@ ReadStatus write_model(const char* host,uint64_t id,const Credential* creds,
                        const ControlPatch& patch,State& confirmed,
                        uint32_t expected_wifi_generation,uint32_t expected_endpoint_generation,
                        uint32_t expected_configuration_generation,
-                       int64_t command_deadline_utc,double approved_min_c,double approved_max_c) {
+                       int64_t command_deadline_utc,double approved_min_c,double approved_max_c,
+                       const AutomaticWriteContext* automatic,WriteReceipt* receipt) {
+    if(receipt)*receipt={};
     if(!patch.changed || (patch.changed&~(AcGeneralFields|AcPropertyFields)))
         return ReadStatus::ProtocolFailed;
     const uint32_t started=static_cast<uint32_t>(millis());
@@ -377,6 +383,10 @@ ReadStatus write_model(const char* host,uint64_t id,const Credential* creds,
             cottage_wifi_link_generation()==expected_wifi_generation &&
             site_settings_endpoint_generation()==expected_endpoint_generation &&
             cottage_midea_configuration_current(expected_configuration_generation) &&
+            (!automatic || (cottage_midea_automatic_write_current(
+                automatic->authorization_generation,automatic->control_config_generation,
+                automatic->site_generation) && cottage_midea_automatic_proposal_current(
+                automatic->proposal_action,automatic->proposal_target_c))) &&
             command_window_open(static_cast<int64_t>(time(nullptr)),command_deadline_utc,
                                 started,static_cast<uint32_t>(millis()),max_prewrite_ms);
     };
@@ -385,6 +395,9 @@ ReadStatus write_model(const char* host,uint64_t id,const Credential* creds,
     const ReadStatus initial=read_model(host,id,creds,original,false,
                                        expected_configuration_generation,patch.changed);
     if(initial!=ReadStatus::Ok)return initial;
+    if(automatic && (automatic->power!=original.power || automatic->mode!=original.mode ||
+       std::fabs(automatic->target_c-original.setpoint_c)>0.001))
+        return ReadStatus::ResourceBusy; // newer local/remote state supersedes the request
     const double target=(patch.changed&ControlTemperature)?patch.setpoint_c:original.setpoint_c;
     if(!std::isfinite(target) || target<approved_min_c || target>approved_max_c)
         return ReadStatus::UnsupportedState;
@@ -400,7 +413,9 @@ ReadStatus write_model(const char* host,uint64_t id,const Credential* creds,
     // Final authorization check follows all state reads, TCP connect and the
     // V3 stabilization wait. A changed adapter/link or expired command sends no SET.
     if(!authorized())return ReadStatus::ResourceBusy;
+    if(receipt)receipt->attempted=true;
     if(!session.send(control))return ReadStatus::ControlNotConfirmed;
+    if(receipt)receipt->sent=true;
     // One physical SET only. A dropped/ambiguous ACK never causes a retry.
     session.drain(500);
     session.close();
@@ -429,19 +444,21 @@ ReadStatus read_device(const char* host,const Credential& credentials,State& rea
 ReadStatus write_device_v2(const char* host,uint64_t id,const ControlPatch& patch,State& confirmed,
                            uint32_t expected_wifi_generation,uint32_t expected_endpoint_generation,
                            uint32_t expected_configuration_generation,
-                           int64_t command_deadline_utc,double approved_min_c,double approved_max_c) {
+                           int64_t command_deadline_utc,double approved_min_c,double approved_max_c,
+                       const AutomaticWriteContext* automatic,WriteReceipt* receipt) {
     return write_model(host,id,nullptr,patch,confirmed,expected_wifi_generation,
                        expected_endpoint_generation,expected_configuration_generation,
-                       command_deadline_utc,approved_min_c,approved_max_c);
+                       command_deadline_utc,approved_min_c,approved_max_c,automatic,receipt);
 }
 ReadStatus write_device(const char* host,const Credential& credentials,
                         const ControlPatch& patch,State& confirmed,
                         uint32_t expected_wifi_generation,uint32_t expected_endpoint_generation,
                         uint32_t expected_configuration_generation,
-                        int64_t command_deadline_utc,double approved_min_c,double approved_max_c) {
+                        int64_t command_deadline_utc,double approved_min_c,double approved_max_c,
+                       const AutomaticWriteContext* automatic,WriteReceipt* receipt) {
     return write_model(host,credentials.device_id,&credentials,patch,confirmed,expected_wifi_generation,
                        expected_endpoint_generation,expected_configuration_generation,
-                       command_deadline_utc,approved_min_c,approved_max_c);
+                       command_deadline_utc,approved_min_c,approved_max_c,automatic,receipt);
 }
 } // namespace enevina::midea
 #endif

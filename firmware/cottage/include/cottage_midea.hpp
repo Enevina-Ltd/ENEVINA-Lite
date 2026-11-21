@@ -1,15 +1,28 @@
 #pragma once
 // Direct local Midea V2/V3 TCP client on ESP32-S3; no Python, HA or cloud runtime.
-// Not enabled as a physical Lite control path until separate model review.
+// Manual and automatic writes share the same serialized service.
 #ifndef COTTAGE_BENCH_MODE
 #include <Arduino.h>
 #include <IPAddress.h>
 #include "pump/midea_v3_protocol.hpp"
+#include "cottage/price_bootstrap.hpp"
 
 namespace enevina::midea {
 enum class ReadStatus : uint8_t {
     Ok, InvalidAddress, InvalidCredentials, ConnectionFailed,
     AuthenticationFailed, ProtocolFailed, UnsupportedState, TimeNotReady, ControlNotConfirmed, ResourceBusy
+};
+struct AutomaticWriteContext {
+    uint32_t authorization_generation=0,control_config_generation=0,site_generation=0;
+    bool power=false;
+    uint8_t mode=0xff;
+    double target_c=0;
+    cottage::BootstrapAction proposal_action=cottage::BootstrapAction::Unavailable;
+    double proposal_target_c=0;
+};
+struct WriteReceipt {
+    bool attempted=false;
+    bool sent=false;
 };
 uint8_t last_v3_read_detail(); // Nonsecret live-read failure classification.
 uint8_t last_v3_reply_opcode(); // Nonsecret Midea AC message type.
@@ -31,13 +44,17 @@ ReadStatus write_device_v2(const char* private_ipv4,uint64_t device_id,
                            uint32_t expected_endpoint_generation,
                            uint32_t expected_configuration_generation,
                            int64_t command_deadline_utc,
-                           double approved_min_c,double approved_max_c);
+                           double approved_min_c,double approved_max_c,
+                           const AutomaticWriteContext* automatic=nullptr,
+                           WriteReceipt* receipt=nullptr);
 ReadStatus write_device(const char* private_ipv4,const Credential& credentials,
                         const ControlPatch& patch,State& confirmed,
                            uint32_t expected_wifi_generation,
                            uint32_t expected_endpoint_generation,
                            uint32_t expected_configuration_generation,
                            int64_t command_deadline_utc,
-                           double approved_min_c,double approved_max_c);
+                           double approved_min_c,double approved_max_c,
+                           const AutomaticWriteContext* automatic=nullptr,
+                           WriteReceipt* receipt=nullptr);
 } // namespace enevina::midea
 #endif

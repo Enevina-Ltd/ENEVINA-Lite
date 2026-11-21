@@ -12,9 +12,17 @@
 using namespace enevina::midea;
 static uint32_t configuration_generation=1;
 static bool configuration_updating=false;
+static uint32_t automatic_generation=7;
+static bool cancel_automatic_on_preflight=false;
+bool cottage_midea_automatic_write_current(uint32_t authorization,uint32_t control,uint32_t site) {
+    return authorization==automatic_generation && control==8 && site==9;
+}
 uint32_t cottage_midea_configuration_generation(){return configuration_generation;}
 bool cottage_midea_configuration_current(uint32_t expected) {
     return !configuration_updating && configuration_generation==expected;
+}
+bool cottage_midea_automatic_proposal_current(enevina::cottage::BootstrapAction action,double target_c) {
+    return action==enevina::cottage::BootstrapAction::HeatSetpoint && target_c==23;
 }
 uint32_t cottage_wifi_link_generation(){return midea_test::link_generation;}
 uint32_t site_settings_endpoint_generation(){return midea_test::endpoint_generation;}
@@ -85,6 +93,7 @@ static Bytes server(const Bytes& packet) {
         if(change_endpoint)++midea_test::endpoint_generation;
         if(change_link)++midea_test::link_generation;
         if(change_configuration)++configuration_generation;
+        if(cancel_automatic_on_preflight)++automatic_generation;
         midea_test::now_ms+=query_delay;
         if(caps_only)reply=frame({0xb5,1,0x14,0x02,1,1});
         else {
@@ -240,6 +249,7 @@ static void reset() {
     caps_only=change_endpoint=wrong_id=set_echo_only=change_link=false;query_delay=0;
     metadata_backlog=short_classic=optional_request_pending=false;
     backlog_connection=late_state_replies=0;delayed_state.clear();
+    automatic_generation=7;cancel_automatic_on_preflight=false;
 }
 static void basic_read_survives_optional_metadata(bool v3) {
     reset();metadata_backlog=true;short_classic=true;
@@ -281,7 +291,41 @@ static void basic_read_survives_optional_metadata(bool v3) {
         assert(observed.setpoint_c==19 && sets==1);
     }
 }
+static void automatic_transport_requires_current_permission_and_fresh_state(bool v3) {
+    reset();
+    if(v3)midea_test::server=v3_server;
+    const auto auth=v3_credentials();
+    ControlPatch patch{};patch.changed=ControlTemperature;patch.setpoint_c=23;
+    State observed{};
+    assert((v3?read_device("10.0.0.2",auth,observed,configuration_generation):
+        read_device_v2("10.0.0.2",123456,observed,configuration_generation))==ReadStatus::Ok);
+    const AutomaticWriteContext request{automatic_generation,8,9,
+        observed.power,observed.mode,observed.setpoint_c,enevina::cottage::BootstrapAction::HeatSetpoint,23};
+    WriteReceipt receipt{};
+    const auto run=[&]() {
+        return v3?write_device("10.0.0.2",auth,patch,observed,
+            midea_test::link_generation,midea_test::endpoint_generation,configuration_generation,
+            time(nullptr)+15,12,30,&request,&receipt):
+            write_device_v2("10.0.0.2",123456,patch,observed,
+            midea_test::link_generation,midea_test::endpoint_generation,configuration_generation,
+            time(nullptr)+15,12,30,&request,&receipt);
+    };
+    target=24; // independent remote change with no mode change
+    assert(run()==ReadStatus::ResourceBusy && sets==0 && !receipt.attempted);
+    target=22;
+    cancel_automatic_on_preflight=true;
+    assert(run()==ReadStatus::ResourceBusy && sets==0 && !receipt.attempted);
+    cancel_automatic_on_preflight=false;automatic_generation=7;
+    set_echo_only=true;
+    assert(run()==ReadStatus::ControlNotConfirmed && sets==1 &&
+           receipt.attempted && receipt.sent && observed.setpoint_c==22);
+    target=22;set_echo_only=false;
+    assert(run()==ReadStatus::Ok && sets==2 && receipt.sent && observed.setpoint_c==23);
+}
+
 int main() {
+    automatic_transport_requires_current_permission_and_fresh_state(false);
+    automatic_transport_requires_current_permission_and_fresh_state(true);
     basic_read_survives_optional_metadata(false);
     basic_read_survives_optional_metadata(true);
     reset();State observed{};

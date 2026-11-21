@@ -37,7 +37,7 @@ for named models, OEM candidates and the exact implemented protocol scope.
 | 15-min electricity prices | Acquisition, caching and pricing logic in source | Accuracy for every electricity contract |
 | FMI weather forecast | Local forecast integration and 48-hour display development | Calibrated use in production MPC control |
 | RuuviTag and Shelly | Adapter/parser and integration work, selected device tests | Universal sensor compatibility or pump-only power measurement |
-| Midea V2/V3 AC LAN | Native model/capability discovery, classic/BB controls, B0 properties and dynamic dashboard; [Frezzer V3 setpoint field test](docs/field/MIDEA_LAN_CONTROL_20261121.md) | Other models have source/protocol evidence; CC/hydronic codecs and optimizer dispatch are not implemented |
+| Midea V2/V3 AC LAN | Native model discovery, classic/BB controls, B0 properties and experimental automatic price/thermostat control; [Frezzer V3 setpoint field test](docs/field/MIDEA_LAN_CONTROL_20261121.md) | Other models have source/protocol evidence. Automatic commands have no physical validation. CC/hydronic codecs remain unimplemented. |
 | Mitsubishi CN105 | First model-specific experimental integration | Certified or universally safe control of Mitsubishi models |
 | Thermal model + MPC | Automatic identification, calibration gate and MPC in the control chain; host tests, closed-loop simulation and MILP comparisons | Field calibration on a real pump; verified real-world cost savings |
 | Signed OTA / recovery | Implementation and targeted regression/device tests | A universally approved end-user firmware update |

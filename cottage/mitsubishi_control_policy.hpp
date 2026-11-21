@@ -3,6 +3,7 @@
 // This pure policy does not know about HTTP, NVS, Wi-Fi, or hardware.
 #include "cottage/price_bootstrap.hpp"
 #include "cottage/mitsubishi_climate_command.hpp"
+#include "pump/pump_adapter.hpp"
 #include <cmath>
 #include <cstdint>
 
@@ -64,7 +65,10 @@ struct ControlProposal {
     ControlStep step=ControlStep::None;
     double target_c=0;
 };
-inline ControlProposal choose_mitsubishi_control(const ControlSnapshot& s) {
+enum class HeatTransition : uint8_t { SeparateSetpoint, Combined };
+inline ControlProposal choose_pump_control(const ControlSnapshot& s,
+                                          const PumpHeatingLimits& limits,
+                                          HeatTransition start) {
     ControlProposal out{};
     if(!s.armed)return out;
     if(!s.heating_mode) {out.gate=ControlBlock::NotInHeatingMode;return out;}
@@ -77,12 +81,13 @@ inline ControlProposal choose_mitsubishi_control(const ControlSnapshot& s) {
         out.gate=ControlBlock::NoProposal;return out;
     }
     if(s.proposal.action==BootstrapAction::HeatSetpoint) {
-        if(!mitsubishi_valid_setpoint(s.proposal.heat_setpoint_c)) {
+        if(!limits.accepts(s.proposal.heat_setpoint_c)) {
             out.gate=ControlBlock::UnsupportedCommand;return out;
         }
         out.target_c=s.proposal.heat_setpoint_c;
-        if(!std::isfinite(s.current_setpoint_c) ||
-           !mitsubishi_valid_setpoint(s.current_setpoint_c) ||
+        if(!s.current_heat && start==HeatTransition::Combined) {
+            out.step=ControlStep::SetHeat;
+        } else if(!limits.accepts(s.current_setpoint_c) ||
            std::fabs(s.current_setpoint_c-out.target_c)>0.01) {
             out.step=ControlStep::Setpoint;
         } else if(!s.current_heat) {
@@ -94,6 +99,7 @@ inline ControlProposal choose_mitsubishi_control(const ControlSnapshot& s) {
         if(!s.current_heat) {
             out.gate=ControlBlock::AlreadyApplied;return out;
         }
+        if(!limits.off) {out.gate=ControlBlock::UnsupportedCommand;return out;}
         out.step=ControlStep::SetOff;
     }
     if((out.step==ControlStep::SetHeat || out.step==ControlStep::SetOff) &&
@@ -105,6 +111,12 @@ inline ControlProposal choose_mitsubishi_control(const ControlSnapshot& s) {
     if(out.step!=ControlStep::None)out.gate=ControlBlock::Ready;
     return out;
 }
+inline constexpr PumpHeatingLimits mitsubishi_heating_limits{16.0,26.0,0.5,true,true};
+
+inline ControlProposal choose_mitsubishi_control(const ControlSnapshot& s) {
+    return choose_pump_control(s,mitsubishi_heating_limits,HeatTransition::SeparateSetpoint);
+}
+
 inline const char* control_gate_name(ControlBlock x) {
     switch(x) {
     case ControlBlock::Disabled:return "DISABLED";

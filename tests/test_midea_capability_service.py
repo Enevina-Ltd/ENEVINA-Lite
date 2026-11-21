@@ -22,7 +22,7 @@ class MideaCapabilityService(unittest.TestCase):
         # Compile the production policy itself, as the dashboard VM tests do
         # for the JavaScript; no duplicate implementation or hardware mocks.
         policy = service.split("struct BooleanControl {", 1)[1].split(
-            "void add_profile_status(", 1
+            "bool pilot_current_locked(", 1
         )[0]
         source = r'''
 #include <cassert>
