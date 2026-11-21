@@ -399,8 +399,13 @@ ReadStatus write_model(const char* host,uint64_t id,const Credential* creds,
        std::fabs(automatic->target_c-original.setpoint_c)>0.001))
         return ReadStatus::ResourceBusy; // newer local/remote state supersedes the request
     const double target=(patch.changed&ControlTemperature)?patch.setpoint_c:original.setpoint_c;
-    if(!std::isfinite(target) || target<approved_min_c || target>approved_max_c)
-        return ReadStatus::UnsupportedState;
+    // An automatic power-only OFF preserves the current setpoint in the
+    // full-state frame. The approved setpoint window still applies to any
+    // command that changes the target or leaves the unit powered.
+    const bool automatic_off=automatic && automatic->proposal_action==cottage::BootstrapAction::Off &&
+        patch.changed==ControlPower && !patch.power;
+    if(!std::isfinite(target) || (!automatic_off &&
+       (target<approved_min_c || target>approved_max_c)))return ReadStatus::UnsupportedState;
     Bytes control;
     if(!valid_ac_control_patch(original,patch) ||
        !ac_set_state_command(original,patch,2,control))return ReadStatus::UnsupportedState;

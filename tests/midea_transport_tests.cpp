@@ -22,7 +22,8 @@ bool cottage_midea_configuration_current(uint32_t expected) {
     return !configuration_updating && configuration_generation==expected;
 }
 bool cottage_midea_automatic_proposal_current(enevina::cottage::BootstrapAction action,double target_c) {
-    return action==enevina::cottage::BootstrapAction::HeatSetpoint && target_c==23;
+    return action==enevina::cottage::BootstrapAction::Off ||
+        (action==enevina::cottage::BootstrapAction::HeatSetpoint && target_c==23);
 }
 uint32_t cottage_wifi_link_generation(){return midea_test::link_generation;}
 uint32_t site_settings_endpoint_generation(){return midea_test::endpoint_generation;}
@@ -44,6 +45,7 @@ static Bytes bb_frame(uint8_t kind,const Bytes& data) {
     f.push_back(-sum);return f;
 }
 static double target=22;
+static bool classic_power=true;
 static unsigned sets=0,cap_queries=0,state_queries=0;
 static bool caps_only=false,change_endpoint=false,wrong_id=false,set_echo_only=false;
 static bool change_link=false;
@@ -97,7 +99,7 @@ static Bytes server(const Bytes& packet) {
         midea_test::now_ms+=query_delay;
         if(caps_only)reply=frame({0xb5,1,0x14,0x02,1,1});
         else {
-            Bytes body(25,0);body[0]=0xc0;body[1]=1;
+            Bytes body(25,0);body[0]=0xc0;body[1]=classic_power?1:0;
             body[2]=0x80|uint8_t(int(target)-16)|(target-int(target)>0.1?0x10:0);
             body[3]=102;body[11]=92;body[12]=80;body[19]=40;
             if(a0_model) {
@@ -154,6 +156,7 @@ static Bytes server(const Bytes& packet) {
         return {};
     } else if(query[10]==0x40) {
         ++sets;target=(query[12]&15)+16+((query[12]&16)?0.5:0);
+        classic_power=(query[11]&1)!=0;
         if(a0_model && !a0_only)assert((query[18]&0x80) && (query[20]&4) &&
                                       !(query[32]&8) && query[29]==55);
         if(a0_only)assert(!(query[18]&0x80) && !(query[20]&4) &&
@@ -249,7 +252,7 @@ static void reset() {
     caps_only=change_endpoint=wrong_id=set_echo_only=change_link=false;query_delay=0;
     metadata_backlog=short_classic=optional_request_pending=false;
     backlog_connection=late_state_replies=0;delayed_state.clear();
-    automatic_generation=7;cancel_automatic_on_preflight=false;
+    automatic_generation=7;cancel_automatic_on_preflight=false;classic_power=true;
 }
 static void basic_read_survives_optional_metadata(bool v3) {
     reset();metadata_backlog=true;short_classic=true;
@@ -323,7 +326,33 @@ static void automatic_transport_requires_current_permission_and_fresh_state(bool
     assert(run()==ReadStatus::Ok && sets==2 && receipt.sent && observed.setpoint_c==23);
 }
 
+static void automatic_off_preserves_remote_target_outside_pilot_range(bool v3) {
+    reset();target=18;
+    if(v3)midea_test::server=v3_server;
+    const auto auth=v3_credentials();
+    const auto link=midea_test::link_generation,endpoint=midea_test::endpoint_generation;
+    State observed{};
+    const auto read=v3?read_device("10.0.0.2",auth,observed,configuration_generation):
+        read_device_v2("10.0.0.2",123456,observed,configuration_generation);
+    assert(read==ReadStatus::Ok && observed.power && observed.setpoint_c==18);
+    ControlPatch off{};off.changed=ControlPower;off.power=false;
+    const AutomaticWriteContext request{automatic_generation,8,9,
+        true,4,18,enevina::cottage::BootstrapAction::Off,0};
+    WriteReceipt receipt{};
+    const auto send=[&](const AutomaticWriteContext* context) {
+        return v3?write_device("10.0.0.2",auth,off,observed,link,endpoint,configuration_generation,
+            time(nullptr)+15,20,26,context,&receipt):
+            write_device_v2("10.0.0.2",123456,off,observed,link,endpoint,configuration_generation,
+            time(nullptr)+15,20,26,context,&receipt);
+    };
+    assert(send(nullptr)==ReadStatus::UnsupportedState && sets==0 && !receipt.sent);
+    assert(send(&request)==ReadStatus::Ok && sets==1 && receipt.sent);
+    assert(!observed.power && observed.setpoint_c==18);
+}
+
 int main() {
+    automatic_off_preserves_remote_target_outside_pilot_range(false);
+    automatic_off_preserves_remote_target_outside_pilot_range(true);
     automatic_transport_requires_current_permission_and_fresh_state(false);
     automatic_transport_requires_current_permission_and_fresh_state(true);
     basic_read_survives_optional_metadata(false);
