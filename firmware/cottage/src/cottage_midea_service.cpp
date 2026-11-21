@@ -638,7 +638,7 @@ void cottage_midea_service_register_routes(WebServer& web) {
             used+=static_cast<size_t>(n);
             return true;
         };
-        bool ok=add("{\"devices\":[");
+        bool ok=add("%s","{\"devices\":[");
         for(size_t i=0;i<count && ok;i++)
             ok=add("%s{\"ip\":\"%u.%u.%u.%u\",\"protocol\":%u,\"device_id\":\"%llu\","
                    "\"device_type_known\":%s,\"device_type\":%u,\"model_known\":%s,\"model\":\"%s\","

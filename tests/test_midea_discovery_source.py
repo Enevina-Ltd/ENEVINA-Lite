@@ -91,7 +91,7 @@ int main(){
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory);cpp=path/"discovery.cpp";binary=path/"discovery"
             cpp.write_text(source)
-            subprocess.run(["g++","-std=c++17","-O2","-Wall","-Wextra","-Werror","-I",str(ROOT),
+            subprocess.run(["g++","-std=c++17","-O2","-Wall","-Wextra","-Wformat","-Wformat-security","-Werror","-I",str(ROOT),
                 str(cpp),str(ROOT/"pump/midea_discovery_info.cpp"),str(ROOT/"pump/midea_v3_protocol.cpp"),
                 "-lcrypto","-o",str(binary)],check=True)
             output=subprocess.check_output([str(binary)],text=True).splitlines()
