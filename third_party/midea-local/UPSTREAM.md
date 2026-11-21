@@ -15,8 +15,11 @@ The upstream repository also has two **separate Git submodule repositories**:
   `e700dc2cb91c7220eb0638b265581a3aec08b0be`;
 * plugins — `midea-lan/midea-plugin`, pinned by upstream to
   `c2ea5bba4df4b90bd772d3fea84e21f1abcbac3b`.
-Those separate projects are **not copied into this directory** and need their
-own provenance/licensing checks before any redistribution.
+Their exact Git commits are preserved as **Git submodule references** at
+`third_party/midea-local/lua` and `third_party/midea-local/plugin`.
+Run `git submodule update --init --recursive` after cloning to fetch the
+optional model/profile sources. Their contents are not copied into the
+ordinary tree; separately review their licenses before redistribution.
 
 **Firmware boundary:** Enevina Lite uses C++ and ESP32-S3. This Python source
 is included for parity checks, protocol derivation and tests; it is NOT

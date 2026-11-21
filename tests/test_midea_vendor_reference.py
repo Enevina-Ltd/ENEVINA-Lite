@@ -23,6 +23,13 @@ class MideaVendorReferenceTest(unittest.TestCase):
         for module in modules:
             compile(module.read_text(encoding="utf-8"), str(module), "exec")
 
+    def test_upstream_submodule_references_are_pinned(self):
+        submodules = (ROOT / ".gitmodules").read_text()
+        self.assertIn("third_party/midea-local/lua", submodules)
+        self.assertIn("https://github.com/midea-lan/midea-lua-lib.git", submodules)
+        self.assertIn("third_party/midea-local/plugin", submodules)
+        self.assertIn("https://github.com/midea-lan/midea-plugin.git", submodules)
+
     def test_upstream_test_suite_is_present_but_not_auto_loaded(self):
         original_tests = VENDOR / "tests"
         self.assertEqual(len(list(original_tests.rglob("*.py"))), 124)

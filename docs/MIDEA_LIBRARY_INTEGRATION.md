@@ -15,7 +15,7 @@
 | Midea V2/V3 LAN wire decoder, authenticated read, manual command | `pump/midea_v3_protocol.*`, `firmware/cottage/src/cottage_midea*.cpp` | **Yes** |
 | Safety and authorization gates | Liten existing supervisor / manual pilot | **Yes** |
 | Optimizer action dispatch into the Midea LAN adapter | Not implemented for Midea | **No** |
-| Lua model-definition corpus | Separate upstream repo `midea-lan/midea-lua-lib`, pinned as documented in `UPSTREAM.md` | **No** |
+| Lua model-definition corpus | Pinned Git submodule `third_party/midea-local/lua` (fetch with `git submodule update --init --recursive`) | **No** |
 
 ## Feature parity tracking
 
@@ -40,4 +40,4 @@ The immediate feature work is a **model-verified alternate state query** or a **
 
 ## Source and licensing
 
-Vendored midea-local: `425bba4a05b74b619d31bf2d8b5a6baf030aa042`, Python package version `15.2.1`, MIT license. See `third_party/midea-local/LICENSE`, `third_party/midea-local/UPSTREAM.md` and `THIRD_PARTY_NOTICES.md`. Python source is development-only and excluded from firmware builds. Lua/plugin dependencies are external submodule projects, not included in this snapshot.
+Vendored midea-local: `425bba4a05b74b619d31bf2d8b5a6baf030aa042`, Python package version `15.2.1`, MIT license. See `third_party/midea-local/LICENSE`, `third_party/midea-local/UPSTREAM.md` and `THIRD_PARTY_NOTICES.md`. Python source is development-only and excluded from firmware builds. Lua/plugin are pinned external Git submodules. Their code is fetched separately and is not part of the vendored Python source blobs.
