@@ -142,6 +142,17 @@ not be described as tested based on either a source copy or host vectors.
 
 ## Verification and attribution
 
+The [model catalogue](integrations/MIDEA_MODEL_CATALOG.md) maps named upstream
+devices and OEM candidates to this native `0xAC` implementation. It also records
+the separate CC and hydronic codecs that are not implemented here. Retail names
+are documentation, not a runtime allowlist or an override for discovered features.
+
+The Frezzer Nordic V3 pilot passed an OFF / HEAT **22 -> 23 -> 22 C** test with
+firmware **2026112102** and independent Core reads on 21 November 2026. See the
+[physical receipt](field/MIDEA_LAN_CONTROL_20261121.md). This proves the tested
+short-C0 command path; unreported optional values remained unknown and other
+models/features retain their own evidence level.
+
 Native tests cover B5 semantics, malformed inputs, C0/A0/BB and B0 wire vectors,
 model-specific temperatures, deadlines and identity changes. The transport test
 compiles the actual firmware transport against a deterministic fake LAN with

@@ -3,8 +3,8 @@
 //
 // Each entry states what is ACTUALLY implemented and verified in THIS
 // repository, not what a manufacturer or a third-party project advertises.
-// Research-only rows stay unselectable. The Midea V2/V3 host-tested row is
-// selectable for experimental manual AC control; CN105 physical writes stay gated.
+// Research-only rows stay unselectable. Midea V2/V3 AC has a tested Frezzer
+// setpoint pilot; other models retain protocol-level experimental support.
 // Selecting an adapter never authorizes writes: the Supervisor / armed
 // control gate and a model-specific approved test plan stay mandatory.
 #include "pump/pump_adapter.hpp"
@@ -19,7 +19,7 @@ enum class AdapterMaturity : uint8_t {
     HostTestedOnly,
     // Native ESP32 firmware read-only path and setup; no model-level field proof.
     FirmwareReadOnly,
-    // Native manual command path and readback, still no field-model proof.
+    // Native manual command path and readback; field coverage varies by model.
     FirmwareControlExperimental,
     // Protocol researched/documented only (Enevina level 0). Not selectable.
     DocumentedOnly
@@ -73,12 +73,12 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      HeatPumpType::GroundSource,AdapterLink::VendorLanProtocol,AdapterMaturity::DocumentedOnly,
      "not implemented","not implemented",0,0,0,"not implemented",false,
      "PR #25 GSHP_ASHP_ILP_LOCAL_PROTOCOLS.md"},
-    {"midea_lan","Midea / OEM","V2/V3 Wi-Fi module, exact model unverified",
+    {"midea_lan","Midea / OEM","Frezzer Nordic (V3 pilot); Midea/OEM AC 0xAC (V2/V3)",
      HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareControlExperimental,
-     "V2/V3 state, power, mode, setpoint and optional temperatures",
-     "manual 0x40 power/mode/setpoint/fan/swing with readback; field test pending",
+     "V2/V3 AC state, model/capabilities and optional temperatures",
+     "manual 0x40 / BB / B0 controls with readback; Frezzer 22-23-22 C field test",
      0,0,0,"V3 authenticated, V2 fixed shared key; no pump-origin timestamp",true,
-     "pump/midea_v3_protocol.cpp, tests/midea_v3_protocol_tests.cpp, docs/MIDEA_V3_LOCAL_WIFI.md"},
+     "docs/integrations/MIDEA_MODEL_CATALOG.md; docs/field/MIDEA_LAN_CONTROL_20261121.md"},
     {"gree_ewpe_lan","Gree / EWPE Smart OEM","Toyotomi Umi UTN/UTG-12CH reference (research)",
      HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::DocumentedOnly,
      "not implemented","not implemented",0,0,0,"not implemented",false,

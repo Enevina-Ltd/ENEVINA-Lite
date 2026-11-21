@@ -8,13 +8,19 @@
 | --- | --- | --- | --- |
 | Mitsubishi Electric **MSZ-FD25VA / MUZ-FD25VA** (CN105 via a local bridge) | First experimental integration, telemetry and command-path development | Source/host tests and selected pilot observations; actual CN105 UART-origin freshness and model-specific safety are not fully independently proved | **No** |
 | Other Mitsubishi Electric models with a **compatible CN105 interface** | Potential adapter family, not a universal model catalogue | Model, board revision, wiring, telemetry and control semantics must each be verified | **No** |
-| Midea / compatible OEM **V2 or V3 AC local Wi-Fi module** | Native V2/V3 LAN; model/subtype and B5 capabilities; classic C0/A0 and BB state/commands; selective B0 properties and dynamic controls; [implementation](MIDEA_LIBRARY_INTEGRATION.md) | Host protocol/real transport-code tests and ESP32 build. Earlier V3 telemetry and a limited power-off setpoint experiment are dated in the technical notes; new capability negotiation is not physically verified. No V2 field test, universal model certification or automatic optimizer dispatch. | **No** |
-| **Frezzer Nordic (owner's basement unit; exact retail submodel unrecorded)** | The existing Midea-family V3 pilot: Core `msmart-ng`, followed by earlier ESP32 Lite V3 telemetry and a limited setpoint experiment | Short C0 omitted preservation fields, so the experiment did not prove whole-state preservation. The new discovery/control implementation needs fresh device verification; do not infer the retail model from generic manuals. [Dated evidence](MIDEA_V3_LOCAL_WIFI.md) | **No** |
+| Midea / compatible OEM **V2 or V3 AC type `0xAC`** | Native V2/V3 LAN; model/subtype and B5 capabilities; classic C0/A0 and BB state/commands; selective B0 properties and dynamic controls; [named models and OEM catalogue](integrations/MIDEA_MODEL_CATALOG.md) | Generic compatible models use the same adapter without a retail-name allowlist. Source/protocol coverage is separate from physical evidence. No V2 field test or automatic optimizer dispatch. | **No** |
+| **Frezzer Nordic (exact retail submodel unrecorded)** | Native ESP32 Lite V3 state and manual control physically verified with firmware **2026112102** | OFF / HEAT **22 -> 23 -> 22 C**, separate Lite confirmation and independent Core `msmart` reads, reported settings preserved. Unknown optional fields use reference command defaults and remain unknown as telemetry. [Dated evidence](field/MIDEA_LAN_CONTROL_20261121.md) | **No** |
+| Midea **`0xCC` MDV/commercial AC**, **`0xC3` hydronic controller**, **`0xCD` heat-pump water heater**, **`0xCF` heat pump** | Upstream Python references are present or linked; their distinct native codecs are not implemented | They do not inherit Lite's `0xAC` support. A shared brand, V3 transport or vendored reference is insufficient. [Protocol boundaries](integrations/MIDEA_MODEL_CATALOG.md#protocol-boundaries) | **No** |
 | Panasonic / **HeishaMon** | Read-only / hydronic reference adapter and research | Not an approved complete Lite controller configuration | **No** |
 | NIBE / **Modbus** | Architecture and possible future model-specific adapter | No generally validated Lite device configuration | **No** |
 | Other heat pumps with local Wi-Fi, IR or wired interfaces | Research and adapter candidates | No blanket claim of compatibility, local access or cloud-free control | **No** |
 
 **One Lite controller is designed for one heat pump.** Other household loads, batteries, EV charging and whole-home EMS are outside Lite's scope.
+
+The [Midea model catalogue](integrations/MIDEA_MODEL_CATALOG.md) records primary
+sources, exact model reports, missing features and current Lite coverage. Brand
+names and internal model codes are not interchangeable, and unlisted compatible
+`0xAC` models are not blocked by a name whitelist.
 
 ## Feature evidence — not marketing claims
 

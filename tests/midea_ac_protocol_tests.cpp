@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <utility>
 
 using namespace enevina::midea;
 namespace {
@@ -268,6 +269,64 @@ Bytes classic_body(bool alternate=false,size_t length=23) {
     if(!alternate && length>19)body[19]=60;
     return body;
 }
+void identified_c0_temperature_offset() {
+    // Synthetic fields from midea_ac_lan#998: 0x2e and decimal 8 mean
+    // 23.8 C for 220F4047/subtype 8, instead of the legacy -2.8 C.
+    const auto identified=[](const char* model,uint16_t subtype) {
+        State s;s.profile.model_known=true;s.profile.subtype_known=true;
+        std::copy_n(model,8,s.profile.model.begin());s.profile.subtype=subtype;
+        return s;
+    };
+    auto body=classic_body();body[11]=46;body[12]=0x20;body[15]=8;
+    const auto frame=response(body);
+    State exact=identified("220F4047",8);
+    CHECK(ingest_ac_response(frame.data(),frame.size(),exact)==ResponseKind::BasicState);
+    CHECK(exact.has_indoor && std::fabs(exact.indoor_c-23.8)<0.001);
+    CHECK(!exact.has_outdoor); // This model's fixed 0x20 is not a measurement.
+    CHECK(exact.power && exact.mode==4 && exact.setpoint_c==21 && exact.fan==102);
+
+    // Neither neighboring identities nor unknown identity fields inherit it.
+    for(State other:{identified("220F4048",8),identified("220F4047",9)}) {
+        CHECK(ingest_ac_response(frame.data(),frame.size(),other)==ResponseKind::BasicState);
+        CHECK(other.has_indoor && std::fabs(other.indoor_c+2.8)<0.001);
+        CHECK(other.has_outdoor && other.outdoor_c==-9);
+    }
+    for(bool unknown_model:{false,true}) {
+        State unknown=identified("220F4047",8);
+        unknown.profile.model_known=!unknown_model;
+        unknown.profile.subtype_known=unknown_model;
+        CHECK(ingest_ac_response(frame.data(),frame.size(),unknown)==ResponseKind::BasicState);
+        CHECK(unknown.has_indoor && std::fabs(unknown.indoor_c+2.8)<0.001);
+        CHECK(unknown.has_outdoor && unknown.outdoor_c==-9);
+    }
+
+    // Upstream len(body)>20 includes its inner CRC. Lite's content length
+    // excludes that byte, so 19 content bytes omit decimals and 20 use them.
+    for(const auto& sample:{std::pair<size_t,double>{19,23.0},{20,23.8}}) {
+        auto short_body=classic_body(false,sample.first);
+        short_body[11]=46;short_body[12]=0x20;short_body[15]=8;
+        const auto short_frame=response(short_body);
+        State s=identified("220F4047",8);
+        CHECK(ingest_ac_response(short_frame.data(),short_frame.size(),s)==ResponseKind::BasicState);
+        CHECK(s.has_indoor && std::fabs(s.indoor_c-sample.second)<0.001);
+        CHECK(!s.has_outdoor);
+    }
+    // Preserve the raw half-degree and add only the low decimal nibble;
+    // other outdoor values retain the existing C0 temperature decoder.
+    body[11]=47;body[12]=60;body[15]=0x38;
+    const auto half_degree=response(body);
+    CHECK(ingest_ac_response(half_degree.data(),half_degree.size(),exact)==ResponseKind::BasicState);
+    CHECK(exact.has_indoor && std::fabs(exact.indoor_c-24.3)<0.001);
+    CHECK(exact.has_outdoor && std::fabs(exact.outdoor_c-5.3)<0.001);
+    body[11]=0xff;body[12]=0xff;
+    const auto missing=response(body);
+    CHECK(ingest_ac_response(missing.data(),missing.size(),exact)==ResponseKind::BasicState);
+    CHECK(!exact.has_indoor && !exact.has_outdoor);
+
+    const auto a0=response(classic_body(true),5);
+    CHECK(ingest_ac_response(a0.data(),a0.size(),exact)==ResponseKind::BasicState);
+    CHECK(!exact.has_indoor && !exact.has_outdoor);
+}
 void classic_preservation_evidence() {
     ControlPatch patch;patch.changed=ControlTemperature;patch.setpoint_c=22;
     const auto a0=response(classic_body(true),5);
@@ -511,6 +570,7 @@ int main() {
     controls_and_preservation();
     property_and_bb_controls();
     identified_temperature_layout_and_subtype();
+    identified_c0_temperature_offset();
     mode_change_checks_inherited_target();
     upstream_short_c0_control();
     classic_preservation_evidence();

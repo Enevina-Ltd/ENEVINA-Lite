@@ -24,6 +24,7 @@
 #include "cottage_network_budget.hpp"
 #include "pump/midea_config_migration.hpp"
 #include "pump/midea_discovery.hpp"
+#include "pump/midea_discovery_info.hpp"
 #include "pump/midea_ac_protocol.hpp"
 
 namespace {
@@ -574,7 +575,11 @@ void cottage_midea_service_register_routes(WebServer& web) {
                     udp.endPacket();
                 }
             }
-        struct Hit {IPAddress ip;uint64_t id;uint8_t protocol;};
+        struct Hit {
+            IPAddress ip;uint64_t id;uint8_t protocol;
+            bool metadata_known=false;
+            enevina::midea::DiscoveryInfo info{};
+        };
         std::array<Hit,8> hits{};
         size_t count=0;
         bool truncated=false;
@@ -602,19 +607,29 @@ void cottage_midea_service_register_routes(WebServer& web) {
             if(!enevina::midea::parse_discovery_reply(
                     reply.data(),static_cast<size_t>(received),candidate))
                 continue;
+            // Optional validated metadata identifies the appliance family.
+            // Keep older/minimal discovery replies visible when it is absent.
+            enevina::midea::DiscoveryInfo info{};
+            const bool metadata_known=enevina::midea::parse_discovery_info(
+                reply.data(),static_cast<size_t>(received),info);
             bool duplicate=false;
-            for(size_t i=0;i<count;i++)
-                duplicate=duplicate ||
-                    (hits[i].id==candidate.id &&
-                     hits[i].protocol==candidate.protocol);
+            for(size_t i=0;i<count;i++) {
+                if(hits[i].id!=candidate.id || hits[i].protocol!=candidate.protocol)continue;
+                duplicate=true;
+                // A later complete reply can enrich the same host's shortlist
+                // row; it cannot move an existing ID to a different address.
+                if(metadata_known && hits[i].ip==src) {
+                    hits[i].info=info;hits[i].metadata_known=true;
+                }
+            }
             if(duplicate)continue;
             if(count==hits.size()) {truncated=true;continue;}
-            hits[count++]={src,candidate.id,candidate.protocol};
+            hits[count++]={src,candidate.id,candidate.protocol,metadata_known,info};
         }
         udp.stop();
         // Bounded and escaped-by-construction response; no Wi-Fi credential,
         // V3 token/key, MAC address, SSID, or sensor data is returned.
-        char json[1100]{};
+        char json[2048]{};
         size_t used=0;
         auto add=[&](const char* format,auto... args)->bool{
             if(used>=sizeof(json))return false;
@@ -623,13 +638,20 @@ void cottage_midea_service_register_routes(WebServer& web) {
             used+=static_cast<size_t>(n);
             return true;
         };
-        bool ok=add("{\"devices\":[");
+        bool ok=add("%s","{\"devices\":[");
         for(size_t i=0;i<count && ok;i++)
-            ok=add("%s{\"ip\":\"%u.%u.%u.%u\",\"protocol\":%u,\"device_id\":\"%llu\"}",
+            ok=add("%s{\"ip\":\"%u.%u.%u.%u\",\"protocol\":%u,\"device_id\":\"%llu\","
+                   "\"device_type_known\":%s,\"device_type\":%u,\"model_known\":%s,\"model\":\"%s\","
+                   "\"subtype_known\":%s,\"subtype\":%u}",
                    i?",":"",hits[i].ip[0],hits[i].ip[1],
                    hits[i].ip[2],hits[i].ip[3],
                    static_cast<unsigned>(hits[i].protocol),
-                   static_cast<unsigned long long>(hits[i].id));
+                   static_cast<unsigned long long>(hits[i].id),
+                   hits[i].metadata_known?"true":"false",
+                   static_cast<unsigned>(hits[i].info.device_type),
+                   hits[i].metadata_known?"true":"false",hits[i].info.model.data(),
+                   hits[i].metadata_known && hits[i].info.subtype_known?"true":"false",
+                   static_cast<unsigned>(hits[i].info.subtype));
         if(ok)ok=add("],\"count\":%u,\"truncated\":%s}",
                       static_cast<unsigned>(count),truncated?"true":"false");
         web.sendHeader("Cache-Control","no-store");

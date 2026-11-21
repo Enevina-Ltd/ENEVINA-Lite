@@ -2,6 +2,11 @@
 
 ## Scope
 
+**Current evidence (21 November 2026):** firmware **2026112102** completed a
+physical Frezzer Nordic V3 OFF / HEAT **22 -> 23 -> 22 C** round trip, with fresh
+Lite confirmation and independent Core reads. See the [field receipt](field/MIDEA_LAN_CONTROL_20261121.md)
+and [source-backed model catalogue](integrations/MIDEA_MODEL_CATALOG.md).
+
 Enevina Lite targets a *single* Midea/OEM air-to-air heat pump per ESP32-S3.
 A separate Enevina Core basement pilot previously read a Midea unit using
 **msmart-ng 2026.8.1** over an authenticated local V3 LAN connection. This is
@@ -31,7 +36,11 @@ The experimental native C++ code in this change lives in:
 The setup page has an owner-initiated **Etsi Midea lähiverkosta** button.
 It runs a bounded (1.35-second) **local UDP** search to ports 6445 and 20086,
 using the standard Midea discovery packet. It verifies V2/V3 response framing
-and extracts the advertised 48-bit device ID, protocol and reply IP. It does
+and extracts the advertised 48-bit device ID, protocol and reply IP. Complete,
+integrity-checked metadata also identifies the appliance type, internal model
+code and subtype. Known non-`0xAC` appliances are shown as unsupported; older
+responses without complete metadata remain discoverable and need the existing
+state-read verification. The model code is not guessed to be a retail name. It does
 not connect to a manufacturer service or issue a pump state/write command.
 
 - Discovery candidates populate the **IP, protocol, and device ID** fields only
@@ -193,13 +202,16 @@ submodel or Wi-Fi module. Its **observed Core protocol is V3**. No retail
 submodel, Wi-Fi-module revision or proprietary pairing secret should be
 published without separate verification.
 
-**Important distinction:** Core LAN connection and state polling have been
-physically tested. The new native **ESP32-S3 Enevina Lite V3 client** has only
-passed host vectors and firmware build/tests; it has **not yet been
-physically tested** against this Frezzer. Lite now contains manual command
-code, but NO proven real Lite-to-Frezzer command/readback evidence. Full
-automatic optimization and IP rediscovery remain unimplemented. This is a high-priority first device for the Lite pilot, but it
-is not yet an approved Lite-compatible retail model.
+**Native Lite evidence:** the ESP32-S3 V3 client was physically verified for
+telemetry on 20 November and for the corrected short-C0 command path on
+21 November 2026. Firmware **2026112102** changed the target from 22 to 23 C
+and back to 22 C while power stayed OFF and mode stayed HEAT. Each result was
+queried independently with Core's `msmart` client. Reported fan, swing and
+presets remained unchanged; absent optional fields stayed unknown. The
+[test receipt](field/MIDEA_LAN_CONTROL_20261121.md) records the exact scope.
+Automatic optimizer dispatch and automatic DHCP re-enrollment remain separate
+work. Initial cloud-free pairing and a WAN-blocked test were not established
+by this command round trip.
 
 ## Authentication and local behavior
 
