@@ -305,21 +305,6 @@ const char* control_request_error(const enevina::midea::State& state,
     if(!valid_ac_control_patch(state,patch))return "UNSUPPORTED_CONTROL";
     Bytes encoded;
     if(ac_set_state_command(state,patch,2,encoded))return nullptr;
-    const auto& caps=state.profile.capabilities;
-    if(state.profile.family==AcProtocol::Legacy &&
-       (patch.changed&AcGeneralFields) &&
-       !(patch.changed&ControlFreezeProtection) &&
-       !state.freeze_protection_known &&
-       !(caps.reports(AcFeature::FreezeProtection) &&
-         !caps.supports(AcFeature::FreezeProtection))) {
-        // Only suggest an explicit frost choice when it actually supplies the
-        // remaining required evidence. A0-only/ambiguous preserved fields
-        // cannot be repaired by choosing an unrelated preset.
-        ControlPatch explicit_frost=patch;
-        explicit_frost.changed|=ControlFreezeProtection;
-        explicit_frost.freeze_protection=false;
-        if(ac_set_state_command(state,explicit_frost,2,encoded))return "MISSING_FROST_STATE";
-    }
     return "UNSUPPORTED_STATE";
 }
 bool mode_control_available(const enevina::midea::State& state,uint8_t mode) {

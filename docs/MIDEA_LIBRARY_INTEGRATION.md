@@ -47,7 +47,12 @@ attempts. Credentials and active readings are not retained in that cache.
 
 Metadata discovery is attempted at most twice per identity. The appliance and
 two B5 probes each have at most two attempts, with at most two pending probes
-per normal acquisition. Timed write pre-reads use the profile without repeating
+per normal acquisition. Basic state and its required A0/B1/BB supplements are
+read before optional appliance/B5 negotiation. Some modules queue unsupported
+queries, so putting them first can delay a valid C0 until a different query is
+already active. Optional probes use only the remaining acquisition budget;
+strict response matching and the 9.5-second total limit are unchanged.
+Timed write pre-reads use the profile without repeating
 capability negotiation, but still acquire required live fields such as BB
 SN8/timer or selective property state.
 
@@ -62,37 +67,43 @@ immediately before SET, after connection and authentication latency.
 
 ## Short C0 and preserving other settings
 
-A short C0 may omit the 8 °C heat-preservation preset. Upstream classic writers
-can default omitted flags to false; that is not evidence about the current
-setting. Lite keeps it unknown and tries a validated A0 state query.
+A short C0 may omit target humidity, the optional 8 °C heating preset and comfort
+mode. Requiring all of them before any ordinary command blocked working legacy
+devices. Lite now follows the existing msmart command format and its explicit
+`AirConditioner.apply()` defaults: absent target humidity is encoded as 40 and
+absent optional boolean fields as false. midea-local also defaults unreported
+frost/comfort flags off. These are compatibility defaults for an outgoing
+whole-state command, not proof that an unreported setting was already off.
 
-The frost requirement for a classic whole-state command can be satisfied by:
+The command-only copy never changes the observed state, `*_known` flags or
+reported capabilities. Current observed values and explicit supported patches
+take precedence over defaults. A0 is still tried as a supplement; when it
+complements C0, only fields from that same acquisition are retained. Previous
+sessions do not fill gaps.
 
-1. A current C0/A0 reports the active bit.
-2. B5 explicitly reports freeze protection unsupported (`0x0213 = 0`), rather
-   than omitting the tag. Later contradictory evidence revokes that inference.
-3. The user explicitly requests a supported freeze-preset value. Its new value
-   still needs observable readback before success can be reported.
+Independent readback must confirm the requested change, basic power/mode/target/
+fan/swing and other observed settings. If a previously observed optional field
+disappears or disagrees, confirmation fails. A field absent from both reads does
+not block confirmation of the basic command. If it first appears after SET, it
+must match the encoded value. An explicit frost-preset change still needs a live
+matching frost observation. Unreported settings cannot be claimed preserved.
 
-Other fields serialized by the whole-state writer also need preservation
-evidence. A0-only telemetry must not turn unreported C0 fields into known false
-values. When A0 complements C0, the transport retains only C0 fields from that
-same acquisition, including ambient readings, Follow Me, Fahrenheit, independent
-auxiliary heat and target humidity. A missing comfort tail is also queried through A0 rather than defaulted off.
-A0's own fields remain authoritative;
-subsequent B1 queries populate properties. Previous sessions do not fill gaps.
+Synthetic 19-byte C0 tests compare the outgoing bytes with the executed pinned
+msmart serializer, then verify a separate short-C0 readback. Authenticated V3
+and V2 transport tests cover exactly one SET with unknown fields remaining
+unknown. These tests are separate from the physical device test record.
 
-Selective B0 commands can be available independently because they do not
-serialize the missing whole-state fields. B5 display support alone does not
+Selective B0 commands remain independent because they do not
+serialize the whole-state fields. B5 display support alone does not
 prove support for the alternate B0 absolute-display command: that writer needs
 a current B1/0017 observation. The legacy display-toggle command is not exposed
 as a writable fallback. An active C0 bit with conflicting Smart Eye and
 independent-auxiliary-heat meanings also blocks general encoding until its
 layout can be established; property-only controls remain independent.
 
-The earlier short-C0 V3 pilot does not prove the new negotiation can obtain its
-missing fields. That device must be read with the new firmware before its
-writable controls can be reported as physically tested.
+References: [msmart apply()](https://github.com/mill1000/midea-msmart/blob/dd0994755bb078b613837038f2d67d97fab133ab/msmart/device/AC/device.py)
+and the vendored midea-local `MessageGeneralSet` / `make_message_set`.
+Source/host results do not establish compatibility with every retail model.
 
 ## Code map
 

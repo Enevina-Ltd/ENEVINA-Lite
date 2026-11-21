@@ -8,6 +8,7 @@
 #include <cstring>
 #include <ctime>
 #include <iostream>
+#include <openssl/evp.h>
 using namespace enevina::midea;
 static uint32_t configuration_generation=1;
 static bool configuration_updating=false;
@@ -47,10 +48,31 @@ static bool bb_model=false,bb_timer=true,bb_sn8_available=true;
 static unsigned bb_sn8_queries=0;
 static unsigned property_sets=0;
 static uint32_t query_delay=0;
+static bool metadata_backlog=false,short_classic=false;
+static unsigned backlog_connection=0,late_state_replies=0;
+static bool optional_request_pending=false;
+static Bytes delayed_state;
 static Bytes server(const Bytes& packet) {
     Bytes query;
-    if(!inner_decode(packet.data(),packet.size(),query))return {}; // V3 intentionally cannot auth here.
+    if(!inner_decode(packet.data(),packet.size(),query))return {}; // V2 peer; V3 wrapper below.
     if(query.size()<11)return {};
+    if(backlog_connection!=midea_test::connection_count) {
+        backlog_connection=midea_test::connection_count;
+        optional_request_pending=false;delayed_state.clear();
+    }
+    // Some AC modules keep working on an unsupported query after our receive
+    // timeout. A later C0 then arrives during the following BB query. This
+    // models that queue, rather than returning a synthetic immediate timeout.
+    if(metadata_backlog && !delayed_state.empty()) {
+        midea_test::now_ms+=1400;
+        ++late_state_replies;
+        Bytes late;late.swap(delayed_state);return late;
+    }
+    if(metadata_backlog && (query[9]==0xa0 || query[10]==0xb5)) {
+        if(query[10]==0xb5)++cap_queries;
+        optional_request_pending=true;
+        return {};
+    }
     Bytes reply;
     if(query[10]==0xb5) {
         ++cap_queries;
@@ -74,6 +96,7 @@ static Bytes server(const Bytes& packet) {
                 if(missing_comfort_tail)body[21]=0x80;
                 body.resize(missing_comfort_tail?22:20); // Optional comfort/frost tails.
             }
+            if(short_classic) {body[1]=0;body.resize(19);}
             reply=frame(body,set_echo_only && sets?2:3);
         }
     } else if(query[10]==0xaa && bb_model) {
@@ -122,13 +145,86 @@ static Bytes server(const Bytes& packet) {
         return {};
     } else if(query[10]==0x40) {
         ++sets;target=(query[12]&15)+16+((query[12]&16)?0.5:0);
-        if(a0_model)assert((query[18]&0x80) && (query[20]&4) &&
-                           !(query[32]&8) && query[29]==55);
+        if(a0_model && !a0_only)assert((query[18]&0x80) && (query[20]&4) &&
+                                      !(query[32]&8) && query[29]==55);
+        if(a0_only)assert(!(query[18]&0x80) && !(query[20]&4) &&
+                          !(query[32]&8) && query[29]==40);
+        if(short_classic)assert(query.size()==37 && !(query[11]&1) &&
+            (query[12]>>5)==4 && query[13]==102 && (query[17]&15)==0 &&
+            query[29]==40 && !(query[31]&0x80) && !(query[32]&9));
         if(missing_comfort_tail)assert((query[32]&1) && ((query[31]&0x80)!=0)==short_a0);
         return {}; // Lost ACK is intentional; only independent readback proves success.
     } else return {};
     Bytes out;uint8_t stamp[8]{};
-    assert(inner_encode(wrong_id?999:123456,reply.data(),reply.size(),stamp,out));return out;
+    assert(inner_encode(wrong_id?999:123456,reply.data(),reply.size(),stamp,out));
+    if(metadata_backlog && optional_request_pending && query[10]==0x41) {
+        delayed_state=out;return {};
+    }
+    return out;
+}
+
+// Synthetic V3 peer: the handshake vector is shared with the independent
+// protocol golden test. No appliance credentials or captured LAN frames are
+// used. OpenSSL implements the peer side so real firmware authentication,
+// encryption, inner-device binding and response matching all execute here.
+static Credential v3_credentials() {
+    Credential auth{};auth.device_id=123456;
+    for(size_t i=0;i<auth.token.size();++i)auth.token[i]=static_cast<uint8_t>(i);
+    for(size_t i=0;i<auth.key.size();++i)auth.key[i]=static_cast<uint8_t>(i+32);
+    return auth;
+}
+static std::array<uint8_t,32> v3_key() {
+    auto key=v3_credentials().key;
+    for(auto& byte:key)byte^=0x11;
+    return key;
+}
+static Bytes peer_aes(const Bytes& data,bool encrypt) {
+    const auto key=v3_key();uint8_t iv[16]{};
+    EVP_CIPHER_CTX* ctx=EVP_CIPHER_CTX_new();assert(ctx);
+    Bytes result(data.size()+16);int size=0,tail=0;
+    assert(EVP_CipherInit_ex(ctx,EVP_aes_256_cbc(),nullptr,key.data(),iv,encrypt?1:0)==1);
+    assert(EVP_CIPHER_CTX_set_padding(ctx,0)==1);
+    assert(EVP_CipherUpdate(ctx,result.data(),&size,data.data(),static_cast<int>(data.size()))==1);
+    assert(EVP_CipherFinal_ex(ctx,result.data()+size,&tail)==1);
+    EVP_CIPHER_CTX_free(ctx);result.resize(static_cast<size_t>(size+tail));return result;
+}
+static Bytes peer_digest(const Bytes& data) {
+    Bytes digest(32);unsigned length=0;
+    assert(EVP_Digest(data.data(),data.size(),digest.data(),&length,EVP_sha256(),nullptr)==1);
+    assert(length==digest.size());return digest;
+}
+static Bytes v3_server(const Bytes& packet) {
+    assert(packet.size()>=8 && packet[0]==0x83 && packet[1]==0x70);
+    if((packet[5]&15)==0) {
+        const auto auth=v3_credentials();
+        assert(packet==handshake_request(auth,0));
+        constexpr char response[]="8370004020010000b1e02cf80070f546cf0c6c0a703fe93ccee1034c3ad001f7c9144d863cd92cc902d449a31fbb267c8f352e9968a79e3e5fc95c1bbeaa502fd6454ebde5a4bedc";
+        Bytes reply((sizeof(response)-1)/2);
+        assert(decode_hex(response,reply.data(),reply.size()));return reply;
+    }
+    assert((packet[5]&15)==6 && packet.size()>=56);
+    const Bytes plain=peer_aes(Bytes(packet.begin()+6,packet.end()-32),false);
+    Bytes signed_plain(packet.begin(),packet.begin()+6);
+    signed_plain.insert(signed_plain.end(),plain.begin(),plain.end());
+    const auto digest=peer_digest(signed_plain);
+    assert(std::equal(digest.begin(),digest.end(),packet.end()-32));
+    const size_t padding=packet[5]>>4;
+    assert(plain.size()>=2+padding);
+    const Bytes inner(plain.begin()+2,plain.end()-padding);
+    const Bytes response=server(inner);
+    if(response.empty())return {};
+    const size_t response_padding=(16-(response.size()+2)%16)%16;
+    const size_t length=response.size()+response_padding+32;
+    Bytes reply{0x83,0x70,static_cast<uint8_t>(length>>8),static_cast<uint8_t>(length),
+                0x20,static_cast<uint8_t>((response_padding<<4)|3)};
+    Bytes response_plain{0,1};
+    response_plain.insert(response_plain.end(),response.begin(),response.end());
+    response_plain.resize(response_plain.size()+response_padding,0);
+    signed_plain=reply;signed_plain.insert(signed_plain.end(),response_plain.begin(),response_plain.end());
+    const auto signature=peer_digest(signed_plain);
+    const auto encrypted=peer_aes(response_plain,true);
+    reply.insert(reply.end(),encrypted.begin(),encrypted.end());
+    reply.insert(reply.end(),signature.begin(),signature.end());return reply;
 }
 static void reset() {
     ++midea_test::link_generation;++midea_test::endpoint_generation;
@@ -142,8 +238,52 @@ static void reset() {
     missing_comfort_tail=false;
     short_a0=frost_report_unsupported=false;
     caps_only=change_endpoint=wrong_id=set_echo_only=change_link=false;query_delay=0;
+    metadata_backlog=short_classic=optional_request_pending=false;
+    backlog_connection=late_state_replies=0;delayed_state.clear();
+}
+static void basic_read_survives_optional_metadata(bool v3) {
+    reset();metadata_backlog=true;short_classic=true;
+    if(v3)midea_test::server=v3_server;
+    const auto auth=v3_credentials();
+    State observed{};
+    for(unsigned cycle=0;cycle<4;++cycle) {
+        const auto started=midea_test::now_ms;
+        const auto result=v3?read_device("10.0.0.2",auth,observed,configuration_generation):
+            read_device_v2("10.0.0.2",123456,observed,configuration_generation);
+        if(result!=ReadStatus::Ok)
+            std::cerr<<"Cold metadata acquisition failed: v3="<<v3<<" cycle="<<cycle
+                     <<" status="<<static_cast<unsigned>(result)
+                     <<" late_C0="<<late_state_replies<<'\n';
+        assert(result==ReadStatus::Ok);
+        assert(observed.has_basic && observed.setpoint_c==22 && observed.indoor_c==21);
+        assert(!observed.profile.capabilities.received && !observed.target_humidity_known);
+        assert(midea_test::now_ms-started<=9500 && sets==0 && property_sets==0);
+    }
+    // Discovery still runs to its bounded end; getting basic state first must
+    // not simply disable unsupported feature probes or manufacture support.
+    assert(cap_queries==4 && late_state_replies==0);
+    // The upstream classic defaults also work through the actual V2/V3
+    // transport: exactly one SET, then an independent short-C0 query. Missing
+    // optional fields remain unknown in the result; power stays off.
+    ControlPatch patch{};patch.changed=ControlTemperature;patch.setpoint_c=23;
+    const auto result=v3?write_device("10.0.0.2",auth,patch,observed,
+        midea_test::link_generation,midea_test::endpoint_generation,configuration_generation,
+        time(nullptr)+15,12,30):write_device_v2("10.0.0.2",123456,patch,observed,
+        midea_test::link_generation,midea_test::endpoint_generation,configuration_generation,
+        time(nullptr)+15,12,30);
+    assert(result==ReadStatus::Ok && sets==1 && cap_queries==4);
+    assert(!observed.power && observed.mode==4 && observed.setpoint_c==23 && observed.fan==102);
+    assert(!observed.target_humidity_known && !observed.comfort_mode_known &&
+           !observed.freeze_protection_known);
+    if(v3) {
+        wrong_id=true;observed.setpoint_c=19;
+        assert(read_device("10.0.0.2",auth,observed,configuration_generation)==ReadStatus::ProtocolFailed);
+        assert(observed.setpoint_c==19 && sets==1);
+    }
 }
 int main() {
+    basic_read_survives_optional_metadata(false);
+    basic_read_survives_optional_metadata(true);
     reset();State observed{};
     assert(read_device_v2("10.0.0.2",123456,observed,configuration_generation)==ReadStatus::Ok);
     assert(observed.setpoint_c==22 && observed.profile.capabilities.received);
@@ -246,20 +386,23 @@ int main() {
             time(nullptr)+15,12,30)==ReadStatus::Ok);
         assert(sets==1 && observed.comfort_mode && observed.setpoint_c==23);
     }
-    // A0-only telemetry cannot prove fields omitted by A0 and serialized by
-    // 0x40. Conflicting public meanings of active C0 bit6 also cannot be guessed.
+    // A0-only telemetry uses the upstream wire defaults for omitted fields;
+    // those defaults do not become observed state. Conflicting public meanings
+    // of an active C0 bit6 still cannot be guessed.
     for(bool only:{false,true}) {
         reset();a0_model=true;a0_only=only;ambiguous_classic_bit=!only;
         assert(read_device_v2("10.0.0.2",123456,observed,configuration_generation)==ReadStatus::Ok);
         assert(write_device_v2("10.0.0.2",123456,patch,observed,
             midea_test::link_generation,midea_test::endpoint_generation,configuration_generation,
-            time(nullptr)+15,12,30)==ReadStatus::UnsupportedState);
-        assert(sets==0);
+            time(nullptr)+15,12,30)==(only?ReadStatus::Ok:ReadStatus::UnsupportedState));
+        assert(sets==static_cast<unsigned>(only));
+        if(only)assert(observed.setpoint_c==23 && !observed.fahrenheit_known &&
+                       !observed.follow_me_known && !observed.target_humidity_known);
         ControlPatch property{};property.changed=ControlDisplay;property.display=true;
         assert(write_device_v2("10.0.0.2",123456,property,observed,
             midea_test::link_generation,midea_test::endpoint_generation,configuration_generation,
             time(nullptr)+15,12,30)==ReadStatus::Ok);
-        assert(property_sets==1 && sets==0);
+        assert(property_sets==1 && sets==static_cast<unsigned>(only));
     }
     // BB writes with an active timer require SN8 from the current BB/10 read,
     // including both timed pre-read and independent readback acquisitions.

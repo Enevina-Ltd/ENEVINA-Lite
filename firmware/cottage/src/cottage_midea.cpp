@@ -273,19 +273,6 @@ ReadStatus read_model(const char* host,uint64_t device_id,const Credential* cred
         if(!identity_current(expected) || !session.healthy())return false;
         return session.query(request,sample,kind,std::min(budget,overall.left()));
     };
-    // Negotiate only during normal polling. The timed write pre-read uses the
-    // identity-bound profile and never spends its TTL on capability discovery.
-    if(negotiate) {
-        for(unsigned count=0;count<2 && overall.left();++count) {
-            const int probe=cache.plan.next_probe();
-            if(probe<0)break;
-            const Bytes request=probe==0?subtype_query():
-                capabilities_query(message_id++,probe==2,sample.profile.protocol_version);
-            const bool ok=query(request,probe==0?ResponseKind::Subtype:ResponseKind::Capabilities,800);
-            cache.plan.finish_probe(static_cast<uint8_t>(probe),ok);
-            if(!session.healthy())break;
-        }
-    }
     bool basic=query(ac_state_query(sample.profile,message_id++),ResponseKind::BasicState,2000);
     const bool current_c0=basic && sample.profile.family==AcProtocol::Legacy;
     if(!basic && session.healthy() && sample.profile.family==AcProtocol::Legacy) {
@@ -346,6 +333,25 @@ ReadStatus read_model(const char* host,uint64_t device_id,const Credential* cred
             query(ac_auxiliary_query(sample.profile,message_id++,4),ResponseKind::Auxiliary,600);
         if(requested_fields&ControlRateSelect)
             query(ac_auxiliary_query(sample.profile,message_id++,5),ResponseKind::Auxiliary,600);
+    }
+    // Read current state before optional metadata. Some AC modules keep an
+    // unsupported appliance/B5 query queued after our timeout, delaying C0
+    // until the next request. Such late packets still must not answer a
+    // different query. Metadata failure must not suppress a timely basic read
+    // or its required model-specific B1/BB state supplements.
+    // The timed write pre-read uses only the identity-bound cached profile.
+    if(negotiate && session.healthy()) {
+        constexpr uint32_t probe_budget_ms=800;
+        for(unsigned count=0;count<2 && overall.left()>2*probe_budget_ms;++count) {
+            const int probe=cache.plan.next_probe();
+            if(probe<0)break;
+            const Bytes request=probe==0?subtype_query():
+                capabilities_query(message_id++,probe==2,sample.profile.protocol_version);
+            const bool ok=query(request,probe==0?ResponseKind::Subtype:ResponseKind::Capabilities,
+                                probe_budget_ms);
+            cache.plan.finish_probe(static_cast<uint8_t>(probe),ok);
+            if(!session.healthy())break;
+        }
     }
     session.close();
     if(!identity_current(expected))return ReadStatus::ResourceBusy;

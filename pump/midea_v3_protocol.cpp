@@ -218,14 +218,10 @@ bool valid_control_patch(const ControlPatch& patch) {
 }
 bool set_state_command(const State& existing,const ControlPatch& patch,
                        uint8_t msg,Bytes& frame) {
-    // Midea 0x40 writes the full AC state, including the optional 8 C
-    // heat-preservation bit. Short C0 reads do not report this bit. Even
-    // when the visible setpoint is >=16 C, its actual value is unknown on
-    // some OEM firmware; never serialize a guessed zero. A model-specific
-    // read or verified field-only write is required for short-C0 devices.
-    // This is an optional heating preset, not the firmware's defrost logic.
-    if(!valid_control_patch(patch) || !valid_state(existing) ||
-       !existing.freeze_protection_known)return false;
+    // Match msmart apply(): an unreported optional 8 C preset is encoded off.
+    // That wire default does not establish its observed value. It is an
+    // optional heating preset, not the appliance's internal defrost logic.
+    if(!valid_control_patch(patch) || !valid_state(existing))return false;
     const bool power=(patch.changed&ControlPower)?patch.power:existing.power;
     const uint8_t mode=(patch.changed&ControlMode)?patch.mode:existing.mode;
     const double temp=(patch.changed&ControlTemperature)?
@@ -265,7 +261,7 @@ bool set_state_command(const State& existing,const ControlPatch& patch,
         temperature_alt,
         existing.humidity,
         0,
-        static_cast<uint8_t>(existing.freeze_protection?0x80:0),
+        static_cast<uint8_t>(existing.freeze_protection_known && existing.freeze_protection?0x80:0),
         static_cast<uint8_t>(existing.independent_aux_heat?0x08:0),0
     };
     if(body.size()!=24)return false;
@@ -295,10 +291,11 @@ bool preserved_state_observed(const State& before,const State& after,
                               const ControlPatch& patch) {
     if(!valid_control_patch(patch) ||
        !valid_state(before) || !valid_state(after) ||
-       // Do not report confirmed state when the post-write C0 omits the
-       // preserved flag: matching visible setpoints cannot prove its value.
-       !before.freeze_protection_known || !after.freeze_protection_known ||
-       before.freeze_protection!=after.freeze_protection ||
+       // Preserve every reported frost value and reject loss of its evidence.
+       // Short C0 can still confirm visible fields when both omit the preset.
+       (before.freeze_protection_known && !after.freeze_protection_known) ||
+       (after.freeze_protection_known && after.freeze_protection!=
+          (before.freeze_protection_known && before.freeze_protection)) ||
        before.independent_aux_heat!=after.independent_aux_heat ||
        before.aux_heat!=after.aux_heat)return false;
     // No false success if the controller has silently reset a different

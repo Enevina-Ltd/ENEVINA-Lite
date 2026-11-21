@@ -68,23 +68,24 @@ The API and UI share the codec's supported-field constraints. This covers AC
 
 ## Short C0 and whole-state preservation
 
-Some units omit the 8 °C heat-preservation preset from a short C0 response.
-A classic `0x40` command writes the whole state. A visible normal target or an
-upstream default of false does not prove the omitted preset is off.
+Some units omit target humidity, comfort and the optional 8 °C heating preset
+from a short C0 response. Lite uses the established msmart whole-state command
+format: absent target humidity is encoded as 40, absent optional booleans as
+false, while reported values and explicit supported changes take precedence.
+These are outgoing compatibility defaults, not observations. The dashboard
+continues to show unknown state and absent capability reports truthfully.
 
-Lite tries a validated A0 response. The frost requirement can be met by an
-observed current bit, an explicit B5 report that the feature is unsupported, or
-an explicit user-requested supported preset value. Missing B5 tags are unknown;
-support alone never supplies the current value. Readback must independently
-show the requested result before success is reported.
+Lite still tries A0 supplements and retains complementary C0 fields from that
+same acquisition. Independent readback confirms the requested change and all
+observable preserved fields. Losing a previously observed field fails
+confirmation; continued absence from both reads does not prevent a basic
+temperature/power/fan command. An explicit frost-preset change still needs its
+own matching observation. Preservation of unreported settings is not claimed.
 
-All other fields serialized by the whole-state command also need preservation
-evidence. A0-only basic telemetry does not prove its omitted C0 fields. A
-same-acquisition C0 can supply Follow Me, Fahrenheit, independent auxiliary heat,
-target humidity and ambient readings, with explicit knowledge flags. A missing
-humidity byte remains unknown; a missing comfort tail triggers an A0 query. An active C0 bit with conflicting Smart Eye /
-independent-auxiliary-heat interpretations is not guessed. Selective B0 properties
-can remain available when general whole-state evidence is incomplete.
+An active C0 bit with conflicting Smart Eye / independent-auxiliary-heat meanings
+remains a separate unresolved layout issue. Selective B0 properties are
+independent. Required current state is acquired before optional appliance/B5
+probes, so unsupported probes cannot queue ahead of the basic query.
 
 The earlier pilot demonstrated 22 → 22.5 → 22 °C with power off on firmware
 2026112025. That experiment did not prove preservation of an unreported preset

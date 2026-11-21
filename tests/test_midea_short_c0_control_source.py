@@ -1,4 +1,8 @@
-"""Unknown short C0 bits must never be silently cleared on a full-state write."""
+"""Short-C0 control retains its manual authority, freshness and queue contract.
+
+Wire-default/readback behavior is executed in the C++ protocol/transport tests;
+it must follow the pinned integrations instead of asserting a blanket refusal.
+"""
 from pathlib import Path
 import unittest
 ROOT=Path(__file__).resolve().parents[1]
@@ -6,16 +10,6 @@ PROTO=(ROOT/"pump/midea_v3_protocol.cpp").read_text()
 TCP=(ROOT/"firmware/cottage/src/cottage_midea.cpp").read_text()
 SERVICE=(ROOT/"firmware/cottage/src/cottage_midea_service.cpp").read_text()
 class ShortC0ControlTests(unittest.TestCase):
- def test_short_state_blocks_full_state_write_and_unproven_readback(self):
-  setter=PROTO.split("bool set_state_command(",1)[1].split("bool control_patch_observed(",1)[0]
-  readback=PROTO.split("bool preserved_state_observed(",1)[1].split("bool inner_encode(",1)[0]
-  self.assertIn("!existing.freeze_protection_known)return false",setter)
-  self.assertNotIn("patch.changed!=ControlTemperature",setter)
-  self.assertIn("existing.freeze_protection?0x80:0",setter)
-  self.assertIn("!before.freeze_protection_known || !after.freeze_protection_known",readback)
-  self.assertIn("before.power!=after.power",readback)
-  self.assertIn("before.mode!=after.mode",readback)
-  self.assertIn("before.independent_aux_heat!=after.independent_aux_heat",readback)
  def test_write_stabilization_and_explicit_manual_pilot_unchanged(self):
   write=TCP.split("ReadStatus write_model(",1)[1].split("} // namespace",1)[0]
   self.assertIn("vTaskDelay(pdMS_TO_TICKS(1100))",TCP)

@@ -109,13 +109,46 @@ State heat_state() {
     s.properties_known=ControlEco|ControlTurbo|ControlSleep|ControlAnion|ControlFreezeProtection;
     return s;
 }
+void upstream_short_c0_control() {
+    // Synthetic legacy C0 with the same short layout accepted by msmart.
+    // Expected SET bytes were generated independently with pinned msmart
+    // dd099475 SetStateCommand, using apply()'s None -> false / humidity 40
+    // defaults, beep disabled and message ID 1. No device identifiers here.
+    Bytes body(19,0);body[0]=0xc0;body[2]=0x86;body[3]=102;
+    body[11]=92;body[12]=70;
+    const auto reply=response(body,3,0);
+    State before;
+    CHECK(ingest_ac_response(reply.data(),reply.size(),before)==ResponseKind::BasicState);
+    CHECK(!before.freeze_protection_known && !before.target_humidity_known &&
+          !before.comfort_mode_known);
+    ControlPatch patch;patch.changed=ControlTemperature;patch.setpoint_c=23;
+    Bytes frame;
+    CHECK(ac_set_state_command(before,patch,1,frame));
+    CHECK(frame==hex("aa24ac00000000000002400287667f7f003000000000000000000000002800000000014365"));
+    // Wire defaults are not fabricated observations or support claims.
+    CHECK(!before.freeze_protection_known && !before.target_humidity_known &&
+          !before.comfort_mode_known && !before.profile.capabilities.received);
+    State after=before;after.setpoint_c=23;
+    CHECK(ac_control_confirmed(before,after,patch));
+    after.freeze_protection_known=true;
+    CHECK(ac_control_confirmed(before,after,patch));
+    after.freeze_protection=true;CHECK(!ac_control_confirmed(before,after,patch));
+    after=before;after.setpoint_c=23;after.target_humidity_known=true;
+    CHECK(ac_control_confirmed(before,after,patch));
+    after.humidity=55;CHECK(!ac_control_confirmed(before,after,patch));
+    after=before;after.setpoint_c=23;
+    after.power=true;CHECK(!ac_control_confirmed(before,after,patch));
+    after=before;CHECK(!ac_control_confirmed(before,after,patch));
+    after.setpoint_c=23;after.fan=40;CHECK(!ac_control_confirmed(before,after,patch));
+}
 void controls_and_preservation() {
     State s=heat_state();s.freeze_protection_known=false;
     s.properties_known&=~ControlFreezeProtection;
     ControlPatch patch;patch.changed=ControlTemperature;patch.setpoint_c=22;
     Bytes frame{0x55};
-    CHECK(!ac_set_state_command(s,patch,1,frame) && frame==Bytes{0x55});
-    // Explicit choice resolves the otherwise unknown full-state freeze byte.
+    CHECK(ac_set_state_command(s,patch,1,frame));
+    CHECK(!s.freeze_protection_known && !(frame[31]&0x80));
+    // An explicit preset request is still encoded and requires live readback.
     patch.changed|=ControlFreezeProtection;patch.freeze_protection=false;
     CHECK(ac_set_state_command(s,patch,1,frame));
     if(frame.size()>31)CHECK(frame[31]==0 && frame[8]==8);
@@ -129,7 +162,8 @@ void controls_and_preservation() {
     State unknown=heat_state();unknown.freeze_protection_known=false;
     CHECK(ingest_ac_response(supported.data(),supported.size(),unknown)==ResponseKind::Capabilities);
     CHECK(!unknown.freeze_protection_known);
-    CHECK(!ac_set_state_command(unknown,patch,2,frame));
+    CHECK(ac_set_state_command(unknown,patch,2,frame));
+    CHECK(!unknown.freeze_protection_known);
     CHECK(ingest_ac_response(supported.data(),supported.size(),s)==ResponseKind::Capabilities);
     CHECK(!s.freeze_protection_known); // Do not retain an inference contradicted by new B5 data.
     s=heat_state();s.dry=true;s.power_saving=true;s.natural_wind=true;s.comfort_mode=true;
@@ -243,11 +277,11 @@ void classic_preservation_evidence() {
           !alternate.independent_aux_heat_known && !alternate.target_humidity_known);
     CHECK(alternate.comfort_mode_known);
     Bytes frame{0x55};
-    // A0 does not report the target humidity, Follow Me, independent heater,
-    // or Fahrenheit fields that a complete 0x40 command would overwrite.
-    CHECK(!ac_set_state_command(alternate,patch,1,frame) && frame==Bytes{0x55});
+    // A0-only devices use the same outgoing defaults as the reference;
+    // absent humidity/Follow Me/heater/Fahrenheit remain unknown telemetry.
+    CHECK(ac_set_state_command(alternate,patch,1,frame));
     State after=alternate;after.setpoint_c=22;
-    CHECK(!ac_control_confirmed(alternate,after,patch));
+    CHECK(ac_control_confirmed(alternate,after,patch));
 
     const auto c0=response(classic_body());
     State complete;
@@ -264,7 +298,7 @@ void classic_preservation_evidence() {
                           &State::independent_aux_heat_known,&State::target_humidity_known,
                           &State::comfort_mode_known}) {
         State incomplete=complete;incomplete.*field=false;
-        CHECK(!ac_set_state_command(incomplete,patch,1,frame));
+        CHECK(ac_set_state_command(incomplete,patch,1,frame));
         after=incomplete;after.setpoint_c=22;
         CHECK(!ac_control_confirmed(complete,after,patch));
     }
@@ -279,11 +313,12 @@ void classic_preservation_evidence() {
     CHECK(short_state.fahrenheit_known && short_state.follow_me_known &&
           short_state.independent_aux_heat_known && !short_state.target_humidity_known);
     patch.changed|=ControlFreezeProtection;patch.freeze_protection=false;
-    CHECK(!ac_set_state_command(short_state,patch,1,frame));
+    CHECK(ac_set_state_command(short_state,patch,1,frame));
     const auto unsupported=response({0xb5,1,0x13,2,1,0});
     CHECK(ingest_ac_response(unsupported.data(),unsupported.size(),short_state)==ResponseKind::Capabilities);
     patch.changed=ControlTemperature;
-    CHECK(!ac_set_state_command(short_state,patch,1,frame));
+    CHECK(ac_set_state_command(short_state,patch,1,frame));
+    CHECK(!short_state.target_humidity_known && !short_state.comfort_mode_known);
 
     auto ambiguous_body=classic_body();ambiguous_body[8]=0x40;
     const auto ambiguous=response(ambiguous_body);
@@ -317,7 +352,7 @@ void absolute_display_requires_property_evidence() {
 }
 void classic_comfort_tail_preservation() {
     // C0 can include target humidity and frost while ending before comfort
-    // byte 22. A default false must not become an observed preset value.
+    // byte 22. Reference wire defaults must not become observed preset values.
     const auto short_tail=response(classic_body(false,22));
     State incomplete;
     CHECK(ingest_ac_response(short_tail.data(),short_tail.size(),incomplete)==ResponseKind::BasicState);
@@ -325,19 +360,19 @@ void classic_comfort_tail_preservation() {
     CHECK(!incomplete.comfort_mode_known);
     ControlPatch patch;patch.changed=ControlTemperature;patch.setpoint_c=22;
     Bytes frame{0x55};
-    CHECK(!ac_set_state_command(incomplete,patch,1,frame) && frame==Bytes{0x55});
+    CHECK(ac_set_state_command(incomplete,patch,1,frame));
+    CHECK(!incomplete.comfort_mode_known && !(frame[32]&1));
     State after=incomplete;after.setpoint_c=22;
-    CHECK(!ac_control_confirmed(incomplete,after,patch));
+    CHECK(ac_control_confirmed(incomplete,after,patch));
 
     const auto full=response(classic_body());
     State complete;
     CHECK(ingest_ac_response(full.data(),full.size(),complete)==ResponseKind::BasicState);
     CHECK(ac_set_state_command(complete,patch,1,frame));
     CHECK(!ac_control_confirmed(complete,after,patch));
-    // Other presets still require an observation of the state they clear,
-    // consistently with the unknown frost preservation policy.
+    // Presets use the same reference defaults for absent fields.
     patch={};patch.changed=ControlEco;patch.eco=true;
-    CHECK(!ac_set_state_command(incomplete,patch,1,frame));
+    CHECK(ac_set_state_command(incomplete,patch,1,frame));
 
     const auto property=response({0xb1,1,0x17,0,0,1,0});
     CHECK(ingest_ac_response(property.data(),property.size(),incomplete)==ResponseKind::Auxiliary);
@@ -376,12 +411,13 @@ void preset_and_dry_transitions() {
     patch.eco=false;
     CHECK(valid_ac_control_patch(before,patch));
 
-    // Selecting another preset does not turn an unknown frost bit into an
-    // observation. The caller can explicitly resolve the bit in the patch.
+    // Selecting another preset defaults unknown frost off on the wire without
+    // turning it into an observed measurement.
     before.freeze_protection_known=false;
     patch={};patch.changed=ControlEco;patch.eco=true;
     Bytes frame;
-    CHECK(!ac_set_state_command(before,patch,2,frame));
+    CHECK(ac_set_state_command(before,patch,2,frame));
+    CHECK(!before.freeze_protection_known);
     patch.changed|=ControlFreezeProtection;patch.freeze_protection=false;
     CHECK(ac_set_state_command(before,patch,2,frame));
     before=heat_state();
@@ -476,6 +512,7 @@ int main() {
     property_and_bb_controls();
     identified_temperature_layout_and_subtype();
     mode_change_checks_inherited_target();
+    upstream_short_c0_control();
     classic_preservation_evidence();
     absolute_display_requires_property_evidence();
     classic_comfort_tail_preservation();
