@@ -79,6 +79,14 @@ int main() {
     // A setpoint change is not a mode change and is never delayed.
     s=base();s.ms_since_mode_change=0;
     assert(choose_mitsubishi_control(s).step==ControlStep::Setpoint);
+    {
+        MitsubishiModeHistory history{};
+        const uint32_t first_observation=61u*60u*1000u;
+        history.observe(false,first_observation,true);
+        assert(history.since_change(first_observation)==0);
+        history.observe(false,first_observation+30000,true);
+        assert(history.since_change(first_observation+30000)==30000);
+    }
     // MitsubishiModeHistory (Codex post-merge review of #28).
     {
         constexpr uint32_t m=60u*1000u;

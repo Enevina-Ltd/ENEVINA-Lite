@@ -345,6 +345,25 @@ bool mode_control_available(const enevina::midea::State& state,uint8_t mode) {
     }
     return false;
 }
+bool add_automatic_heat(const enevina::midea::State& state,enevina::midea::ControlPatch& patch) {
+    using namespace enevina::midea;
+    patch.changed|=ControlMode|ControlPower;
+    patch.mode=4;patch.power=true;
+    const auto& caps=state.profile.capabilities;
+    if(state.mode!=3 || fan_supported(caps,102))return true;
+    // Leaving Dry normally selects Auto. When the model does not support
+    // Auto, prefer the already observed speed before falling back to one
+    // of the documented native speed values.
+    for(const uint8_t speed:{state.fan,uint8_t{40},uint8_t{60},uint8_t{80},
+                            uint8_t{20},uint8_t{100}}) {
+        if(fan_supported(caps,speed)) {
+            patch.changed|=ControlFan;
+            patch.fan=speed;
+            return true;
+        }
+    }
+    return false;
+}
 bool pilot_current_locked(uint32_t endpoint) {
     return pilot.enabled && pilot.config_revision==revision.load() &&
         pilot.endpoint_generation==endpoint && pilot.protocol==saved.protocol &&
@@ -661,10 +680,8 @@ enevina::cottage::ControlBlock cottage_midea_submit_automatic(
         } else {
             patch.changed=ControlTemperature;
             patch.setpoint_c=command.target_c;
-            if(command.step==ControlStep::SetHeat) {
-                patch.changed|=ControlPower|ControlMode;
-                patch.power=true;patch.mode=4;
-            }
+            if(command.step==ControlStep::SetHeat && !add_automatic_heat(observed,patch))
+                return ControlBlock::UnsupportedCommand;
         }
         if(control_request_error(observed,patch))return ControlBlock::UnsupportedCommand;
         const AutomaticWriteContext context{authorization_generation,config_generation,
@@ -1288,11 +1305,17 @@ void cottage_midea_service_worker(void*) {
                 last_result.store(static_cast<int>(result));
                 if(result==enevina::midea::ReadStatus::Ok) {
                     observed=sample;
+                    const auto sample_link=action?expected_link:read_link;
+                    const auto sample_endpoint=action?expected_endpoint:read_endpoint;
+                    const uint32_t sampled_at_ms=millis();
+                    if(observed_wifi_generation!=sample_link ||
+                       observed_endpoint_generation!=sample_endpoint)
+                        midea_mode_history.reset(sampled_at_ms);
                     if(!sample.power || sample.mode==4)
-                        midea_mode_history.observe(sample.power,millis());
-                    else midea_mode_history.reset(millis());
-                    observed_wifi_generation=action?expected_link:read_link;
-                    observed_endpoint_generation=action?expected_endpoint:read_endpoint;
+                        midea_mode_history.observe(sample.power,sampled_at_ms,true);
+                    else midea_mode_history.reset(sampled_at_ms);
+                    observed_wifi_generation=sample_link;
+                    observed_endpoint_generation=sample_endpoint;
                     last_success.store(time(nullptr));
                 } else last_success.store(0);
             }

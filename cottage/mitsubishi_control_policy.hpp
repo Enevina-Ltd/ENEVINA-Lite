@@ -30,10 +30,10 @@ public:
     static constexpr uint32_t observation_gap_ms=5u*60u*1000u;
     void reset(uint32_t now) { last_change_=now; seen_=-1; }
     void command_dispatched(uint32_t now) { last_change_=now; }
-    void observe(bool heating,uint32_t now) {
+    void observe(bool heating,uint32_t now,bool first_starts_dwell=false) {
         const int seen=heating?1:0;
-        if(seen_>=0 && (seen!=seen_ ||
-           static_cast<uint32_t>(now-last_observation_)>observation_gap_ms))
+        if(seen_<0?first_starts_dwell:
+           (seen!=seen_ || static_cast<uint32_t>(now-last_observation_)>observation_gap_ms))
             last_change_=now;
         seen_=seen;
         last_observation_=now;

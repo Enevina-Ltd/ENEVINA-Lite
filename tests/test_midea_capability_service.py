@@ -110,7 +110,14 @@ int main() {
     dry_exit.changed|=ControlFan;dry_exit.fan=40;
     assert(control_request_error(drying,dry_exit)==nullptr);
     dry_exit.fan=102;assert(!valid_ac_control_patch(drying,dry_exit));
+    ControlPatch start_heat{};start_heat.changed=ControlTemperature;start_heat.setpoint_c=22;
+    assert(add_automatic_heat(drying,start_heat));
+    assert(start_heat.power && start_heat.mode==4 && start_heat.fan==40);
+    assert(control_request_error(drying,start_heat)==nullptr);
+    drying.fan=102;
+    assert(add_automatic_heat(drying,start_heat) && start_heat.fan==40);
     report(dry_caps,AcFeature::FanLow,false);report(dry_caps,AcFeature::FanHigh,false);
+    assert(!add_automatic_heat(drying,start_heat));
     assert(!mode_control_available(drying,4));
 
     // The same service table parses HTTP boolean names and assigns patch bits.
