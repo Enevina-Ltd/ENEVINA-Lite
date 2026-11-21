@@ -23,7 +23,7 @@ assert.deepEqual(missing,[],'missing English translations');
 
 const ctx={document:{},state:{},uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,WZ};',ctx);
+vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,wzSavePump,WZ};',ctx);
 const A=ctx.api;
 
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
@@ -88,7 +88,11 @@ pm=pumpOf({cn105_sse_climate_received:true,cn105_sse_climate_age_s:null});assert
 pm=pumpOf({cn105_sse_climate_received:true,cn105_sse_climate_age_s:-5});assert(pm.detail.includes('ei tule'));
 pm=pumpOf({cn105_source_verified:true});assert.equal(pm.state,'ok');
 const midea=JSON.parse(JSON.stringify(good));midea.site.pump_adapter='midea_lan';
-assert.equal(A.wzSummary(midea).find(x=>x.key==='pump').state,'warn');                            // never a fake ok for Midea
+assert.equal(A.wzSummary(midea).find(x=>x.key==='pump').state,'warn');
+midea.midea={selected:true,configured:true,fresh:true,read_code:'ok',protocol:3};
+assert.equal(A.wzSummary(midea).find(x=>x.key==='pump').state,'ok');
+midea.midea.fresh=false;
+assert.equal(A.wzSummary(midea).find(x=>x.key==='pump').state,'warn');
 // a country change blanks the tariff draft (source guard on the handler below)
 assert.deepEqual({...A.wzBlankTariff()},{margin:'',tday:'',tnight:'',tax:'',vat:'',incl:'false'});
 const handler=header.split("sel.addEventListener('change'")[1].split('});')[0];
@@ -189,6 +193,52 @@ console.log('comfort step helpers ok');
 console.log('devices step helpers ok');
 
 (async()=>{
+  {
+    const writes=[];
+    ctx.fetch=async (url,req)=>{writes.push([url,Object.fromEntries(req.body)]);return {ok:true,json:async()=>({saved:true})};};
+    ctx.reloadSite=async()=>{};
+    ctx.URLSearchParams=URLSearchParams;
+    ctx.state.status={air:{config_token:'setup-test-token'}};
+    ctx.state.site={pump_adapter:'midea_lan'};
+    A.WZ.adapter='midea_lan';
+    ctx.fetchJSON=async()=>({selected:true,configured:true,fresh:false,read_code:'ok'});
+    await assert.rejects(A.wzSavePump(false),/tuore/);
+    assert.equal(writes.length,0);
+    await A.wzSavePump(true);
+    assert.deepEqual(writes[0],['/api/settings',{setup_step:'5',token:'setup-test-token'}]);
+    writes.length=0;
+    ctx.fetchJSON=async()=>({selected:true,configured:true,fresh:true,read_code:'ok',protocol:3});
+    A.WZ.mideaChanged=true;
+    await assert.rejects(A.wzSavePump(false),/tuore/);
+    assert.equal(writes.length,0);
+    A.WZ.mideaChanged=false;
+    await A.wzSavePump(false);
+    assert.deepEqual(writes[0],['/api/settings',{setup_step:'5',token:'setup-test-token'}]);
+  }
+  {
+    const calls=[];
+    ctx.document={getElementById:()=>null};
+    ctx.state.status={air:{mode:0,occupied_target_c:20,hold_target_c:12,drying_delta_c:3}};
+    ctx.airPostLocal=async (path,body)=>calls.push([path,{...body}]);
+    ctx.reloadStatus=async()=>{};
+    A.WZ.comfort={mode:3,target:'21.5',profile:'balanced'};
+    ctx.state.status.air.mode=2;
+    ctx.state.site={optimization:{profile:'balanced',comfort_min_c:10,comfort_max_c:14},region:{setup_step:5}};
+    const post=ctx.wzPost;
+    ctx.wzPost=async f=>calls.push(['/api/settings',{...f}]);
+    Object.assign(A.WZ.comfort,{min:'19',max:'23'});
+    await A.wzSaveComfort(false);
+    ctx.wzPost=post;
+    assert.deepEqual(calls,[
+      ['/api/settings',{optimization_profile:'balanced',comfort_min_c:'19',comfort_max_c:'23',
+        setup_step:'6',comfort_txn_mode:'3',comfort_txn_target:'21.5'}],
+      ['/api/air/config',{mode:'3',delta:'3',hold:'12',occupied:'21.5'}]
+    ]);
+    assert.equal(ctx.state.status.air.mode,3);
+    assert.equal(ctx.state.status.air.occupied_target_c,21.5);
+    assert.equal(ctx.state.status.air.hold_target_c,12);
+    delete A.WZ.comfort.mode;
+  }
   // P2 #57: failure of site NVS must never durably/actively change the target.
   // On air-write failure after site save, compensate old profile and band.
   const events=[];

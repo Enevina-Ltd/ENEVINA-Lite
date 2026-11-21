@@ -28,6 +28,8 @@ class AirPartialNvsRecovery(unittest.TestCase):
         endpoint=site.split('web.on("/api/settings",HTTP_POST',1)[1]
         self.assertLess(endpoint.index('prepare_comfort_transaction(comfort_tx)'),
                         endpoint.index('const bool site_saved=persist(next) && site_persisted_matches(next);'))
+        self.assertLess(endpoint.index('c23_prepare_comfort_base(air)'),
+                        endpoint.index('prepare_comfort_transaction(comfort_tx)'))
         self.assertIn('site_comfort_transaction_finish(desired)',SRC)
         self.assertIn('site_comfort_transaction_mark_site_committed()',site)
         self.assertIn('site_comfort_transaction_abort_verified(air)',site)
@@ -45,7 +47,6 @@ class AirPartialNvsRecovery(unittest.TestCase):
         self.assertIn('mode_comfort_limits_fit(site_settings_snapshot(),proposed)',SRC)
         self.assertIn('if(!mode_comfort_limits_fit(site,mode))return {};',CTRL)
         self.assertIn('COMFORT_RECOVERY_REQUIRED',SRC)
-        self.assertIn('tx.phase==static_cast<uint8_t>(ComfortPhase::Prepared)',header)
         self.assertIn('comfort_recovery_action(',SRC)
         self.assertIn('site_comfort_transaction_abort_verified(config)',SRC)
         self.assertIn('site_comfort_transaction_abort_verified(previous)',SRC)
@@ -60,7 +61,7 @@ class AirPartialNvsRecovery(unittest.TestCase):
         self.assertIn('site_comfort_transaction_pending()',SRC)
         self.assertIn('valid_comfort_txn',header)
         wizard=UI.split('async function wzSaveComfort(skip){',1)[1].split('function wzStepDevices(',1)[0]
-        self.assertIn('newFields.comfort_txn_target=String(r.target)',wizard)
+        self.assertIn('newFields.comfort_txn_target=String(target)',wizard)
         self.assertIn('newFields.comfort_txn_mode=String(mode)',wizard)
     def test_control_and_ui_refuse_unverified_ram_rollback(self):
         self.assertIn('c23_config_storage_verified()',CTRL)

@@ -606,6 +606,34 @@ static void comfort_journal_power_loss_matrix() {
     tx.phase=uint8_t(ComfortPhase::Prepared);
     assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
 }
+static void comfort_mode_change_survives_site_air_split() {
+    using Action=ComfortRecoveryAction;
+    ComfortTxn tx{};
+    tx.mode=2;tx.previous_mode_plus_one=4; // Occupied -> Hold
+    tx.target=12;tx.previous_target=13;
+    tx.min_c=10;tx.max_c=14;
+    tx.previous_min_c=19;tx.previous_max_c=23;
+    SiteSettings site{};
+    site.setup_step=6;site.comfort_min_c=10;site.comfort_max_c=14;
+    CottageModeConfig air{};
+    air.mode=CottageMode::Occupied;
+    air.occupied_target_c=21;air.hold_target_c=13;
+    assert(comfort_old_mode_matches(tx,air));
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+    tx.phase=uint8_t(ComfortPhase::SiteCommitted);
+    assert(comfort_recovery_action(tx,site,air,true)==Action::CompleteAirTarget);
+    // Power loss between separate mode and hold NVS writes.
+    air.mode=CottageMode::Hold;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::CompleteAirTarget);
+    comfort_apply_target(tx,air);
+    assert(comfort_mode_matches(tx,air));
+    assert(air.occupied_target_c==21);
+    air.hold_target_c=14;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+    // A distinct newer mode must take precedence over the old journal.
+    air.mode=CottageMode::Drying;
+    assert(comfort_recovery_action(tx,site,air,true)==Action::RestorePriorSite);
+}
 static void comfort_rollback_owner_target_is_not_replayed() {
     using Action=ComfortRecoveryAction;
     ComfortTxn tx{};
@@ -681,6 +709,7 @@ int main() {
     hard_comfort_limits_never_silently_disappear();
     old_ota_settings_require_real_image_confirmation();
     comfort_journal_power_loss_matrix();
+    comfort_mode_change_survives_site_air_split();
     comfort_rollback_owner_target_is_not_replayed();
     v3_provenance_after_rollback_then_v4_upgrade();
     nvs_snapshot_failure_does_not_commit_an_unknown_baseline();

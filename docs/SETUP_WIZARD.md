@@ -4,7 +4,8 @@
 end to end in a real browser against `tools/dev_device_simulator.py`. NOT yet run
 against a flashed ESP32-S3 and NOT tried on a real phone.** Wi-Fi onboarding
 (phase 1, `/setup`, see `ONBOARDING_WIFI_FIRST_20261118.md`) is unchanged and runs
-first; this wizard is phase 2 and opens on the home LAN.
+first. This wizard is phase 2 and opens on the home LAN. The Midea connection
+and operating-mode changes below have Node and firmware-build evidence.
 
 ## Behaviour
 
@@ -14,9 +15,10 @@ first; this wizard is phase 2 and opens on the home LAN.
 | 2 Location | `city`, `fmi_latlon` | City search with suggestions (`/api/geocode`, ≥3 characters, debounced, polls while the device worker runs). Manual `lat, lon` with dot decimals; invalid text blocks *Continue* instead of silently keeping an old location. Skippable. |
 | 3 Market area | `price_zone` | Labels like `Sweden – Stockholm (SE3)` / `Ruotsi – Tukholma (SE3)`. Required, no default for multi-zone countries. |
 | 4 Contract | tariff keys, `tariff_confirmed` | Amounts in the zone currency's minor unit (snt / öre / øre / gr). Nothing is pre-filled with invented values; *Skip* leaves the contract marked unconfirmed. |
-| 5 Heat pump | `pump_adapter`, `cn105_url` | Only adapters the firmware marks selectable, with their maturity label. No command is sent; control stays a separate, explicit opt-in. Midea is finished in its existing Settings card. |
-| 6 Sensors and meter | `shelly_url` | Shows the bound RuuviTag; binding stays in the RuuviTag card. Warns that the meter must measure the pump only. |
-| 7 Summary | `setup_complete`, `setup_step` | Live checklist: ok / needs attention / not set / optional, with the real reason (e.g. price service error codes). The dashboard opens even if items remain. |
+| 5 Heat pump | `pump_adapter`, `cn105_url`, local Midea credentials | Select the connection. For Midea, discover a compatible appliance or enter its address and device ID. V2 uses local discovery details. V3 also needs the device's existing local token and key. Save and verify a fresh state read before continuing. |
+| 6 Temperature and optimization | Operating mode, room target, comfort limits and profile | Choose the operating mode, room target and profile on this screen. Continuing saves the mode, target, and comfort limits together using the durable Comfort journal. |
+| 7 Sensors and meter | RuuviTag binding, `shelly_url`, meter scope | Scan for sensors or enter the details manually. Confirm whether the optional meter measures the heat pump. |
+| 8 Summary | `setup_complete`, `setup_step` | Live checklist: ok / needs attention / not set / optional, with the real reason (e.g. price service error codes). The dashboard opens even if items remain. |
 
 * Every step persists `setup_step` on the device, so closing the tab or reloading
   resumes where the owner left off; once `setup_complete` is true a reload never
@@ -32,7 +34,8 @@ first; this wizard is phase 2 and opens on the home LAN.
 ## Evidence
 
 * `node tests/test_setup_wizard.js`: coordinates, tariff parsing, zone labels,
-  resume point and the honest summary rules (125 literals checked).
+  resume point, fresh Midea state, unsaved connection drafts, operating-mode
+  selection and the summary rules.
 * Browser run (Chromium pane, 375 px phone and desktop, day and night theme) on the
   simulator: Finland→Sweden→Malmö search→SE4→SEK tariff→Mitsubishi→summary→finish,
   reload resume, reload after completion, Estonia single-zone, invalid coordinates.
@@ -44,9 +47,7 @@ first; this wizard is phase 2 and opens on the home LAN.
 
 * No physical device or phone test; the device-side `/api/geocode` worker and TLS
   to the geocoder have never run on hardware.
-* RuuviTag scanning/naming and Shelly/Midea discovery are **not** in the wizard:
-  it points to the existing Settings cards. Lists of discovered devices remain open.
-* Comfort / balanced / saving profile and comfort temperatures are **not** asked:
-  the optimizer has no such profiles yet, and a button without effect would be
-  dishonest.
+* Midea discovery and the new operating-mode step still need a physical ESP32-S3
+  and phone browser test. The Midea connection test performs a read. Automatic
+  control remains an explicit choice in Settings.
 * OpenStreetMap attribution for city search still has to be added before release.
