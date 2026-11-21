@@ -23,7 +23,7 @@ assert.deepEqual(missing,[],'missing English translations');
 
 const ctx={document:{},state:{},uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,wzSavePump,roomTempFields,WZ};',ctx);
+vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,wzSavePump,roomTempFields,saveRoomTemp,WZ};',ctx);
 const A=ctx.api;
 
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
@@ -204,6 +204,17 @@ console.log('comfort step helpers ok');
 console.log('devices step helpers ok');
 
 (async()=>{
+  {
+    ctx.state.status={air:{},room_temperature_source:'ruuvi',room_temperature_correction_c:0};
+    const saved=[];
+    ctx.airPostLocal=async (path,fields)=>saved.push([path,{...fields}]);
+    await A.saveRoomTemp({source:'pump',offset:'-0.75',pending:true});
+    await A.saveRoomTemp({offset:'0.25',pending:true});
+    assert.deepEqual(saved,[
+      ['/api/temperature-source',{source:'pump',correction_c:'-0.75'}],
+      ['/api/temperature-source',{source:'pump',correction_c:'0.25'}]
+    ],'editing only the correction uses the source saved in the wizard');
+  }
   {
     const writes=[];
     ctx.fetch=async (url,req)=>{writes.push([url,Object.fromEntries(req.body)]);return {ok:true,json:async()=>({saved:true})};};

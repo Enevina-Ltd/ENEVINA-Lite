@@ -843,14 +843,27 @@ function roomTempFields(source,offset){
     throw Error(WT('Korjauksen tulee olla −5…+5 °C, enintään kaksi desimaalia.'));
   return {source,correction_c:value.toFixed(2)};
 }
+let refreshRoomTempSettings=null;
 async function saveRoomTemp(draft){
   const status=state.status||{};
   const fields=roomTempFields(draft.source||status.room_temperature_source||'ruuvi',
     draft.offset??String(status.room_temperature_correction_c??0));
-  // Preserve any input edit made while the request was in flight.
-  const edit=draft.revision;
+  const sourceEdit=draft.source,offsetEdit=draft.offset;
   await airPostLocal('/api/temperature-source',fields);
-  if(draft.revision===edit)draft.pending=false;
+  if(draft.source===sourceEdit)delete draft.source;
+  if(draft.offset===offsetEdit)delete draft.offset;
+  draft.pending=draft.source!==undefined || draft.offset!==undefined;
+  // The response confirms durable NVS. Keep an older in-flight status GET
+  // from restoring the previous source before the other form sees this save.
+  state.statusRequestSequence=(state.statusRequestSequence||0)+1;
+  const current=state.status||{};
+  const correction=Number(fields.correction_c);
+  const changed=current.room_temperature_source!==fields.source ||
+    current.room_temperature_correction_c!==correction;
+  state.status={...current,room_temperature_source:fields.source,
+    room_temperature_correction_c:correction,
+    room_temperature_c:changed?null:current.room_temperature_c};
+  if(refreshRoomTempSettings)refreshRoomTempSettings(state.status);
 }
 function roomTempForm(body,scope,draft){
   const id='room-temp-'+scope;
@@ -862,22 +875,24 @@ function roomTempForm(body,scope,draft){
   const offset=wzEl('input',{id:id+'-offset',inputmode:'decimal',
     value:draft.offset??String(status.room_temperature_correction_c??0)});
   const feedback=wzEl('p',{role:'status',class:'muted tiny'});
-  const changed=()=>{
-    draft.source=source.value;
-    draft.offset=offset.value;
-    draft.pending=true;
-    draft.revision=(draft.revision||0)+1;
-    feedback.textContent='';
+  source.addEventListener('change',()=>{
+    draft.source=source.value;draft.pending=true;feedback.textContent='';
+  });
+  offset.addEventListener('input',()=>{
+    draft.offset=offset.value;draft.pending=true;feedback.textContent='';
+  });
+  const refresh=latest=>{
+    if(draft.source===undefined)source.value=latest.room_temperature_source||'ruuvi';
+    if(draft.offset===undefined)offset.value=String(latest.room_temperature_correction_c??0);
   };
-  source.addEventListener('change',changed);
-  offset.addEventListener('input',changed);
   const submit=wzEl('button',{type:'button',on:{click:async()=>{
     if(scope==='wizard'&&WZ.busy)return;
     if(scope==='wizard')WZ.busy=true;
     submit.disabled=true;
     try{
       await saveRoomTemp(draft);
-      feedback.textContent=WT('Tallennettu.');
+      refresh(state.status);
+      if(!draft.pending)feedback.textContent=WT('Tallennettu.');
       await reloadStatus();
     }catch(error){feedback.textContent=translateFi(error.message);}
     finally {
@@ -891,6 +906,7 @@ function roomTempForm(body,scope,draft){
       wzEl('label',{class:'field','for':id+'-offset'},WT('Mittauskorjaus (°C)'),offset),submit),
     wzEl('p',{class:'muted tiny'},WT('Pumpun anturi mittaa laitteen lähellä. Voit verrata lukemaa huoneen mittariin ja lisätä enintään ±5 °C:n korjauksen.')),
     feedback);
+  return refresh;
 }
 function wzStepComfort(body){
   const air=(state.status&&state.status.air)||{};
@@ -2116,6 +2132,7 @@ function showStatus(){
   text('price-spot-heading','Spot '+priceDisplayMinorUnit()+'/kWh');
   text('price-total-heading','Kokonaishinta '+priceDisplayMinorUnit()+'/kWh');
   text('price-area-chip','Nord Pool · '+(s.price_area||'—')+' · '+priceDisplayCurrency());
+  if(refreshRoomTempSettings)refreshRoomTempSettings(s);
   const room=number(s.room_temperature_c);
   text('room-temperature-value',room===null?'—':
     fmt(room,2)+' °C · '+(s.room_temperature_source==='pump'?translateFi('Pumpun oma anturi'):'RuuviTag'));
@@ -3065,7 +3082,7 @@ async function initialRefresh(){await reloadStatus();await reloadPrices();await 
     roomSettings.append(wzEl('h2',{},WT('Huonelämpötilan lähde')),
       wzEl('div',{class:'statusgrid'},wzEl('span',{},WT('Ohjauksen huonelämpötila')),
         wzEl('span',{id:'room-temperature-value'})));
-    roomTempForm(roomSettings,'settings',{});
+    refreshRoomTempSettings=roomTempForm(roomSettings,'settings',{});
     if(state.status)showStatus();
     translateDashboard();
   }
