@@ -23,7 +23,7 @@ assert.deepEqual(missing,[],'missing English translations');
 
 const ctx={document:{},state:{},uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,wzSavePump,wzSaveMode,WZ};',ctx);
+vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,wzSavePump,WZ};',ctx);
 const A=ctx.api;
 
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
@@ -222,8 +222,18 @@ console.log('devices step helpers ok');
     ctx.airPostLocal=async (path,body)=>calls.push([path,{...body}]);
     ctx.reloadStatus=async()=>{};
     A.WZ.comfort={mode:3,target:'21.5',profile:'balanced'};
-    await A.wzSaveMode();
-    assert.deepEqual(calls,[['/api/air/config',{mode:'3',hold:'12',delta:'3',occupied:'21.5'}]]);
+    ctx.state.status.air.mode=2;
+    ctx.state.site={optimization:{profile:'balanced',comfort_min_c:10,comfort_max_c:14},region:{setup_step:5}};
+    const post=ctx.wzPost;
+    ctx.wzPost=async f=>calls.push(['/api/settings',{...f}]);
+    Object.assign(A.WZ.comfort,{min:'19',max:'23'});
+    await A.wzSaveComfort(false);
+    ctx.wzPost=post;
+    assert.deepEqual(calls,[
+      ['/api/settings',{optimization_profile:'balanced',comfort_min_c:'19',comfort_max_c:'23',
+        setup_step:'6',comfort_txn_mode:'3',comfort_txn_target:'21.5'}],
+      ['/api/air/config',{mode:'3',delta:'3',hold:'12',occupied:'21.5'}]
+    ]);
     assert.equal(ctx.state.status.air.mode,3);
     assert.equal(ctx.state.status.air.occupied_target_c,21.5);
     assert.equal(ctx.state.status.air.hold_target_c,12);

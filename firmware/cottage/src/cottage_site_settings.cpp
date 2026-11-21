@@ -688,7 +688,8 @@ void site_settings_register_routes(WebServer& web) {
             }
             const String mode_s=web.arg("comfort_txn_mode");
             const String target_s=web.arg("comfort_txn_target");
-            if((mode_s!="2"&&mode_s!="3")||target_s.length()>20 ||
+            if((mode_s!="0"&&mode_s!="1"&&mode_s!="2"&&mode_s!="3") ||
+               target_s.length()>20 ||
                next.setup_step!=6) {
                 web.send(400,"application/json","{\"saved\":false,\"error\":\"COMFORT_TXN\"}");
                 return;
@@ -699,13 +700,13 @@ void site_settings_register_routes(WebServer& web) {
             comfort_tx.profile=static_cast<uint8_t>(next.profile);
             comfort_tx.target=static_cast<float>(t);
             const auto existing_air=enevina::cottage::c23_mode_config();
+            if(comfort_tx.mode!=static_cast<uint8_t>(existing_air.mode))
+                comfort_tx.previous_mode_plus_one=static_cast<uint8_t>(existing_air.mode)+1;
             comfort_tx.previous_target=comfort_tx.mode==3?
                 existing_air.occupied_target_c:existing_air.hold_target_c;
             comfort_tx.min_c=static_cast<float>(next.comfort_min_c);
             comfort_tx.max_c=static_cast<float>(next.comfort_max_c);
-            const auto air=enevina::cottage::c23_mode_config();
-            if(end==target_s.c_str() || *end || !enevina::cottage::valid_comfort_txn(comfort_tx) ||
-               static_cast<uint8_t>(air.mode)!=comfort_tx.mode) {
+            if(end==target_s.c_str() || *end || !enevina::cottage::valid_comfort_txn(comfort_tx)) {
                 web.send(400,"application/json","{\"saved\":false,\"error\":\"COMFORT_TXN\"}");
                 return;
             }
@@ -717,8 +718,10 @@ void site_settings_register_routes(WebServer& web) {
                 air.occupied_target_c:air.hold_target_c;
         // Enforce what the UI labels HARD lower/upper comfort limits.
         // Never accept a band that the runtime would silently discard.
-        if((air.mode==enevina::cottage::CottageMode::Hold ||
-            air.mode==enevina::cottage::CottageMode::Occupied) &&
+        const auto prospective_mode=wants_txn?
+            static_cast<enevina::cottage::CottageMode>(comfort_tx.mode):air.mode;
+        if((prospective_mode==enevina::cottage::CottageMode::Hold ||
+            prospective_mode==enevina::cottage::CottageMode::Occupied) &&
            !enevina::cottage::comfort_limits_fit_target(
                 next.comfort_min_c,next.comfort_max_c,prospective_target)) {
             web.send(409,"application/json",
@@ -787,7 +790,8 @@ void site_settings_register_routes(WebServer& web) {
             comfort_tx.previous_target=comfort_tx.mode==3?
                 air.occupied_target_c:air.hold_target_c;
         }
-        if(wants_txn && !prepare_comfort_transaction(comfort_tx)) {
+        if(wants_txn && (!enevina::cottage::c23_prepare_comfort_base(air) ||
+                         !prepare_comfort_transaction(comfort_tx))) {
             web.send(503,"application/json","{\"saved\":false,\"error\":\"COMFORT_NVS\"}");
             return;
         }

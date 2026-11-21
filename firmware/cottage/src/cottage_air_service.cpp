@@ -616,6 +616,14 @@ uint32_t c23_config_generation() {
 bool c23_mode_config_is_durable(const CottageModeConfig& cfg) {
     return guard && persisted_mode_matches(cfg);
 }
+bool c23_prepare_comfort_base(const CottageModeConfig& cfg) {
+    if(!c23_config_storage_verified())return false;
+    if(persisted_mode_matches(cfg))return true;
+    // A fresh unit or an older image may have loaded defaults for missing
+    // keys. Make the unchanged predecessor recoverable before staging.
+    save_config();
+    return persisted_mode_matches(cfg);
+}
 bool c23_config_storage_verified() {
     if(!guard)return false;
     lock();const bool ok=config_storage_verified;unlock();
@@ -833,7 +841,8 @@ void c23_register_routes(WebServer& web) {
         } else {
             lock();occupied=config.occupied_target_c;unlock();
         }
-        CottageModeConfig proposed=c23_mode_config();
+        const CottageModeConfig persisted_before=c23_mode_config();
+        CottageModeConfig proposed=persisted_before;
         proposed.mode=static_cast<CottageMode>(mode_s.toInt());
         proposed.hold_target_c=hold;
         proposed.occupied_target_c=occupied;
@@ -848,7 +857,17 @@ void c23_register_routes(WebServer& web) {
                     "{\"saved\":false,\"error\":\"COMFORT_JOURNAL_UNVERIFIED\"}");
                 return;
             }
-            if(!comfort_mode_matches(tx,proposed)) {
+            if(comfort_mode_matches(tx,proposed)) {
+                const bool preserves_other_settings=
+                    std::fabs(proposed.drying_delta_c-persisted_before.drying_delta_c)<0.001 &&
+                    (tx.mode==2 || std::fabs(proposed.hold_target_c-persisted_before.hold_target_c)<0.001) &&
+                    (tx.mode==3 || std::fabs(proposed.occupied_target_c-persisted_before.occupied_target_c)<0.001);
+                if(!comfort_site_matches(tx,site_settings_snapshot()) || !preserves_other_settings) {
+                    web.send(409,"application/json",
+                        "{\"saved\":false,\"error\":\"COMFORT_RECOVERY_REQUIRED\"}");
+                    return;
+                }
+            } else {
                 const auto previous=c23_mode_config();
                 if(!persisted_mode_matches(previous) ||
                    !site_comfort_transaction_abort_verified(previous)) {

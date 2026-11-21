@@ -35,26 +35,29 @@ enum class ComfortPhase : uint8_t { Prepared=0, SiteCommitted=1 };
 struct ComfortTxn {
     uint32_t magic=0x43545831;   // CTX1, version 2
     uint16_t version=2;
-    uint8_t mode=2;             // Hold / Occupied
+    uint8_t mode=2;             // Desired CottageMode
     uint8_t profile=1;
     uint8_t phase=static_cast<uint8_t>(ComfortPhase::Prepared);
     uint8_t previous_profile=1;
     uint8_t previous_setup_step=5;
-    uint8_t reserved=0;
+    uint8_t previous_mode_plus_one=0; // Zero in existing target-only journals
     float target=12;
     float min_c=0,max_c=0;
     float previous_target=12;
     float previous_min_c=0,previous_max_c=0;
 };
 inline bool valid_comfort_txn(const ComfortTxn& t) {
-    if(t.magic!=0x43545831 || t.version!=2 || t.mode<2 || t.mode>3 ||
+    if(t.magic!=0x43545831 || t.version!=2 || t.mode>3 ||
        t.profile>2 || t.previous_profile>2 || t.previous_setup_step>9 ||
        t.phase>static_cast<uint8_t>(ComfortPhase::SiteCommitted) ||
-       t.reserved!=0 || !std::isfinite(t.target) ||
+       t.previous_mode_plus_one>4 || (t.mode<2 && t.previous_mode_plus_one==0) ||
+       !std::isfinite(t.target) ||
        !std::isfinite(t.previous_target) ||
-       !comfort_limits_fit_target(t.min_c,t.max_c,t.target) ||
+       !(t.mode>=2?comfort_limits_fit_target(t.min_c,t.max_c,t.target):
+                    valid_comfort_limits(t.min_c,t.max_c)) ||
        !valid_comfort_limits(t.previous_min_c,t.previous_max_c))return false;
-    return t.mode==2 ?
+    if(t.mode<2 && std::fabs(t.target-t.previous_target)>=0.001)return false;
+    return t.mode!=3 ?
         t.target>=5&&t.target<=24&&
         t.previous_target>=5&&t.previous_target<=24 :
         t.target>=16&&t.target<=26&&
@@ -83,7 +86,9 @@ inline bool comfort_mode_matches(const ComfortTxn& t,const CottageModeConfig& c)
     return std::fabs(current-t.target)<0.001;
 }
 inline bool comfort_old_mode_matches(const ComfortTxn& t,const CottageModeConfig& c) {
-    if(!valid_comfort_txn(t) || static_cast<uint8_t>(c.mode)!=t.mode)return false;
+    const uint8_t previous_mode=t.previous_mode_plus_one?
+        static_cast<uint8_t>(t.previous_mode_plus_one-1):t.mode;
+    if(!valid_comfort_txn(t) || static_cast<uint8_t>(c.mode)!=previous_mode)return false;
     const double current=t.mode==3?c.occupied_target_c:c.hold_target_c;
     return std::fabs(current-t.previous_target)<0.001;
 }
@@ -94,18 +99,22 @@ inline ComfortRecoveryAction comfort_recovery_action(const ComfortTxn& tx,
     const SiteSettings& site,const CottageModeConfig& air,bool air_durable) {
     if(!air_durable || !valid_comfort_txn(tx))
         return ComfortRecoveryAction::Block;
-    if(tx.phase==static_cast<uint8_t>(ComfortPhase::Prepared) ||
-       !comfort_site_matches(tx,site) ||
-       static_cast<uint8_t>(air.mode)!=tx.mode ||
-       (!comfort_old_mode_matches(tx,air) &&
-        !comfort_mode_matches(tx,air)))
+    const uint8_t mode=static_cast<uint8_t>(air.mode);
+    const double target=tx.mode==3?air.occupied_target_c:air.hold_target_c;
+    // Mode and target are separate air keys. Either can already be durable.
+    const bool known_mode=mode==tx.mode ||
+        (tx.previous_mode_plus_one && mode+1==tx.previous_mode_plus_one);
+    const bool known_target=std::fabs(target-tx.previous_target)<0.001 ||
+        std::fabs(target-tx.target)<0.001;
+    if(!comfort_site_matches(tx,site) || !known_mode || !known_target)
         // A rollback-firmware target edit newer than both journal endpoints
         // belongs to the owner. Never replay the stale target over it.
         return ComfortRecoveryAction::RestorePriorSite;
     return ComfortRecoveryAction::CompleteAirTarget;
 }
 inline void comfort_apply_target(const ComfortTxn& t,CottageModeConfig& c) {
+    c.mode=static_cast<CottageMode>(t.mode);
     if(t.mode==3)c.occupied_target_c=t.target;
-    else c.hold_target_c=t.target;
+    else if(t.mode==2)c.hold_target_c=t.target;
 }
 }
