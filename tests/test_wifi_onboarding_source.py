@@ -201,9 +201,13 @@ class SiteSettingsSource(unittest.TestCase):
     def test_settings_change_cancels_inflight_command(self):
         post = MAIN.split("static bool cn105_bridge_post(", 1)[1].split(
             "static void cottage_control_tick()", 1)[0]
-        self.assertEqual(post.count("site_settings_generation()!=site_generation"), 2)
-        self.assertLess(post.index("site_settings_generation()!=site_generation"),
-                        post.index('req.POST("")'))
+        before, final = post.split("// Last cancellation point", 1)
+        self.assertIn("site_settings_generation()!=site_generation", before)
+        dispatch = final.split("const bool dispatch=", 1)[1].split(";", 1)[0]
+        self.assertIn("site_settings_generation()==site_generation", dispatch)
+        self.assertIn("cn105_command_link.current()", dispatch)
+        self.assertIn("control_armed_endpoint.load()==cn105_command_link.endpoint", dispatch)
+        self.assertLess(final.index("if(!dispatch)"), final.index('req.POST("")'))
 
     def test_endpoint_change_revokes_armed_control(self):
         # Codex P1 (PR #30): authorization is bound to the configured pump.
