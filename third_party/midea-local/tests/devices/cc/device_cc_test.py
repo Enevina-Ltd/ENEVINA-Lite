@@ -1,0 +1,742 @@
+"""Test CC Device."""
+
+from unittest.mock import patch
+
+import pytest
+
+from midealocal.const import ProtocolVersion
+from midealocal.devices.cc import DeviceAttributes, MideaCCDevice
+from midealocal.devices.cc.message import (
+    CCControlId,
+    CCFanSpeed3Level,
+    CCFanSpeed7Level,
+    CCFanSpeedFE,
+    MessageFEControl,
+    MessageQuery,
+    MessageSet,
+)
+from midealocal.message import MessageType
+from tests.base_classes.climate_test import DummyFanMode, DummyHVACMode, DummySwingMode
+
+
+def _build_message(message_type: MessageType, body: bytearray) -> bytes:
+    """Build a full CC response message."""
+    header = bytearray([0xAA, 0x00, 0xCC, 0x00, 0x00, 0x00, 0x00, 0x00])
+    header += bytearray([ProtocolVersion.V1, message_type])
+    return bytes(header + body + bytearray([0x00]))
+
+
+def _legacy_frame(
+    byte1: int = 0x88,
+    fan_speed: int = 0x10,
+    temp_int: int = 24,
+    temp_dot: int = 5,
+    indoor: int = 90,
+    byte13: int = 0x00,
+    byte14: int = 0x00,
+    byte20: int = 0x00,
+    message_type: MessageType = MessageType.query,
+) -> bytes:
+    """Build a legacy (non-0xFE) CC query response frame."""
+    body = bytearray(22)
+    body[0] = 0x01  # body_type X01
+    body[1] = byte1
+    body[2] = fan_speed
+    body[3] = temp_int
+    body[4] = indoor
+    body[13] = byte13
+    body[14] = byte14
+    body[19] = temp_dot
+    body[20] = byte20
+    return _build_message(message_type, body)
+
+
+def _fe_frame(fan_speed: int = 5) -> bytes:
+    """Build a 0xFE VRF panel CC query response frame."""
+    body = bytearray(70)
+    body[0] = 0x01  # body_type X01
+    body[1] = 0xFE  # format byte -> 0xFE path
+    body[8] = 1  # power on
+    body[11] = 128  # target temperature -> 128 / 2 - 40 = 24.0
+    body[12] = 0
+    body[13] = 235  # indoor temperature -> 235 / 10 = 23.5
+    body[31] = 0x02  # operational mode COOL -> index 4
+    body[34] = fan_speed
+    body[41] = 0x06  # vertical louver auto -> swing on
+    body[56] = 1  # eco on
+    body[60] = 1  # sleep on
+    return _build_message(MessageType.query, body)
+
+
+class TestMideaCCDevice:
+    """Test Midea CC Device."""
+
+    device: MideaCCDevice
+
+    @pytest.fixture(autouse=True)
+    def _setup_device(self) -> None:
+        """Midea CC Device setup."""
+        self.device = MideaCCDevice(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=6444,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="test_model",
+            subtype=1,
+        )
+
+    def test_initial_attributes(self) -> None:
+        """Test initial attributes."""
+        assert self.device.attributes[DeviceAttributes.power] is False
+        assert self.device.attributes[DeviceAttributes.mode] == 1
+        assert self.device.attributes[DeviceAttributes.target_temperature] == 26.0
+        assert self.device.attributes[DeviceAttributes.fan_speed] == 0x80
+        assert self.device.attributes[DeviceAttributes.fan_speed_level] is None
+        assert self.device.attributes[DeviceAttributes.indoor_temperature] is None
+        assert self.device.attributes[DeviceAttributes.aux_heating] is False
+        assert self.device.raw_fan_modes is not None
+        assert len(self.device.raw_fan_modes) == 0
+        assert self.device.target_temperature() == 26.0
+        assert self.device.current_temperature() is None
+        assert self.device.current_humidity() is None
+        self.device._attributes[DeviceAttributes.target_temperature] = None
+        assert self.device.target_temperature() is None
+
+    def test_power_on_power_off(self) -> None:
+        """Test power on and power off."""
+        with (
+            patch.object(self.device, "build_send") as mock_build_send,
+        ):
+            self.device.turn_on()
+            assert mock_build_send.call_count == 1
+            assert mock_build_send.call_args[0][0].power is True
+            mock_build_send.reset_mock()
+            self.device.turn_off()
+            assert mock_build_send.call_count == 1
+            assert mock_build_send.call_args[0][0].power is False
+
+    def test_preset_modes(self) -> None:
+        """Test the flag-style preset read/write for CC."""
+        assert list(self.device.preset_modes) == ["none", "sleep", "eco"]
+        assert self.device.preset_mode == "none"
+
+        self.device._attributes[DeviceAttributes.sleep_mode] = True
+        assert self.device.preset_mode == "sleep"
+
+        with patch.object(self.device, "set_attribute") as mock_set:
+            self.device.set_preset_mode("eco")
+        mock_set.assert_called_once_with(attr=DeviceAttributes.eco_mode, value=True)
+
+    def test_set_preset_mode_then_clear_immediately(self) -> None:
+        """An immediate set-then-clear reads back the just-set preset.
+
+        set_attribute() only builds/sends the wire command; it doesn't
+        update self._attributes, so preset_mode must be updated by
+        set_preset_mode() itself, or an immediate clear would see the
+        stale (pre-command) flags and skip sending the disable command.
+        """
+        with patch.object(self.device, "build_send"):
+            self.device.set_preset_mode("sleep")
+            assert self.device.preset_mode == "sleep"
+            assert self.device.get_attribute(DeviceAttributes.sleep_mode) is True
+
+            self.device.set_preset_mode("none")
+            assert self.device.preset_mode == "none"
+            assert self.device.get_attribute(DeviceAttributes.sleep_mode) is False
+
+    def test_build_query(self) -> None:
+        """Test build query."""
+        queries = self.device.build_query()
+        assert len(queries) == 1
+        assert isinstance(queries[0], MessageQuery)
+
+    def test_process_message_legacy_7level(self) -> None:
+        """Legacy frame without 3-level flag selects the 7-level fan table."""
+        new_status = self.device.process_message(
+            _legacy_frame(byte14=0x80),
+        )
+        assert self.device.attributes[DeviceAttributes.power] is True
+        assert self.device.attributes[DeviceAttributes.mode] == 4
+        assert self.device.attributes[DeviceAttributes.target_temperature] == 24.5
+        assert self.device.attributes[DeviceAttributes.indoor_temperature] == 25.0
+        assert self.device.attributes[DeviceAttributes.fan_speed] == "level_5"
+        assert self.device.attributes[DeviceAttributes.temperature_precision] == 1
+        assert self.device.attributes[DeviceAttributes.aux_heating] is False
+        assert new_status[DeviceAttributes.fan_speed.value] == "level_5"
+        assert self.device.raw_fan_modes == [m.name.lower() for m in CCFanSpeed7Level]
+        assert self.device.current_temperature() == 25.0
+        assert self.device.target_temperature() == 24.5
+
+    def test_process_message_legacy_3level_and_aux(self) -> None:
+        """3-level flag selects the 3-level table; aux heat status 1 sets aux."""
+        new_status = self.device.process_message(
+            _legacy_frame(fan_speed=0x08, byte13=0x40, byte14=0x20),
+        )
+        assert self.device.attributes[DeviceAttributes.fan_speed_level] is True
+        assert self.device.attributes[DeviceAttributes.fan_speed] == "medium"
+        assert self.device.attributes[DeviceAttributes.aux_heat_status] == 1
+        assert self.device.attributes[DeviceAttributes.aux_heating] is True
+        assert new_status[DeviceAttributes.aux_heating.value] is True
+        assert self.device.raw_fan_modes == [m.name.lower() for m in CCFanSpeed3Level]
+
+    def test_process_message_aux_heating_reset(self) -> None:
+        """Aux heating flips back to False when heat status clears."""
+        self.device.process_message(_legacy_frame(byte14=0x20))
+        assert self.device.attributes[DeviceAttributes.aux_heating] is True
+        new_status = self.device.process_message(_legacy_frame(byte14=0x00))
+        assert self.device.attributes[DeviceAttributes.aux_heating] is False
+        assert new_status[DeviceAttributes.aux_heating.value] is False
+
+    def test_process_message_unknown_fan_speed(self) -> None:
+        """A fan speed value not in the table maps to None."""
+        new_status = self.device.process_message(_legacy_frame(fan_speed=0x03))
+        assert self.device.attributes[DeviceAttributes.fan_speed] is None
+        assert new_status[DeviceAttributes.fan_speed.value] is None
+
+    def test_process_message_unparsed(self) -> None:
+        """A set/X01 frame is not parsed and yields no status."""
+        body = bytearray(22)
+        body[0] = 0x01
+        new_status = self.device.process_message(
+            _build_message(MessageType.set, body),
+        )
+        assert new_status == {}
+
+    def test_process_message_fe_format(self) -> None:
+        """0xFE frames switch the device to the VRF fan table and control path."""
+        new_status = self.device.process_message(_fe_frame(fan_speed=5))
+        assert self.device._is_fe_format is True
+        assert self.device.attributes[DeviceAttributes.power] is True
+        assert self.device.attributes[DeviceAttributes.mode] == 4
+        assert self.device.attributes[DeviceAttributes.target_temperature] == 24.0
+        assert self.device.attributes[DeviceAttributes.indoor_temperature] == 23.5
+        assert self.device.attributes[DeviceAttributes.fan_speed] == "level_5"
+        assert self.device.attributes[DeviceAttributes.swing] is True
+        assert new_status[DeviceAttributes.fan_speed.value] == "level_5"
+        assert self.device.raw_fan_modes == [m.name.lower() for m in CCFanSpeedFE]
+
+    def test_make_message_set_maps_fan_speed(self) -> None:
+        """make_message_set maps the fan speed name back to its raw key."""
+        self.device.process_message(_legacy_frame(fan_speed=0x08, byte13=0x40))
+        message = self.device.make_message_set()
+        assert isinstance(message, MessageSet)
+        assert message.fan_speed == 0x08
+        assert message.power is True
+        assert message.mode == 4
+        assert message.target_temperature == 24.5
+
+    def test_make_message_set_unknown_fan_speed_keeps_default(self) -> None:
+        """An unresolved fan speed (None) does not crash make_message_set."""
+        self.device.process_message(_legacy_frame(fan_speed=0x08, byte13=0x40))
+        self.device.process_message(_legacy_frame(fan_speed=0x03, byte13=0x40))
+        assert self.device.attributes[DeviceAttributes.fan_speed] is None
+        message = self.device.make_message_set()
+        assert message.fan_speed == 0x80
+
+    def test_set_attribute_power_without_fan_speeds(self) -> None:
+        """Without a known fan table the default raw fan speed is kept."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.power.value, True)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert isinstance(msg, MessageSet)
+            assert msg.power is True
+            assert msg.fan_speed == 0x80
+
+    def test_set_attribute_mode_forces_power(self) -> None:
+        """Setting the mode also powers the device on."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.mode.value, 3)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert msg.mode == 3
+            assert msg.power is True
+
+    def test_set_attribute_eco_mode_clears_sleep(self) -> None:
+        """Enabling eco mode clears sleep mode."""
+        self.device._attributes[DeviceAttributes.sleep_mode] = True
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.eco_mode.value, True)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert msg.eco_mode is True
+            assert msg.sleep_mode is False
+
+    def test_set_attribute_sleep_mode_clears_eco(self) -> None:
+        """Enabling sleep mode clears eco mode."""
+        self.device._attributes[DeviceAttributes.eco_mode] = True
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.sleep_mode.value, True)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert msg.sleep_mode is True
+            assert msg.eco_mode is False
+
+    def test_set_attribute_aux_heating_on(self) -> None:
+        """Enabling aux heating sends heat status 1."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.aux_heating.value, True)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert msg.aux_heat_status == 1
+
+    def test_set_attribute_aux_heating_off(self) -> None:
+        """Disabling aux heating sends heat status 2."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.aux_heating.value, False)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert msg.aux_heat_status == 2
+
+    def test_set_attribute_fan_speed_valid(self) -> None:
+        """A known fan speed name is mapped to its raw key."""
+        self.device.process_message(_legacy_frame(fan_speed=0x08, byte13=0x40))
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.fan_speed.value, "high")
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert msg.fan_speed == 0x40
+
+    def test_set_attribute_fan_speed_invalid_keeps_current(self) -> None:
+        """An unknown fan speed name still sends the current fan speed."""
+        self.device.process_message(_legacy_frame(fan_speed=0x08, byte13=0x40))
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.fan_speed.value, "Bogus")
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert msg.fan_speed == 0x08
+
+    def test_set_attribute_sensor_not_sent(self) -> None:
+        """Sensor attributes never build a set message."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(
+                DeviceAttributes.indoor_temperature.value,
+                25,
+            )
+            self.device.set_attribute(DeviceAttributes.fan_speed_level.value, True)
+            mock_send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("power", "hvac_mode", "mode"),
+        [
+            (False, "", 1),
+            (True, "auto", 5),
+            (True, "dry", 2),
+            (False, "off", 0),
+            (False, "invalid", 1),
+        ],
+    )
+    def test_set_target_temperature(
+        self,
+        power: bool,
+        hvac_mode: str,
+        mode: int,
+    ) -> None:
+        """Setting temperature with a mode powers on and applies the mode."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_raw_target_temperature(22.5, hvac_mode)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert isinstance(msg, MessageSet)
+            assert msg.target_temperature == 22.0
+            assert msg.power == power
+            assert msg.mode == mode
+
+    @pytest.mark.parametrize(
+        ("temperature", "expected_step_whole"),
+        [
+            (20.2, 20.0),
+            (20.3, 20.0),
+            (20.5, 20.0),
+            (20.7, 21.0),
+            (20.8, 21.0),
+        ],
+    )
+    def test_set_target_temperature_rounded(
+        self,
+        temperature: float,
+        expected_step_whole: float,
+    ) -> None:
+        """Test set target temperature to be rounded."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_target_temperature(temperature, "auto")
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert message.target_temperature == expected_step_whole
+            mock_build_send.reset_mock()
+
+    def test_set_target_temperature_without_mode(self) -> None:
+        """Setting temperature without a mode keeps the current power state."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_raw_target_temperature(21.0, None)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert msg.target_temperature == 21.0
+            assert msg.power is False
+
+    def test_hvac_modes(self) -> None:
+        """Test hvac_modes lists every generic HVAC mode name."""
+        assert self.device.raw_hvac_modes == [
+            "off",
+            "fan_only",
+            "dry",
+            "heat",
+            "cool",
+            "auto",
+        ]
+
+    @pytest.mark.parametrize(
+        ("power", "mode", "expected"),
+        [
+            (True, 5, "auto"),
+            (True, 2, "dry"),
+            (False, 1, "off"),
+            (True, 999, None),
+            (True, 0, None),
+            ("not_a_bool", 1, None),
+            (True, "not_an_int", None),
+        ],
+    )
+    def test_hvac_mode(
+        self,
+        power: bool | str,
+        mode: int | str,
+        expected: str | None,
+    ) -> None:
+        """Test hvac_mode across power/mode edge cases."""
+        self.device._attributes[DeviceAttributes.power] = power
+        self.device._attributes[DeviceAttributes.mode] = mode
+        assert self.device.raw_hvac_mode() == expected
+
+    def test_set_hvac_mode_unsupported(self) -> None:
+        """Test unsupported MideaHVACMode."""
+        with pytest.raises(ValueError, match="Unsupported hvac mode"):
+            self.device.set_hvac_mode(DummyHVACMode.INVALID)
+
+    def test_set_hvac_mode_off_powers_off(self) -> None:
+        """Test set_hvac_mode with off powers the device off."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_hvac_mode("off")
+            message = mock_build_send.call_args[0][0]
+            assert message.power is False
+
+    def test_set_hvac_mode_sets_mode_index(self) -> None:
+        """Test set_hvac_mode writes the matching protocol mode index."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_raw_hvac_mode("heat")
+            message = mock_build_send.call_args[0][0]
+            assert message.mode == 3
+
+    def test_set_hvac_mode_unsupported_value_raises(self) -> None:
+        """Test set_hvac_mode raises for a mode not in hvac_modes."""
+        with (
+            patch.object(self.device, "build_send") as mock_build_send,
+            pytest.raises(ValueError, match="Unsupported hvac mode"),
+        ):
+            self.device.set_raw_hvac_mode("not_a_real_mode")
+        mock_build_send.assert_not_called()
+
+    def test_fan_mode_before_and_after_speed_table_resolved(self) -> None:
+        """Test fan_mode is None until the fan speed table is known."""
+        assert self.device.raw_fan_mode is None
+        self.device.process_message(_legacy_frame(fan_speed=0x08))
+        assert (
+            self.device.raw_fan_mode
+            == self.device.attributes[DeviceAttributes.fan_speed]
+        )
+        assert isinstance(self.device.raw_fan_mode, str)
+
+    def test_set_fan_mode(self) -> None:
+        """Test set_fan_mode writes the fan_speed attribute."""
+        self.device.process_message(_legacy_frame(fan_speed=0x08))
+        fan_modes = self.device.raw_fan_modes
+        assert fan_modes is not None
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_raw_fan_mode(fan_modes[0])
+            mock_send.assert_called_once()
+
+    def test_set_fan_mode_unsupported(self) -> None:
+        """Test unsupported MideaFanMode."""
+        with pytest.raises(ValueError, match="Unsupported fan mode"):
+            self.device.set_fan_mode(DummyFanMode.INVALID)
+
+    def test_set_fan_mode_unresolved_table_raises(self) -> None:
+        """Test set_fan_mode raises before the fan speed table is known."""
+        assert self.device.raw_fan_modes is not None
+        assert len(self.device.raw_fan_modes) == 0
+        with (
+            patch.object(self.device, "build_send") as mock_send,
+            pytest.raises(ValueError, match="Unsupported fan mode"),
+        ):
+            self.device.set_raw_fan_mode("medium")
+        mock_send.assert_not_called()
+
+    def test_set_fan_mode_unsupported_value_raises(self) -> None:
+        """Test set_fan_mode raises for a mode not in the resolved table."""
+        self.device.process_message(_legacy_frame(fan_speed=0x08))
+        with (
+            patch.object(self.device, "build_send") as mock_send,
+            pytest.raises(ValueError, match="Unsupported fan mode"),
+        ):
+            self.device.set_raw_fan_mode("not_a_real_mode")
+        mock_send.assert_not_called()
+
+    def test_swing_mode(self) -> None:
+        """Test swing_mode is derived from the swing attribute."""
+        self.device._attributes[DeviceAttributes.swing] = False
+        assert self.device.raw_swing_mode == "off"
+        self.device._attributes[DeviceAttributes.swing] = True
+        assert self.device.raw_swing_mode == "on"
+
+    def test_set_swing_mode_unsupported(self) -> None:
+        """Test unsupported MideaSwingMode."""
+        with pytest.raises(ValueError, match="Unsupported swing mode"):
+            self.device.set_swing_mode(DummySwingMode.INVALID)
+
+    def test_swing_mode_invalid_type_returns_none(self) -> None:
+        """Test swing_mode returns None for an unexpected attribute type."""
+        self.device._attributes[DeviceAttributes.swing] = None
+        assert self.device.raw_swing_mode is None
+
+    def test_swing_modes(self) -> None:
+        """Test swing_modes lists off/on."""
+        assert self.device.raw_swing_modes == ["off", "on"]
+
+    def test_set_swing_mode(self) -> None:
+        """Test set_swing_mode writes the swing attribute."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_raw_swing_mode("on")
+            msg = mock_send.call_args[0][0]
+            assert msg.swing is True
+
+    def test_set_swing_mode_unsupported_value_raises(self) -> None:
+        """Test set_swing_mode raises for a mode not in swing_modes."""
+        with (
+            patch.object(self.device, "build_send") as mock_send,
+            pytest.raises(ValueError, match="Unsupported swing mode"),
+        ):
+            self.device.set_raw_swing_mode("auto")
+        mock_send.assert_not_called()
+
+    def test_temperature_step(self) -> None:
+        """Test temperature_step mirrors temperature_precision."""
+        self.device._attributes[DeviceAttributes.temperature_precision] = 1
+        assert self.device.temperature_step == 1.0
+
+    def test_temperature_step_invalid_type_returns_none(self) -> None:
+        """Test temperature_step returns 1.0 for an unexpected attribute type."""
+        self.device._attributes[DeviceAttributes.temperature_precision] = None
+        assert self.device.temperature_step == 1.0
+
+
+class TestMideaCCDeviceFEControl:
+    """Test Midea CC Device 0xFE VRF control path."""
+
+    device: MideaCCDevice
+
+    @pytest.fixture(autouse=True)
+    def _setup_device(self) -> None:
+        """Midea CC Device setup in 0xFE mode."""
+        self.device = MideaCCDevice(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=6444,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="test_model",
+            subtype=1,
+        )
+        self.device.process_message(_fe_frame(fan_speed=3))
+
+    def test_fe_temperature_value(self) -> None:
+        """Target temperatures are encoded as value * 2 + 80."""
+        assert self.device._fe_temperature_value(24.0) == 128
+        assert self.device._fe_temperature_value(17.5) == 115
+
+    @pytest.mark.parametrize(
+        ("power", "hvac_mode", "mode"),
+        [
+            (1, "auto", 5),
+            (1, "dry", 6),
+        ],
+    )
+    def test_set_target_temperature(
+        self,
+        power: int,
+        hvac_mode: str,
+        mode: int,
+    ) -> None:
+        """FE temperature set with mode sends power + mode + temperature."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_raw_target_temperature(24.0, hvac_mode)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert isinstance(msg, MessageFEControl)
+            assert msg._controls == [
+                (CCControlId.POWER, power),
+                (CCControlId.MODE, mode),
+                (CCControlId.TARGET_TEMPERATURE, 128),
+            ]
+
+    @pytest.mark.parametrize(
+        ("hvac_mode"),
+        [
+            (""),
+            ("invalid"),
+            ("off"),
+        ],
+    )
+    def test_set_target_temperature_hvac_none(
+        self,
+        hvac_mode: str,
+    ) -> None:
+        """FE temperature set with mode sends power + mode + temperature."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_raw_target_temperature(24.0, hvac_mode)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert isinstance(msg, MessageFEControl)
+            assert msg._controls == [
+                (CCControlId.TARGET_TEMPERATURE, 128),
+            ]
+
+    def test_set_target_temperature_without_mode(self) -> None:
+        """FE temperature set without mode sends only the temperature."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_raw_target_temperature(24.0, None)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert msg._controls == [(CCControlId.TARGET_TEMPERATURE, 128)]
+
+    def test_set_attribute_power(self) -> None:
+        """FE power set sends a single POWER control."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.power.value, True)
+            self.device.set_attribute(DeviceAttributes.power.value, False)
+            assert mock_send.call_count == 2
+            assert mock_send.call_args_list[0][0][0]._controls == [
+                (CCControlId.POWER, 1),
+            ]
+            assert mock_send.call_args_list[1][0][0]._controls == [
+                (CCControlId.POWER, 0),
+            ]
+
+    def test_set_attribute_mode(self) -> None:
+        """FE mode set sends power on plus the mapped FE mode value."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.mode.value, 3)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert msg._controls == [
+                (CCControlId.POWER, 1),
+                (CCControlId.MODE, 0x03),
+            ]
+
+    def test_set_attribute_mode_unknown_defaults_to_cool(self) -> None:
+        """Unknown mode indexes fall back to the FE cool mode value."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.mode.value, 9)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert msg._controls == [
+                (CCControlId.POWER, 1),
+                (CCControlId.MODE, 0x02),
+            ]
+
+    def test_set_attribute_fan_speed_valid(self) -> None:
+        """FE fan speed name maps to the numeric FE speed value."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.fan_speed.value, "level_3")
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert msg._controls == [(CCControlId.FAN_SPEED, 3)]
+
+    def test_set_attribute_fan_speed_invalid_not_sent(self) -> None:
+        """Unknown FE fan speed names do not send anything."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.fan_speed.value, "Bogus")
+            mock_send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("attr", "value", "expected_controls"),
+        [
+            pytest.param(
+                DeviceAttributes.eco_mode,
+                True,
+                [(CCControlId.ECO, 1), (CCControlId.SLEEP, 0)],
+                id="eco-on-clears-sleep",
+            ),
+            pytest.param(
+                DeviceAttributes.eco_mode,
+                False,
+                [(CCControlId.ECO, 0)],
+                id="eco-off",
+            ),
+            pytest.param(
+                DeviceAttributes.sleep_mode,
+                True,
+                [(CCControlId.SLEEP, 1), (CCControlId.ECO, 0)],
+                id="sleep-on-clears-eco",
+            ),
+            pytest.param(
+                DeviceAttributes.sleep_mode,
+                False,
+                [(CCControlId.SLEEP, 0)],
+                id="sleep-off",
+            ),
+        ],
+    )
+    def test_set_attribute_eco_and_sleep(
+        self,
+        attr: DeviceAttributes,
+        value: bool,
+        expected_controls: list[tuple[CCControlId, int]],
+    ) -> None:
+        """FE eco/sleep controls carry the value and clear the other on activation."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(attr.value, value)
+            assert mock_send.call_args[0][0]._controls == expected_controls
+
+    def test_set_attribute_eco_and_sleep_are_mutually_exclusive(self) -> None:
+        """Activating eco/sleep clears the other flag in the same control frame.
+
+        Legacy C3 serialization does this in make_message_set(); the 0xFE
+        control path must match it so a sleep->eco transition (or the
+        reverse) doesn't leave both flags active on the panel.
+        """
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.sleep_mode.value, True)
+            self.device.set_attribute(DeviceAttributes.eco_mode.value, True)
+            assert mock_send.call_count == 2
+            assert mock_send.call_args_list[0][0][0]._controls == [
+                (CCControlId.SLEEP, 1),
+                (CCControlId.ECO, 0),
+            ]
+            assert mock_send.call_args_list[1][0][0]._controls == [
+                (CCControlId.ECO, 1),
+                (CCControlId.SLEEP, 0),
+            ]
+
+    def test_set_attribute_swing(self) -> None:
+        """FE swing on sends the auto louver angle, off sends zero."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.swing.value, True)
+            self.device.set_attribute(DeviceAttributes.swing.value, False)
+            assert mock_send.call_count == 2
+            assert mock_send.call_args_list[0][0][0]._controls == [
+                (CCControlId.SWING, 0x06),
+            ]
+            assert mock_send.call_args_list[1][0][0]._controls == [
+                (CCControlId.SWING, 0x00),
+            ]
+
+    def test_set_attribute_unsupported_not_sent(self) -> None:
+        """Attributes without an FE control id are ignored."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.night_light.value, True)
+            mock_send.assert_not_called()
