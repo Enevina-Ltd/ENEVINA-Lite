@@ -867,9 +867,10 @@ async function wzSavePump(skip){
     await wzPost({setup_step:'5'});return;
   }
   if(WZ.adapter==='gree_ewpe_lan'){
-    const s=await fetchJSON('/api/gree/status');
+    const s=await fetchJSON('/api/gree/status?draft=true');
     if(greeDraft || greeBusy || s.configured!==true || s.fresh!==true)
       throw Error(WT('Yhdistä Gree ja odota tuoretta tilanlukua ennen jatkamista.'));
+    if(s.draft_id)await greeCommit(s.draft_id);
     await wzPost({pump_adapter:'gree_ewpe_lan',setup_step:'5'});return;
   }
   const f={pump_adapter:WZ.adapter,setup_step:'5'};
@@ -3191,7 +3192,8 @@ const greeTexts={
   store_failed:'Gree-yhteyden tallennus epäonnistui.'
 };
 function showGree(s){
-  text('gree-status',greeTexts[s.result]||(s.fresh?'Gree-yhteys toimii.':'Gree-yhteys odottaa lukutestiä.'));
+  const result=!s.fresh&&(s.result==='ok'||s.result==='paired')?'':s.result;
+  text('gree-status',greeTexts[result]||(s.fresh?'Gree-yhteys toimii.':'Gree-yhteys odottaa lukutestiä.'));
   text('gree-mode',s.fresh?(s.power?(s.mode===4?'Lämmitys':'Tila '+s.mode):'Pois päältä'):'—');
   text('gree-target',s.fresh&&Number.isFinite(s.target_c)?fmt(s.target_c,0)+' °C':'—');
   text('gree-temperature',s.fresh&&Number.isFinite(s.indoor_c)?fmt(s.indoor_c,0)+' °C':'—');
@@ -3216,16 +3218,19 @@ function showGree(s){
     menu.hidden=!list.length;
   }
 }
+function greeDraftView(){
+  return WZ.open&&WZ.step===4&&WZ.adapter==='gree_ewpe_lan';
+}
 function greePanelActive(){
-  return state.site?.pump_adapter==='gree_ewpe_lan' ||
-    (WZ.open&&WZ.step===4&&WZ.adapter==='gree_ewpe_lan');
+  return state.site?.pump_adapter==='gree_ewpe_lan'||greeDraftView();
 }
 async function reloadGree(){
   if(!greePanelActive()){greeStatus=null;return null;}
   const seq=++greeSequence;
   try {
-    const s=await fetchJSON('/api/gree/status');
-    if(seq!==greeSequence||!greePanelActive())return null;
+    const draft=greeDraftView();
+    const s=await fetchJSON('/api/gree/status'+(draft?'?draft=true':''));
+    if(seq!==greeSequence||!greePanelActive()||draft!==greeDraftView())return null;
     greeStatus=s;showGree(s);return s;
   } catch(e) {
     if(seq===greeSequence){greeStatus=null;text('gree-status','Gree-pumpulta ei saatu tuoretta tilaa.');}
@@ -3245,6 +3250,8 @@ $('gree-discovered').addEventListener('change',()=>{
 async function greeJob(action){
   if(greeBusy)return;
   greeBusy=true;
+  if(action==='pair')greeDraft=true;
+  const draft=greeDraftView();
   const fields=['gree-ip','gree-id','gree-cipher','gree-discovered','gree-scan','gree-pair','gree-test'];
   fields.forEach(id=>{$(id).disabled=true;});
   try {
@@ -3253,7 +3260,7 @@ async function greeJob(action){
     if(!token)throw Error('authorization');
     const r=await fetch('/api/gree/'+action,{method:'POST',
       headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body:new URLSearchParams({...params,token})});
+      body:new URLSearchParams({...params,token,draft:String(draft)})});
     const reply=await r.json();
     if(!r.ok||reply.queued!==true)throw Error(reply.error||'read_failed');
     for(let i=0;i<15;i++){
@@ -3266,6 +3273,16 @@ async function greeJob(action){
     text('gree-status','Gree-yhteys odottaa lukutestiä.');
   }catch(e){text('gree-status',greeTexts[e.message]||'Gree-yhteys odottaa lukutestiä.');}
   finally{greeBusy=false;fields.forEach(id=>{$(id).disabled=false;});}
+}
+async function greeCommit(id){
+  const token=state.status?.air?.config_token;
+  if(!token)throw Error(translateFi('Laite ei vastaa tai vahvistustunniste puuttuu.'));
+  const r=await fetch('/api/gree/commit',{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({token,draft_id:String(id)})});
+  const result=await r.json().catch(()=>({}));
+  if(!r.ok||result.saved!==true)
+    throw Error(translateFi(greeTexts[result.error]||'Gree-yhteyden tallennus epäonnistui.'));
 }
 $('gree-scan').addEventListener('click',()=>greeJob('discover'));
 $('gree-pair').addEventListener('click',()=>greeJob('pair'));

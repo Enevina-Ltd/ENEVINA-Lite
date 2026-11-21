@@ -55,17 +55,26 @@ struct Job {
     Work work=Work::None;
     Config proposed{};
     Link link{};
+    bool draft=false;
+};
+struct Draft {
+    Config config{};
+    Sample sample{};
+    uint32_t id=0;
 };
 struct State {
     Config saved{};
     uint32_t revision=0;
     Sample sample{};
+    Draft draft{};
+    uint32_t next_draft=0;
     std::array<Candidate,max_candidates> candidates{};
     size_t candidate_count=0;
     Link scan_link{};
     Job queued{};
     bool busy=false;
     const char* result="not_tested";
+    const char* draft_result="not_tested";
 };
 
 SemaphoreHandle_t guard=nullptr;
@@ -211,30 +220,34 @@ size_t scan(const Link& link,std::array<Candidate,max_candidates>& out) {
     return count;
 }
 
-void status(WebServer& web) {
+void status(WebServer& web,bool draft_view) {
     xSemaphoreTake(guard,portMAX_DELAY);
     const State s=state;
     xSemaphoreGive(guard);
-    const bool is_fresh=fresh(s.sample,s.revision);
+    const bool staged=draft_view && s.draft.id && s.draft.sample.link.current();
+    const auto& shown_config=staged?s.draft.config:s.saved;
+    const auto& sample=staged?s.draft.sample:s.sample;
+    const bool is_fresh=fresh(sample,staged?s.draft.id:s.revision);
     auto* root=cJSON_CreateObject();
     if(!root) {web.send(503,"application/json","{}");return;}
-    cJSON_AddBoolToObject(root,"configured",configured(s.saved));
+    cJSON_AddBoolToObject(root,"configured",configured(shown_config));
     cJSON_AddBoolToObject(root,"fresh",is_fresh);
+    if(staged)cJSON_AddNumberToObject(root,"draft_id",s.draft.id);
     cJSON_AddBoolToObject(root,"busy",s.busy || s.queued.work!=Work::None);
-    cJSON_AddStringToObject(root,"result",s.result);
-    if(configured(s.saved)) {
-        cJSON_AddStringToObject(root,"host",s.saved.host);
-        cJSON_AddStringToObject(root,"device",s.saved.device);
-        cJSON_AddNumberToObject(root,"cipher",static_cast<unsigned>(s.saved.cipher));
+    cJSON_AddStringToObject(root,"result",draft_view?s.draft_result:s.result);
+    if(configured(shown_config)) {
+        cJSON_AddStringToObject(root,"host",shown_config.host);
+        cJSON_AddStringToObject(root,"device",shown_config.device);
+        cJSON_AddNumberToObject(root,"cipher",static_cast<unsigned>(shown_config.cipher));
     }
     if(is_fresh) {
-        const auto& r=*s.sample.reading;
+        const auto& r=*sample.reading;
         cJSON_AddBoolToObject(root,"power",r.power);
         cJSON_AddNumberToObject(root,"mode",static_cast<unsigned>(r.mode));
         if(r.setpoint_c)cJSON_AddNumberToObject(root,"target_c",*r.setpoint_c);
         if(r.indoor_c)cJSON_AddNumberToObject(root,"indoor_c",*r.indoor_c);
         if(r.frost)cJSON_AddBoolToObject(root,"frost",*r.frost);
-        if(s.sample.utc>=1700000000)cJSON_AddNumberToObject(root,"read_utc",s.sample.utc);
+        if(sample.utc>=1700000000)cJSON_AddNumberToObject(root,"read_utc",sample.utc);
     }
     if(auto* found=cJSON_AddArrayToObject(root,"discovered");found && s.scan_link.current()) {
         for(size_t i=0;i<s.candidate_count;++i) {
@@ -266,7 +279,7 @@ bool web_ready(WebServer& web,bool write) {
 void enqueue(WebServer& web,Work work,Config proposed={}) {
     xSemaphoreTake(guard,portMAX_DELAY);
     const bool pending=state.busy || state.queued.work!=Work::None;
-    if(!pending)state.queued={work,proposed,active_link()};
+    if(!pending)state.queued={work,proposed,active_link(),web.arg("draft")=="true"};
     xSemaphoreGive(guard);
     web.send(pending?409:202,"application/json",pending?
         "{\"error\":\"busy\"}":"{\"queued\":true}");
@@ -289,7 +302,7 @@ void cottage_gree_register_routes(WebServer& web) {
     if(!guard)return;
     load_config();
     web.on("/api/gree/status",HTTP_GET,[&web](){
-        if(web_ready(web,false))status(web);
+        if(web_ready(web,false))status(web,web.arg("draft")=="true");
     });
     web.on("/api/gree/discover",HTTP_POST,[&web](){
         if(web_ready(web,true))enqueue(web,Work::Scan);
@@ -310,6 +323,25 @@ void cottage_gree_register_routes(WebServer& web) {
         strlcpy(proposed.host,ip.toString().c_str(),sizeof(proposed.host));
         strlcpy(proposed.device,device.c_str(),sizeof(proposed.device));
         enqueue(web,Work::Pair,proposed);
+    });
+    web.on("/api/gree/commit",HTTP_POST,[&web](){
+        if(!web_ready(web,true))return;
+        const String expected=web.arg("draft_id");
+        xSemaphoreTake(guard,portMAX_DELAY);
+        const bool matched=state.draft.id && expected==String(state.draft.id) &&
+            fresh(state.draft.sample,state.draft.id) &&
+            !state.busy && state.queued.work==Work::None;
+        const bool saved=matched && store_config(state.draft.config);
+        if(saved) {
+            state.saved=state.draft.config;
+            state.sample=state.draft.sample;
+            state.sample.config=++state.revision;
+            state.result="paired";
+            state.draft={};
+        }
+        xSemaphoreGive(guard);
+        web.send(saved?200:matched?500:409,"application/json",saved?
+            "{\"saved\":true}":matched?"{\"error\":\"store_failed\"}":"{\"error\":\"read_failed\"}");
     });
 }
 
@@ -351,7 +383,8 @@ void cottage_gree_worker(void*) {
         if(job.work==Work::None && selected && configured(state.saved) &&
            (millis()-last_poll>=poll_ms || last_wifi!=link.wifi || last_endpoint!=link.endpoint))
             job={Work::Read,{},link};
-        const Config old=state.saved;
+        const bool using_draft=job.draft && state.draft.id && state.draft.sample.link.current();
+        const Config old=using_draft?state.draft.config:state.saved;
         state.queued={};
         state.busy=job.work!=Work::None;
         xSemaphoreGive(guard);
@@ -396,16 +429,22 @@ void cottage_gree_worker(void*) {
                 state.candidate_count=count;
                 state.scan_link=job.link;
             } else if(job.work==Work::Pair && reading) {
-                if(store_config(candidate)) {
+                if(job.draft) {
+                    if(++state.next_draft==0)++state.next_draft;
+                    const uint32_t id=state.next_draft;
+                    state.draft={candidate,{reading,time(nullptr),millis(),job.link,id},id};
+                } else if(store_config(candidate)) {
                     state.saved=candidate;
-                    ++state.revision;
-                    state.sample={reading,time(nullptr),millis(),job.link,state.revision};
+                    state.sample={reading,time(nullptr),millis(),job.link,++state.revision};
+                    state.draft={};
                 } else result="store_failed";
+            } else if(job.work==Work::Read && using_draft) {
+                state.draft.sample={reading,time(nullptr),millis(),job.link,state.draft.id};
             } else if(job.work==Work::Read) {
                 state.sample={reading,time(nullptr),millis(),job.link,state.revision};
             }
-            state.result=result;
-        } else state.result="link_changed";
+        } else result="link_changed";
+        (job.draft?state.draft_result:state.result)=result;
         xSemaphoreGive(guard);
         if(job.work!=Work::Scan) {
             last_poll=millis();last_wifi=job.link.wifi;last_endpoint=job.link.endpoint;
