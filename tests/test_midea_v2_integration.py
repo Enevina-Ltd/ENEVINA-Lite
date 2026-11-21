@@ -69,7 +69,7 @@ class NativeMideaV2(unittest.TestCase):
 
     def test_dashboard_v2_needs_no_token_and_manual_control_is_explicit(self):
         for value in ("Midea-protokolla","V2 (ei tokenia)",
-                      "Midean automaattinen optimointiohjaus ei ole vielä käytössä; manuaalinen ohjaus löytyy Midea-asetuksista.",
+                      "Midean automaattiohjaus edellyttää hyväksyttyä mallikohtaista ohjauskoetta ja tuoretta tilanlukua.",
                       "V2-yhteys onnistui"):
             self.assertIn(value,LANG)
         self.assertIn("protocol==='3' ? $('midea-token').value.trim() : ''",UI)

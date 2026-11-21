@@ -114,6 +114,8 @@ static bool shelly_relay_on=false;
 static std::atomic<bool> control_armed{false};
 // Pump identity (CN105 URL/adapter) the current arming was given for.
 static std::atomic<uint32_t> control_armed_endpoint{0};
+static std::atomic<uint32_t> control_permission_generation{0};
+static std::atomic<uint32_t> control_armed_midea_revision{0};
 // Owner decision 18.11.2026: >= 30 min between HEAT<->OFF changes. Last change
 // = last mode command sent, last change observed via bridge GET, boot or
 // arming (unknown history -> wait). millis()-based, survives NTP jumps.
@@ -767,7 +769,7 @@ static ArbiterInput build_arbiter_input(int64_t now,const TemperatureSample& t) 
     in.mode_generation=observed_mode_generation;
     xSemaphoreGive(lock_data);
     const PumpView view=pump_view(cp,now,minutes);
-    in.pump_state_known=view.known;
+    in.pump_state_known=view.known && !cottage_midea_selected();
     in.pump_heat=view.heat;
     in.own_transition_confirmed=in.plan.has_plan &&
         mpc_confirmed_slot_utc.load()==in.plan.first_utc &&
@@ -889,15 +891,64 @@ static bool cn105_bridge_get(bool& heating,double& target) {
     }
     return false;
 }
+static enevina::PumpRoomState cn105_room_state() {
+    using namespace enevina;
+    PumpRoomState state{};
+    const auto endpoint=site_settings_endpoint_generation();
+    const auto link=cottage_wifi_link_generation();
+    bool heat=false;
+    double setpoint=0;
+    if(!cn105_bridge_get(heat,setpoint) || endpoint!=site_settings_endpoint_generation() ||
+       link!=cottage_wifi_link_generation())return state;
+    state.type=HeatPumpType::AirToAir;
+    state.protocol=PumpRoomProtocol::Cn105EspHome;
+    state.endpoint_generation=endpoint;
+    state.link_generation=link;
+    state.mode=heat?PumpRoomMode::Heat:PumpRoomMode::Off;
+    state.setpoint_c=setpoint;
+    state.heating=mitsubishi_heating_limits;
+    state.source=PumpStateSource::Gateway;
+    state.evidence.received_utc=control_last_bridge_read_utc.load();
+    return state;
+}
+
+void cottage_midea_automatic_cancel() {
+    control_armed.store(false);
+    control_permission_generation.fetch_add(1);
+}
+bool cottage_midea_automatic_enabled() {
+    return control_armed.load() && cottage_midea_selected() &&
+        control_armed_endpoint.load()==site_settings_endpoint_generation() &&
+        cottage_midea_configuration_current(control_armed_midea_revision.load());
+}
+bool cottage_midea_automatic_write_current(uint32_t authorization_generation,
+        uint32_t config_generation,uint32_t site_generation) {
+    if(control_permission_generation.load()!=authorization_generation ||
+       !cottage_midea_automatic_enabled() || !wifi_ok.load() || !clock_ok() ||
+       cottage_ota_network_maintenance() || !c23_config_storage_verified() ||
+       c23_config_generation()!=config_generation ||
+       site_settings_generation()!=site_generation)
+        return false;
+    return c23_mode_config().mode==CottageMode::Cold ||
+           valid_temperature(c23_temperature_sample(),time(nullptr));
+}
+
+bool cottage_midea_automatic_proposal_current(BootstrapAction expected,double target_c) {
+    const auto current=active_control_proposal(time(nullptr),c23_temperature_sample());
+    return current.action==expected && (expected==BootstrapAction::Off ||
+        (expected==BootstrapAction::HeatSetpoint &&
+         std::fabs(current.heat_setpoint_c-target_c)<=0.001));
+}
+
 static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
-                              uint32_t config_generation,ControlStep step,
-                              double required_target) {
+                              uint32_t config_generation,uint32_t site_generation,
+                              uint32_t link_generation,ControlStep step,double required_target,
+                              bool expected_heat,double expected_setpoint) {
     if(!cn105_selected())return false;
     control_post_stage.store(1);
     control_post_http_code.store(0);
     // A browser settings change (URL, tariff) supersedes an in-flight command
     // exactly like a mode change does; no new gate, same cancellation points.
-    const uint32_t site_generation=site_settings_generation();
     if(!command.valid || !control_armed.load() || !wifi_ok.load() ||
        control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
         control_post_stage.store(-1);return false;
@@ -918,6 +969,10 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
         control_post_stage.store(-3);return false;
     }
     control_post_stage.store(3);
+    if(bridge_heat!=expected_heat || std::fabs(bridge_setpoint-expected_setpoint)>0.001) {
+        control_note_observed_mode(bridge_heat);
+        return false;
+    }
     const auto latest=active_control_proposal(now,current_temp);
     if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
        (latest.action!=BootstrapAction::HeatSetpoint ||
@@ -954,7 +1009,8 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     // Last cancellation point after all potentially blocking preparation.
     if(!control_armed.load() || !c23_config_storage_verified() ||
        c23_config_generation()!=config_generation ||
-       site_settings_generation()!=site_generation) {
+       site_settings_generation()!=site_generation ||
+       cottage_wifi_link_generation()!=link_generation) {
         req.end();
         return false;
     }
@@ -1031,6 +1087,7 @@ static bool control_save_user_arm(const StoredControlIntent& record) {
 // device-specific NVS authorization is durably revoked.
 bool cottage_control_revoke_saved_intent() {
     control_armed.store(false);
+    control_permission_generation.fetch_add(1);
     uint8_t digest[32]{};
     (void)control_current_image_sha256(digest); // disabled intent needs no hash
     const auto record=control_intent_for(
@@ -1048,12 +1105,17 @@ static void cottage_control_disarm() {
 }
 static void cottage_control_tick() {
     control_gate.store(static_cast<int>(ControlBlock::Disabled));
-    // Never reuse CN105 command permissions for a Midea read-only device.
-    if(!cn105_selected()) {
+    const bool midea=cottage_midea_selected();
+    if(!midea && !cn105_selected()) {
         if(control_armed.load())cottage_control_disarm();
         return;
     }
     if(!control_armed.load())return;
+    const uint32_t authorization_generation=control_permission_generation.load();
+    const uint32_t site_generation=site_settings_generation();
+    if(midea && !cottage_midea_automatic_enabled()) {
+        return;
+    }
     // Arming is bound to the configured pump. A changed CN105 endpoint or
     // adapter revokes it; a reboot restores only the same pump identity.
     if(control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
@@ -1081,6 +1143,25 @@ static void cottage_control_tick() {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
     }
+    ControlSnapshot candidate{};
+    candidate.armed=control_armed.load();
+    candidate.heating_mode=(mode.mode==CottageMode::Cold ||
+          mode.mode==CottageMode::Drying ||
+          mode.mode==CottageMode::Hold ||
+          mode.mode==CottageMode::Occupied);
+    candidate.temperature_fresh=mode.mode==CottageMode::Cold ||
+                                valid_temperature(sample,now);
+    candidate.market_fresh=proposal.action!=BootstrapAction::Unavailable;
+    candidate.proposal=proposal;
+    if(midea) {
+        // Midea's direct LAN worker uses the same decision gate. The existing
+        // calibrated CN105 model cannot transfer to a different pump.
+        const auto reading=cottage_midea_room_state();
+        const auto gate=cottage_midea_submit_automatic(reading,candidate,
+            authorization_generation,config_generation,site_generation);
+        control_gate.store(static_cast<int>(gate));
+        return;
+    }
     // A HOLD proposal does not authorize any physical command. A failed
     // *optional* bridge observation must not mislabel it as an unsafe    // heating command; still attempt a read to maintain the 30-min dwell
     // history and avoid a stale observation gap at the next HEAT request.
@@ -1091,9 +1172,8 @@ static void cottage_control_tick() {
         control_gate.store(static_cast<int>(ControlBlock::NoProposal));
         return;
     }
-    bool current_heat=false;
-    double current_setpoint=0;
-    if(!cn105_bridge_get(current_heat,current_setpoint)) {
+    const auto current=cn105_room_state();
+    if(current.source!=enevina::PumpStateSource::Gateway) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
     }
@@ -1106,20 +1186,11 @@ static void cottage_control_tick() {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
     }
-    ControlSnapshot candidate{};
-    candidate.armed=control_armed.load();
-    candidate.heating_mode=(mode.mode==CottageMode::Cold ||
-          mode.mode==CottageMode::Drying ||
-          mode.mode==CottageMode::Hold ||
-          mode.mode==CottageMode::Occupied);
-    candidate.temperature_fresh=mode.mode==CottageMode::Cold ||
-                                valid_temperature(sample,now);
-    candidate.market_fresh=proposal.action!=BootstrapAction::Unavailable;
     candidate.cn105_link_fresh=true; // direct bridge GET above succeeded
     candidate.bridge_get_ok=true; // separate live ESPHome GET succeeded
+    const bool current_heat=current.mode==enevina::PumpRoomMode::Heat;
     candidate.current_heat=current_heat;
-    candidate.current_setpoint_c=current_setpoint;
-    candidate.proposal=proposal;
+    candidate.current_setpoint_c=current.setpoint_c;
     control_note_observed_mode(current_heat);
     candidate.ms_since_mode_change=control_ms_since_mode_change();
     const auto decision=choose_mitsubishi_control(candidate);
@@ -1142,8 +1213,10 @@ static void cottage_control_tick() {
     control_last_step.store(static_cast<int>(decision.step));
     control_last_command_utc.store(now);
     control_commands_sent.fetch_add(1);
-    const bool sent=cn105_bridge_post(request,config_generation,
-                                      decision.step,decision.target_c);
+    const uint32_t link_generation=current.link_generation;
+    const bool sent=link_generation==cottage_wifi_link_generation() &&
+        cn105_bridge_post(request,config_generation,site_generation,link_generation,decision.step,
+                         decision.target_c,current_heat,current.setpoint_c);
     // ESPHome may acknowledge the POST before updating its REST state.
     // Confirm only what the bridge GET reports, never claim UART proof.
     bool confirmed=false;
@@ -1155,6 +1228,8 @@ static void cottage_control_tick() {
             bool read_heating=false;
             double read_setpoint=0;
             if(!cn105_bridge_get(read_heating,read_setpoint))continue;
+            if(site_settings_generation()!=site_generation ||
+               cottage_wifi_link_generation()!=link_generation)break;
             control_note_observed_mode(read_heating);
             last_heating=read_heating;last_setpoint=read_setpoint;
             confirmed=decision.step==ControlStep::Setpoint ?
@@ -1234,7 +1309,8 @@ static void cottage_control_registration() {
             return;
         }
         const bool requested=web.arg("enabled")=="true";
-        if(requested && !cn105_selected()) {
+        const bool midea=cottage_midea_selected();
+        if(requested && !midea && !cn105_selected()) {
             web.send(409,"application/json",
                 "{\"saved\":false,\"error\":\"ADAPTER_READ_ONLY\"}");
             return;
@@ -1250,6 +1326,21 @@ static void cottage_control_registration() {
         const bool allowed=requested ?
             control_current_image_sha256(digest) &&
             !pending_ota && !cottage_ota_confirmation_pending() : true;
+        if(midea) {
+            if(requested && (!allowed || !cottage_midea_automatic_ready())) {
+                web.send(409,"application/json",
+                    "{\"saved\":false,\"error\":\"MIDEA_NOT_READY\"}");
+                return;
+            }
+            // Midea approval is volatile and bound to the exact LAN config.
+            // It is never restored from Mitsubishi intent or after reboot.
+            control_permission_generation.fetch_add(1);
+            control_armed_endpoint.store(site_settings_endpoint_generation());
+            control_armed_midea_revision.store(cottage_midea_configuration_generation());
+            control_armed.store(requested);
+            web.send(200,"application/json","{\"saved\":true}");
+            return;
+        }
         const auto record=control_intent_for(
             site_settings_snapshot(),requested && allowed,digest);
         // Exact pump/adapter AND signed/USB image identity together.
@@ -1261,6 +1352,7 @@ static void cottage_control_registration() {
             // Arming starts the dwell window: mode history while disarmed
             // is unknown (manual remote changes are not observed).
             control_reset_mode_history();
+            control_permission_generation.fetch_add(1);
             control_armed.store(requested);
         }
         web.send(stored?200:500,"application/json",
@@ -1718,10 +1810,12 @@ static void status_endpoint() {
         site_slot_total_price((now/900)*900,price.current_spot_eur_per_kwh,total);
     const BootstrapDecision bootstrap=bootstrap_preview(now,te);
     cJSON* root=cJSON_CreateObject();
-    cJSON_AddStringToObject(root,"mode",control_armed.load()?
-        "CN105_AUTOMAATIO_KAYTOSSA":"VARJOTILA_EI_KOMENTOJA");
-    cJSON_AddBoolToObject(root,"physical_writes",control_armed.load());
-    cJSON_AddBoolToObject(root,"control_armed",control_armed.load());
+    const bool midea=cottage_midea_selected();
+    const bool armed=midea?cottage_midea_automatic_enabled():control_armed.load();
+    cJSON_AddStringToObject(root,"mode",armed?
+        (midea?"MIDEA_AUTOMAATIO_KAYTOSSA":"CN105_AUTOMAATIO_KAYTOSSA"):"VARJOTILA_EI_KOMENTOJA");
+    cJSON_AddBoolToObject(root,"physical_writes",armed);
+    cJSON_AddBoolToObject(root,"control_armed",armed);
     cJSON_AddNumberToObject(root,"control_arm_nvs_reclaimed",
                             control_arm_nvs_reclaimed.load());
     cJSON_AddNumberToObject(root,"control_arm_nvs_save_failures",

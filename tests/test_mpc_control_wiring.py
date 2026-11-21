@@ -33,12 +33,15 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("in.bootstrap=bootstrap_preview(now,t);", MAIN)
 
     def test_existing_gates_unchanged_and_before_any_command(self):
-        # Midea / read-only adapters never reach the CN105 writer.
-        self.assertLess(TICK.index("if(!cn105_selected())"),
+        # Other adapters cannot reach the CN105 writer.
+        self.assertLess(TICK.index("if(!midea && !cn105_selected())"),
                         TICK.index("active_control_proposal("))
         self.assertLess(TICK.index("if(!control_armed.load())return;"),
                         TICK.index("active_control_proposal("))
         self.assertIn("const auto decision=choose_mitsubishi_control(candidate);", TICK)
+        self.assertLess(TICK.index("cottage_midea_submit_automatic("), TICK.index("cn105_bridge_post("))
+        self.assertIn("site_settings_generation()!=site_generation", MAIN)
+        self.assertIn("in.pump_state_known=view.known && !cottage_midea_selected();", MAIN)
         self.assertIn("candidate.ms_since_mode_change=control_ms_since_mode_change();", TICK)
         # The MPC never adds a write path of its own.
         self.assertNotIn("cn105_bridge_post(", WORKER)

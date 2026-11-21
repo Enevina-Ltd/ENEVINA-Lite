@@ -31,7 +31,7 @@ class ModeDwellWiring(unittest.TestCase):
 
     def test_readback_and_arming_update_history(self):
         self.assertIn("control_note_observed_mode(read_heating);", TICK)
-        arm = MAIN.split('web.on("/api/control/arm"', 1)[1]
+        arm = MAIN.split('web.on("/api/control/arm"', 1)[1].split('control_save_user_arm(record)',1)[1]
         self.assertLess(arm.index("control_reset_mode_history();"),
                         arm.index("control_armed.store(requested)"))
 

@@ -14,7 +14,27 @@ static ControlSnapshot base() {
     s.ms_since_mode_change=mitsubishi_min_mode_dwell_ms; // history old enough
     return s;
 }
+static void shared_gate_respects_driver_limits_and_dwell() {
+    auto s=base();
+    const enevina::PumpHeatingLimits lan{20,28,1,true,true};
+    auto decision=choose_pump_control(s,lan,HeatTransition::Combined);
+    assert(decision.gate==ControlBlock::UnsupportedCommand);
+    s.proposal.heat_setpoint_c=22;
+    s.ms_since_mode_change=0;
+    assert(choose_pump_control(s,lan,HeatTransition::Combined).gate==ControlBlock::ModeDwell);
+    s.ms_since_mode_change=mitsubishi_min_mode_dwell_ms;
+    decision=choose_pump_control(s,lan,HeatTransition::Combined);
+    assert(decision.step==ControlStep::SetHeat && decision.target_c==22);
+    assert(choose_mitsubishi_control(s).step==ControlStep::Setpoint);
+    s.current_heat=true;
+    assert(choose_pump_control(s,lan,HeatTransition::Combined).step==ControlStep::Setpoint);
+    s.proposal.action=BootstrapAction::Off;
+    const enevina::PumpHeatingLimits no_off{20,28,1,true,false};
+    assert(choose_pump_control(s,no_off,HeatTransition::Combined).gate==ControlBlock::UnsupportedCommand);
+}
+
 int main() {
+    shared_gate_respects_driver_limits_and_dwell();
     auto s=base();
     assert(choose_mitsubishi_control(s).step==ControlStep::Setpoint);
     s.armed=false;
@@ -59,6 +79,14 @@ int main() {
     // A setpoint change is not a mode change and is never delayed.
     s=base();s.ms_since_mode_change=0;
     assert(choose_mitsubishi_control(s).step==ControlStep::Setpoint);
+    {
+        MitsubishiModeHistory history{};
+        const uint32_t first_observation=61u*60u*1000u;
+        history.observe(false,first_observation,true);
+        assert(history.since_change(first_observation)==0);
+        history.observe(false,first_observation+30000,true);
+        assert(history.since_change(first_observation+30000)==30000);
+    }
     // MitsubishiModeHistory (Codex post-merge review of #28).
     {
         constexpr uint32_t m=60u*1000u;

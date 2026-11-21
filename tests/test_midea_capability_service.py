@@ -22,7 +22,7 @@ class MideaCapabilityService(unittest.TestCase):
         # Compile the production policy itself, as the dashboard VM tests do
         # for the JavaScript; no duplicate implementation or hardware mocks.
         policy = service.split("struct BooleanControl {", 1)[1].split(
-            "void add_profile_status(", 1
+            "bool pilot_current_locked(", 1
         )[0]
         source = r'''
 #include <cassert>
@@ -110,7 +110,14 @@ int main() {
     dry_exit.changed|=ControlFan;dry_exit.fan=40;
     assert(control_request_error(drying,dry_exit)==nullptr);
     dry_exit.fan=102;assert(!valid_ac_control_patch(drying,dry_exit));
+    ControlPatch start_heat{};start_heat.changed=ControlTemperature;start_heat.setpoint_c=22;
+    assert(add_automatic_heat(drying,start_heat));
+    assert(start_heat.power && start_heat.mode==4 && start_heat.fan==40);
+    assert(control_request_error(drying,start_heat)==nullptr);
+    drying.fan=102;
+    assert(add_automatic_heat(drying,start_heat) && start_heat.fan==40);
     report(dry_caps,AcFeature::FanLow,false);report(dry_caps,AcFeature::FanHigh,false);
+    assert(!add_automatic_heat(drying,start_heat));
     assert(!mode_control_available(drying,4));
 
     // The same service table parses HTTP boolean names and assigns patch bits.

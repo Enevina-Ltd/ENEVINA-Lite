@@ -42,7 +42,8 @@ class MideaManualControl(unittest.TestCase):
         self.assertIn('c23_authorize_local_setting(',endpoint)
         self.assertIn('control_patch_fields_valid(patch)',endpoint)
         self.assertIn('control_request_error(observed,patch)',endpoint)
-        self.assertIn('control_pending.store(true)',endpoint)
+        self.assertIn('queue_locked(patch,now',endpoint)
+        self.assertIn('!cottage_midea_automatic_enabled() && !control_busy',endpoint)
         self.assertIn('web.send(202',endpoint)
         self.assertNotIn('write_device(',endpoint)
         self.assertNotIn('write_device_v2(',endpoint)
@@ -50,7 +51,7 @@ class MideaManualControl(unittest.TestCase):
         self.assertIn('control_queued_utc',SERVICE)
         self.assertIn('now-queued<=15',SERVICE)
 
-    def test_worker_is_serialized_and_no_automatic_midea_control(self):
+    def test_manual_and_automatic_commands_share_the_same_worker(self):
         worker=SERVICE.split('void cottage_midea_service_worker(void*) {',1)[1]
         self.assertIn('if(control_pending.load())',worker)
         self.assertIn('control_busy=true',worker)
@@ -62,6 +63,18 @@ class MideaManualControl(unittest.TestCase):
         self.assertIn('write_device(',worker)
         self.assertIn('NetworkBudgetLease lease',worker)
         self.assertNotIn('cottage_air_service_get_plan(',worker)
+        auto=SERVICE.split('ControlBlock cottage_midea_submit_automatic(',1)[1].split(
+            'uint32_t cottage_midea_configuration_generation()',1)[0]
+        self.assertIn('choose_pump_control(decision,current.heating,HeatTransition::Combined)',auto)
+        self.assertIn('control_busy || control_pending.load()',auto)
+        self.assertIn('current.link_generation!=expected.link_generation',auto)
+        self.assertIn('queue_locked(patch,now',auto)
+        self.assertIn('automatic_guard,&receipt',worker)
+        self.assertIn('if(receipt)receipt->sent=true',TCP)
+        tx=TCP.split('ReadStatus write_model(',1)[1].split('} // namespace',1)[0]
+        self.assertLess(tx.index('automatic->power!=original.power'),tx.index('session.send(control)'))
+        self.assertLess(tx.rindex('if(!authorized())'),tx.index('session.send(control)'))
+        self.assertLess(tx.index('session.send(control)'),tx.index('ac_control_confirmed(original,fresh,patch)'))
 
     def test_review_p1_p2_control_gates(self):
         wifi=(ROOT/"firmware/cottage/src/cottage_wifi.cpp").read_text()
