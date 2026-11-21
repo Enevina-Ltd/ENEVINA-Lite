@@ -6,6 +6,7 @@
 #include <limits>
 #include <vector>
 #include <chrono>
+#include "cottage/telemetry.hpp"
 using namespace enevina::cottage;
 static void check(bool b,const char* msg) {if(!b){std::fprintf(stderr,"FAIL: %s\n",msg);std::exit(1);}}
 static Parameters param() {
@@ -61,7 +62,33 @@ static void check_schedule(const Parameters& p,State start,
     check(x.starts==starts,"start counter");
     check(switches < f.size()/3,"avoid rapid command cycling");
 }
+static void room_temperature_uses_the_selected_fresh_source() {
+    using namespace enevina;
+    using namespace enevina::cottage;
+    constexpr int64_t now=1800000000;
+    const TemperatureSample ruuvi{true,now-4,20.6};
+    PumpRoomState pump{};
+    pump.source=PumpStateSource::Gateway;
+    pump.evidence.received_utc=now-5;
+    pump.indoor_c=22.5;
+    const auto a=room_temperature_sample({},ruuvi,pump,now);
+    check(valid_temperature(a,now) && a.indoor_c==20.6,"default uses Ruuvi");
+    const RoomTemperatureConfig selected{RoomTemperatureSource::Pump,-150};
+    check(!room_temperature_sample(selected,ruuvi,pump,now).received,"unproven pump reading is unavailable");
+    pump.source=PumpStateSource::DirectLan;
+    const auto b=room_temperature_sample(selected,ruuvi,pump,now);
+    check(valid_temperature(b,now) && b.indoor_c==21.0 && b.captured_utc==now-5,"calibrated LAN reading");
+    check(!room_temperature_sample(selected,ruuvi,pump,now+90).received,"stale LAN reading");
+    pump.source=PumpStateSource::VerifiedBus;
+    pump.evidence={now-5,now-200,true};
+    check(!room_temperature_sample(selected,ruuvi,pump,now).received,"unproven pump reading is unavailable");
+    pump.evidence.source_utc=now-8;
+    const auto c=room_temperature_sample(selected,ruuvi,pump,now);
+    check(valid_temperature(c,now) && c.captured_utc==now-8,"original verified UART time");
+}
+
 int main() {
+    room_temperature_uses_the_selected_fresh_source();
     auto p=param();
     check(valid(p),"parameter validation");
     State s{10,false,180};

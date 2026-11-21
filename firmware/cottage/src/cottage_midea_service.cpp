@@ -1256,6 +1256,10 @@ void cottage_midea_service_worker(void*) {
                 polling.store(false);
             }
         }
+        const bool repeat_allowed=deferred_for_budget &&
+            (!automatic || cottage_midea_automatic_write_current(
+                automatic_context.authorization_generation,
+                automatic_context.control_config_generation,automatic_context.site_generation));
         xSemaphoreTake(mutex,portMAX_DELAY);
         const bool same_identity=before==revision.load() &&
             is_midea_selected() && WiFi.status()==WL_CONNECTED &&
@@ -1271,10 +1275,7 @@ void cottage_midea_service_worker(void*) {
             // whose result is uncertain.
             const int64_t at=static_cast<int64_t>(time(nullptr));
             const int64_t issued=control_queued_utc.load();
-            const bool repeat=deferred_for_budget &&
-                (!automatic || cottage_midea_automatic_write_current(
-                    automatic_context.authorization_generation,
-                    automatic_context.control_config_generation,automatic_context.site_generation)) &&
+            const bool repeat=repeat_allowed &&
                 before==revision.load() && !config_updating &&
                 pilot.enabled && pilot.config_revision==before &&
                 pilot.endpoint_generation==expected_endpoint &&

@@ -26,6 +26,8 @@
 
 using enevina::cottage::SiteSettings;
 using enevina::cottage::SettingError;
+using enevina::cottage::RoomTemperatureConfig;
+using enevina::cottage::RoomTemperatureSource;
 namespace {
 constexpr uint32_t kMagic=0x45535431; // "EST1"
 constexpr uint16_t kVersion=5;  // v5 preserves predecessor v4 for OTA rollback
@@ -49,6 +51,16 @@ struct StoredV1 {
 };
 SemaphoreHandle_t guard=nullptr;
 SiteSettings current{};
+RoomTemperatureConfig room_temperature{};
+struct StoredRoomTemperature {
+    uint32_t magic=0x45525431; // ERT1
+    uint16_t version=1;
+    uint8_t source=0;
+    uint8_t reserved=0;
+    int16_t correction_c100=0;
+    uint16_t size=sizeof(StoredRoomTemperature);
+};
+constexpr char kRoomTemperatureKey[]="room_temp1";
 std::atomic<uint32_t> generation{0};
 std::atomic<uint32_t> endpoint_generation{0};
 std::atomic<bool> comfort_pending{false};
@@ -310,6 +322,16 @@ void site_settings_initialize() {
     Preferences p;
     if(p.begin("site",true)) {
         comfort_pending.store(p.isKey(kComfortKey));
+        StoredRoomTemperature stored_room{};
+        if(p.getBytesLength(kRoomTemperatureKey)==sizeof(stored_room) &&
+           p.getBytes(kRoomTemperatureKey,&stored_room,sizeof(stored_room))==sizeof(stored_room) &&
+           stored_room.magic==StoredRoomTemperature{}.magic && stored_room.version==1 &&
+           stored_room.reserved==0 && stored_room.size==sizeof(stored_room)) {
+            RoomTemperatureConfig candidate{static_cast<RoomTemperatureSource>(stored_room.source),
+                stored_room.correction_c100};
+            if(enevina::cottage::valid_room_temperature_config(candidate))
+                room_temperature=candidate;
+        }
         Stored blob{};
         StoredV1 old{};
         bool v5_valid=false;
@@ -486,6 +508,13 @@ bool site_comfort_transaction_finish(const enevina::cottage::CottageModeConfig& 
        !enevina::cottage::comfort_mode_matches(tx,cfg))return false;
     return site_comfort_transaction_abandon();
 }
+RoomTemperatureConfig site_room_temperature_config() {
+    if(!guard)return {};
+    xSemaphoreTake(guard,portMAX_DELAY);
+    const auto config=room_temperature;
+    xSemaphoreGive(guard);
+    return config;
+}
 uint32_t site_settings_generation() { return generation.load(); }
 uint32_t site_settings_endpoint_generation() { return endpoint_generation.load(); }
 bool site_slot_total_price(int64_t utc,double spot,double& total) {
@@ -600,6 +629,65 @@ static void send_shelly_scan(WebServer& web) {
     cJSON_free(body);
 }
 void site_settings_register_routes(WebServer& web) {
+    web.on("/api/temperature-source",HTTP_GET,[&web]() {
+        if(!cottage_wifi_require_home_lan(web))return;
+        const auto config=site_room_temperature_config();
+        char json[100]{};
+        snprintf(json,sizeof(json),"{\"source\":\"%s\",\"correction_c\":%.2f}",
+            config.source==RoomTemperatureSource::Pump?"pump":"ruuvi",
+            static_cast<double>(config.correction_c100)/100.0);
+        web.sendHeader("Cache-Control","no-store");
+        web.send(200,"application/json",json);
+    });
+    web.on("/api/temperature-source",HTTP_POST,[&web]() {
+        if(!cottage_wifi_require_home_lan(web))return;
+        if(!guard) {
+            web.send(503,"application/json","{\"saved\":false,\"error\":\"NVS\"}");
+            return;
+        }
+        if(!web.hasArg("token") ||
+           !enevina::cottage::c23_authorize_local_setting(web.arg("token").c_str())) {
+            web.send(403,"application/json","{\"saved\":false,\"error\":\"TOKEN\"}");
+            return;
+        }
+        const String source=web.arg("source");
+        const String correction=web.arg("correction_c");
+        char* end=nullptr;
+        const double c=strtod(correction.c_str(),&end);
+        if((source!="pump" && source!="ruuvi") || correction.length()>12 ||
+           end==correction.c_str() || *end || !std::isfinite(c) || c< -5 || c>5 ||
+           std::fabs(c*100.0-std::round(c*100.0))>0.00001) {
+            web.send(400,"application/json","{\"saved\":false,\"error\":\"TEMPERATURE_SOURCE\"}");
+            return;
+        }
+        const RoomTemperatureConfig next{source=="pump"?RoomTemperatureSource::Pump:
+            RoomTemperatureSource::Ruuvi,static_cast<int16_t>(std::lround(c*100.0))};
+        const auto current_config=site_room_temperature_config();
+        if(current_config.source==next.source && current_config.correction_c100==next.correction_c100) {
+            web.send(200,"application/json","{\"saved\":true}");
+            return;
+        }
+        StoredRoomTemperature stored{};
+        stored.source=static_cast<uint8_t>(next.source);
+        stored.correction_c100=next.correction_c100;
+        Preferences p;
+        StoredRoomTemperature readback{};
+        const bool saved=p.begin("site",false) &&
+            p.putBytes(kRoomTemperatureKey,&stored,sizeof(stored))==sizeof(stored) &&
+            p.getBytes(kRoomTemperatureKey,&readback,sizeof(readback))==sizeof(readback) &&
+            readback.magic==stored.magic && readback.version==stored.version &&
+            readback.size==stored.size && readback.reserved==stored.reserved &&
+            readback.source==stored.source && readback.correction_c100==stored.correction_c100;
+        if(!saved) {
+            web.send(507,"application/json","{\"saved\":false,\"error\":\"NVS\"}");
+            return;
+        }
+        xSemaphoreTake(guard,portMAX_DELAY);
+        room_temperature=next;
+        generation.fetch_add(1);
+        xSemaphoreGive(guard);
+        web.send(200,"application/json","{\"saved\":true}");
+    });
     web.on("/api/shelly/discover",HTTP_GET,[&web]() {
         if(cottage_wifi_require_home_lan(web))send_shelly_scan(web);
     });
@@ -816,9 +904,9 @@ void site_settings_register_routes(WebServer& web) {
         // The previous endpoint's NVS authorization was already revoked.
         current=next;
         loaded_from_nvs=true;
-        xSemaphoreGive(guard);
         if(endpoint_changed) endpoint_generation.fetch_add(1);
         generation.fetch_add(1);
+        xSemaphoreGive(guard);
         // Only weather location changed: keep the CN105 control permission.
         // Persist before updating RAM; the FMI worker invalidates its old
         // cache and immediately schedules a fetch for this location.

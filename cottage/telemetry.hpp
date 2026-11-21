@@ -1,6 +1,6 @@
 #pragma once
 #include <cstdint>
-#include "pump/measurement_quality.hpp"
+#include "pump/pump_adapter.hpp"
 namespace enevina::cottage {
 enum class ObservedPumpMode : uint8_t { Unknown, Off, Heat, Other };
 struct CN105Telemetry {
@@ -26,6 +26,19 @@ struct TemperatureSample {
 bool valid_cn105(const CN105Telemetry& sample,int64_t now_utc,int64_t max_age_s=180);
 bool valid_shelly(const ShellyTelemetry& sample,int64_t now_utc,int64_t max_age_s=180);
 bool valid_temperature(const TemperatureSample& sample,int64_t now_utc,int64_t max_age_s=180);
+enum class RoomTemperatureSource : uint8_t { Ruuvi, Pump };
+struct RoomTemperatureConfig {
+    RoomTemperatureSource source=RoomTemperatureSource::Ruuvi;
+    int16_t correction_c100=0;
+};
+inline bool valid_room_temperature_config(RoomTemperatureConfig c) {
+    return (c.source==RoomTemperatureSource::Ruuvi || c.source==RoomTemperatureSource::Pump) &&
+           c.correction_c100>=-500 && c.correction_c100<=500;
+}
+// No implicit source fallback. Correction always applies to the selected
+// sensor. The sample retains its measurement time for the age checks.
+TemperatureSample room_temperature_sample(RoomTemperatureConfig config,
+    const TemperatureSample& ruuvi,const PumpRoomState& pump,int64_t now_utc);
 // Read-only observable state. This adapter has NO transport writer.
 class MitsubishiCN105Adapter final {
 public:

@@ -85,6 +85,16 @@ const run=x=>vm.runInContext(x,context);
   assert.match($('energy-intensity').textContent,/70,6 kWh/);
   assert.equal(JSON.parse(browserStorage.get('enevina_lite_own_energy_v1')).annual,1200);
   run('state.status=('+JSON.stringify(status)+');showStatus()');
+  run("state.status={...state.status,room_temperature_source:'pump',room_temperature_c:22.5,room_temperature_age_s:8,air:{...state.status.air,sensor_fresh:false}};showStatus()");
+  assert.equal($('home-temp').textContent,'22,5 °C');
+  assert.match($('home-sensor').textContent,/Pumpun oma anturi/);
+  assert.equal($('connection-dot').className,'dot ok');
+  assert.equal($('home-rh').textContent,'—');
+  run("state.status={...state.status,room_temperature_c:null,air:{...state.status.air,sensor_fresh:true}};showStatus()");
+  assert.match($('home-temp').textContent,/Ei tuoretta/);
+  assert.equal($('connection-dot').className,'dot bad');
+  assert.equal($('home-rh').textContent,'53,0 %');
+  run('state.status=('+JSON.stringify(status)+');showStatus()');
   // Codex P2: saving warning limits must not discard a newer, unsaved edit.
   assert.equal(String($('alert-rh70').value),'70');
   pauseAlerts=true;

@@ -808,7 +808,30 @@ static void legacy_event_log_migration_preserves_old_entries() {
     CHECK(er.newest(0).utc==T0);
 }
 
+static void room_temperature_history_preserves_the_source_change() {
+    HistoryStore store;
+    EventLog events;
+    HistoryRecorder recorder;
+    HistoryInputs in{};
+    in.clock_trusted=true;
+    in.utc=T0;in.indoor_valid=true;in.indoor_c=19;
+    in.indoor_source_id=1;
+    recorder.observe(in,store,events);
+    in.utc=T0+300;
+    in.indoor_c=22;in.indoor_from_pump=true;in.indoor_correction_c100=-50;
+    recorder.observe(in,store,events);
+    CHECK(events.newest(0).kind==static_cast<uint8_t>(HistoryEventKind::RoomTemperatureSourceChanged));
+    CHECK(events.newest(0).arg==1 && events.newest(0).value==-50);
+    in.utc=T0+900;
+    CHECK(recorder.observe(in,store,events));
+    CHECK(store.get(T0/900)->indoor_c100==kMissingI16);
+    in.utc=T0+1800;
+    CHECK(recorder.observe(in,store,events));
+    CHECK(store.get(T0/900+1)->indoor_c100==2200);
+}
+
 int main() {
+    room_temperature_history_preserves_the_source_change();
     legacy_event_log_migration_preserves_old_entries();
     mount_failure_never_formats_nonblank_partition();
     measured_energy_requires_verifiable_coverage();
