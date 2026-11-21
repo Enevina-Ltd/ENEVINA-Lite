@@ -7,8 +7,9 @@ function element(id){return {id,value:'',textContent:'',disabled:false,hidden:fa
   appendChild(v){this.children.push(v)},replaceChildren(...v){this.children=[...v]},
   addEventListener(k,v){this.handlers[k]=v}};}
 const elements=new Map(),$=id=>{if(!elements.has(id))elements.set(id,element(id));return elements.get(id)};
-let devices=[],calls=[];
-const context={document:{createElement:element},$,URLSearchParams,
+let devices=[],calls=[],wizardOpen=false;
+const WZ={mideaChanged:false};
+const context={document:{createElement:element},$,URLSearchParams,WZ,wzMideaStep:()=>wizardOpen,
   state:{status:{air:{config_token:'existing-test-token'}}},showMideaProtocolFields:()=>{},
   text:(id,value)=>{$(id).textContent=String(value)},
   fetch:async(url,options)=>{calls.push({url,body:String(options.body)});return {ok:true,json:async()=>({devices})}}};
@@ -35,7 +36,8 @@ const unchanged=()=>{for(const name of ['ip','id','protocol','token','key'])asse
   assert.equal($('midea-token').value,'');assert.equal($('midea-key').value,'');
   assert.equal(calls.length,0,'selection never saves, authenticates or commands');
 
-  reset();choose(legacy);
+  reset();wizardOpen=true;choose(legacy);
+  assert.equal(WZ.mideaChanged,true);
   assert.equal($('midea-ip').value,'10.0.0.5');assert.equal($('midea-protocol').value,'2');
   choose({...legacy,device_type_known:false,device_type:204,model_known:false,model:''});
   assert.equal($('midea-ip').value,'10.0.0.5','unknown metadata preserves existing discovery selection');
