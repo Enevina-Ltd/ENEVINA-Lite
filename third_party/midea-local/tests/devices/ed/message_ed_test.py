@@ -998,3 +998,153 @@ class TestMessageEDResponse:
         raw = bytes.fromhex(
             "aa3fed000000000000021501004a64645a00000050000000000000000000000000"
             "0000980a0000000000000000005e00000000000000000000000000000100ff",
+        )
+
+        message = MessageEDResponse(raw, subtype=395)
+
+        assert message.body_type == ListTypes.X15
+        assert hasattr(message, "current_temperature")
+        assert hasattr(message, "target_temperature")
+        assert hasattr(message, "heating")
+        assert hasattr(message, "dispensing")
+        assert message.current_temperature == 74
+        assert message.target_temperature == 80
+        assert message.heating is False
+        assert message.dispensing is False
+
+    def test_ed_general_response(self) -> None:
+        """Test general response."""
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xDA,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x03,
+            ],
+        )
+        body = bytearray(
+            [
+                0xFF,  # body_type
+                0x01,
+                0x07,  # category
+                0x00,  # part 1, offset+1,  attr bit1, test 0x00/CHILD_LOCK
+                0x40,  # part 1, offset+2,  attr bit2 and length bit
+                0x00,  # part 1, offset+3,
+                0x00,  # part 1, offset+4,
+                0x01,  # part 1, offset+5, child_lock
+                0x01,  # part 1, offset+6, power
+                0x10,  # part 2, offset+1,  attr bit1, test 0x10/LIFE
+                0x40,  # part 2, offset+2,  attr bit2 and length bit
+                0x01,  # part 2, offset+3, life1
+                0x02,  # part 2, offset+4, life2
+                0x03,  # part 2, offset+5, life3
+                0x00,  # part 2,
+                0x11,  # part 3, offset+1,  attr bit1, test 0x11/WATER_CONSUMPTION
+                0x40,  # part 3, offset+2,  attr bit2 and length bit
+                0x01,  # part 3, offset+3, water_consumption bit1
+                0x02,  # part 3, offset+4, water_consumption bit2
+                0x03,  # part 3, offset+5, water_consumption bit3
+                0x04,  # part 3, offset+6, water_consumption bit4
+                0x13,  # part 4, offset+1,  attr bit1, test 0x13/TDS
+                0x40,  # part 4, offset+2,  attr bit2 and length bit
+                0x04,  # part 4, offset+3, in_tds bit1
+                0x03,  # part 4, offset+4, in_tds bit2
+                0x02,  # part 4, offset+5, out_tds bit1
+                0x01,  # part 4, offset+6, out_tds bit2
+                0x00,
+            ],
+        )
+        message = MessageEDResponse(bytes(header + body))
+        assert hasattr(message, "body_type")
+        assert message.body_type == 255
+        assert hasattr(message, "power")
+        assert message.power
+        assert hasattr(message, "water_consumption")
+        assert message.water_consumption == 67305.985
+        assert hasattr(message, "in_tds")
+        assert message.in_tds == 772
+        assert hasattr(message, "out_tds")
+        assert message.out_tds == 258
+        assert hasattr(message, "child_lock")
+        assert message.child_lock
+        assert hasattr(message, "life1")
+        assert message.life1 == 1
+        assert hasattr(message, "life2")
+        assert message.life2 == 2
+        assert hasattr(message, "life3")
+        assert message.life3 == 3
+
+    @pytest.mark.parametrize(
+        ("body_type", "body_size"),
+        [
+            (ListTypes.X01, 41),
+            (ListTypes.X03, 53),
+            (ListTypes.X04, 53),
+            (ListTypes.X05, 53),
+            (ListTypes.X06, 53),
+            (ListTypes.X07, 53),
+        ],
+    )
+    def test_ed_typed_body_response(
+        self,
+        body_type: ListTypes,
+        body_size: int,
+    ) -> None:
+        """Test response dispatch to the body parser of each body type."""
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xDA,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x03,
+            ],
+        )
+        body = bytearray(body_size)
+        body[0] = body_type
+        message = MessageEDResponse(bytes(header + body))
+        assert hasattr(message, "device_class")
+        assert message.device_class == body_type
+        assert hasattr(message, "power")
+        assert message.power is False
+        assert hasattr(message, "water_consumption")
+        assert message.water_consumption == 0
+        assert hasattr(message, "child_lock")
+        assert message.child_lock is False
+
+    def test_ed_typed_body_response_x09(self) -> None:
+        """Test response dispatch to the body parser for body type X09."""
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xDA,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x03,
+            ],
+        )
+        body = bytearray(60)
+        body[0] = ListTypes.X09
+        message = MessageEDResponse(bytes(header + body))
+        assert hasattr(message, "device_class")
+        assert message.device_class == ListTypes.X09
+        assert hasattr(message, "velocity")
+        assert message.velocity == 0
+        assert hasattr(message, "water_consumption")
+        assert message.water_consumption == 0
