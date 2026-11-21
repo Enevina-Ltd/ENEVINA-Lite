@@ -67,6 +67,14 @@ static SemaphoreHandle_t lock_data=nullptr;
 static std::atomic<bool> wifi_ok{false};
 static std::atomic<uint32_t> web_loop_heartbeat_ms{0};
 static CN105Telemetry pump{};
+struct Cn105LinkIdentity {
+    uint32_t endpoint=0, wifi=0;
+    bool current() const {
+        return endpoint==site_settings_endpoint_generation() &&
+               wifi==cottage_wifi_link_generation();
+    }
+};
+static Cn105LinkIdentity verified_cn105_link{}; // protected by lock_data
 // Legacy ESPHome /events exposes real device state as SSE, but the receipt
 // does not prove a new UART poll. Keep the last observed values separately
 // from the source-verified sample used by the optimizer/safety gate.
@@ -322,7 +330,8 @@ static bool cn105_proof_timestamp(const cJSON* doc,const char* name,int64_t& out
     out=static_cast<int64_t>(value);
     return true;
 }
-static bool parse_cn105_proof_event(const cJSON* root,int64_t now) {
+static bool parse_cn105_proof_event(const cJSON* root,int64_t now,
+                                  const Cn105LinkIdentity& link) {
     const cJSON* source=cJSON_GetObjectItemCaseSensitive(root,"value");
     if(!cJSON_IsString(source) || !source->valuestring ||
        strlen(source->valuestring)>512)return false;
@@ -362,10 +371,13 @@ static bool parse_cn105_proof_event(const cJSON* root,int64_t now) {
     cn105_source_proof_status.store(static_cast<int>(proof));
     if(proof==enevina::PumpReadProofStatus::NewRead) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
-        const bool continuous=valid_cn105(pump,now);
-        // A newly verified pump mode or a break in confirmed dwell invalidates
-        // the optimizer's snapshot before the fresh sample is published.
-        if(verified.mode!=pump.mode || !continuous) {
+        const bool continuous=verified_cn105_link.current() && valid_cn105(pump,now);
+        // A different setpoint in active HEAT changes the model's input.
+        // Writing a setpoint while OFF is also the first stage of our own
+        // OFF -> HEAT transition and leaves the current thermal state intact.
+        const bool heating_target_changed=verified.mode==ObservedPumpMode::Heat &&
+            std::fabs(verified.setpoint_c-pump.setpoint_c)>0.001;
+        if(verified.mode!=pump.mode || !continuous || heating_target_changed) {
             ++observed_mode_generation;
             plan_count=0;
             last_plan.status=MpcStatus::InvalidInput;
@@ -373,6 +385,7 @@ static bool parse_cn105_proof_event(const cJSON* root,int64_t now) {
         observed_mode_duration.observe(verified.mode,
             static_cast<uint64_t>(esp_timer_get_time()/1000),continuous);
         pump=verified;
+        verified_cn105_link=link;
         xSemaphoreGive(lock_data);
         cn105_source_proof_good.fetch_add(1);
     } else if(proof!=enevina::PumpReadProofStatus::Replay) {
@@ -410,14 +423,15 @@ static bool get_http(const char* url,String& result,unsigned timeout_ms=4000) {
     request.end();
     return ok && result.length()==static_cast<unsigned>(body_size);
 }
-static void parse_sse_state(const char* raw) {
+static void parse_sse_state(const char* raw,const Cn105LinkIdentity& link) {
+    if(!link.current())return;
     cJSON* root=cJSON_ParseWithOpts(raw,nullptr,true);
     if(!root) return;
     const cJSON* key=cJSON_GetObjectItemCaseSensitive(root,"id");
     const int64_t now=clock_ok()?time(nullptr):0;
     if(!cJSON_IsString(key)||!now) {cJSON_Delete(root);return;}
     if(strcmp(key->valuestring,"text_sensor/Enevina CN105 Verified Snapshot")==0) {
-        if(parse_cn105_proof_event(root,now))cn105_proof_envelope_active=true;
+        if(parse_cn105_proof_event(root,now,link))cn105_proof_envelope_active=true;
         else {
             cn105_source_proof_status.store(
                 static_cast<int>(enevina::PumpReadProofStatus::Unverified));
@@ -515,9 +529,11 @@ static void parse_sse_state(const char* raw) {
 static void sse_worker(void*) {
     for(;;) {
         // Browser-configured URL (Phase 2); compile-time value is only the default.
-        const auto settings=site_settings_snapshot();
         const uint32_t settings_generation=site_settings_generation();
-        if(cottage_ota_network_maintenance() || !wifi_ok.load() ||
+        Cn105LinkIdentity link{site_settings_endpoint_generation(),cottage_wifi_link_generation()};
+        const auto settings=site_settings_snapshot();
+        if(!link.current() || settings_generation!=site_settings_generation() ||
+           cottage_ota_network_maintenance() || !wifi_ok.load() ||
            !clock_ok() ||
            std::strcmp(settings.pump_adapter,"mitsubishi_cn105_esphome")!=0 ||
            !valid_cn105_events_url(settings.cn105_url)) {
@@ -561,13 +577,13 @@ static void sse_worker(void*) {
                 xSemaphoreGive(lock_data);
                 WiFiClient* stream=request.getStreamPtr();
                 HttpChunkDecoder decoder;
-                SseStateParser parser([](const char* json,void*) {
-                    parse_sse_state(json);
-                },nullptr);
+                SseStateParser parser([](const char* json,void* context) {
+                    parse_sse_state(json,*static_cast<const Cn105LinkIdentity*>(context));
+                },&link);
                 uint32_t last_activity_ms=millis();
                 while(wifi_ok.load() && client.connected() &&
                       !cottage_ota_network_maintenance() &&
-                      settings_generation==site_settings_generation() &&
+                      settings_generation==site_settings_generation() && link.current() &&
                       static_cast<uint32_t>(millis()-last_activity_ms)<180000u) {
                     if(!stream->available()) {
                         vTaskDelay(pdMS_TO_TICKS(20));continue;
@@ -797,6 +813,28 @@ static bool cn105_selected() {
     const auto settings=site_settings_snapshot();
     return enevina::adapter_allowed_cn105_physical_writes(settings.pump_adapter);
 }
+static TemperatureSample selected_room_sample(int64_t now,const RoomTemperatureConfig& config) {
+    using namespace enevina;
+    if(config.source==RoomTemperatureSource::Ruuvi)
+        return room_temperature_sample(config,c23_temperature_sample(),{},now);
+    if(!wifi_ok.load() || !clock_ok())return {};
+    PumpRoomState state{};
+    if(cottage_midea_selected()) {
+        state=cottage_midea_room_state();
+    } else if(cn105_selected()) {
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        if(verified_cn105_link.current() && valid_cn105(pump,now)) {
+            state.source=PumpStateSource::VerifiedBus;
+            state.indoor_c=pump.indoor_c;
+            state.evidence=pump.evidence;
+        }
+        xSemaphoreGive(lock_data);
+    }
+    return room_temperature_sample(config,{},state,now);
+}
+static TemperatureSample selected_room_sample(int64_t now) {
+    return selected_room_sample(now,site_room_temperature_config());
+}
 static bool cn105_bridge_get(bool& heating,double& target) {
     if(!cn105_selected()) return false;
     const String url=cn105_local_url(
@@ -930,11 +968,12 @@ bool cottage_midea_automatic_write_current(uint32_t authorization_generation,
        site_settings_generation()!=site_generation)
         return false;
     return c23_mode_config().mode==CottageMode::Cold ||
-           valid_temperature(c23_temperature_sample(),time(nullptr));
+           selected_room_sample(time(nullptr)).received;
 }
 
 bool cottage_midea_automatic_proposal_current(BootstrapAction expected,double target_c) {
-    const auto current=active_control_proposal(time(nullptr),c23_temperature_sample());
+    const int64_t now=time(nullptr);
+    const auto current=active_control_proposal(now,selected_room_sample(now));
     return current.action==expected && (expected==BootstrapAction::Off ||
         (expected==BootstrapAction::HeatSetpoint &&
          std::fabs(current.heat_setpoint_c-target_c)<=0.001));
@@ -958,7 +997,7 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     // Never hold NetworkBudgetLease across cn105_bridge_get(): it owns its
     // own non-recursive network mutex. Revalidate after this blocking GET.
     const int64_t now=time(nullptr);
-    const auto current_temp=c23_temperature_sample();
+    const auto current_temp=selected_room_sample(now);
     // A direct CN105 HTTP GET is the live device check. An unrelated SSE
     // heartbeat or a proprietary "Verified Snapshot" is not required.
     const CottageMode current_mode=c23_mode_config().mode;
@@ -988,7 +1027,8 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
        c23_config_generation()!=config_generation ||
        site_settings_generation()!=site_generation ||
        !wifi_ok.load() || !clock_ok())return false;
-    const auto refreshed=active_control_proposal(time(nullptr),c23_temperature_sample());
+    const int64_t refreshed_utc=time(nullptr);
+    const auto refreshed=active_control_proposal(refreshed_utc,selected_room_sample(refreshed_utc));
     if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
        (refreshed.action!=BootstrapAction::HeatSetpoint ||
         std::fabs(refreshed.heat_setpoint_c-required_target)>0.001))
@@ -1128,8 +1168,8 @@ static void cottage_control_tick() {
     }
     const CottageModeConfig mode=c23_mode_config();
     const uint32_t config_generation=c23_config_generation();
-    const auto sample=c23_temperature_sample();
     const int64_t now=time(nullptr);
+    const auto sample=selected_room_sample(now);
     ArbiterOutput arbitration{};
     const auto proposal=active_control_proposal(now,sample,&arbitration);
     xSemaphoreTake(lock_data,portMAX_DELAY);
@@ -1181,8 +1221,8 @@ static void cottage_control_tick() {
     // snapshots must never be carried into the physical POST.
     if(!control_armed.load() ||
        config_generation!=c23_config_generation() ||
-       (mode.mode!=CottageMode::Cold &&
-        !valid_temperature(c23_temperature_sample(),time(nullptr)))) {
+       site_generation!=site_settings_generation() ||
+       (mode.mode!=CottageMode::Cold && !selected_room_sample(time(nullptr)).received)) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
     }
@@ -1381,8 +1421,16 @@ static uint32_t identifier_identity() {
     mix(s.cn105_url,sizeof(s.cn105_url));
     mix(s.fmi_latlon,sizeof(s.fmi_latlon));
     // The model describes the room the bound indoor sensor measures.
-    const uint32_t sensor=c23_indoor_binding_id();
+    const auto room=site_room_temperature_config();
+    const uint32_t sensor=room.source==RoomTemperatureSource::Ruuvi?c23_indoor_binding_id():0;
     for(int i=0;i<4;++i) {h^=(sensor>>(8*i))&0xFFu;h*=16777619u;}
+    // Preserve the identity of calibrations from the default uncorrected Ruuvi.
+    if(room.source!=RoomTemperatureSource::Ruuvi || room.correction_c100!=0) {
+        h^=static_cast<uint8_t>(room.source);h*=16777619u;
+        const uint16_t correction=static_cast<uint16_t>(room.correction_c100);
+        h^=correction&0xFFu;h*=16777619u;
+        h^=correction>>8;h*=16777619u;
+    }
     return h;
 }
 static std::atomic<bool> identifier_reset_requested{false};
@@ -1599,7 +1647,10 @@ static void optimizer_worker(void*) {
         observed_mode_minutes=observed_mode_duration.minutes(
             cp.mode,static_cast<uint64_t>(esp_timer_get_time()/1000),valid_cn105(cp,now));
         xSemaphoreGive(lock_data);
-        ts=c23_temperature_sample();
+        const uint32_t optimizer_site_generation=site_settings_generation();
+        ts=selected_room_sample(now);
+        if(site_settings_generation()!=optimizer_site_generation ||
+           (id && identifier_identity()!=identity))ts={};
         const auto ms=enevina_firmware::market_status();
         const auto ws=enevina_firmware::weather_status();
         const size_t pc=boundary?enevina_firmware::future_prices(prices,200):0;
@@ -1609,7 +1660,8 @@ static void optimizer_worker(void*) {
             const PumpView view=pump_view(cp,now,observed_mode_minutes);
             // (1) Close the previous slot: one identification observation.
             if(slot.open && slot.utc==slot_start-900 &&
-               slot.config_generation==c23_config_generation()) {
+               slot.config_generation==c23_config_generation() &&
+               optimizer_site_generation==site_settings_generation()) {
                 SlotObservation o{};
                 o.slot_utc=slot.utc;
                 o.indoor_valid=slot.indoor_ok && valid_temperature(ts,now);
@@ -1671,7 +1723,7 @@ static void optimizer_worker(void*) {
             pi.horizon=hz;
             pi.mode_generation=optimizer_mode_generation;
             pi.config_generation=c23_config_generation();
-            pi.settings_generation=site_settings_generation();
+            pi.settings_generation=optimizer_site_generation;
             pi.limits=owner_comfort_limits();
             pi.controls.runtime_budget_ms=1800;
             pi.controls.monotonic_now_ms=cottage_now_ms;
@@ -1691,7 +1743,8 @@ static void optimizer_worker(void*) {
             // solver was busy; never publish that old plan, even if
             // HEAT -> OFF -> HEAT returned to the same mode.
             const bool mode_changed=optimizer_mode_generation!=
-                observed_mode_generation || cp.mode!=pump.mode;
+                observed_mode_generation || cp.mode!=pump.mode ||
+                site_settings_generation()!=optimizer_site_generation;
             MpcPlanRecord record=po.record;
             if(mode_changed) {
                 record.has_plan=false;record.planning_fallback=MpcFallback::PlanInputsChanged;
@@ -1733,7 +1786,7 @@ static void optimizer_worker(void*) {
             // Diagnostic supervisor (never authorises writes).
             Health health;
             health.now_utc=now;
-            health.pump=cp;health.independent_temperature=ts;
+            health.pump=cp;health.independent_temperature=c23_temperature_sample();
             health.watchdog_ok=(millis()-web_loop_heartbeat_ms.load()<5000);
             health.calibrated=attempt;
             health.independent_freeze_protection_verified=false;
@@ -1801,14 +1854,16 @@ static void status_endpoint() {
     ms=optimizer_ms;worst=max_optimizer_ms;heap=free_heap;psram=free_psram;
     stack=stack_watermark;
     xSemaphoreGive(lock_data);
-    te=c23_temperature_sample();
     const int64_t now=time(nullptr);
+    const auto room=site_room_temperature_config();
+    const auto selected=selected_room_sample(now,room);
+    te=c23_temperature_sample();
     const auto price=enevina_firmware::market_status();
     const auto weather=enevina_firmware::weather_status();
     double total=0;
     const bool valid_total=price.current_price_valid &&
         site_slot_total_price((now/900)*900,price.current_spot_eur_per_kwh,total);
-    const BootstrapDecision bootstrap=bootstrap_preview(now,te);
+    const BootstrapDecision bootstrap=bootstrap_preview(now,selected);
     cJSON* root=cJSON_CreateObject();
     const bool midea=cottage_midea_selected();
     const bool armed=midea?cottage_midea_automatic_enabled():control_armed.load();
@@ -1961,6 +2016,12 @@ static void status_endpoint() {
     }
     if(valid_temperature(te,now))cJSON_AddNumberToObject(root,"independent_c",te.indoor_c);
     else cJSON_AddNullToObject(root,"independent_c");
+    cJSON_AddStringToObject(root,"room_temperature_source",
+        room.source==RoomTemperatureSource::Pump?"pump":"ruuvi");
+    cJSON_AddNumberToObject(root,"room_temperature_correction_c",
+        static_cast<double>(room.correction_c100)/100.0);
+    if(selected.received)cJSON_AddNumberToObject(root,"room_temperature_c",selected.indoor_c);
+    else cJSON_AddNullToObject(root,"room_temperature_c");
     cJSON_AddBoolToObject(root,"shelly_relay_on",relay_on);
     if(valid_shelly(st,now))cJSON_AddNumberToObject(root,"shelly_w",st.watts);
     else cJSON_AddNullToObject(root,"shelly_w");
@@ -2144,7 +2205,7 @@ static void plan_endpoint() {
     // change (Cold, drying block), a rebound sensor, new settings or an
     // external pump change is never shown as valid (Codex P2, PR #63).
     const MpcFallback validity=plan_validity(
-        build_arbiter_input(current_utc,c23_temperature_sample()));
+        build_arbiter_input(current_utc,selected_room_sample(current_utc)));
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.sendHeader("Cache-Control","no-store");
     web.send(200,"application/json; charset=utf-8","");
@@ -2188,7 +2249,7 @@ static void json_number_or_null(char* out,size_t n,double v,const char* f,bool o
 }
 static void mpc_endpoint() {
     const int64_t now=time(nullptr);
-    const ArbiterInput arb_in=build_arbiter_input(now,c23_temperature_sample());
+    const ArbiterInput arb_in=build_arbiter_input(now,selected_room_sample(now));
     const ArbiterOutput arb=arbitrate(arb_in);
     const MpcFallback validity=plan_validity(arb_in);
     struct PsramFree {void operator()(void* p) const {heap_caps_free(p);}};
@@ -2421,7 +2482,15 @@ static enevina::cottage::HistoryInputs history_collect() {
     xSemaphoreTake(lock_data,portMAX_DELAY);
     cp=pump;observed=sse_observed_pump;st=consumption;climate_time=climate_utc;
     xSemaphoreGive(lock_data);
-    const TemperatureSample te=c23_temperature_sample();
+    const auto room=site_room_temperature_config();
+    in.indoor_from_pump=room.source==RoomTemperatureSource::Pump;
+    in.indoor_correction_c100=room.correction_c100;
+    const bool midea=cottage_midea_selected();
+    in.indoor_source_id=in.indoor_from_pump?
+        (static_cast<uint64_t>(site_settings_endpoint_generation())<<32) |
+            (midea?cottage_midea_configuration_generation():0):
+        c23_indoor_binding_id();
+    const TemperatureSample te=selected_room_sample(now,room);
     in.indoor_valid=valid_temperature(te,now);
     in.indoor_c=te.indoor_c;
     in.sensor_online=in.indoor_valid;
@@ -2436,11 +2505,15 @@ static enevina::cottage::HistoryInputs history_collect() {
         }
     }
     const bool sse_fresh=observed.received && climate_time>0 && now>=climate_time && now-climate_time<=180;
-    in.pump_online=valid_cn105(cp,now) || sse_fresh;
-    // The setpoint comes from the VERIFIED snapshot: sse_observed_pump is never
-    // marked received (proof envelopes update `pump`), so using it left every
-    // stored setpoint missing.
-    in.setpoint_valid=valid_cn105(cp,now);in.setpoint_c=cp.setpoint_c;
+    if(midea) {
+        const auto live=cottage_midea_room_state();
+        in.pump_online=live.source==enevina::PumpStateSource::DirectLan;
+        in.setpoint_valid=in.pump_online && std::isfinite(live.setpoint_c);
+        in.setpoint_c=live.setpoint_c;
+    } else {
+        in.pump_online=valid_cn105(cp,now) || sse_fresh;
+        in.setpoint_valid=valid_cn105(cp,now);in.setpoint_c=cp.setpoint_c;
+    }
     in.power_valid=valid_shelly(st,now);in.power_w=st.watts;
     in.power_sample_utc=st.captured_utc;
     in.power_scope=static_cast<uint8_t>(site_settings_snapshot().shelly_scope);
@@ -2457,7 +2530,7 @@ static enevina::cottage::HistoryInputs history_collect() {
     const BootstrapDecision d=active_control_proposal(now,te);
     in.action=d.action==BootstrapAction::Off?1:d.action==BootstrapAction::HeatSetpoint?2:
               d.action==BootstrapAction::Hold?3:0;
-    in.armed=control_armed.load();
+    in.armed=midea?cottage_midea_automatic_enabled():control_armed.load();
     in.commands_sent=control_commands_sent.load();
     in.commands_confirmed=control_commands_confirmed.load();
     in.commands_failed=control_commands_failed.load();
@@ -2482,7 +2555,7 @@ static void freshness_endpoint() {
     // Reuse the live controller's validated total-price path, not spot-only
     // metadata. This checks the confirmed tariff, contiguous 8 slots and
     // actual proposal mode; never claim price control if bootstrap falls back.
-    const TemperatureSample te=c23_temperature_sample();
+    const TemperatureSample te=selected_room_sample(now);
     const BootstrapDecision actual=bootstrap_preview(now,te);
     in.price_decision_valid=actual.price_data_valid;
     in.no_heating_requested=actual.action==BootstrapAction::Off &&
@@ -2497,16 +2570,24 @@ static void freshness_endpoint() {
     xSemaphoreTake(lock_data,portMAX_DELAY);
     cp=pump;observed=sse_observed_pump;climate_time=climate_utc;
     xSemaphoreGive(lock_data);
-    in.sensor_bound=c23_indoor_bound();
+    in.sensor_bound=site_room_temperature_config().source==RoomTemperatureSource::Pump?
+        site.pump_adapter[0]!=0:c23_indoor_bound();
     in.sensor_fresh=valid_temperature(te,now);
     in.sensor_age_s=te.received&&now>=te.captured_utc?now-te.captured_utc:-1;
     const bool sse_fresh=observed.received && climate_time>0 && now>=climate_time && now-climate_time<=180;
     in.pump_configured=site.pump_adapter[0]!=0;
-    const bool cn105_fresh=valid_cn105(cp,now);
-    in.pump_fresh=cn105_fresh || sse_fresh;
-    in.pump_age_s=verified_pump_age(now,cn105_fresh,cp.captured_utc,
-                                    sse_fresh,climate_time);
-    in.control_armed=control_armed.load();
+    const bool midea=cottage_midea_selected();
+    if(midea) {
+        const auto live=cottage_midea_room_state();
+        in.pump_fresh=live.source==enevina::PumpStateSource::DirectLan;
+        in.pump_age_s=in.pump_fresh?now-live.evidence.received_utc:-1;
+    } else {
+        const bool cn105_fresh=valid_cn105(cp,now);
+        in.pump_fresh=cn105_fresh || sse_fresh;
+        in.pump_age_s=verified_pump_age(now,cn105_fresh,cp.captured_utc,
+                                        sse_fresh,climate_time);
+    }
+    in.control_armed=midea?cottage_midea_automatic_enabled():control_armed.load();
     const Freshness f=assess_freshness(in);
     web.sendHeader("Cache-Control","no-store");
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -2573,7 +2654,7 @@ static void timeline_endpoint() {
         web.send(200,"application/json; charset=utf-8","{\"valid\":false,\"slots\":[],\"segments\":[]}");
         return;
     }
-    const TemperatureSample indoor=c23_temperature_sample();
+    const TemperatureSample indoor=selected_room_sample(now);
     ArbiterOutput active{};
     const BootstrapDecision decision=active_control_proposal(now,indoor,&active);
     // The displayed "now" proposal must be identical to what the controller

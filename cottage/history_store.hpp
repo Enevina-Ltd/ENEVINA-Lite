@@ -136,7 +136,8 @@ enum class HistoryEventKind : uint8_t {
     CommandSent=4,     // value: how many since the last check
     CommandConfirmed=5,
     CommandFailed=6,
-    UpdateConfirmed=7  // arg: the signed release version that was confirmed good
+    UpdateConfirmed=7, // arg: the signed release version that was confirmed good
+    RoomTemperatureSourceChanged=8 // arg: 0 Ruuvi, 1 pump. value: correction in hundredths of a degree.
 };
 enum class HistorySource : uint8_t { None=0, Wifi=1, Pump=2, Sensor=3, Prices=4 };
 struct HistoryEvent {
@@ -180,6 +181,9 @@ struct HistoryInputs {
     int64_t utc=0;
     bool wifi_ok=false,pump_online=false,sensor_online=false,prices_ok=false;
     bool indoor_valid=false;   double indoor_c=0;
+    bool indoor_from_pump=false;
+    int16_t indoor_correction_c100=0;
+    uint64_t indoor_source_id=0;
     bool rh_valid=false;       double rh_pct=0;
     bool outdoor_valid=false;  double outdoor_c=0;  bool outdoor_is_forecast=false;
     bool setpoint_valid=false; double setpoint_c=0;
@@ -226,10 +230,27 @@ public:
         track_source(in,HistorySource::Prices,in.prices_ok,events);
         command_events(in,events);
         if(acc_slot_!=0&&now_slot<acc_slot_) return false;          // clock went backwards: ignore
+        const bool indoor_changed=indoor_source_known_ &&
+            (in.indoor_from_pump!=indoor_from_pump_ ||
+             in.indoor_correction_c100!=indoor_correction_c100_ ||
+             in.indoor_source_id!=indoor_source_id_);
+        const bool same_slot=now_slot==acc_slot_;
         if(acc_slot_!=0&&now_slot>acc_slot_) {
             finalized=finalize(store);
             reset(now_slot);
         } else if(acc_slot_==0) reset(now_slot);
+        if(indoor_changed || (!indoor_source_known_ &&
+                             (in.indoor_from_pump || in.indoor_correction_c100!=0))) {
+            events.put({static_cast<uint32_t>(in.utc),
+                static_cast<uint8_t>(HistoryEventKind::RoomTemperatureSourceChanged),
+                static_cast<uint8_t>(HistorySource::Sensor),in.indoor_correction_c100,
+                static_cast<uint32_t>(in.indoor_from_pump)});
+        }
+        indoor_source_known_=true;
+        indoor_source_id_=in.indoor_source_id;
+        indoor_correction_c100_=in.indoor_correction_c100;
+        indoor_from_pump_=in.indoor_from_pump;
+        if(same_slot && indoor_changed)indoor_mixed_=true;
         add(in);
         return finalized;
     }
@@ -241,6 +262,9 @@ private:
     struct Track {bool state=false;bool known=false;int64_t since=0;bool reported=true;bool lost_reported=false;int64_t lost_at=0;};
     uint32_t acc_slot_=0;
     Sum indoor_,rh_,outdoor_,power_,price_;
+    bool indoor_source_known_=false,indoor_mixed_=false,indoor_from_pump_=false;
+    int16_t indoor_correction_c100_=0;
+    uint64_t indoor_source_id_=0;
     bool have_setpoint_=false;double setpoint_=0;
     uint8_t action_=0;bool armed_=false,outdoor_forecast_=false,outdoor_measured_=false;
     bool pump_online_=false,wifi_ok_=false;
@@ -286,6 +310,7 @@ private:
 
     void reset(uint32_t slot) {
         acc_slot_=slot;indoor_=rh_=outdoor_=power_=price_=Sum{};
+        indoor_mixed_=false;
         have_setpoint_=false;action_=0;armed_=false;outdoor_forecast_=false;
         outdoor_measured_=false;pump_online_=false;wifi_ok_=false;samples_=0;
         power_scope_=0;power_scope_set_=false;power_mixed_=false;
@@ -347,7 +372,7 @@ private:
         if(samples_==0||acc_slot_==0) return false;
         HistoryRecord r;
         r.slot=acc_slot_;
-        if(indoor_.any()) r.indoor_c100=static_cast<int16_t>(std::lround(indoor_.avg()*100));
+        if(indoor_.any() && !indoor_mixed_) r.indoor_c100=static_cast<int16_t>(std::lround(indoor_.avg()*100));
         if(rh_.any()) r.rh_c100=static_cast<uint16_t>(std::lround(rh_.avg()*100));
         if(outdoor_.any()) r.outdoor_c100=static_cast<int16_t>(std::lround(outdoor_.avg()*100));
         if(have_setpoint_) r.setpoint_c10=static_cast<int16_t>(std::lround(setpoint_*10));

@@ -4,11 +4,13 @@
 // device, so the existing pilot build keeps working unchanged.
 #include "cottage/site_settings.hpp"
 #include "cottage/comfort_transaction.hpp"
+#include "cottage/telemetry.hpp"
 class WebServer;
 
 void site_settings_initialize();             // once in setup(), before workers
 enevina::cottage::SiteSettings site_settings_snapshot(); // thread-safe copy
 uint32_t site_settings_generation();         // increments on every commit
+enevina::cottage::RoomTemperatureConfig site_room_temperature_config();
 // Increments only when the pump identity changes (CN105 URL or adapter).
 // Armed CN105 control is bound to the identity it was enabled for.
 uint32_t site_settings_endpoint_generation();

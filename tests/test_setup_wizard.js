@@ -23,7 +23,7 @@ assert.deepEqual(missing,[],'missing English translations');
 
 const ctx={document:{},state:{},uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,wzSavePump,WZ};',ctx);
+vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,wzSavePump,roomTempFields,WZ};',ctx);
 const A=ctx.api;
 
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
@@ -135,6 +135,17 @@ console.log('manual-location summary ok');
 }
 // The three profile descriptions never promise a saving figure.
 for(const p of A.WZ_PROFILES)assert(!/%|€|EUR/.test(p.text),p.id);
+{
+  assert.deepEqual(JSON.parse(JSON.stringify(A.roomTempFields('pump','-0,75'))),
+    {source:'pump',correction_c:'-0.75'});
+  assert.throws(()=>A.roomTempFields('other','0'));
+  assert.throws(()=>A.roomTempFields('ruuvi','5.01'));
+  assert.throws(()=>A.roomTempFields('ruuvi','0.751'));
+  const check=value=>A.wzSummary({status:{air:{sensor_fresh:true},room_temperature_source:'pump',
+    room_temperature_c:value}}).find(row=>row.key==='sensor');
+  assert.equal(check(21).state,'ok');
+  assert.equal(check(null).state,'warn');
+}
 console.log('comfort step helpers ok');
 
 // ---- devices step: sensors and meter ---------------------------------------

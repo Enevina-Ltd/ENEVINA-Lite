@@ -16,7 +16,7 @@ and operating-mode changes below have Node and firmware-build evidence.
 | 3 Market area | `price_zone` | Labels like `Sweden – Stockholm (SE3)` / `Ruotsi – Tukholma (SE3)`. Required, no default for multi-zone countries. |
 | 4 Contract | tariff keys, `tariff_confirmed` | Amounts in the zone currency's minor unit (snt / öre / øre / gr). Nothing is pre-filled with invented values; *Skip* leaves the contract marked unconfirmed. |
 | 5 Heat pump | `pump_adapter`, `cn105_url`, local Midea credentials | Select the connection. For Midea, discover a compatible appliance or enter its address and device ID. V2 uses local discovery details. V3 also needs the device's existing local token and key. Save and verify a fresh state read before continuing. |
-| 6 Temperature and optimization | Operating mode, room target, comfort limits and profile | Choose the operating mode, room target and profile on this screen. Continuing saves the mode, target, and comfort limits together using the durable Comfort journal. |
+| 6 Temperature and optimization | Operating mode, room target, comfort limits and profile | Choose RuuviTag or the heat pump as the room temperature source, with an optional correction from −5 to +5 °C. Then choose the operating mode, room target and profile. Continuing saves the mode, target, and comfort limits together using the durable Comfort journal. |
 | 7 Sensors and meter | RuuviTag binding, `shelly_url`, meter scope | Scan for sensors or enter the details manually. Confirm whether the optional meter measures the heat pump. |
 | 8 Summary | `setup_complete`, `setup_step` | Live checklist: ok / needs attention / not set / optional, with the real reason (e.g. price service error codes). The dashboard opens even if items remain. |
 
@@ -30,6 +30,20 @@ and operating-mode changes below have Node and firmware-build evidence.
   real reason.
 * All wizard text is Finnish with a complete English dictionary entry
   (`tests/test_setup_wizard.js` fails if a literal or caption is missing).
+
+## Room temperature source
+
+RuuviTag is the default and supplies humidity data for drying mode. The heat
+pump choice uses a fresh Midea V2/V3 0xAC LAN reading or a source-verified
+CN105 UART observation from the current bridge. A receipt timestamp from an
+ordinary CN105 SSE snapshot does not verify a UART read. If the chosen source
+stops reporting, ordinary automatic heating waits for a fresh reading.
+Manual pump controls remain available under the pump's own requirements.
+
+The correction applies to the room temperature used for control and to
+quarter-hour history. Choosing a different source or correction restarts
+calibration. History records the change and leaves the indoor reading blank
+in a quarter that spans the change.
 
 ## Evidence
 
