@@ -435,5 +435,41 @@ int main() {
     assert(observed.profile.model_known && observed.profile.new_temperature_layout);
     assert(observed.setpoint_c==25.5 && observed.has_indoor &&
            std::abs(observed.indoor_c-21.3)<0.001 && !observed.has_outdoor);
+    // Internal model codes select only the exact documented layout exception;
+    // they are not retail-model names or an allowlist of supported OEMs.
+    const auto advertise=[](const char* model,uint16_t subtype,uint8_t type=0xac) {
+        Bytes metadata(80,0);metadata[4]=0x2c;metadata[5]=0x19;
+        std::memcpy(metadata.data()+17,model,8);
+        char network[20]{};std::snprintf(network,sizeof(network),"net_%02x_TEST",type);
+        const size_t size=std::strlen(network);metadata[40]=static_cast<uint8_t>(size);
+        std::memcpy(metadata.data()+41,network,size);
+        metadata[57+size]=static_cast<uint8_t>(subtype);
+        metadata[58+size]=static_cast<uint8_t>(subtype>>8);
+        uint8_t timestamp[8]{};
+        assert(inner_encode(123456,metadata.data(),metadata.size(),timestamp,midea_test::discovery));
+    };
+    for(const uint16_t subtype:{1u,2u}) {
+        reset();bb_model=subtype==1;advertise("23096633",subtype);
+        assert(read_device_v2("10.0.0.2",123456,observed,configuration_generation)==ReadStatus::Ok);
+        assert(observed.profile.model_known && observed.profile.subtype==subtype);
+        assert(observed.profile.family==(subtype==1?AcProtocol::Subprotocol:AcProtocol::Legacy));
+        Bytes first_query;
+        assert(inner_decode(midea_test::writes.front().data(),midea_test::writes.front().size(),first_query));
+        // Inspect the FIRST query, so fallback discovery cannot mask a missing
+        // exact-model selection rule.
+        assert(first_query[10]==(subtype==1?0xaa:0x41));
+    }
+    reset();advertise("22251759",32773);
+    assert(read_device_v2("10.0.0.2",123456,observed,configuration_generation)==ReadStatus::Ok);
+    assert(!observed.profile.new_temperature_layout && observed.setpoint_c==22 &&
+           observed.has_indoor && observed.indoor_c==21 && observed.has_outdoor && observed.outdoor_c==15);
+    reset();advertise("NEW0OEM1",44204);
+    assert(read_device_v2("10.0.0.2",123456,observed,configuration_generation)==ReadStatus::Ok);
+    assert(observed.profile.family==AcProtocol::Legacy && observed.setpoint_c==22);
+    for(const uint8_t type:{0xcc,0xc3}) {
+        reset();advertise("171PNL01",1,type);
+        assert(read_device_v2("10.0.0.2",123456,observed,configuration_generation)==ReadStatus::UnsupportedState);
+        assert(midea_test::writes.empty() && sets==0);
+    }
     std::cout<<"Midea firmware transport negotiation PASS\n";
 }

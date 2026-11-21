@@ -7,6 +7,8 @@
 // 425bba4a05b74b619d31bf2d8b5a6baf030aa042, devices/ac/message.py;
 // mill1000/midea-msmart 2026.11.0, commit dd0994755bb078b613837038f2d67d97fab133ab,
 // msmart/device/AC/command.py. See THIRD_PARTY_NOTICES.md for licenses.
+// Model 220F4047 C0 temperatures: wuwentao/midea-lan, commit
+// e414af70d57cd7fbbac1ddcf50e700077478a28c, midealan/devices/ac/__init__.py.
 namespace enevina::midea {
 namespace {
 uint8_t crc8(const uint8_t* bytes,size_t n) {
@@ -70,6 +72,10 @@ bool uses_new_temperatures(const AcProfile& profile) {
     return profile.new_temperature_layout && profile.model_known &&
         std::memcmp(profile.model.data(),"22013279",8)==0 && profile.model[8]==0;
 }
+bool uses_c0_temperature_correction(const AcProfile& profile) {
+    return profile.model_known && profile.subtype_known && profile.subtype==8 &&
+        std::memcmp(profile.model.data(),"220F4047",8)==0 && profile.model[8]==0;
+}
 bool parse_classic(const uint8_t* frame,size_t n,State& state) {
     const uint8_t* p=nullptr;size_t length=0;
     if(!legacy_body(frame,n,p,length))return false;
@@ -102,6 +108,15 @@ bool parse_classic(const uint8_t* frame,size_t n,State& state) {
     next.power_saving=(p[8]&8)!=0;
     if(c0) {
         next.natural_wind=(p[9]&2)!=0;
+        if(uses_c0_temperature_correction(next.profile)) {
+            // midea_ac_lan#998: this exact model/subtype omits the +50 offset.
+            // Upstream body includes the inner CRC, so its len(body)>20
+            // decimal guard means at least 20 content bytes here.
+            const double decimal=length>=20?(p[15]&0x0f)/10.0:0.0;
+            next.has_indoor=p[11]!=0xff;
+            next.indoor_c=next.has_indoor?p[11]/2.0+decimal:0.0;
+            if(p[12]==0x20) { next.has_outdoor=false;next.outdoor_c=0; }
+        }
         if(length>22) {
             next.comfort_mode=(p[22]&1)!=0;next.comfort_mode_known=true;
         }

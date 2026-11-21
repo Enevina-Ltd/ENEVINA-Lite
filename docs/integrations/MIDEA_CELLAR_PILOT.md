@@ -1,28 +1,30 @@
 # Enevina Lite — kellarin Midea, paikallisen LAN-yhteyden ensimmäinen pilotti
 
-**19.11.2026 · Enevina Liten Midea V2/V3 -lukuadapterien lähdekoodi on yhdistetty `main`-haaraan (PR #48 ja #51), mutta Lite-laitteen fyysinen Frezzer Nordic -yhteystesti on edelleen tekemättä.** Käyttäjän kellarin **Midea-ilmalämpöpumppuun on jo toteutettu ja fyysisesti todennettu paikallinen LAN-lukuyhteys Kaelion-Core-repossa 8.–9.9.2026**. Liten oma ESP32-S3-adapteri ja uusi nykyhetken LAN-/WAN-estotesti ovat edelleen tekemättä. Sisäyksikön tarkka mallikoodi, Wi-Fi-moduuli ja firmware ovat yhä tuntemattomat. Aiemmin todettu Core-yhteys **ei yksin todista pilvetöntä ensimmäistä paritusta tai Liten toimivuutta**. Älä muuta pumpun asetuksia ilman erillistä hyväksyntää.
+**21.11.2026 · Frezzer Nordicin paikallinen Midea V3 -tilaluku ja rajattu manuaalinen asetuslämpötilan muutos on nyt todennettu myös Litellä.** Firmware `2026112102` muutti sammutetun, lämmitystilaan asetetun pumpun pyynnön **22 → 23 → 22 °C**. Sekä Liten tuore takaisinluku että erillinen Coren tilakysely vahvistivat molemmat muutokset. Testiasetukset palautettiin ja tilapäinen ohjauslupa poistettiin. Katso [kenttätestin tulos ja tarkat rajaukset](../field/MIDEA_LAN_CONTROL_20261121.md) ja [ajantasainen malliluettelo](MIDEA_MODEL_CATALOG.md).
+
+Tämä dokumentti säilyttää myös alkuperäisen lukupilotin suunnitelman. WAN-estokoetta, pilvetöntä ensimmäistä paritusta, kompressorin käyntiä tai kaikkia ohjaustoimintoja ei ole osoitettu kyseisellä kokeella. Tarkka vähittäismyyntimalli ja Wi-Fi-moduulin laiteversio ovat edelleen kirjaamatta; aiemman Coren lukutestin lisäksi käytössä on nyt erillinen Liten oma näyttö.
 
 ## Tavoite
 
 Selvittää, voiko Enevina Lite ESP32-S3 N16R8 ottaa suoran paikallisen yhteyden **Midean omaan Wi-Fi-moduuliin** ja lukea tuoreen tilan myös, kun pumpun internet-yhteys on estetty. **Erillistä IR-lähetintä, relettä tai ohjainboksia ei lisätä.** Testityökalu saa väliaikaisesti toimia PC:llä; lopullinen firmware on itsenäinen C++/ESP-IDF.
 
-## Inventaario (täytetään vasta kenttähavainnosta)
+## Inventaario (päivitetty 21.11.2026)
 
 | Tieto | Havainto |
 | --- | --- |
 | Sijainti | Kellarissa oleva Midea |
-| Sisäyksikön mallinumero / sarja | EI TUNNETA |
+| Sisäyksikön mallinumero / sarja | Frezzer Nordic; tarkka vähittäismyyntimalli ei kirjattu |
 | Wi-Fi-sovittimen malli, laiteohjelmisto ja mahdollinen USB-tikku | EI TUNNETA |
 | Valmistajan sovellus | EI TUNNETA |
-| Wi-Fi-yhteys | Paikallinen LAN-yhteys on todistettu Core-ympäristössä syyskuussa 2026; taajuutta ei vahvistettu |
+| Wi-Fi-yhteys | Paikallinen LAN-yhteys todennettu Corella 9/2026 ja Litellä 21.11.2026; taajuutta ei vahvistettu |
 | Paikallinen IP (ei kirjata GitHubiin) | Vaihtui DHCP:ssä syyskuussa 2026; uusi osoite löydettiin automaattisesti PR #613:ssa; ajantasainen IP tarkistettava paikallisesti |
-| Midea-protokolla V1/V2/V3 | Kellarin Frezzer Nordic on jo varmennettu Corella Midea V3 -LAN-yhteytenä; Lite V2/V3 -lukuadapterit eivät ole vielä kenttävarmennettuja |
-| LAN-tyyppi `0xAC`, `supported` | VARMENTAMATTA |
-| Autentikointi ja V3 `token/key` | Core-koodi tukee tallennettuja laitekohtaisia tunnuksia; syyskuun LAN-luku onnistui autentikoidusti aiemmin tallennetuilla tunnuksilla. Varsinainen protokollaversio ja avainten alkuperä **ei varmistettu** |
-| Mallin asetuslämpötila-/tila-/tehotiedot | Syyskuun lukutilanne: tavoite 22 °C, huonelämpötila 24,5 °C, ulkolämpötila 14 °C; teho/energiakenttien luotettavuutta ei osoitettu. Erillinen Shelly Plus 1PM -mittari |
-| Read-only discover / autentikointi / tilaluku | **Core: TODETTU 9.9.2026**, mukaan lukien DHCP-uudelleenhaku ja tunnistetun laitteen autentikoitu uusi tilaluku. **Lite: EI TESTATTU** |
+| Midea-protokolla V1/V2/V3 | V3 varmennettu Corella ja Litellä; V2 ei ole tämän laitteen kenttätesti |
+| LAN-tyyppi `0xAC`, `supported` | `0xAC`, classic C0, lyhyt tilavastaus; Liten oma onnistunut autentikoitu tilaluku ja rajattu SET |
+| Autentikointi ja V3 `token/key` | Lite ja Core käyttivät ennestään tallennettuja laitekohtaisia V3-tunnuksia; avainten alkuperäistä pilvetöntä hankintaa ei osoitettu |
+| Mallin asetuslämpötila-/tila-/tehotiedot | Liten 21.11. testi: OFF / HEAT, 22 → 23 → 22 °C. Teho/energiakenttien luotettavuutta ei osoitettu. Erillinen Shelly Plus 1PM -mittari |
+| Read-only discover / autentikointi / tilaluku | **Core: TODETTU 9.9.2026**, mukaan lukien DHCP-uudelleenhaku. **Lite: TODETTU 21.11.2026**, autentikoitu tuore V3-tilaluku; haun käyttöliittymän mallikentät ovat erillinen myöhempi muutos |
 | WAN-eston jälkeinen tuore LAN-tilaluku | EI TESTATTU |
-| Fyysiset ohjauskirjoitukset | **EI SALLITTU tässä pilotin vaiheessa** |
+| Fyysiset ohjauskirjoitukset | Käyttäjän hyväksymä rajattu **22 → 23 → 22 °C PASS**; pumppu pysyi OFF-tilassa. Testin tilapäinen lupa poistettu; automaattiohjaus pois |
 
 ## Aiempi toimiva paikallisintegraatio: Kaelion-Core (8.–9.9.2026)
 
@@ -36,7 +38,12 @@ Selvittää, voiko Enevina Lite ESP32-S3 N16R8 ottaa suoran paikallisen yhteyden
 - [PR #622](https://github.com/linkki79-pixel/Kaelion-Core/pull/622): kellarin Ruuvi-anturin todellinen `ext_room_c=22.43` °C-luku, 162 kohdennettua ja 2329 laajempaa testiä PASS. Ei fyysisiä ohjauskirjoituksia.
 - Kellarin Midean sähkötehon erillinen mittaus: **Shelly Plus 1PM SNSW-001P16EU** (9/2026). Shellyä ei saa käyttää syöttöreleenä hintojen perusteella.
 
-**Tärkeä tekninen erottelu:** Core-koodi vaatii V3:ssa tunnistimen, tokenin ja avaimen, mutta jo toteutettu autentikoitu LAN-käyttö ei yksin todista, että tunnukset saatiin alun perin pilvettömästi. Laitekohtainen V1/V2/V3-versio ja salaisuuksien elinkaari tutkitaan olemassa olevan tuotantokonfiguraation turvallisesti sensuroiduista tiedoista; niitä ei kopioida GitHubiin. **Älä nollaa tai parita kellarin pumppua uudelleen.** Ensisijainen tehtävä on sovittaa toimivaksi osoitettu protokolla erilliseksi Liten C++/ESP32-adapteriksi.
+**Tärkeä tekninen erottelu:** Core-koodi vaatii V3:ssa tunnistimen, tokenin ja avaimen, mutta jo toteutettu autentikoitu LAN-käyttö ei yksin todista, että tunnukset saatiin alun perin pilvettömästi. V3 on nyt varmennettu myös Litellä. Salaisuuksien elinkaaren tiedot tarkistetaan olemassa olevasta konfiguraatiosta; niitä ei kopioida GitHubiin. **Älä nollaa tai parita pumppua uudelleen.** Liten C++/ESP32-adapteri on toteutettu; jäljellä olevat kokeet erotetaan yllä jo tehdystä testistä.
+
+## Alkuperäinen lukupilotin suunnitelma (historiallinen)
+
+Alla olevat vaiheet kuvaavat ensimmäistä, vain lukuun rajattua suunnitelmaa.
+Ne eivät kumoa yllä kirjattua myöhempää, erikseen hyväksyttyä ohjauskoetta.
 
 ## Vaihe A — passiivinen inventaario
 
