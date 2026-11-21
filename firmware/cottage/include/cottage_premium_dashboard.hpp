@@ -2254,7 +2254,8 @@ function showStatus(){
       ' · '+translateFi('Sillalta kuitattu')+' '+(s.control_commands_confirmed||0)+
       ' · '+translateFi('Lähetys- tai kuittausvirheet')+' '+(s.control_commands_failed||0));
   }
-  $('control-enable').disabled=s.control_armed===true || !a.config_token;
+  $('control-enable').disabled=s.control_armed===true || !a.config_token ||
+    state.site?.pump_adapter==='gree_ewpe_lan';
   $('control-disable').disabled=s.control_armed!==true || !a.config_token;
   text('device-version',s.firmware_version||'—');text('device-wifi',number(s.wifi_rssi_dbm)!==null?fmt(s.wifi_rssi_dbm,0)+' dBm':'Ei Wi-Fiä');
   const hasSse=s.cn105_sse_climate_received===true;
@@ -2810,7 +2811,7 @@ async function reloadSite(){try{
   const r=rows.insertRow();[a.manufacturer+' · '+a.models,a.link,maturityText[a.maturity]||a.maturity,a.measurements,a.commands].forEach(v=>{r.insertCell().textContent=v;});}
  sel.value=s.pump_adapter||'';$('midea-v3-card').hidden=s.pump_adapter!=='midea_lan';
  $('gree-card').hidden=s.pump_adapter!=='gree_ewpe_lan';
- $('control-enable').disabled=!state.status||!!state.status.control_armed;
+ $('control-enable').disabled=!state.status||!!state.status.control_armed||s.pump_adapter==='gree_ewpe_lan';
  }catch(e){text('site-feedback','Asetuksia ei voitu lukea laitteelta.');}}
 $('site-adapter').addEventListener('change',()=>{$('midea-v3-card').hidden=$('site-adapter').value!=='midea_lan';});
 $('site-save').addEventListener('click',async()=>{const token=state.status&&state.status.air&&state.status.air.config_token;

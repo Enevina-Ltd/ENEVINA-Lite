@@ -7,7 +7,7 @@
 
 namespace enevina::gree {
 constexpr uint16_t port=7000;
-constexpr size_t max_packet=1536;
+constexpr size_t max_packet=1400;
 constexpr std::string_view scan_packet=R"({"t":"scan"})";
 enum class Cipher : uint8_t { Ecb=1, Gcm=2 };
 enum class Mode : uint8_t { Auto=0, Cool=1, Dry=2, Fan=3, Heat=4 };

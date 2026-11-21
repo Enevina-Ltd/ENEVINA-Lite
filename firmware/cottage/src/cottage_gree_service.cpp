@@ -42,6 +42,7 @@ struct Link {
 struct Sample {
     std::optional<Reading> reading;
     int64_t utc=0;
+    uint32_t received_ms=0;
     Link link{};
     uint32_t config=0;
 };
@@ -73,9 +74,9 @@ Link active_link() {
     return {site_settings_endpoint_generation(),cottage_wifi_link_generation()};
 }
 bool configured(const Config& c) {return c.version==config_version;}
-bool fresh(const Sample& s,uint32_t revision,int64_t now) {
+bool fresh(const Sample& s,uint32_t revision) {
     return s.reading && s.link.current() && s.config==revision &&
-        s.utc>=1700000000 && now>=s.utc && now-s.utc<=fresh_s;
+        static_cast<uint32_t>(millis()-s.received_ms)<=fresh_s*1000;
 }
 
 bool local_peer(const IPAddress& ip) {
@@ -214,7 +215,7 @@ void status(WebServer& web) {
     xSemaphoreTake(guard,portMAX_DELAY);
     const State s=state;
     xSemaphoreGive(guard);
-    const bool is_fresh=fresh(s.sample,s.revision,time(nullptr));
+    const bool is_fresh=fresh(s.sample,s.revision);
     auto* root=cJSON_CreateObject();
     if(!root) {web.send(503,"application/json","{}");return;}
     cJSON_AddBoolToObject(root,"configured",configured(s.saved));
@@ -233,7 +234,7 @@ void status(WebServer& web) {
         if(r.setpoint_c)cJSON_AddNumberToObject(root,"target_c",*r.setpoint_c);
         if(r.indoor_c)cJSON_AddNumberToObject(root,"indoor_c",*r.indoor_c);
         if(r.frost)cJSON_AddBoolToObject(root,"frost",*r.frost);
-        cJSON_AddNumberToObject(root,"read_utc",s.sample.utc);
+        if(s.sample.utc>=1700000000)cJSON_AddNumberToObject(root,"read_utc",s.sample.utc);
     }
     if(auto* found=cJSON_AddArrayToObject(root,"discovered");found && s.scan_link.current()) {
         for(size_t i=0;i<s.candidate_count;++i) {
@@ -316,14 +317,14 @@ enevina::PumpRoomState cottage_gree_room_state() {
     const auto revision=state.revision;
     const auto cipher=state.saved.cipher;
     xSemaphoreGive(guard);
-    if(!fresh(s,revision,time(nullptr)))return out;
+    if(!fresh(s,revision))return out;
     out.source=PumpStateSource::DirectLan;
     out.protocol=cipher==Cipher::Gcm?PumpRoomProtocol::GreeGcm:PumpRoomProtocol::GreeEcb;
     out.type=HeatPumpType::AirToAir;
     out.endpoint_generation=s.link.endpoint;
     out.link_generation=s.link.wifi;
     out.configuration_generation=revision;
-    out.evidence={s.utc,0,false};
+    if(s.utc>=1700000000)out.evidence={s.utc,0,false};
     const auto& r=*s.reading;
     out.mode=!r.power?PumpRoomMode::Off:r.mode==Mode::Heat?PumpRoomMode::Heat:PumpRoomMode::Other;
     if(r.setpoint_c)out.setpoint_c=*r.setpoint_c;
@@ -391,10 +392,10 @@ void cottage_gree_worker(void*) {
                 if(store_config(candidate)) {
                     state.saved=candidate;
                     ++state.revision;
-                    state.sample={reading,time(nullptr),job.link,state.revision};
+                    state.sample={reading,time(nullptr),millis(),job.link,state.revision};
                 } else result="store_failed";
             } else if(job.work==Work::Read) {
-                state.sample={reading,time(nullptr),job.link,state.revision};
+                state.sample={reading,time(nullptr),millis(),job.link,state.revision};
             }
             state.result=result;
         } else state.result="link_changed";

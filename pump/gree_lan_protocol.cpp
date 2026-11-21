@@ -14,7 +14,7 @@ namespace enevina::gree {
 namespace {
 using Json=std::unique_ptr<cJSON,decltype(&cJSON_Delete)>;
 using Tag=std::array<uint8_t,16>;
-constexpr size_t max_inner=1000;
+constexpr size_t max_inner=900;
 constexpr unsigned char nonce[]={0x54,0x40,0x78,0x44,0x49,0x67,0x5a,0x51,0x6c,0x5e,0x63,0x13};
 constexpr unsigned char aad[]="qualcomm-test";
 constexpr Key ecb_default={'a','3','K','8','B','x','%','2','r','8','Y','7','#','x','D','h'};
