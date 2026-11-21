@@ -3,6 +3,7 @@
 // This pure policy does not know about HTTP, NVS, Wi-Fi, or hardware.
 #include "cottage/price_bootstrap.hpp"
 #include "cottage/mitsubishi_climate_command.hpp"
+#include "cottage/telemetry.hpp"
 #include "pump/pump_adapter.hpp"
 #include <cmath>
 #include <cstdint>
@@ -64,6 +65,28 @@ struct ControlProposal {
     ControlBlock gate=ControlBlock::Disabled;
     ControlStep step=ControlStep::None;
     double target_c=0;
+};
+struct MitsubishiCommandPhase {
+    ControlStep step=ControlStep::None;
+    double target_c=0;
+    int64_t utc=0;
+};
+// Only an accepted UART snapshot reaches observe(). The oldest source
+// timestamp must follow the HTTP dispatch, so a buffered or same-second
+// poll cannot confirm the command. Gateway REST acknowledgement is separate.
+struct MitsubishiCommandReadback {
+    MitsubishiCommandPhase requested{},sent{},confirmed{};
+    void observe(const CN105Telemetry& reading,int64_t now) {
+        constexpr int64_t window_s=90;
+        if(!reading.received || sent.utc<=0 || confirmed.utc>sent.utc ||
+           reading.evidence.source_utc<=sent.utc || now-sent.utc>window_s ||
+           !verified_fresh(reading.evidence,now,window_s))return;
+        const bool target=std::fabs(reading.setpoint_c-sent.target_c)<=0.001;
+        const bool matches=(sent.step==ControlStep::Setpoint && target) ||
+            (sent.step==ControlStep::SetHeat && reading.mode==ObservedPumpMode::Heat && target) ||
+            (sent.step==ControlStep::SetOff && reading.mode==ObservedPumpMode::Off);
+        if(matches)confirmed={sent.step,sent.target_c,reading.evidence.source_utc};
+    }
 };
 enum class HeatTransition : uint8_t { SeparateSetpoint, Combined };
 inline ControlProposal choose_pump_control(const ControlSnapshot& s,

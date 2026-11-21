@@ -118,8 +118,10 @@ class ShadowSurfaceTests(unittest.TestCase):
                        "market_last_fetch_utc","weather_last_fetch_utc",
                        "independent_freeze_protection_verified", "safety_reason"):
             self.assertIn(marker,self.main)
-        self.assertIn('cJSON_AddBoolToObject(root,"physical_writes",control_armed.load())',self.main)
-        self.assertIn('cJSON_AddBoolToObject(root,"control_armed",control_armed.load())',self.main)
+        status=self.main.split("static void status_endpoint()",1)[1]
+        self.assertIn("const bool armed=midea?cottage_midea_automatic_enabled():control_armed.load();",status)
+        self.assertIn('cJSON_AddBoolToObject(root,"physical_writes",armed)',status)
+        self.assertIn('cJSON_AddBoolToObject(root,"control_armed",armed)',status)
         self.assertIn('health.independent_freeze_protection_verified=false;',self.main)
 
 if __name__=="__main__":
