@@ -306,10 +306,24 @@ namespace {
 bool feature_available(const State& state,AcFeature feature,uint32_t field) {
     return state.profile.capabilities.supports(feature,(state.properties_known&field)!=0);
 }
-bool classic_preservation_known(const State& state) {
-    return state.fahrenheit_known && state.follow_me_known &&
-        state.independent_aux_heat_known && state.target_humidity_known &&
-        state.comfort_mode_known && !state.classic_aux_bit_ambiguous;
+State classic_command_defaults(State state) {
+    // Match msmart AirConditioner.apply() for fields absent from a short C0
+    // or A0. This copy is only the outgoing command, never an observation.
+    // midea-local likewise defaults its unreported frost/comfort flags off.
+    if(!state.fahrenheit_known)state.fahrenheit=false;
+    if(!state.follow_me_known)state.follow_me=false;
+    if(!state.independent_aux_heat_known)state.independent_aux_heat=false;
+    if(!state.target_humidity_known)state.humidity=40;
+    if(!state.comfort_mode_known)state.comfort_mode=false;
+    if(!state.freeze_protection_known)state.freeze_protection=false;
+    return state;
+}
+template<class T>
+bool observed_optional_matches(bool expected_known,bool actual_known,T expected,T actual) {
+    // Losing a previously observed field cannot prove preservation. A field
+    // absent from both reads cannot veto a confirmed basic-state command.
+    // If a field appears after SET, check it against the value we encoded.
+    return (!expected_known || actual_known) && (!actual_known || expected==actual);
 }
 bool angle_value(uint8_t value) {
     return value==0 || value==1 || value==25 || value==50 || value==75 || value==100;
@@ -472,7 +486,8 @@ bool ac_set_state_command(const State& observed,const ControlPatch& patch,uint8_
         return !frame.empty();
     }
     unsupported_frost(target);
-    if(!target.freeze_protection_known || !classic_preservation_known(target))return false;
+    if(target.classic_aux_bit_ambiguous)return false;
+    target=classic_command_defaults(target);
     // Keep the previously verified msmart extended-range 0x40 encoding and
     // add the fields described by the HA protocol reference. This avoids
     // wrapping temperatures outside the primary 17..30 C nibble range.
@@ -505,19 +520,27 @@ bool ac_control_confirmed(const State& before,const State& after,const ControlPa
     if(patch.changed&AcPropertyFields)return true;
     if(expected.eco!=actual.eco || expected.turbo!=actual.turbo ||
        expected.sleep!=actual.sleep || expected.purifier!=actual.purifier ||
-       expected.follow_me!=actual.follow_me || expected.aux_heat!=actual.aux_heat ||
+       expected.aux_heat!=actual.aux_heat ||
        expected.dry!=actual.dry)return false;
     if(before.profile.family==AcProtocol::Subprotocol) {
-        return !before.bb_timer_known ||
-            (after.bb_timer_known && before.bb_timer==after.bb_timer);
+        return expected.follow_me==actual.follow_me && (!before.bb_timer_known ||
+            (after.bb_timer_known && before.bb_timer==after.bb_timer));
     }
-    if(!classic_preservation_known(expected) || !classic_preservation_known(actual) ||
-       expected.humidity!=actual.humidity || !expected.freeze_protection_known ||
-       !actual.freeze_protection_known ||
-       expected.freeze_protection!=actual.freeze_protection)return false;
-    return expected.independent_aux_heat==actual.independent_aux_heat &&
-        expected.fahrenheit==actual.fahrenheit && expected.power_saving==actual.power_saving &&
-        expected.natural_wind==actual.natural_wind && expected.comfort_mode==actual.comfort_mode &&
+    if(expected.classic_aux_bit_ambiguous || actual.classic_aux_bit_ambiguous)return false;
+    expected=classic_command_defaults(expected);
+    return observed_optional_matches(expected.target_humidity_known,actual.target_humidity_known,
+                                     expected.humidity,actual.humidity) &&
+        observed_optional_matches(expected.freeze_protection_known,actual.freeze_protection_known,
+                                  expected.freeze_protection,actual.freeze_protection) &&
+        observed_optional_matches(expected.fahrenheit_known,actual.fahrenheit_known,
+                                  expected.fahrenheit,actual.fahrenheit) &&
+        observed_optional_matches(expected.follow_me_known,actual.follow_me_known,
+                                  expected.follow_me,actual.follow_me) &&
+        observed_optional_matches(expected.independent_aux_heat_known,actual.independent_aux_heat_known,
+                                  expected.independent_aux_heat,actual.independent_aux_heat) &&
+        observed_optional_matches(expected.comfort_mode_known,actual.comfort_mode_known,
+                                  expected.comfort_mode,actual.comfort_mode) &&
+        expected.power_saving==actual.power_saving && expected.natural_wind==actual.natural_wind &&
         expected.smart_eye==actual.smart_eye;
 }
 } // namespace enevina::midea

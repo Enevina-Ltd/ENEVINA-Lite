@@ -62,17 +62,19 @@ int main() {
     assert(control_request_error(inferred,inferred_basic)==nullptr);
     assert(observed_control_field(state,ControlFreezeProtection));
 
-    // An A0-only sample does not provide the classic preserved fields. A
-    // suggested frost choice must not imply those other missing bits are safe.
+    // Like msmart/HA, an A0-only or short-C0 sample can use command defaults.
+    // Admitting a command must not manufacture observed optional fields.
     State incomplete=state;
     incomplete.fahrenheit_known=incomplete.follow_me_known=false;
     incomplete.independent_aux_heat_known=incomplete.target_humidity_known=false;
     incomplete.freeze_protection_known=false;
-    assert(!std::strcmp(control_request_error(incomplete,inferred_basic),"UNSUPPORTED_STATE"));
+    assert(control_request_error(incomplete,inferred_basic)==nullptr);
+    assert(!incomplete.target_humidity_known && !incomplete.freeze_protection_known);
     State ambiguous=state;ambiguous.classic_aux_bit_ambiguous=true;
     assert(!std::strcmp(control_request_error(ambiguous,inferred_basic),"UNSUPPORTED_STATE"));
     State missing_comfort=state;missing_comfort.comfort_mode_known=false;
-    assert(!std::strcmp(control_request_error(missing_comfort,inferred_basic),"UNSUPPORTED_STATE"));
+    assert(control_request_error(missing_comfort,inferred_basic)==nullptr);
+    assert(!missing_comfort.comfort_mode_known);
     ControlPatch property{};property.changed=ControlDisplay;property.display=true;
     assert(control_request_error(incomplete,property)==nullptr);
     assert(control_request_error(ambiguous,property)==nullptr);
@@ -135,7 +137,8 @@ int main() {
     state.freeze_protection_known=false;
     state.properties_known&=~ControlFreezeProtection;
     ControlPatch basic{};basic.changed=ControlTemperature;basic.setpoint_c=23;
-    assert(!std::strcmp(control_request_error(state,basic),"MISSING_FROST_STATE"));
+    assert(control_request_error(state,basic)==nullptr);
+    assert(!state.freeze_protection_known && !observed_control_field(state,ControlFreezeProtection));
     ControlPatch selective{};selective.changed=ControlDisplay;selective.display=true;
     assert(control_request_error(state,selective)==nullptr);
     basic.changed|=ControlFreezeProtection;basic.freeze_protection=false;
@@ -152,7 +155,7 @@ int main() {
     report(caps,AcFeature::FreezeProtection,true);report(caps,AcFeature::Anion,true);
     assert(!optional_control_supported(state,ControlFreezeProtection,AcFeature::FreezeProtection));
     assert(!optional_control_supported(state,ControlAnion,AcFeature::Anion));
-    std::cout<<"PASS service optional-field admission, native validation and missing-frost policy\n";
+    std::cout<<"PASS service optional-field admission, native validation and upstream defaults\n";
 }
 '''
         with tempfile.TemporaryDirectory(prefix="midea-service-policy-") as folder:

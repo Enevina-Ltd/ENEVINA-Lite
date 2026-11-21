@@ -144,8 +144,14 @@ int main() {
                 ControlPatch change{};
                 change.changed=ControlTemperature;
                 change.setpoint_c=22.0;
-                Bytes unsafe{};
-                assert(!set_state_command(state,change,1,unsafe));
+                Bytes command{};
+                // This parser fixture contains nonstandard swing=1. The
+                // writer still rejects inheriting it; an explicit valid swing
+                // permits the command despite the absent optional frost tail.
+                assert(!set_state_command(state,change,1,command));
+                change.changed|=ControlSwing;change.swing=0;
+                assert(set_state_command(state,change,1,command));
+                assert(command[31]==0 && !state.freeze_protection_known);
             }
             short_frame.back()^=1;
             assert(!parse_state(short_frame.data(),short_frame.size(),state));
