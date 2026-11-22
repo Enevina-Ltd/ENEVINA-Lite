@@ -33,9 +33,11 @@ const A=ctx.api;
   const card={prepend(node){node.parentElement=this;}};
   const dsiotCard={prepend(node){node.parentElement=this;}};
   const cn105Card={prepend(node){node.parentElement=this;}};
+  const s21Panel={parentElement:modal},s21Card={prepend(node){node.parentElement=this;}};
   const elements={'wf-rac-connection':panel,'wf-rac-card':card,wizard:modal,
     'daikin-dsiot-connection':dsiotPanel,'daikin-dsiot-card':dsiotCard,
-    'cn105-direct-connection':cn105Panel,'cn105-direct-card':cn105Card};
+    'cn105-direct-connection':cn105Panel,'cn105-direct-card':cn105Card,
+    'daikin-s21-connection':s21Panel,'daikin-s21-card':s21Card};
   const noop=()=>{};
   const env={WZ:{open:true},wzStopPolling:noop,wzUpdateMideaPolling:noop,wzRestoreMideaPanel:noop,
     wzRestoreMideaPilot:noop,wzRestoreGreePanel:noop,wzRestoreDaikinPanel:noop,
@@ -46,6 +48,7 @@ const A=ctx.api;
   assert.equal(panel.parentElement,card,'closing setup restores the WF-RAC panel to Settings');
   assert.equal(dsiotPanel.parentElement,dsiotCard,'closing setup restores the DSIoT panel to Settings');
   assert.equal(cn105Panel.parentElement,cn105Card,'closing setup restores the direct CN105 panel to Settings');
+  assert.equal(s21Panel.parentElement,s21Card,'closing setup restores the S21 panel to Settings');
   assert.equal(modal.hidden,true);
 }
 
@@ -539,6 +542,22 @@ console.log('devices step helpers ok');
   ctx.cn105DirectCommit=async id=>events.push(['cn105',id]);
   await A.wzSavePump(false);
   assert.deepEqual(events,[['cn105',51],{pump_adapter:'mitsubishi_cn105_direct',setup_step:'5'}]);
+  events.length=0;
+  await A.wzSavePump(true);
+  assert.deepEqual(events,[{setup_step:'5'}]);
+  events.length=0;
+  A.WZ.adapter='daikin_s21';
+  ctx.daikinS21Busy=false;
+  ctx.fetchJSON=async path=>{
+    assert.equal(path,'/api/daikin-s21/status?draft=true');
+    return {configured:true,fresh:false,draft_id:55};
+  };
+  await assert.rejects(A.wzSavePump(false),/S21/);
+  assert.deepEqual(events,[]);
+  ctx.fetchJSON=async()=>({configured:true,fresh:true,draft_id:55});
+  ctx.daikinS21Commit=async id=>events.push(['s21',id]);
+  await A.wzSavePump(false);
+  assert.deepEqual(events,[['s21',55],{pump_adapter:'daikin_s21',setup_step:'5'}]);
   events.length=0;
   await A.wzSavePump(true);
   assert.deepEqual(events,[{setup_step:'5'}]);
