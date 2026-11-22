@@ -39,3 +39,5 @@ Use independent publisher keys and HTTPS authorities for test and field channels
 For USB recovery, back up the device settings with the owner's approved procedure first. Use the addressed components to leave NVS and the history partition untouched. Writing the initial OTA data selects the newly written first application bank and resets the active-bank selection. Use the board's signed update path for normal application upgrades.
 
 The publishable binary needs the copyright notices and corresponding source described in [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md). See the [ESP-IDF reproducibility guidance](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32/api-guides/reproducible-builds.html) for the bootloader build option.
+
+The [22 November N16R8 bench record](../field/N16R8_ROLLBACK_USB_TEST_20261122.md) documents USB staging, physical rollback and settings retention on the existing test board.
