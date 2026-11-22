@@ -792,6 +792,12 @@ static enevina::PumpRoomState optimizer_pump_state(int64_t now,bool midea) {
     xSemaphoreGive(lock_data);
     return state;
 }
+static bool direct_lan_pump_selected() {
+    using namespace enevina;
+    const auto* adapter=find_adapter(site_settings_snapshot().pump_adapter);
+    return adapter && adapter->link==AdapterLink::VendorLanProtocol &&
+        adapter_selectable_in_lite_firmware(adapter->id);
+}
 static bool known_heating_mode(const enevina::PumpRoomState& state) {
     return state.mode==enevina::PumpRoomMode::Off ||
         (state.mode==enevina::PumpRoomMode::Heat && std::isfinite(state.setpoint_c));
@@ -2730,7 +2736,7 @@ static enevina::cottage::HistoryInputs history_collect() {
         }
     }
     const bool sse_fresh=observed.received && climate_time>0 && now>=climate_time && now-climate_time<=180;
-    if(midea || cottage_gree_selected() || cottage_daikin_selected()) {
+    if(direct_lan_pump_selected()) {
         const auto live=optimizer_pump_state(now,midea);
         in.pump_online=live.source==enevina::PumpStateSource::DirectLan;
         in.setpoint_valid=in.pump_online && std::isfinite(live.setpoint_c);
@@ -2802,7 +2808,7 @@ static void freshness_endpoint() {
     const bool sse_fresh=observed.received && climate_time>0 && now>=climate_time && now-climate_time<=180;
     in.pump_configured=site.pump_adapter[0]!=0;
     const bool midea=cottage_midea_selected();
-    if(midea || cottage_gree_selected() || cottage_daikin_selected()) {
+    if(direct_lan_pump_selected()) {
         const auto live=optimizer_pump_state(now,midea);
         in.pump_fresh=live.source==enevina::PumpStateSource::DirectLan;
         in.pump_age_s=in.pump_fresh?now-live.evidence.received_utc:-1;
