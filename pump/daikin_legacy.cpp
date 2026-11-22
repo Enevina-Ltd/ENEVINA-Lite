@@ -159,6 +159,32 @@ bool matches(const Reading& state,const Patch& patch) {
         (!patch.heat_target_c ||
          (state.target_c && std::fabs(*state.target_c-*patch.heat_target_c)<0.001));
 }
+bool same_request(const Reading& a,const Reading& b) {
+    return a.power==b.power && a.mode==b.mode && a.target_c==b.target_c &&
+        a.humidity==b.humidity && a.fan==b.fan && a.swing==b.swing &&
+        a.heat_humidity==b.heat_humidity && a.heat_fan==b.heat_fan &&
+        a.heat_swing==b.heat_swing;
+}
+bool readback_matches(const Reading& before,const Reading& after,const Patch& patch) {
+    return matches(after,patch) && after.power==patch.power.value_or(before.power) &&
+        after.mode==(patch.heat_mode?4u:before.mode);
+}
+bool changes_mode(const Reading& before,const Patch& patch) {
+    return before.power!=patch.power.value_or(before.power) ||
+        (patch.heat_mode && before.mode!=4);
+}
+std::optional<double> heat_target(std::string_view value) {
+    const auto target=measure(value,10,32);
+    return target && std::fabs(*target*2-std::round(*target*2))<0.001?target:std::nullopt;
+}
+std::optional<PumpHeatingLimits> model_limits(std::string_view low,std::string_view high,
+                                              std::string_view step) {
+    const auto a=heat_target(low),b=heat_target(high);
+    const double increment=step=="0.5"?.5:step=="1"?1.:0.;
+    if(!a || !b || *a>=*b || increment==0)return {};
+    const PumpHeatingLimits limits{*a,*b,increment,true,true};
+    return limits.accepts(*a) && limits.accepts(*b)?std::optional{limits}:std::nullopt;
+}
 PumpRoomMode room_mode(const Reading& state) {
     if(!state.power)return PumpRoomMode::Off;
     if(state.mode==4)return state.target_c?PumpRoomMode::Heat:PumpRoomMode::Unknown;

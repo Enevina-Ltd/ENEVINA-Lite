@@ -86,9 +86,10 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      "direct LAN response; reported values have no pump timestamp",true,
      "docs/integrations/GREE_LAN.md"},
     {"daikin_local_api","Daikin","Legacy local HTTP (no field-verified models)",
-     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareReadOnly,
+     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareControlExperimental,
      "identity, state, setpoint and optional measurements directly from the LAN module",
-     "not enabled",0,0,0,"direct LAN response; reported values have no pump timestamp",false,
+     "model-approved manual and automatic HEAT, OFF and setpoint",0,0,0,
+     "direct LAN response; reported values have no pump timestamp",true,
      "docs/integrations/DAIKIN_LEGACY.md"},
 };
 inline constexpr size_t adapter_catalog_size=sizeof(adapter_catalog)/sizeof(adapter_catalog[0]);
@@ -106,10 +107,11 @@ inline bool adapter_allowed_cn105_physical_writes(const char* id) {
 // Only adapters implemented in THIS ESP32-S3 cottage firmware may be selected.
 inline bool adapter_selectable_in_lite_firmware(const char* id) {
     const auto* e=find_adapter(id);
-    // Midea V2/V3 writes use the local LAN worker.
+    // These experimental adapters have a dedicated local LAN command path.
     return e && (e->maturity==AdapterMaturity::FieldPilot ||
         e->maturity==AdapterMaturity::FirmwareReadOnly ||
-        ((std::strcmp(e->id,"midea_lan")==0 || std::strcmp(e->id,"gree_ewpe_lan")==0) &&
+        ((std::strcmp(e->id,"midea_lan")==0 || std::strcmp(e->id,"gree_ewpe_lan")==0 ||
+          std::strcmp(e->id,"daikin_local_api")==0) &&
          e->maturity==AdapterMaturity::FirmwareControlExperimental));
 }
 inline const char* adapter_maturity_name(AdapterMaturity m) {

@@ -38,5 +38,11 @@ std::optional<std::string> set_request(const Reading& current,const Patch& patch
                                        const PumpHeatingLimits& limits);
 bool accepted(std::string_view reply);
 bool matches(const Reading& state,const Patch& patch);
+bool same_request(const Reading& a,const Reading& b);
+bool readback_matches(const Reading& before,const Reading& after,const Patch& patch);
+bool changes_mode(const Reading& before,const Patch& patch);
+std::optional<PumpHeatingLimits> model_limits(std::string_view low,std::string_view high,
+                                              std::string_view step);
+std::optional<double> heat_target(std::string_view value);
 PumpRoomMode room_mode(const Reading& state);
 }

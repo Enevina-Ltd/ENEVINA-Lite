@@ -130,6 +130,7 @@ static std::atomic<uint32_t> control_armed_endpoint{0};
 static std::atomic<uint32_t> control_permission_generation{0};
 static std::atomic<uint32_t> control_armed_midea_revision{0};
 static std::atomic<uint32_t> control_armed_gree_revision{0};
+static std::atomic<uint32_t> control_armed_daikin_revision{0},control_armed_daikin_wifi{0};
 // Owner decision 18.11.2026: >= 30 min between HEAT<->OFF changes. Last change
 // = last mode command sent, last change observed via bridge GET, boot or
 // arming (unknown history -> wait). millis()-based, survives NTP jumps.
@@ -816,7 +817,7 @@ static ArbiterInput build_arbiter_input(int64_t now,const TemperatureSample& t) 
     in.pump_state_known=known_heating_mode(state);
     in.pump_heat=state.mode==enevina::PumpRoomMode::Heat;
     in.pump_setpoint_c=state.setpoint_c;
-    in.own_transition_confirmed=in.plan.has_plan && ((midea || cottage_gree_selected())?
+    in.own_transition_confirmed=in.plan.has_plan && ((midea || cottage_gree_selected() || cottage_daikin_selected())?
         state.automatic_queued_utc>=in.plan.computed_utc &&
         state.automatic_confirmed_utc>=state.automatic_queued_utc &&
         state.automatic_confirmed_utc<=now &&
@@ -1022,9 +1023,19 @@ bool cottage_gree_automatic_enabled() {
         control_armed_endpoint.load()==site_settings_endpoint_generation() &&
         control_armed_gree_revision.load()==cottage_gree_configuration_generation();
 }
+void cottage_daikin_automatic_cancel() {
+    if(cottage_daikin_selected())cottage_midea_automatic_cancel();
+}
+bool cottage_daikin_automatic_enabled() {
+    return control_armed.load() && cottage_daikin_selected() &&
+        control_armed_endpoint.load()==site_settings_endpoint_generation() &&
+        control_armed_daikin_wifi.load()==cottage_wifi_link_generation() &&
+        control_armed_daikin_revision.load()==cottage_daikin_configuration_generation();
+}
 static bool active_control_armed(bool midea) {
     if(midea)return cottage_midea_automatic_enabled();
     if(cottage_gree_selected())return cottage_gree_automatic_enabled();
+    if(cottage_daikin_selected())return cottage_daikin_automatic_enabled();
     return cn105_selected() && control_armed.load();
 }
 static uint32_t lan_configuration_revision(bool midea) {
@@ -1043,10 +1054,10 @@ static bool expected_control_proposal_current(BootstrapAction expected,double ta
 bool cottage_midea_automatic_proposal_current(BootstrapAction expected,double target_c) {
     return expected_control_proposal_current(expected,target_c);
 }
-bool cottage_gree_automatic_write_current(uint32_t authorization,uint32_t config,
-        uint32_t settings,const BootstrapDecision& proposal) {
-    if(control_permission_generation.load()!=authorization ||
-       !cottage_gree_automatic_enabled() || !wifi_ok.load() || !clock_ok() ||
+static bool queued_lan_proposal_current(uint32_t authorization,uint32_t config,
+        uint32_t settings,const BootstrapDecision& proposal,bool enabled) {
+    if(control_permission_generation.load()!=authorization || !enabled ||
+       !wifi_ok.load() || !clock_ok() ||
        cottage_ota_network_maintenance() || !c23_config_storage_verified() ||
        c23_config_generation()!=config || site_settings_generation()!=settings)
         return false;
@@ -1054,6 +1065,17 @@ bool cottage_gree_automatic_write_current(uint32_t authorization,uint32_t config
     if(c23_mode_config().mode!=CottageMode::Cold && !selected_room_sample(now).received)
         return false;
     return expected_control_proposal_current(proposal.action,proposal.heat_setpoint_c);
+}
+
+bool cottage_gree_automatic_write_current(uint32_t authorization,uint32_t config,
+        uint32_t settings,const BootstrapDecision& proposal) {
+    return queued_lan_proposal_current(authorization,config,settings,proposal,
+                                       cottage_gree_automatic_enabled());
+}
+bool cottage_daikin_automatic_write_current(uint32_t authorization,uint32_t config,
+        uint32_t settings,const BootstrapDecision& proposal) {
+    return queued_lan_proposal_current(authorization,config,settings,proposal,
+                                       cottage_daikin_automatic_enabled());
 }
 
 static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
@@ -1229,14 +1251,15 @@ static void cottage_control_tick() {
     control_gate.store(static_cast<int>(ControlBlock::Disabled));
     const bool midea=cottage_midea_selected();
     const bool gree=cottage_gree_selected();
-    if(!midea && !gree && !cn105_selected()) {
+    const bool daikin=cottage_daikin_selected();
+    if(!midea && !gree && !daikin && !cn105_selected()) {
         if(control_armed.load())cottage_control_disarm();
         return;
     }
     if(!control_armed.load())return;
     const uint32_t authorization_generation=control_permission_generation.load();
     const uint32_t site_generation=site_settings_generation();
-    if((midea || gree) && !active_control_armed(midea))return;
+    if((midea || gree || daikin) && !active_control_armed(midea))return;
     // Arming is bound to the configured pump. A changed CN105 endpoint or
     // adapter revokes it; a reboot restores only the same pump identity.
     if(control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
@@ -1286,6 +1309,13 @@ static void cottage_control_tick() {
     if(gree) {
         const auto reading=cottage_gree_room_state();
         const auto gate=cottage_gree_submit_automatic(reading,candidate,
+            authorization_generation,config_generation,site_generation);
+        control_gate.store(static_cast<int>(gate));
+        return;
+    }
+    if(daikin) {
+        const auto reading=cottage_daikin_room_state();
+        const auto gate=cottage_daikin_submit_automatic(reading,candidate,
             authorization_generation,config_generation,site_generation);
         control_gate.store(static_cast<int>(gate));
         return;
@@ -1453,7 +1483,8 @@ static void cottage_control_registration() {
             return;
         }
         const bool gree=cottage_gree_selected();
-        if(requested && !midea && !gree && !cn105_selected()) {
+        const bool daikin=cottage_daikin_selected();
+        if(requested && !midea && !gree && !daikin && !cn105_selected()) {
             web.send(409,"application/json",
                 "{\"saved\":false,\"error\":\"ADAPTER_READ_ONLY\"}");
             return;
@@ -1469,19 +1500,29 @@ static void cottage_control_registration() {
         const bool allowed=requested ?
             control_current_image_sha256(digest) &&
             !pending_ota && !cottage_ota_confirmation_pending() : true;
-        if(midea || gree) {
-            if(requested && (!allowed ||
-               !(midea?cottage_midea_automatic_ready():cottage_gree_automatic_ready()))) {
+        if(midea || gree || daikin) {
+            bool ready=true;
+            if(requested && allowed) {
+                if(midea)ready=cottage_midea_automatic_ready();
+                else if(gree)ready=cottage_gree_automatic_ready();
+                else ready=cottage_daikin_automatic_ready();
+            }
+            if(requested && (!allowed || !ready)) {
                 web.send(409,"application/json",midea?
-                    "{\"saved\":false,\"error\":\"MIDEA_NOT_READY\"}":
-                    "{\"saved\":false,\"error\":\"GREE_NOT_READY\"}");
+                    "{\"saved\":false,\"error\":\"MIDEA_NOT_READY\"}":gree?
+                    "{\"saved\":false,\"error\":\"GREE_NOT_READY\"}":
+                    "{\"saved\":false,\"error\":\"DAIKIN_NOT_READY\"}");
                 return;
             }
             // LAN pilot approval is volatile and bound to this enrollment.
             control_permission_generation.fetch_add(1);
             control_armed_endpoint.store(site_settings_endpoint_generation());
             if(midea)control_armed_midea_revision.store(cottage_midea_configuration_generation());
-            else control_armed_gree_revision.store(cottage_gree_configuration_generation());
+            else if(gree)control_armed_gree_revision.store(cottage_gree_configuration_generation());
+            else {
+                control_armed_daikin_revision.store(cottage_daikin_configuration_generation());
+                control_armed_daikin_wifi.store(cottage_wifi_link_generation());
+            }
             control_armed.store(requested);
             web.send(200,"application/json","{\"saved\":true}");
             return;
@@ -1518,7 +1559,8 @@ static bool cottage_cancel(void*) {
 static bool variable_setpoint_model_selected() {
     const auto cfg=c23_mode_config();
     ComfortBand legacy{};
-    return cottage_midea_selected() || cottage_gree_selected() || cfg.mode==CottageMode::Occupied ||
+    return cottage_midea_selected() || cottage_gree_selected() || cottage_daikin_selected() ||
+        cfg.mode==CottageMode::Occupied ||
         (cfg.mode==CottageMode::Hold && !mpc_comfort_band(cfg.hold_target_c,legacy));
 }
 static const char* model_blob_key(bool variable) {return variable?"rls2":"rls1";}
@@ -1543,9 +1585,9 @@ static uint32_t identifier_identity() {
         h^=correction&0xFFu;h*=16777619u;
         h^=correction>>8;h*=16777619u;
     }
-    if(std::strcmp(s.pump_adapter,"midea_lan")==0 || std::strcmp(s.pump_adapter,"gree_ewpe_lan")==0) {
-        const uint32_t pump_id=std::strcmp(s.pump_adapter,"midea_lan")==0?
-            cottage_midea_calibration_identity():cottage_gree_calibration_identity();
+    if(cottage_midea_selected() || cottage_gree_selected() || cottage_daikin_selected()) {
+        const uint32_t pump_id=cottage_midea_selected()?cottage_midea_calibration_identity():
+            cottage_gree_selected()?cottage_gree_calibration_identity():cottage_daikin_calibration_identity();
         for(int i=0;i<4;++i) {h^=(pump_id>>(8*i))&0xFFu;h*=16777619u;}
     }
     return h;
@@ -2030,7 +2072,8 @@ static void status_endpoint() {
     const bool armed=active_control_armed(midea);
     cJSON_AddStringToObject(root,"mode",armed?
         (midea?"MIDEA_AUTOMAATIO_KAYTOSSA":cottage_gree_selected()?
-            "GREE_AUTOMAATIO_KAYTOSSA":"CN105_AUTOMAATIO_KAYTOSSA"):"VARJOTILA_EI_KOMENTOJA");
+            "GREE_AUTOMAATIO_KAYTOSSA":cottage_daikin_selected()?"DAIKIN_AUTOMAATIO_KAYTOSSA":
+            "CN105_AUTOMAATIO_KAYTOSSA"):"VARJOTILA_EI_KOMENTOJA");
     cJSON_AddBoolToObject(root,"physical_writes",armed);
     cJSON_AddBoolToObject(root,"control_armed",armed);
     cJSON_AddStringToObject(root,"control_connection",control_connection_key(midea).c_str());
