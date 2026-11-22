@@ -21,7 +21,7 @@ python tools/cottage_install_package.py \
   --source "$(git rev-parse HEAD)" --output enevina-lite-n16r8.zip
 ```
 
-The installer takes offsets from the ESP-IDF flash metadata and the compiled partition table. It verifies the rollback flag in the generated SDK configuration, both image checksums and SHA-256 digests, the matching A/B layout and empty initial OTA sectors. The test application from the ESP-IDF project stays out of the package. The ZIP contains the Lite application, rollback bootloader, partition table, initial OTA data, address map, per-file checksums and a combined first-install image.
+The installer takes offsets from the ESP-IDF flash metadata and the compiled partition table. It verifies the rollback flag in the generated SDK configuration, both image checksums and SHA-256 digests, the matching A/B layout and empty initial OTA sectors. The test application from the ESP-IDF project stays out of the package. The ZIP contains the Lite application, rollback bootloader, partition table, initial OTA data, address map, per-file checksums and a combined first-install image. It also records archive members referenced by both generated linker maps in `linked-archives.json` and includes the repository's own license and tracked third-party notices. Review the full runtime licenses and corresponding source separately before public distribution.
 
 ## First installation
 

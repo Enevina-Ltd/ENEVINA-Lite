@@ -1,4 +1,6 @@
 import importlib.util,unittest,contextlib,io,sys,tempfile
+import shutil
+import subprocess
 from cryptography.hazmat.primitives import hashes,serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.exceptions import InvalidSignature
@@ -10,6 +12,22 @@ SRC=Path(__file__).resolve().parents[1]/"tools/cottage_ota_publish.py"
 spec=importlib.util.spec_from_file_location("ota_publish",SRC)
 ota=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ota)
+
+@unittest.skipUnless(shutil.which("openssl"), "OpenSSL required to verify TLS chain")
+class ProvisionedCertificateTests(unittest.TestCase):
+    def test_generated_chain_passes_strict_tls_server_verification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provision = SRC.with_name("cottage_ota_provision.py")
+            subprocess.run([sys.executable, str(provision), "--root", str(root),
+                            "--lan-ip", "127.0.0.1"], check=True, capture_output=True)
+            result = subprocess.run(
+                ["openssl", "verify", "-x509_strict", "-purpose", "sslserver",
+                 "-verify_ip", "127.0.0.1", "-CAfile", str(root/"ca-public.pem"),
+                 str(root/"server-cert.pem")],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn(b"PRIVATE KEY", (root/"ca-public.pem").read_bytes())
 
 class SignedReleaseTests(unittest.TestCase):
     def setUp(self):
