@@ -2,6 +2,7 @@
 #include "cottage_daikin_service.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
+#include "cottage_local_http.hpp"
 #include "cottage_secure_ota.hpp"
 #include "cottage_site_settings.hpp"
 #include "cottage_wifi.hpp"
@@ -9,7 +10,6 @@
 
 #include <HTTPClient.h>
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <Preferences.h>
 #include <WebServer.h>
@@ -90,16 +90,6 @@ std::atomic<uint32_t> configuration_revision{0};
 
 Link live_link() {
     return {site_settings_endpoint_generation(),cottage_wifi_link_generation()};
-}
-bool local_host(const char* text,IPAddress& address) {
-    if(!text || !address.fromString(text))return false;
-    const auto a=address[0],b=address[1];
-    if(!(a==10 || (a==192 && b==168) || (a==172 && b>=16 && b<=31)))return false;
-    const auto host=static_cast<uint32_t>(WiFi.localIP());
-    const auto mask=static_cast<uint32_t>(WiFi.subnetMask());
-    const auto peer=static_cast<uint32_t>(address);
-    const auto network=host&mask;
-    return host && mask && (peer&mask)==network && peer!=host && peer!=network && peer!=(network|~mask);
 }
 bool configured(const Config& config) {
     if(config.schema!=config_schema || !std::memchr(config.host,0,sizeof(config.host)) ||
@@ -188,7 +178,7 @@ std::optional<std::string> get(const char* address,std::string_view path,const L
                                const Work* command=nullptr,bool mode_change=false,
                                bool* dispatched=nullptr) {
     IPAddress ip;
-    if(!link.current() || !local_host(address,ip))return {};
+    if(!link.current() || !local_http_peer(address,ip))return {};
     const std::string url="http://"+std::string(address)+std::string(path);
     WiFiClient client;
     HTTPClient req;
@@ -211,32 +201,8 @@ std::optional<std::string> get(const char* address,std::string_view path,const L
         }
         if(dispatched)*dispatched=true;
     }
-    const int status=req.GET(),len=req.getSize();
-    std::optional<std::string> result;
-    if(status==200 && len!=0 && len<=static_cast<int>(max_body) &&
-       req.header("Transfer-Encoding").length()==0) {
-        std::string body;
-        auto& stream=req.getStream();
-        std::array<uint8_t,128> bytes{};
-        const uint32_t start=millis();
-        bool complete=false;
-        while(link.current() && millis()-start<1300) {
-            if(len>=0 && body.size()==static_cast<size_t>(len)) {complete=true;break;}
-            const int available=stream.available();
-            if(available>0) {
-                const auto n=static_cast<size_t>(available);
-                const size_t residual=(len>=0?static_cast<size_t>(len):max_body)-body.size();
-                if(n>residual)break;
-                const int read=stream.read(bytes.data(),std::min(n,bytes.size()));
-                if(read>0)body.append(reinterpret_cast<const char*>(bytes.data()),read);
-                else vTaskDelay(pdMS_TO_TICKS(15));
-            } else if(!stream.connected()) {
-                complete=len<0;
-                break;
-            } else vTaskDelay(pdMS_TO_TICKS(15));
-        }
-        if(complete && !body.empty() && link.current())result=std::move(body);
-    }
+    const int status=req.GET();
+    auto result=bounded_http_body(req,status,max_body,[&](){return link.current();});
     req.end();
     return result;
 }
@@ -439,7 +405,7 @@ void cottage_daikin_register_routes(WebServer& web) {
     web.on("/api/daikin/identify",HTTP_POST,[&web](){
         if(!web_ready(web,true))return;
         IPAddress address;
-        if(!local_host(web.arg("host").c_str(),address)) {
+        if(!local_http_peer(web.arg("host").c_str(),address)) {
             web.send(400,"application/json","{\"error\":\"invalid_address\"}");return;
         }
         const auto host=address.toString();

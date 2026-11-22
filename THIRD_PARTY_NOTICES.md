@@ -32,6 +32,8 @@ The local HTTP adapter is independently authored C++. The references supplied wi
 - [Apollon77/daikin-controller](https://github.com/Apollon77/daikin-controller/tree/6d6d23eae45d57d04dff2ab811a30f81bce4093f), commit `6d6d23eae45d57d04dff2ab811a30f81bce4093f`, MIT. No Node runtime or source is bundled.
 - [fredrike/pydaikin](https://github.com/fredrike/pydaikin/tree/3c88d3fe1ccd64e94c7d54ce52643f2c44cf6058), commit `3c88d3fe1ccd64e94c7d54ce52643f2c44cf6058`, GPL-3.0. No source, fixtures or Python runtime from this project are bundled.
 
+WF-RAC framing follows the MIT-licensed [Mitsubishi-WF-RAC-Integration reference](https://github.com/blues-sechseck/Mitsubishi-WF-RAC-Integration/tree/4acf985ccc8ce2859c7322ccbfa6ff4bbe818174). The native C++ temperature conversion tables were adapted from [pywfrac at 39a5568](https://github.com/blues-sechseck/pywfrac/tree/39a5568901ed6897ba1045ab2b0453d7bc8c53e0). Preserve [the MIT notice](third_party/pywfrac/LICENSE) when distributing those tables. Lite uses its own C++ framing and has no Python, Home Assistant or cloud dependency for this adapter.
+
 ## Mandatory release checks
 
 1. Build each supported firmware variant reproducibly from the pinned toolchain and record exact framework, component, library and bootloader versions and SHA-256 of deliverables.
