@@ -91,6 +91,10 @@ int main() {
         assert(!dwell_allows({true,Mode::Heat,22},off,dwell-1,dwell));
         auto cooling=*reading;cooling.mode=Mode::Cool;
         assert(!dwell_allows({true,Mode::Heat,22},cooling,0,dwell));
+        assert(!permits_heating_patch(setpoint,cooling,pilot));
+        assert(permits_heating_patch({true,Mode::Heat,22},cooling,pilot));
+        assert(permits_heating_patch({false,{},{}},cooling,pilot));
+        assert(permits_heating_patch(setpoint,off,pilot));
         const auto changed=read(R"({"t":"dat","cols":["Pow","Mod","TemUn","SetTem"],"dat":[1,4,0,22]})");
         assert(changed && confirmed(setpoint,*changed));
         assert(command_request(variant,*key,*unit,{false,Mode::Heat,30}).empty());

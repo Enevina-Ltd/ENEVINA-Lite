@@ -3249,8 +3249,10 @@ function showGree(s){
     'Mallikohtaista ohjaustestiä ei ole hyväksytty.');
   const target=$('gree-command-target');
   target.min=s.minimum_c??16;target.max=s.maximum_c??30;
-  for(const id of ['gree-setpoint','gree-heat','gree-off'])
-    $(id).disabled=s.write_available!==true||s.busy===true;
+  const writesDisabled=s.write_available!==true||s.busy===true;
+  $('gree-setpoint').disabled=writesDisabled || (s.power!==false && s.mode!==4);
+  $('gree-heat').disabled=writesDisabled;
+  $('gree-off').disabled=writesDisabled;
   const list=Array.isArray(s.discovered)?s.discovered:[];
   if(JSON.stringify(list)!==JSON.stringify(greeDiscovered)){
     greeDiscovered=list;

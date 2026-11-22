@@ -350,8 +350,10 @@ bool dwell_allows(const Patch& patch,const Reading& reading,uint32_t elapsed,uin
     return !changes_operating_mode(patch,reading) || elapsed>=minimum;
 }
 bool permits_heating_patch(const Patch& patch,const Reading& reading,const PumpHeatingLimits& limits) {
+    const bool heating_target=!reading.power || reading.mode==Mode::Heat ||
+        patch.mode==Mode::Heat;
     return limits.heating && heating_state_known(reading) &&
-        (!patch.setpoint_c || limits.accepts(*patch.setpoint_c)) &&
+        (!patch.setpoint_c || (heating_target && limits.accepts(*patch.setpoint_c))) &&
         (!patch.mode || *patch.mode==Mode::Heat) &&
         (patch.power || patch.mode || patch.setpoint_c) &&
         !(patch.power==false && (patch.mode || patch.setpoint_c));
