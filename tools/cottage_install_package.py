@@ -14,6 +14,15 @@ ERASED = 0xFF
 PART_ENTRY = struct.Struct("<HBBII16sI")
 MD5_PREFIX = b"\xeb\xeb" + b"\xff" * 14
 S3_CHIP = 9
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_NOTICES = (
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "third_party/midea-local/LICENSE",
+    "third_party/msmart-ng/LICENSE.md",
+    "third_party/pywfrac/LICENSE",
+    "third_party/esphome-panasonic-ac/LICENSE",
+)
 KIND = {
     "bootloader.bin": "bootloader",
     "partition-table.bin": "partitions",
@@ -132,6 +141,21 @@ def collect(idf, pio):
     assets["application"] = (partitions["app0"]["offset"], app)
     return assets, partitions
 
+def linked_archive_members(path):
+    """Return archive members referenced in the active part of a GNU ld map."""
+    contents = path.read_text(encoding="utf-8")
+    _, marker, active = contents.partition("Linker script and memory map")
+    if not marker:
+        raise ValueError("Invalid GNU linker map: " + path.name)
+    active = active.partition("Cross Reference Table")[0]
+    archives = {}
+    for filename, member in re.findall(r"([^\s()]+\.a)\(([^)\r\n]+)\)", active):
+        name = Path(filename).name
+        archives.setdefault(name, set()).add(member)
+    if not archives:
+        raise ValueError("GNU linker map has no archive members: " + path.name)
+    return {archive: sorted(members) for archive, members in archives.items()}
+
 def archive(idf, pio, source, out):
     if not re.fullmatch("[0-9a-f]{40}", source):
         raise ValueError("Use the exact 40-character Git source commit")
@@ -160,11 +184,21 @@ def archive(idf, pio, source, out):
              "first_install":{"file":"first-install.bin", "offset":"0x0",
                               "erase_settings":True, "sha256":digest(merged)}}
     files["flash-layout.json"] = (json.dumps(flash, sort_keys=True, indent=2) + "\n").encode()
+    link_inventory = {
+        "source_commit": source,
+        "application": linked_archive_members(pio / "firmware.map"),
+        "bootloader": linked_archive_members(idf / "bootloader" / "bootloader.map"),
+    }
+    files["linked-archives.json"] = (
+        json.dumps(link_inventory, sort_keys=True, indent=2) + "\n").encode()
+    for notice in PROJECT_NOTICES:
+        files["notices/" + notice] = (PROJECT_ROOT / notice).read_bytes()
     commands = " ".join(region["offset"] + " " + region["file"] for region in regions)
     files["INSTALL.txt"] = (
         "Enevina Lite development installer for ESP32-S3, 16 MiB flash, 8 MiB OPI PSRAM\n"
         f"Source commit {source}\n\n"
         "Check SHA256SUMS before use. Read docs/release/N16R8_INSTALL.md at the source commit.\n"
+        "The link inventory and repository notices support release review.\n"
         "Use these addressed components on a blank device, or when carrying out the documented recovery.\n"
         "Replace PORT with your device port.\n\n"
         "python -m esptool --chip esp32s3 --port PORT write_flash "

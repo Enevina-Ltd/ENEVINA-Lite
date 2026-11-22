@@ -6,7 +6,7 @@
 | Memory and startup | ESP32-S3 revision 0.2, 16 MiB flash, 8 MiB embedded PSRAM and an ESP-IDF 5.5.5 rollback bootloader. |
 | Original firmware | Signed build 2026112103, app1 marked valid, automatic control disarmed. |
 | Test application | Build from main commit `b6baf01c25b1cee2bf09b1e027645212287af354`. N16R8 archive SHA-256 `50aa1947e15d0019f38c11558310258c08fb58e1a5a7980bebb929bc35f429df`. |
-| Flash regions checked | Bootloader starts at `0x0`. The board's partition table at `0x8000` matches the archive. OTA data is at `0xe000`. App0 at `0x10000) and app1 at `0x650000) are each `0x640000` bytes. |
+| Flash regions checked | Bootloader starts at `0x0`. The board's partition table at `0x8000` matches the archive. OTA data is at `0xe000`. App0 at `0x10000` and app1 at `0x650000` are each `0x640000` bytes. |
 
 The test used the existing two-bank installation. We backed up the original standby application and OTA metadata, verified the installed partition table byte for byte, and staged the new application in app0 via USB. The live app1 image and NVS were outside the write ranges. The new application started with pending verification, joined the saved Wi-Fi network, preserved the checked site settings and read a fresh OFF state from the paired Midea V3 pump. Automatic control remained disarmed throughout the test.
 

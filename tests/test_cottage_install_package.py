@@ -58,6 +58,16 @@ class InstallPackage(unittest.TestCase):
         (self.idf/"ota_data_initial.bin").write_bytes(b"\xff"*8192)
         (self.pio/"partitions.bin").write_bytes(table())
         (self.pio/"firmware.bin").write_bytes(image())
+        for map_file, library in (
+                (self.pio/"firmware.map", "libFrameworkArduino.a"),
+                (self.idf/"bootloader"/"bootloader.map", "libbootloader_support.a"),
+        ):
+            map_file.write_text(
+                "Discarded input sections\n/tmp/project/libUnused.a(ignored.o)\n"
+                "Linker script and memory map\n"
+                f" .text /build/root/{library}(active.o)\n"
+                "Cross Reference Table\n/tmp/project/libCrossref.a(ignored.o)\n",
+                encoding="utf-8")
 
     def test_reproducible_installer_and_addressed_components(self):
         one, two = self.directory/"one.zip", self.directory/"two.zip"
@@ -75,6 +85,14 @@ class InstallPackage(unittest.TestCase):
                 self.assertEqual(combined[offset:offset+len(data)],data)
                 self.assertEqual(hashlib.sha256(data).hexdigest(),region["sha256"])
             self.assertNotIn("idf-test-app.bin",z.namelist())
+            self.assertIn("notices/LICENSE", z.namelist())
+            inventory = json.loads(z.read("linked-archives.json"))
+            self.assertEqual(inventory["source_commit"], "a"*40)
+            self.assertEqual(inventory["application"], {"libFrameworkArduino.a": ["active.o"]})
+            self.assertEqual(inventory["bootloader"], {"libbootloader_support.a": ["active.o"]})
+            sha256sums = z.read("SHA256SUMS").decode()
+            self.assertIn("  linked-archives.json\n", sha256sums)
+            self.assertIn("  notices/LICENSE\n", sha256sums)
             self.assertNotIn("nvs", [p["kind"] for p in layout["regions"]])
 
     def test_rejects_arduino_bootloader_or_mismatched_partition_table(self):
@@ -97,6 +115,13 @@ class InstallPackage(unittest.TestCase):
         (self.pio/"firmware.bin").write_bytes(image()[:-1]+b"\0")
         with self.assertRaisesRegex(ValueError,"checksum or SHA-256"):
             collect(self.idf,self.pio)
+
+    def test_rejects_inventory_when_build_map_is_unavailable(self):
+        (self.pio/"firmware.map").unlink()
+        out = self.directory/"missing-map.zip"
+        with self.assertRaises(FileNotFoundError):
+            archive(self.idf, self.pio, "a"*40, out)
+        self.assertFalse(out.exists())
 
     def test_rejects_file_outside_idf_build(self):
         self.metadata["flash_files"]["0x0"]="../bootloader.bin"
