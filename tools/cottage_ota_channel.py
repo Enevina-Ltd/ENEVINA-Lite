@@ -8,7 +8,9 @@ def channel_directory(parsed, filename):
     # Static hosts can serve project sites below a path prefix. Keep paths
     # literal and canonical before binding the exact URL in the marker.
     pattern = r"/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*" + re.escape(filename)
-    if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+    port = parsed.port
+    if (port == 0 or parsed.netloc.endswith(":") or parsed.scheme != "https"
+            or not parsed.hostname or parsed.username
             or parsed.password or parsed.query or parsed.fragment
             or not re.fullmatch(pattern, parsed.path)):
         raise ValueError("signed OTA requires canonical HTTPS endpoints")

@@ -85,6 +85,43 @@ class SignedPullReleaseCapabilityTests(unittest.TestCase):
             with self.subTest(suffix=suffix), self.assertRaises(ValueError):
                 channel_tag(dist + "/manifest.txt" + suffix, dist + "/firmware.bin", ca, key)
 
+    def test_real_header_generator_accepts_a_project_directory(self):
+        import subprocess
+        from datetime import datetime, timedelta, timezone
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes
+
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            private=ec.generate_private_key(ec.SECP256R1())
+            subject=x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,"test OTA root")])
+            now=datetime.now(timezone.utc)
+            ca=(x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
+                .public_key(private.public_key()).serial_number(1)
+                .not_valid_before(now-timedelta(days=1)).not_valid_after(now+timedelta(days=1))
+                .sign(private,hashes.SHA256()).public_bytes(serialization.Encoding.PEM).decode("ascii"))
+            key=private.public_key().public_bytes(serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo).decode("ascii")
+            (root/"ca-public.pem").write_text(ca,encoding="ascii")
+            (root/"publisher-public.pem").write_text(key,encoding="ascii")
+            directory="https://ota.test/ENEVINA-Lite/ota/field"
+            manifest=directory+"/manifest.txt"
+            firmware=directory+"/firmware.bin"
+            path=Path(__file__).resolve().parents[1]/"tools/cottage_ota_generate_header.py"
+            header=root/"anchors.hpp"
+            args=[sys.executable,str(path),"--root",str(root),"--output",str(header),
+                  "--manifest-url",manifest,"--firmware-url",firmware]
+            fail=subprocess.run(args[:-1]+["https://ota.test/lab/firmware.bin"],capture_output=True,text=True)
+            self.assertEqual(fail.returncode,2)
+            self.assertFalse(header.exists())
+            subprocess.run(args,check=True,capture_output=True,text=True)
+            result=header.read_text(encoding="ascii")
+            self.assertIn(manifest,result)
+            self.assertIn(firmware,result)
+            self.assertIn(channel_tag(manifest,firmware,ca,key),result)
+            self.assertNotIn("PRIVATE KEY",result)
+
     def test_channel_digest_in_generator_and_build(self):
         root=Path(__file__).resolve().parents[1]
         generator=(root/"tools/cottage_ota_generate_header.py").read_text()
