@@ -12,7 +12,9 @@ struct Reading {
     Mode mode=Mode::Unknown;
     uint8_t model_number=0;
     std::optional<double> target_c,indoor_c,outdoor_c;
-    bool compressor_running=false;
+    bool compressor_demand=false;
+    bool self_clean=false;
+    uint8_t fault=0;
 };
 struct Patch {
     std::optional<bool> power;
@@ -20,6 +22,10 @@ struct Patch {
     bool heat=false;
 };
 std::optional<std::string> unit_id(std::string_view text);
+bool operator_id_valid(std::string_view text);
+bool same_request(const Reading& a,const Reading& b);
+bool changes_mode(const Reading& before,const Patch& patch);
+bool permits_heat(const Reading& before,const Patch& patch);
 uint16_t crc16(std::string_view bytes);
 std::optional<Reading> decode(std::string_view bytes);
 std::optional<std::string> command(const Patch& patch,const PumpHeatingLimits& limits);

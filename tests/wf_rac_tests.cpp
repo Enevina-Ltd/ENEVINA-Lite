@@ -25,7 +25,7 @@ int main() {
     for(const auto& frame:{standard,legacy}) {
         const auto state=decode(frame);
         assert(state && state->model_number==3 && state->power && state->mode==Mode::Heat);
-        assert(state->target_c==22.5 && state->compressor_running);
+        assert(state->target_c==22.5 && state->compressor_demand);
         assert(state->indoor_c==21.2);
         assert(state->outdoor_c.has_value());
     }
@@ -45,6 +45,9 @@ int main() {
     assert(unit_id("34-8E-89-C5-A1-37")=="348e89c5a137");
     assert(!unit_id("34:8E89:C5:A1:37") && !unit_id("000000000000"));
     assert(!unit_id("348e89c5a137/path"));
+    assert(operator_id_valid("f582452f-8d4a-4412-a464-5d758dd4aac7"));
+    assert(!operator_id_valid("f582452f-8d4a-4412-a464-5d758dd4aag7"));
+    assert(!operator_id_valid("aws") && !operator_id_valid(""));
 
     const PumpHeatingLimits limits{18,30,.5,true,true};
     const auto off=command({false,{},false},limits);
@@ -71,5 +74,16 @@ int main() {
     after.power=false;
     assert(!readback_matches(before,after,{false,{},false}));
     assert(heating_mode(*state)==PumpRoomMode::Heat);
+    assert(same_request(*state,*state) && !same_request(*state,after));
+    assert(permits_heat(*state,{{},23.0,false}));
+    assert(!permits_heat(after,{{},23.0,false}));
+    assert(changes_mode(*state,{false,{},false}) && !changes_mode(*state,{{},22.5,false}));
+    after=*state;
+    after.fault=0x80;
+    assert(!permits_heat(after,{false,{},false}));
+    after=*state;
+    after.self_clean=true;
+    assert(!permits_heat(after,{false,{},false}));
+    after.power=false;
     assert(heating_mode(after)==PumpRoomMode::Off);
 }

@@ -86,6 +86,28 @@ std::optional<std::string> unit_id(std::string_view id) {
     if(result=="000000000000" || result=="ffffffffffff")return {};
     return result;
 }
+bool operator_id_valid(std::string_view id) {
+    if(id.size()!=36)return false;
+    for(size_t i=0;i<id.size();++i) {
+        const char c=id[i];
+        if(i==8 || i==13 || i==18 || i==23) {
+            if(c!='-')return false;
+        } else if(!((c>='0' && c<='9') || (c>='a' && c<='f') || (c>='A' && c<='F')))
+            return false;
+    }
+    return true;
+}
+bool same_request(const Reading& a,const Reading& b) {
+    return a.model_number==b.model_number && a.mode==b.mode && a.power==b.power &&
+        a.target_c==b.target_c && a.fault==b.fault && a.self_clean==b.self_clean;
+}
+bool changes_mode(const Reading& before,const Patch& patch) {
+    return before.power!=patch.power.value_or(before.power) || (patch.heat && before.mode!=Mode::Heat);
+}
+bool permits_heat(const Reading& before,const Patch& patch) {
+    return before.fault==0 && !before.self_clean && before.mode!=Mode::Unknown &&
+        (!patch.target_c || patch.heat || before.mode==Mode::Heat);
+}
 uint16_t crc16(std::string_view bytes) {
     uint16_t value=0xffff;
     for(const uint8_t b:bytes) {
@@ -115,7 +137,9 @@ std::optional<Reading> decode(std::string_view bytes) {
     reading.mode=mode<=4?static_cast<Mode>(mode):Mode::Unknown;
     const auto target=byte(received,4);
     if(target>=20 && target<=66)reading.target_c=target*.5;
-    reading.compressor_running=(byte(received,9)&2)!=0;
+    reading.fault=byte(received,6);
+    reading.compressor_demand=(byte(received,9)&2)!=0;
+    reading.self_clean=(byte(received,15)&1)!=0;
     const size_t verified_end=received.size()-(full?2:4);
     for(size_t offset=19;offset+2<verified_end;offset+=4) {
         if(byte(received,offset)!=0x80)continue;

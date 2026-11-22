@@ -92,9 +92,10 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      "direct LAN response; reported values have no pump timestamp",true,
      "docs/integrations/DAIKIN_LEGACY.md"},
     {"mhi_wf_rac_lan","Mitsubishi Heavy Industries","WF-RAC HTTP (no field-verified models)",
-     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareReadOnly,
-     "local module identity, operating mode, setpoint and optional temperature", "not enabled",0,0,0,
-     "LAN response; reported values have no pump timestamp",false,"docs/integrations/MHI_WF_RAC.md"},
+     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareControlExperimental,
+     "local module identity, operating mode, setpoint and optional temperature",
+     "model-approved HEAT, OFF and setpoint on the original HTTP module",0,0,0,
+     "LAN response; reported values have no pump timestamp",true,"docs/integrations/MHI_WF_RAC.md"},
 };
 inline constexpr size_t adapter_catalog_size=sizeof(adapter_catalog)/sizeof(adapter_catalog[0]);
 
@@ -115,7 +116,7 @@ inline bool adapter_selectable_in_lite_firmware(const char* id) {
     return e && (e->maturity==AdapterMaturity::FieldPilot ||
         e->maturity==AdapterMaturity::FirmwareReadOnly ||
         ((std::strcmp(e->id,"midea_lan")==0 || std::strcmp(e->id,"gree_ewpe_lan")==0 ||
-          std::strcmp(e->id,"daikin_local_api")==0) &&
+          std::strcmp(e->id,"daikin_local_api")==0 || std::strcmp(e->id,"mhi_wf_rac_lan")==0) &&
          e->maturity==AdapterMaturity::FirmwareControlExperimental));
 }
 inline const char* adapter_maturity_name(AdapterMaturity m) {
