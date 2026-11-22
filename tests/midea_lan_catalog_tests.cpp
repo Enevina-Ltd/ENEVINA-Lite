@@ -21,6 +21,10 @@ int main() {
     assert(gree && gree->maturity==AdapterMaturity::FirmwareControlExperimental && gree->command_readback);
     assert(adapter_selectable_in_lite_firmware(gree->id));
     assert(!adapter_allowed_cn105_physical_writes(gree->id));
+    const auto* daikin=find_adapter("daikin_local_api");
+    assert(daikin && daikin->maturity==AdapterMaturity::FirmwareControlExperimental);
+    assert(daikin->command_readback && adapter_selectable_in_lite_firmware(daikin->id));
+    assert(!adapter_allowed_cn105_physical_writes(daikin->id));
     assert(!adapter_selectable_in_lite_firmware("unknown"));
     std::cout<<"Midea experimental manual control and CN105 isolation PASS\n";
 }

@@ -185,7 +185,8 @@ void mark_dispatched(const Work& work,bool mode_change) {
     xSemaphoreGive(gate);
 }
 std::optional<std::string> get(const char* address,std::string_view path,const Link& link,
-                               const Work* command=nullptr,bool mode_change=false) {
+                               const Work* command=nullptr,bool mode_change=false,
+                               bool* dispatched=nullptr) {
     IPAddress ip;
     if(!link.current() || !local_host(address,ip))return {};
     const std::string url="http://"+std::string(address)+std::string(path);
@@ -208,6 +209,7 @@ std::optional<std::string> get(const char* address,std::string_view path,const L
             xSemaphoreGive(gate);
             return {};
         }
+        if(dispatched)*dispatched=true;
     }
     const int status=req.GET(),len=req.getSize();
     std::optional<std::string> result;
@@ -298,7 +300,9 @@ WriteResult write_command(const Work& work,const Config& config,const Device& de
     if(!path) {result.status="unsupported_command";return result;}
     if(!mode_allowed) {result.status="mode_dwell";return result;}
     if(!command_current(work))return result;
-    const auto ack=get(config.host,*path,work.link,&work,changes_mode(before,cmd.patch));
+    bool dispatched=false;
+    const auto ack=get(config.host,*path,work.link,&work,changes_mode(before,cmd.patch),&dispatched);
+    if(!dispatched)return result;
     result.status=ack && accepted(*ack)?"unconfirmed":"send_failed";
     result.sample={};
     // Read after dispatch even when the response timed out. Never resend a SET.
