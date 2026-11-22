@@ -107,10 +107,11 @@ inline bool adapter_allowed_cn105_physical_writes(const char* id) {
 // Only adapters implemented in THIS ESP32-S3 cottage firmware may be selected.
 inline bool adapter_selectable_in_lite_firmware(const char* id) {
     const auto* e=find_adapter(id);
-    // Midea V2/V3 writes use the local LAN worker.
+    // These experimental adapters have a dedicated local LAN command path.
     return e && (e->maturity==AdapterMaturity::FieldPilot ||
         e->maturity==AdapterMaturity::FirmwareReadOnly ||
-        ((std::strcmp(e->id,"midea_lan")==0 || std::strcmp(e->id,"gree_ewpe_lan")==0) &&
+        ((std::strcmp(e->id,"midea_lan")==0 || std::strcmp(e->id,"gree_ewpe_lan")==0 ||
+          std::strcmp(e->id,"daikin_local_api")==0) &&
          e->maturity==AdapterMaturity::FirmwareControlExperimental));
 }
 inline const char* adapter_maturity_name(AdapterMaturity m) {
