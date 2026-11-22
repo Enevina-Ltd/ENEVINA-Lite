@@ -28,6 +28,7 @@
 #include "cottage_secure_ota.hpp"
 #include "cottage_site_settings.hpp"
 #include "cottage_midea_service.hpp"
+#include "cottage_gree_service.hpp"
 #include "pump/adapter_catalog.hpp"
 #include "cottage/control_intent.hpp"
 #include "cottage_wifi.hpp"
@@ -119,7 +120,7 @@ static std::atomic<uint32_t> cn105_source_proof_good{0};
 static TaskHandle_t task_sse=nullptr,task_shelly=nullptr;
 static TaskHandle_t task_ruuvi=nullptr,task_optimizer=nullptr;
 static TaskHandle_t task_ota=nullptr;
-static TaskHandle_t task_history=nullptr,task_midea=nullptr;
+static TaskHandle_t task_history=nullptr,task_midea=nullptr,task_gree=nullptr;
 static bool shelly_relay_on=false;
 // Production control is explicitly ARMED via local setting, never by OTA.
 static std::atomic<bool> control_armed{false};
@@ -855,6 +856,8 @@ static TemperatureSample selected_room_sample(int64_t now,const RoomTemperatureC
     PumpRoomState state{};
     if(cottage_midea_selected()) {
         state=cottage_midea_room_state();
+    } else if(cottage_gree_selected()) {
+        state=cottage_gree_room_state();
     } else if(cn105_selected()) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
         if(verified_cn105_link.current() && valid_cn105(pump,now)) {
@@ -2977,6 +2980,7 @@ void setup() {
     c23_register_routes(web);
     site_settings_register_routes(web);
     cottage_midea_service_register_routes(web);
+    cottage_gree_register_routes(web);
     cottage_control_registration(); // restore prior explicit choice only
     web.onNotFound([](){
         if(cottage_wifi_request_via_ap(web)) {
@@ -3024,12 +3028,15 @@ void loop() {
     // This is a once-per-selection task creation, not a polling/watchdog.
     // A saved Midea enrollment must also start after switching adapters in UI.
     static uint32_t last_midea_check_ms=0;
-    if(!task_midea && static_cast<uint32_t>(millis()-last_midea_check_ms)>=2000) {
+    if(static_cast<uint32_t>(millis()-last_midea_check_ms)>=2000) {
         last_midea_check_ms=millis();
-        if(cottage_midea_service_needs_worker() &&
+        if(!task_midea && cottage_midea_service_needs_worker() &&
            xTaskCreatePinnedToCore(cottage_midea_service_worker,"cottage_midea",
                                    10240,nullptr,1,&task_midea,0)!=pdPASS)
             Serial.println("MIDEA_WORKER: insufficient memory");
+        if(!task_gree && cottage_gree_needs_worker() &&
+           xTaskCreatePinnedToCore(cottage_gree_worker,"cottage_gree",8192,nullptr,1,&task_gree,0)!=pdPASS)
+            Serial.println("GREE_WORKER: insufficient memory");
     }
     verify_new_ota_boot();
     c23_tick(); // local BLE/mode/alarm history works with wifi=0

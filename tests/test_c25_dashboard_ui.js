@@ -74,6 +74,12 @@ vm.createContext(context);
 vm.runInContext(source,context,{filename:'dashboard.js'});
 const run=x=>vm.runInContext(x,context);
 (async()=>{
+  run("showGree({result:'ok',fresh:false,configured:false})");
+  assert.equal($('gree-status').textContent,'Gree-yhteys odottaa lukutestiä.');
+  run("showGree({result:'paired',fresh:false,configured:false})");
+  assert.equal($('gree-status').textContent,'Gree-yhteys odottaa lukutestiä.');
+  run("showGree({result:'paired',fresh:true,configured:false})");
+  assert.equal($('gree-status').textContent,'Gree-yhteys toimii.');
   assert.equal(run('ownEnergyClass(1200,17).grade'),'B');
   assert.equal(run('ownEnergyClass(850,17).grade'),'A');
   assert.equal(run('ownEnergyClass(1700,17).grade'),'C');

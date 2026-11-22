@@ -18,6 +18,13 @@ This inventory is based on repository build configurations and source imports as
 | **NumPy** (development/test only) | `tools/reference_benchmark.py` | [NumPy license](https://github.com/numpy/numpy/blob/main/LICENSE.txt) (BSD-style) | Only if redistributing the Python tools with their dependencies: include or reference complete applicable notices in that distribution. |
 | **SciPy** (development/test only) | `tools/reference_benchmark.py`, including `scipy.optimize.milp` | [SciPy license](https://github.com/scipy/scipy/blob/main/LICENSE.txt) (BSD-style) | Check any bundled binaries and transitive notices before redistributing a Python environment. |
 
+## Gree protocol references
+
+The Gree codec is independently authored C++ using documented packet formats and wire constants. No GPL source, tests, or Python runtime dependencies are included.
+
+- [tomikaa87/gree-remote protocol description](https://github.com/tomikaa87/gree-remote/tree/828c9ec77f25d4475cfca63dd5eb81128dbc24a0) at `828c9ec77f25d4475cfca63dd5eb81128dbc24a0`, GPL-3.0, describes UDP discovery, binding and V1 packet fields.
+- [cmroche/greeclimate](https://github.com/cmroche/greeclimate/tree/ec124ec8b86a9c9dcf61a783609e57964408c31c) at `ec124ec8b86a9c9dcf61a783609e57964408c31c`, GPL-3.0, documents V2 AES-GCM interoperability and response variants. Its Python dependencies are not part of Lite.
+
 ## Mandatory release checks
 
 1. Build each supported firmware variant reproducibly from the pinned toolchain and record exact framework, component, library and bootloader versions and SHA-256 of deliverables.

@@ -449,3 +449,18 @@ target_link_libraries(cottage_mpc_resource_bench PRIVATE enevina_cottage enevina
 if(MINGW)
   target_link_options(cottage_mpc_resource_bench PRIVATE -static)
 endif()
+
+# Gree wire vectors share the ESP32 codec; host crypto and JSON use system libraries.
+find_path(GREE_CJSON_INCLUDE NAMES cJSON.h PATH_SUFFIXES cjson)
+find_library(GREE_CJSON_LIBRARY NAMES cjson)
+if(OpenSSL_FOUND AND GREE_CJSON_INCLUDE AND GREE_CJSON_LIBRARY)
+  add_executable(gree_lan_protocol_tests tests/gree_lan_protocol_tests.cpp pump/gree_lan_protocol.cpp)
+  target_include_directories(gree_lan_protocol_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${GREE_CJSON_INCLUDE})
+  target_link_libraries(gree_lan_protocol_tests PRIVATE OpenSSL::Crypto ${GREE_CJSON_LIBRARY})
+  if(MSVC)
+    target_compile_options(gree_lan_protocol_tests PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(gree_lan_protocol_tests PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME gree_lan_protocol_tests COMMAND gree_lan_protocol_tests)
+endif()

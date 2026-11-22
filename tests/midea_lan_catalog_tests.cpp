@@ -17,7 +17,10 @@ int main() {
     assert(!adapter_allowed_cn105_physical_writes(""));
     assert(!adapter_allowed_cn105_physical_writes(nullptr));
     assert(!adapter_selectable_in_lite_firmware("nibe_s_modbus_tcp"));
-    assert(!adapter_selectable_in_lite_firmware("gree_ewpe_lan"));
+    const auto* gree=find_adapter("gree_ewpe_lan");
+    assert(gree && gree->maturity==AdapterMaturity::FirmwareReadOnly);
+    assert(adapter_selectable_in_lite_firmware(gree->id));
+    assert(!adapter_allowed_cn105_physical_writes(gree->id));
     assert(!adapter_selectable_in_lite_firmware("unknown"));
     std::cout<<"Midea experimental manual control and CN105 isolation PASS\n";
 }
