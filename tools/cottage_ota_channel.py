@@ -22,7 +22,8 @@ def channel_tag(manifest_url, firmware_url, ca_pem, publisher_pem):
     it is not cryptographic attestation of device-side execution.
     """
     if any(
-        not url.isascii() or any(ord(char) <= 32 or ord(char) == 127 for char in url)
+        not url.isascii() or any(char in url for char in "?#")
+        or any(ord(char) <= 32 or ord(char) == 127 for char in url)
         for url in (manifest_url, firmware_url)
     ):
         raise ValueError("signed OTA requires canonical HTTPS endpoints")

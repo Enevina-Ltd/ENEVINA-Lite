@@ -81,8 +81,9 @@ class SignedPullReleaseCapabilityTests(unittest.TestCase):
         for path in ("/ota/../", "/ota//", "/%2e/", "/./", "/with%20space/", "/a\\\\b/", "/a\t/"):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 channel_tag(root + path + "manifest.txt", root + path + "firmware.bin", ca, key)
-        with self.assertRaises(ValueError):
-            channel_tag(dist + "/manifest.txt?latest", dist + "/firmware.bin", ca, key)
+        for suffix in ("?latest", "?", "#"):
+            with self.subTest(suffix=suffix), self.assertRaises(ValueError):
+                channel_tag(dist + "/manifest.txt" + suffix, dist + "/firmware.bin", ca, key)
 
     def test_channel_digest_in_generator_and_build(self):
         root=Path(__file__).resolve().parents[1]
