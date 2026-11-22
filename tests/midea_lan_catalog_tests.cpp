@@ -18,7 +18,7 @@ int main() {
     assert(!adapter_allowed_cn105_physical_writes(nullptr));
     assert(!adapter_selectable_in_lite_firmware("nibe_s_modbus_tcp"));
     const auto* gree=find_adapter("gree_ewpe_lan");
-    assert(gree && gree->maturity==AdapterMaturity::FirmwareReadOnly);
+    assert(gree && gree->maturity==AdapterMaturity::FirmwareControlExperimental && gree->command_readback);
     assert(adapter_selectable_in_lite_firmware(gree->id));
     assert(!adapter_allowed_cn105_physical_writes(gree->id));
     assert(!adapter_selectable_in_lite_firmware("unknown"));

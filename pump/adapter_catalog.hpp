@@ -80,9 +80,10 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      0,0,0,"V3 authenticated, V2 fixed shared key; no pump-origin timestamp",true,
      "docs/integrations/MIDEA_MODEL_CATALOG.md; docs/field/MIDEA_LAN_CONTROL_20261121.md"},
     {"gree_ewpe_lan","Gree / EWPE Smart OEM","Local V1/V2 (no field-verified models)",
-     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareReadOnly,
+     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareControlExperimental,
      "direct LAN discovery, pairing, operating state, Celsius setpoint and optional temperature",
-     "not enabled",0,0,0,"direct LAN response; reported values have no pump timestamp",false,
+     "model-approved manual and automatic HEAT, OFF and whole-degree setpoint",0,0,0,
+     "direct LAN response; reported values have no pump timestamp",true,
      "docs/integrations/GREE_LAN.md"},
     {"daikin_local_api","Daikin","BRP069Axx/Bxx, BRP072A42/A43 (research)",
      HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::DocumentedOnly,
@@ -107,7 +108,7 @@ inline bool adapter_selectable_in_lite_firmware(const char* id) {
     // Midea V2/V3 writes use the local LAN worker.
     return e && (e->maturity==AdapterMaturity::FieldPilot ||
         e->maturity==AdapterMaturity::FirmwareReadOnly ||
-        (std::strcmp(e->id,"midea_lan")==0 &&
+        ((std::strcmp(e->id,"midea_lan")==0 || std::strcmp(e->id,"gree_ewpe_lan")==0) &&
          e->maturity==AdapterMaturity::FirmwareControlExperimental));
 }
 inline const char* adapter_maturity_name(AdapterMaturity m) {

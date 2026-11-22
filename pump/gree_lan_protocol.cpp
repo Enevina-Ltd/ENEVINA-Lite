@@ -334,6 +334,30 @@ std::string command_request(Cipher cipher,const Key& key,std::string_view device
     return pack(cipher,key,false,"app",device,"{\"t\":\"cmd\",\"mac\":\""+
         std::string(device)+"\",\"opt\":["+options+"],\"p\":["+values+"]}");
 }
+bool heating_state_known(const Reading& reading) {
+    return reading.frost==false && reading.setpoint_c.has_value();
+}
+PumpRoomMode heating_room_mode(const Reading& reading) {
+    if(!heating_state_known(reading))return PumpRoomMode::Unknown;
+    if(!reading.power)return PumpRoomMode::Off;
+    return reading.mode==Mode::Heat?PumpRoomMode::Heat:PumpRoomMode::Other;
+}
+bool changes_operating_mode(const Patch& patch,const Reading& reading) {
+    return (patch.power && *patch.power!=reading.power) ||
+        (reading.power && patch.mode && *patch.mode!=reading.mode);
+}
+bool dwell_allows(const Patch& patch,const Reading& reading,uint32_t elapsed,uint32_t minimum) {
+    return !changes_operating_mode(patch,reading) || elapsed>=minimum;
+}
+bool permits_heating_patch(const Patch& patch,const Reading& reading,const PumpHeatingLimits& limits) {
+    const bool heating_target=!reading.power || reading.mode==Mode::Heat ||
+        patch.mode==Mode::Heat;
+    return limits.heating && heating_state_known(reading) &&
+        (!patch.setpoint_c || (heating_target && limits.accepts(*patch.setpoint_c))) &&
+        (!patch.mode || *patch.mode==Mode::Heat) &&
+        (patch.power || patch.mode || patch.setpoint_c) &&
+        !(patch.power==false && (patch.mode || patch.setpoint_c));
+}
 bool confirmed(const Patch& patch,const Reading& reading) {
     return (patch.power || patch.mode || patch.setpoint_c) &&
         (!patch.power || reading.power==*patch.power) &&

@@ -460,7 +460,7 @@ console.log('devices step helpers ok');
   ctx.state.site.pump_adapter='gree_ewpe_lan';
   await A.wzSavePump(true);
   assert.deepEqual(events,[{setup_step:'5'}],'skipping a draft preserves the active pump');
-  const greeJob=header.split('async function greeJob(action){')[1].split("async function initialRefresh(){")[0];
+  const greeJob=header.split('async function greeJob(')[1].split("async function initialRefresh(){")[0];
   assert(!greeJob.includes('wzPost('),'discovery and pairing must not save the active adapter');
   console.log('wizard rollback-order, ambiguous-response, control-choice and Gree setup tests OK');
 })().catch(e=>{console.error(e);process.exitCode=1;});
