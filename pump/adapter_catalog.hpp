@@ -101,9 +101,10 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      "module identity, heating setpoint and optional temperatures via DSIoT", "not enabled",0,0,0,
      "LAN response; reported values have no pump timestamp",false,"docs/integrations/DAIKIN_DSIOT.md"},
     {"mitsubishi_cn105_direct","Mitsubishi Electric","Direct CN105 UART (no field-verified models)",
-     HeatPumpType::AirToAir,AdapterLink::SerialBus,AdapterMaturity::FirmwareReadOnly,
+     HeatPumpType::AirToAir,AdapterLink::SerialBus,AdapterMaturity::FirmwareControlExperimental,
      "direct UART power, mode, setpoint, and supported temperature and compressor readings",
-     "not enabled",0,0,0,"completed checksum-valid UART poll for this connection",false,
+     "model-approved HEAT, OFF and setpoint on the standard CN105 bus",0,0,0,
+     "completed checksum-valid UART poll for this connection",true,
      "docs/integrations/MITSUBISHI_CN105_DIRECT.md"},
 };
 inline constexpr size_t adapter_catalog_size=sizeof(adapter_catalog)/sizeof(adapter_catalog[0]);
@@ -121,11 +122,12 @@ inline bool adapter_allowed_cn105_physical_writes(const char* id) {
 // Only adapters implemented in THIS ESP32-S3 cottage firmware may be selected.
 inline bool adapter_selectable_in_lite_firmware(const char* id) {
     const auto* e=find_adapter(id);
-    // These experimental adapters have a dedicated local LAN command path.
+    // These experimental adapters have a dedicated local command path.
     return e && (e->maturity==AdapterMaturity::FieldPilot ||
         e->maturity==AdapterMaturity::FirmwareReadOnly ||
         ((std::strcmp(e->id,"midea_lan")==0 || std::strcmp(e->id,"gree_ewpe_lan")==0 ||
-          std::strcmp(e->id,"daikin_local_api")==0 || std::strcmp(e->id,"mhi_wf_rac_lan")==0) &&
+          std::strcmp(e->id,"daikin_local_api")==0 || std::strcmp(e->id,"mhi_wf_rac_lan")==0 ||
+          std::strcmp(e->id,"mitsubishi_cn105_direct")==0) &&
          e->maturity==AdapterMaturity::FirmwareControlExperimental));
 }
 inline const char* adapter_maturity_name(AdapterMaturity m) {
