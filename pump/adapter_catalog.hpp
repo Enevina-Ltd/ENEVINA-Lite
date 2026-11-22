@@ -100,6 +100,11 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareReadOnly,
      "module identity, heating setpoint and optional temperatures via DSIoT", "not enabled",0,0,0,
      "LAN response; reported values have no pump timestamp",false,"docs/integrations/DAIKIN_DSIOT.md"},
+    {"mitsubishi_cn105_direct","Mitsubishi Electric","Direct CN105 UART (no field-verified models)",
+     HeatPumpType::AirToAir,AdapterLink::SerialBus,AdapterMaturity::FirmwareReadOnly,
+     "direct UART power, mode, setpoint, and supported temperature and compressor readings",
+     "not enabled",0,0,0,"completed checksum-valid UART poll for this connection",false,
+     "docs/integrations/MITSUBISHI_CN105_DIRECT.md"},
 };
 inline constexpr size_t adapter_catalog_size=sizeof(adapter_catalog)/sizeof(adapter_catalog[0]);
 

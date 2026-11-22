@@ -1,0 +1,10 @@
+#pragma once
+#include "pump/pump_adapter.hpp"
+class WebServer;
+bool cottage_cn105_direct_selected();
+bool cottage_cn105_direct_needs_worker();
+void cottage_cn105_direct_register_routes(WebServer&);
+void cottage_cn105_direct_tick();
+uint32_t cottage_cn105_direct_configuration_generation();
+uint32_t cottage_cn105_direct_calibration_identity();
+enevina::PumpRoomState cottage_cn105_direct_room_state();

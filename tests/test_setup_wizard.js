@@ -29,11 +29,13 @@ const A=ctx.api;
 {
   const loadPart=(name,next)=>src.slice(src.indexOf('function '+name+'('),src.indexOf(next,src.indexOf('function '+name+'(')));
   const modal={hidden:false};
-  const panel={parentElement:modal},dsiotPanel={parentElement:modal};
+  const panel={parentElement:modal},dsiotPanel={parentElement:modal},cn105Panel={parentElement:modal};
   const card={prepend(node){node.parentElement=this;}};
   const dsiotCard={prepend(node){node.parentElement=this;}};
+  const cn105Card={prepend(node){node.parentElement=this;}};
   const elements={'wf-rac-connection':panel,'wf-rac-card':card,wizard:modal,
-    'daikin-dsiot-connection':dsiotPanel,'daikin-dsiot-card':dsiotCard};
+    'daikin-dsiot-connection':dsiotPanel,'daikin-dsiot-card':dsiotCard,
+    'cn105-direct-connection':cn105Panel,'cn105-direct-card':cn105Card};
   const noop=()=>{};
   const env={WZ:{open:true},wzStopPolling:noop,wzUpdateMideaPolling:noop,wzRestoreMideaPanel:noop,
     wzRestoreMideaPilot:noop,wzRestoreGreePanel:noop,wzRestoreDaikinPanel:noop,
@@ -43,6 +45,7 @@ const A=ctx.api;
     loadPart('wzClose','async function wzOpen(')+'wzClose()',env);
   assert.equal(panel.parentElement,card,'closing setup restores the WF-RAC panel to Settings');
   assert.equal(dsiotPanel.parentElement,dsiotCard,'closing setup restores the DSIoT panel to Settings');
+  assert.equal(cn105Panel.parentElement,cn105Card,'closing setup restores the direct CN105 panel to Settings');
   assert.equal(modal.hidden,true);
 }
 
@@ -523,5 +526,21 @@ console.log('devices step helpers ok');
   events.length=0;
   await A.wzSavePump(true);
   assert.deepEqual(events,[{setup_step:'5'}]);
-  console.log('wizard rollback-order, control-choice and LAN setup tests OK');
+  events.length=0;
+  A.WZ.adapter='mitsubishi_cn105_direct';
+  ctx.cn105DirectBusy=false;ctx.cn105DirectDirty=false;
+  ctx.fetchJSON=async path=>{
+    assert.equal(path,'/api/cn105-direct/status?draft=true');
+    return {configured:true,fresh:false,draft_id:51};
+  };
+  await assert.rejects(A.wzSavePump(false),/CN105/);
+  assert.deepEqual(events,[]);
+  ctx.fetchJSON=async()=>({configured:true,fresh:true,draft_id:51});
+  ctx.cn105DirectCommit=async id=>events.push(['cn105',id]);
+  await A.wzSavePump(false);
+  assert.deepEqual(events,[['cn105',51],{pump_adapter:'mitsubishi_cn105_direct',setup_step:'5'}]);
+  events.length=0;
+  await A.wzSavePump(true);
+  assert.deepEqual(events,[{setup_step:'5'}]);
+  console.log('wizard rollback-order, control-choice and pump setup tests OK');
 })().catch(e=>{console.error(e);process.exitCode=1;});
