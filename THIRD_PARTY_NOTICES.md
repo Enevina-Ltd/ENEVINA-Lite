@@ -38,6 +38,8 @@ Daikin DSIoT uses an original C++ implementation of the message format described
 
 The direct Mitsubishi Electric CN105 driver uses its own codec based on the [ESPHome CN105 wire reference](https://esphome.io/components/climate/mitsubishi_cn105/) and the BSD-2-Clause [MitsubishiCN105ESPHome source at b24e428](https://github.com/echavet/MitsubishiCN105ESPHome/tree/b24e4285d901d0c20ab16b1d112fdf9f2851d7b9). No ESPHome runtime is linked.
 
+The Daikin S21 codec implements the published protocol facts independently. References are [esphome-daikin-s21 at 1ff4298](https://github.com/asund/esphome-daikin-s21/tree/1ff429896af20b477903818a515ad2ee25a26e6e) and [ESP32-Faikout at 12b13cc](https://codeberg.org/RevK/ESP32-Faikout/src/commit/12b13cc403872c17d9cf00e53b83558a5ec9a81b), both GPL-3.0. No upstream source files or ESPHome runtime are included or linked for this adapter.
+
 ## Mandatory release checks
 
 1. Build each supported firmware variant reproducibly from the pinned toolchain and record exact framework, component, library and bootloader versions and SHA-256 of deliverables.
