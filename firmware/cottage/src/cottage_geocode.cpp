@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <new>
 #include "cottage_geocode.hpp"
 #include "cottage_network_budget.hpp"
 #include "../../main/tls_roots.hpp"
@@ -21,7 +22,6 @@ constexpr uint32_t kReuseMs=120*1000;
 constexpr uint32_t kMinGapMs=2000;
 
 SemaphoreHandle_t guard=nullptr;
-TaskHandle_t worker=nullptr;
 GeocodeSnapshot shared{};        // last/active job, guarded by `guard`
 char job_url[300]{};
 uint32_t finished_ms=0;
@@ -36,69 +36,92 @@ void fail(GeocodeError e) {
     xSemaphoreGive(guard);
 }
 
-void run_job() {
-    GeocodeError error=GeocodeError::Offline;
-    // Same budget gate as price and weather TLS: never two TLS handshakes or
-    // a handshake during BLE discovery in scarce internal RAM.
-    NetworkBudgetLease lease(8000,78*1024,16*1024);
-    if(!lease.held()) {fail(GeocodeError::LowMemory);return;}
+struct SearchWorkspace {
+    char body[kBodyLimit];
+    enevina::GeoPlace places[kGeocodeMaxResults];
+};
+
+GeocodeError download(char* body, size_t& used) {
+    // mbedTLS still needs internal RAM. The response and parsed places live
+    // in PSRAM, so only the bounded HTTPS exchange holds the shared gate.
+    NetworkBudgetLease lease(8000,52*1024,16*1024);
+    if(!lease.held()) {
+        if(lease.diagnostic().failure==NetworkBudgetFailure::MutexBusy)
+            return GeocodeError::Busy;
+        const auto& detail=lease.diagnostic();
+        ESP_LOGW(tag,"geocode TLS budget refused: free=%u largest=%u",
+                 static_cast<unsigned>(detail.free_internal),
+                 static_cast<unsigned>(detail.largest_internal));
+        return GeocodeError::LowMemory;
+    }
     esp_http_client_config_t cfg{};
     cfg.url=job_url;
     cfg.timeout_ms=10000;
     cfg.cert_pem=photon_ca_pem;
-    esp_http_client_handle_t client=esp_http_client_init(&cfg);
-    if(!client) {fail(GeocodeError::LowMemory);return;}
-    // Body lives in PSRAM only; there is no internal-RAM fallback.
-    char* body=static_cast<char*>(heap_caps_malloc(kBodyLimit+1,
-        MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
-    bool done=false;
-    if(!body) error=GeocodeError::LowMemory;
-    else if(esp_http_client_open(client,0)==ESP_OK) {
-        esp_http_client_fetch_headers(client);
+    cfg.disable_auto_redirect=true;
+    cfg.buffer_size=1024;
+    cfg.buffer_size_tx=512;
+    auto client=esp_http_client_init(&cfg);
+    if(!client)return GeocodeError::LowMemory;
+
+    GeocodeError error=GeocodeError::Offline;
+    const auto opened=esp_http_client_open(client,0);
+    if(opened==ESP_OK) {
+        const auto length=esp_http_client_fetch_headers(client);
         const int status=esp_http_client_get_status_code(client);
-        if(status!=200) error=GeocodeError::ServerError;
-        else {
-            size_t used=0;
+        if(status>0 && status!=200)error=GeocodeError::ServerError;
+        else if(status==200 && length>static_cast<int>(kBodyLimit))
+            error=GeocodeError::BadResponse;
+        else if(status==200) {
             int read=0;
-            while(used<kBodyLimit && (read=esp_http_client_read(client,body+used,
-                static_cast<int>(kBodyLimit-used)))>0) used+=static_cast<size_t>(read);
-            if(read!=0 || used==0) error=GeocodeError::Offline;
-            else {
-                body[used]=0;
-                auto result=std::unique_ptr<GeocodeSnapshot>(new(std::nothrow) GeocodeSnapshot);
-                if(!result) error=GeocodeError::LowMemory;
-                else {
-                    xSemaphoreTake(guard,portMAX_DELAY);
-                    char country[3];
-                    std::memcpy(country,shared.country,sizeof(country));
-                    xSemaphoreGive(guard);
-                    size_t count=0;
-                    if(enevina::parse_geocode(body,used,country[0]?country:nullptr,
-                        result->places,kGeocodeMaxResults,count)) {
-                        xSemaphoreTake(guard,portMAX_DELAY);
-                        std::memcpy(shared.places,result->places,sizeof(shared.places));
-                        shared.count=count;
-                        shared.state=GeocodeState::Done;
-                        shared.error=GeocodeError::None;
-                        finished_ms=millis();
-                        xSemaphoreGive(guard);
-                        done=true;
-                    } else error=GeocodeError::BadResponse;
-                }
-            }
+            while(used<kBodyLimit &&
+                  (read=esp_http_client_read(client,body+used,
+                                             static_cast<int>(kBodyLimit-used)))>0)
+                used+=static_cast<size_t>(read);
+            if(used && esp_http_client_is_complete_data_received(client))
+                error=GeocodeError::None;
+            else if(used==kBodyLimit)error=GeocodeError::BadResponse;
         }
         esp_http_client_close(client);
+    } else {
+        ESP_LOGW(tag,"geocode HTTPS open failed: %s",esp_err_to_name(opened));
+        if(opened==ESP_ERR_NO_MEM)error=GeocodeError::LowMemory;
     }
-    if(body) heap_caps_free(body);
     esp_http_client_cleanup(client);
-    if(!done) fail(error);
+    return error;
+}
+
+void run_job() {
+    auto* mem=heap_caps_malloc(sizeof(SearchWorkspace),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!mem) {fail(GeocodeError::LowMemory);return;}
+    std::unique_ptr<SearchWorkspace,decltype(&heap_caps_free)> data(
+        new(mem) SearchWorkspace,heap_caps_free);
+    size_t used=0;
+    const auto error=download(data->body,used);
+    if(error!=GeocodeError::None) {fail(error);return;}
+
+    char country[3];
+    xSemaphoreTake(guard,portMAX_DELAY);
+    std::memcpy(country,shared.country,sizeof(country));
+    xSemaphoreGive(guard);
+    size_t count=0;
+    if(!enevina::parse_geocode(data->body,used,country[0]?country:nullptr,
+                               data->places,kGeocodeMaxResults,count)) {
+        fail(GeocodeError::BadResponse);
+        return;
+    }
+    xSemaphoreTake(guard,portMAX_DELAY);
+    std::memcpy(shared.places,data->places,sizeof(shared.places));
+    shared.count=count;
+    shared.state=GeocodeState::Done;
+    shared.error=GeocodeError::None;
+    finished_ms=millis();
+    xSemaphoreGive(guard);
 }
 
 void worker_main(void*) {
-    for(;;) {
-        ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
-        run_job();
-    }
+    run_job();
+    vTaskDelete(nullptr);
 }
 } // namespace
 
@@ -111,7 +134,7 @@ GeocodeState geocode_search(const char* query,const char* country,
     if(*country && !(std::strlen(country)==2 && country[0]>='A' && country[0]<='Z' &&
                      country[1]>='A' && country[1]<='Z')) country="";
     if(!language || (std::strcmp(language,"fi") && std::strcmp(language,"en"))) language="en";
-    char url[300];
+    char url[300]{};
     if(!enevina::build_geocode_url(query,language,url,sizeof(url))) {
         out.state=GeocodeState::Failed;
         out.error=GeocodeError::BadQuery;
@@ -152,15 +175,11 @@ GeocodeState geocode_search(const char* query,const char* country,
     }
     out=shared;
     xSemaphoreGive(guard);
-    if(start) {
-        if(!worker && xTaskCreate(worker_main,"geocode",6144,nullptr,2,&worker)!=pdPASS) {
-            fail(GeocodeError::LowMemory);
-            xSemaphoreTake(guard,portMAX_DELAY);
-            out=shared;
-            xSemaphoreGive(guard);
-            return out.state;
-        }
-        xTaskNotifyGive(worker);
+    if(start && xTaskCreate(worker_main,"geocode",6144,nullptr,2,nullptr)!=pdPASS) {
+        fail(GeocodeError::LowMemory);
+        xSemaphoreTake(guard,portMAX_DELAY);
+        out=shared;
+        xSemaphoreGive(guard);
     }
     return out.state;
 }

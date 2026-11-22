@@ -43,7 +43,8 @@ static void encoding() {
     CHECK(!enevina::geocode_encode_query("\xC3\xA4\xC3\xB6",b,sizeof(b)));
     char url[300];
     CHECK(enevina::build_geocode_url("Kang","fi",url,sizeof(url)));
-    CHECK(std::string(url).find("q=Kang&limit=20&lang=fi")!=std::string::npos);
+    CHECK(std::string(url).find("q=Kang&limit=20&layer=city")!=std::string::npos);
+    CHECK(std::string(url).find("&lang=")==std::string::npos);
     CHECK(enevina::build_geocode_url("Kang","xx",url,sizeof(url)));      // falls back to en
     CHECK(std::string(url).find("lang=en")!=std::string::npos);
     CHECK(!enevina::build_geocode_url("Kang","en",url,20));

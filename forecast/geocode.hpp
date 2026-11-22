@@ -147,10 +147,12 @@ inline bool geocode_encode_query(const char* text,char* out,size_t cap) {
 inline bool build_geocode_url(const char* query,const char* language,char* out,size_t cap) {
     char encoded[kGeoMaxQueryBytes*3+1];
     if(!geocode_encode_query(query,encoded,sizeof(encoded))) return false;
-    if(!language||(std::strcmp(language,"fi")&&std::strcmp(language,"en"))) language="en";
+    // The public Photon instance does not offer fi. Its default language
+    // preserves local names, while the English UI can request its en index.
+    const char* language_param=language && !std::strcmp(language,"fi") ? "" : "&lang=en";
     const int n=std::snprintf(out,cap,
-        "https://photon.komoot.io/api/?q=%s&limit=20&lang=%s&layer=city&layer=locality",
-        encoded,language);
+        "https://photon.komoot.io/api/?q=%s&limit=20%s&layer=city&layer=locality",
+        encoded,language_param);
     return n>0&&static_cast<size_t>(n)<cap;
 }
 // "lat,lon" with four decimals (~10 m), the format the weather settings use.
