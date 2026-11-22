@@ -512,11 +512,11 @@ public:
         static uint32_t last=0,last_endpoint=0,last_wifi=0;
         if(cottage_ota_network_maintenance())return;
         const auto link=live_link();
-        const bool selected=selected();
+        const bool is_selected=selected();
         xSemaphoreTake(gate,portMAX_DELAY);
         auto job=state.job;
         const bool explicit_test=job.baud!=0;
-        if(!explicit_test && selected && Protocol::valid_baud(state.pair.baud) &&
+        if(!explicit_test && is_selected && Protocol::valid_baud(state.pair.baud) &&
            (millis()-last>=poll_interval || link.endpoint!=last_endpoint || link.wifi!=last_wifi))
             job={state.pair.baud,link};
         const auto limits=state.limits;
@@ -524,12 +524,12 @@ public:
         state.busy=job.baud!=0;
         xSemaphoreGive(gate);
         if(!job.baud) {
-            if(!selected && cottage_pump_uart.owned_by(Protocol::owner))disconnect();
+            if(!is_selected && cottage_pump_uart.owned_by(Protocol::owner))disconnect();
             return;
         }
         const auto outcome=job.command?perform_write(job,limits):WriteResult{};
         const auto sample=job.command?Sample{}:poll(job.baud,job.link);
-        if(job.draft && !selected)disconnect();
+        if(job.draft && !is_selected)disconnect();
         xSemaphoreTake(gate,portMAX_DELAY);
         state.busy=false;
         if(job.link.current()) {
