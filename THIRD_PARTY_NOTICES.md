@@ -25,6 +25,13 @@ The Gree codec is independently authored C++ using documented packet formats and
 - [tomikaa87/gree-remote protocol description](https://github.com/tomikaa87/gree-remote/tree/828c9ec77f25d4475cfca63dd5eb81128dbc24a0) at `828c9ec77f25d4475cfca63dd5eb81128dbc24a0`, GPL-3.0, describes UDP discovery, binding and V1 packet fields.
 - [cmroche/greeclimate](https://github.com/cmroche/greeclimate/tree/ec124ec8b86a9c9dcf61a783609e57964408c31c) at `ec124ec8b86a9c9dcf61a783609e57964408c31c`, GPL-3.0, documents V2 AES-GCM interoperability and response variants. Its Python dependencies are not part of Lite.
 
+## Daikin legacy protocol references
+
+The local HTTP adapter is independently authored C++. The references supplied wire field names and observed firmware distinctions.
+
+- [Apollon77/daikin-controller](https://github.com/Apollon77/daikin-controller/tree/6d6d23eae45d57d04dff2ab811a30f81bce4093f), commit `6d6d23eae45d57d04dff2ab811a30f81bce4093f`, MIT. No Node runtime or source is bundled.
+- [fredrike/pydaikin](https://github.com/fredrike/pydaikin/tree/3c88d3fe1ccd64e94c7d54ce52643f2c44cf6058), commit `3c88d3fe1ccd64e94c7d54ce52643f2c44cf6058`, GPL-3.0. No source, fixtures or Python runtime from this project are bundled.
+
 ## Mandatory release checks
 
 1. Build each supported firmware variant reproducibly from the pinned toolchain and record exact framework, component, library and bootloader versions and SHA-256 of deliverables.

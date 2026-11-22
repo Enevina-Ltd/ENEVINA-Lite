@@ -674,99 +674,95 @@ enevina::PumpRoomState cottage_gree_room_state() {
     return out;
 }
 
-void cottage_gree_worker(void*) {
-    uint32_t last_poll=0,last_wifi=0,last_endpoint=0;
-    for(;;) {
-        if(WiFi.status()!=WL_CONNECTED || cottage_ota_network_maintenance()) {
-            vTaskDelay(pdMS_TO_TICKS(400));
-            continue;
+void cottage_gree_tick() {
+    static uint32_t last_poll=0,last_wifi=0,last_endpoint=0;
+    if(WiFi.status()!=WL_CONNECTED || cottage_ota_network_maintenance()) {
+        return;
+    }
+    const auto link=active_link();
+    const bool selected=cottage_gree_selected();
+    xSemaphoreTake(guard,portMAX_DELAY);
+    Job job=state.queued;
+    if(job.work==Work::None && selected && configured(state.saved) &&
+       (millis()-last_poll>=poll_ms || last_wifi!=link.wifi || last_endpoint!=link.endpoint))
+        job={Work::Read,{},link};
+    const bool using_draft=job.draft && state.draft.id && state.draft.sample.link.current();
+    const Config old=using_draft?state.draft.config:state.saved;
+    const auto limits=state.limits;
+    state.queued={};
+    state.busy=job.work!=Work::None;
+    xSemaphoreGive(guard);
+    if(job.work==Work::None) {
+        return;
+    }
+    const char* result="link_changed";
+    Config candidate=job.proposed;
+    std::optional<Reading> reading;
+    WriteOutcome command{};
+    std::array<Candidate,max_candidates> found{};
+    size_t count=0;
+    if(job.link.current()) {
+        enevina_firmware::NetworkBudgetLease lease(700,72*1024,16*1024);
+        if(!lease.held())result="network_busy";
+        else if(job.work==Work::Scan) {
+            count=scan(job.link,found);
+            result=count?"scan_ok":"no_devices";
+        } else if(job.work==Work::Pair) {
+            const bool same=configured(old) && !std::strcmp(candidate.host,old.host) &&
+                candidate.cipher==old.cipher && device_id(candidate.device)==device_id(old.device);
+            if(same)reading=read(old,job.link);
+            if(reading) {
+                candidate=old;
+                result="paired";
+            } else if(const auto key=bind(candidate,job.link)) {
+                candidate.version=config_version;
+                candidate.key=*key;
+                reading=read(candidate,job.link);
+                result=reading?"paired":"read_failed";
+            } else result="bind_failed";
+        } else if(job.work==Work::Write) {
+            command=write_command(job,old,limits);
+            result=command.result;
+        } else {
+            if(configured(old))reading=read(old,job.link);
+            result=!configured(old)?"not_configured":reading?"ok":"read_failed";
         }
-        const auto link=active_link();
-        const bool selected=cottage_gree_selected();
-        xSemaphoreTake(guard,portMAX_DELAY);
-        Job job=state.queued;
-        if(job.work==Work::None && selected && configured(state.saved) &&
-           (millis()-last_poll>=poll_ms || last_wifi!=link.wifi || last_endpoint!=link.endpoint))
-            job={Work::Read,{},link};
-        const bool using_draft=job.draft && state.draft.id && state.draft.sample.link.current();
-        const Config old=using_draft?state.draft.config:state.saved;
-        const auto limits=state.limits;
-        state.queued={};
-        state.busy=job.work!=Work::None;
-        xSemaphoreGive(guard);
-        if(job.work==Work::None) {
-            vTaskDelay(pdMS_TO_TICKS(250));
-            continue;
-        }
-        const char* result="link_changed";
-        Config candidate=job.proposed;
-        std::optional<Reading> reading;
-        WriteOutcome command{};
-        std::array<Candidate,max_candidates> found{};
-        size_t count=0;
-        if(job.link.current()) {
-            enevina_firmware::NetworkBudgetLease lease(700,72*1024,16*1024);
-            if(!lease.held())result="network_busy";
-            else if(job.work==Work::Scan) {
-                count=scan(job.link,found);
-                result=count?"scan_ok":"no_devices";
-            } else if(job.work==Work::Pair) {
-                const bool same=configured(old) && !std::strcmp(candidate.host,old.host) &&
-                    candidate.cipher==old.cipher && device_id(candidate.device)==device_id(old.device);
-                if(same)reading=read(old,job.link);
-                if(reading) {
-                    candidate=old;
-                    result="paired";
-                } else if(const auto key=bind(candidate,job.link)) {
-                    candidate.version=config_version;
-                    candidate.key=*key;
-                    reading=read(candidate,job.link);
-                    result=reading?"paired":"read_failed";
-                } else result="bind_failed";
-            } else if(job.work==Work::Write) {
-                command=write_command(job,old,limits);
-                result=command.result;
-            } else {
-                if(configured(old))reading=read(old,job.link);
-                result=!configured(old)?"not_configured":reading?"ok":"read_failed";
-            }
-        }
-        xSemaphoreTake(guard,portMAX_DELAY);
-        state.busy=false;
-        if(job.link.current()) {
-            if(job.work==Work::Scan) {
-                state.candidates=found;
-                state.candidate_count=count;
-                state.scan_link=job.link;
-            } else if(job.work==Work::Pair && reading) {
-                if(job.draft) {
-                    if(++state.next_draft==0)++state.next_draft;
-                    const uint32_t id=state.next_draft;
-                    state.draft={candidate,{reading,time(nullptr),millis(),job.link,id},id};
-                } else if(store_config(candidate)) {
-                    install(candidate,reading,job.link);
-                    state.draft={};
-                } else result="store_failed";
-            } else if(job.work==Work::Write && job.request.revision==state.revision) {
-                if(command.reading || command.sent)publish_reading(command.reading,job.link);
-                if(command.confirmed) {
-                    state.confirmed={job.request.patch,command.confirmed_utc};
-                    if(job.request.automatic) {
-                        state.automatic_queued_utc=job.request.queued;
-                        state.automatic_confirmed_utc=command.confirmed_utc;
-                    }
+    }
+    xSemaphoreTake(guard,portMAX_DELAY);
+    state.busy=false;
+    if(job.link.current()) {
+        if(job.work==Work::Scan) {
+            state.candidates=found;
+            state.candidate_count=count;
+            state.scan_link=job.link;
+        } else if(job.work==Work::Pair && reading) {
+            if(job.draft) {
+                if(++state.next_draft==0)++state.next_draft;
+                const uint32_t id=state.next_draft;
+                state.draft={candidate,{reading,time(nullptr),millis(),job.link,id},id};
+            } else if(store_config(candidate)) {
+                install(candidate,reading,job.link);
+                state.draft={};
+            } else result="store_failed";
+        } else if(job.work==Work::Write && job.request.revision==state.revision) {
+            if(command.reading || command.sent)publish_reading(command.reading,job.link);
+            if(command.confirmed) {
+                state.confirmed={job.request.patch,command.confirmed_utc};
+                if(job.request.automatic) {
+                    state.automatic_queued_utc=job.request.queued;
+                    state.automatic_confirmed_utc=command.confirmed_utc;
                 }
-            } else if(job.work==Work::Read && using_draft) {
-                state.draft.sample={reading,time(nullptr),millis(),job.link,state.draft.id};
-            } else if(job.work==Work::Read) {
-                publish_reading(reading,job.link);
             }
-        } else result="link_changed";
-        (job.draft?state.draft_result:state.result)=result;
-        xSemaphoreGive(guard);
-        if(job.work!=Work::Scan) {
-            last_poll=millis();last_wifi=job.link.wifi;last_endpoint=job.link.endpoint;
+        } else if(job.work==Work::Read && using_draft) {
+            state.draft.sample={reading,time(nullptr),millis(),job.link,state.draft.id};
+        } else if(job.work==Work::Read) {
+            publish_reading(reading,job.link);
         }
+    } else result="link_changed";
+    (job.draft?state.draft_result:state.result)=result;
+    xSemaphoreGive(guard);
+    if(job.work!=Work::Scan) {
+        last_poll=millis();last_wifi=job.link.wifi;last_endpoint=job.link.endpoint;
     }
 }
 #endif
