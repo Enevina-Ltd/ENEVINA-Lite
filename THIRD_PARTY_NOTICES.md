@@ -36,6 +36,8 @@ WF-RAC framing follows the MIT-licensed [Mitsubishi-WF-RAC-Integration reference
 
 Daikin DSIoT uses an original C++ implementation of the message format described by [Hubitat-Daikin-BRP084 at 0712ecb](https://github.com/Mclass294/Hubitat-Daikin-BRP084/tree/0712ecb567608c9c6298f73f96904276f2bd2ce5) under Apache-2.0 and [pydaikin at 3c88d3f](https://github.com/fredrike/pydaikin/tree/3c88d3fe1ccd64e94c7d54ce52643f2c44cf6058) under GPL-3.0. No Groovy or GPL source files are included or linked.
 
+The direct Mitsubishi Electric CN105 driver uses its own codec based on the [ESPHome CN105 wire reference](https://esphome.io/components/climate/mitsubishi_cn105/) and the BSD-2-Clause [MitsubishiCN105ESPHome source at b24e428](https://github.com/echavet/MitsubishiCN105ESPHome/tree/b24e4285d901d0c20ab16b1d112fdf9f2851d7b9). No ESPHome runtime is linked.
+
 ## Mandatory release checks
 
 1. Build each supported firmware variant reproducibly from the pinned toolchain and record exact framework, component, library and bootloader versions and SHA-256 of deliverables.

@@ -36,10 +36,11 @@ class MpcControlWiring(unittest.TestCase):
         pump = MAIN.split("static enevina::PumpRoomState optimizer_pump_state(", 1)[1].split("\n}\n", 1)[0]
         self.assertIn("if(cottage_wf_rac_selected())return cottage_wf_rac_room_state();", pump)
         self.assertIn("if(cottage_daikin_dsiot_selected())return cottage_daikin_dsiot_room_state();", pump)
+        self.assertIn("if(cottage_cn105_direct_selected())return cottage_cn105_direct_room_state();", pump)
         for function in ("static enevina::cottage::HistoryInputs history_collect()",
                          "static void freshness_endpoint()"):
             body = MAIN.split(function, 1)[1].split("\n}\n", 1)[0]
-            self.assertIn("if(direct_lan_pump_selected())", body)
+            self.assertIn("if(uses_common_pump_state())", body)
             self.assertIn("optimizer_pump_state(now,midea)", body)
 
     def test_dsiot_cached_module_status_is_display_only(self):
