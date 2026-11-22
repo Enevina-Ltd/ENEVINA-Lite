@@ -91,6 +91,10 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      "model-approved manual and automatic HEAT, OFF and setpoint",0,0,0,
      "direct LAN response; reported values have no pump timestamp",true,
      "docs/integrations/DAIKIN_LEGACY.md"},
+    {"mhi_wf_rac_lan","Mitsubishi Heavy Industries","WF-RAC HTTP (no field-verified models)",
+     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareReadOnly,
+     "local module identity, operating mode, setpoint and optional temperature", "not enabled",0,0,0,
+     "LAN response; reported values have no pump timestamp",false,"docs/integrations/MHI_WF_RAC.md"},
 };
 inline constexpr size_t adapter_catalog_size=sizeof(adapter_catalog)/sizeof(adapter_catalog[0]);
 

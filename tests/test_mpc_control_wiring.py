@@ -32,6 +32,15 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("out.proposal=in.bootstrap;", ARB)
         self.assertIn("in.bootstrap=bootstrap_preview(now,t);", MAIN)
 
+    def test_direct_lan_history_and_freshness_use_the_selected_adapter(self):
+        pump = MAIN.split("static enevina::PumpRoomState optimizer_pump_state(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("if(cottage_wf_rac_selected())return cottage_wf_rac_room_state();", pump)
+        for function in ("static enevina::cottage::HistoryInputs history_collect()",
+                         "static void freshness_endpoint()"):
+            body = MAIN.split(function, 1)[1].split("\n}\n", 1)[0]
+            self.assertIn("if(direct_lan_pump_selected())", body)
+            self.assertIn("optimizer_pump_state(now,midea)", body)
+
     def test_existing_gates_unchanged_and_before_any_command(self):
         # Other adapters cannot reach the CN105 writer.
         self.assertLess(TICK.index("if(!midea && !gree && !daikin && !cn105_selected())"),

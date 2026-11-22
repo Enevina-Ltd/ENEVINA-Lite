@@ -30,6 +30,7 @@
 #include "cottage_midea_service.hpp"
 #include "cottage_gree_service.hpp"
 #include "cottage_daikin_service.hpp"
+#include "cottage_wf_rac_service.hpp"
 #include "pump/adapter_catalog.hpp"
 #include "cottage/control_intent.hpp"
 #include "cottage_wifi.hpp"
@@ -769,6 +770,7 @@ static enevina::PumpRoomState optimizer_pump_state(int64_t now,bool midea) {
     if(midea)return cottage_midea_room_state();
     if(cottage_gree_selected())return cottage_gree_room_state();
     if(cottage_daikin_selected())return cottage_daikin_room_state();
+    if(cottage_wf_rac_selected())return cottage_wf_rac_room_state();
     PumpRoomState state{};
     xSemaphoreTake(lock_data,portMAX_DELAY);
     if(verified_cn105_link.current() && valid_cn105(pump,now) &&
@@ -789,6 +791,12 @@ static enevina::PumpRoomState optimizer_pump_state(int64_t now,bool midea) {
     }
     xSemaphoreGive(lock_data);
     return state;
+}
+static bool direct_lan_pump_selected() {
+    using namespace enevina;
+    const auto* adapter=find_adapter(site_settings_snapshot().pump_adapter);
+    return adapter && adapter->link==AdapterLink::VendorLanProtocol &&
+        adapter_selectable_in_lite_firmware(adapter->id);
 }
 static bool known_heating_mode(const enevina::PumpRoomState& state) {
     return state.mode==enevina::PumpRoomMode::Off ||
@@ -865,6 +873,8 @@ static TemperatureSample selected_room_sample(int64_t now,const RoomTemperatureC
         state=cottage_gree_room_state();
     } else if(cottage_daikin_selected()) {
         state=cottage_daikin_room_state();
+    } else if(cottage_wf_rac_selected()) {
+        state=cottage_wf_rac_room_state();
     } else if(cn105_selected()) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
         if(verified_cn105_link.current() && valid_cn105(pump,now)) {
@@ -1041,7 +1051,8 @@ static bool active_control_armed(bool midea) {
 static uint32_t lan_configuration_revision(bool midea) {
     if(midea)return cottage_midea_configuration_generation();
     if(cottage_gree_selected())return cottage_gree_configuration_generation();
-    return cottage_daikin_selected()?cottage_daikin_configuration_generation():0;
+    if(cottage_daikin_selected())return cottage_daikin_configuration_generation();
+    return cottage_wf_rac_selected()?cottage_wf_rac_configuration_generation():0;
 }
 static bool expected_control_proposal_current(BootstrapAction expected,double target_c) {
     const int64_t now=time(nullptr);
@@ -1585,9 +1596,11 @@ static uint32_t identifier_identity() {
         h^=correction&0xFFu;h*=16777619u;
         h^=correction>>8;h*=16777619u;
     }
-    if(cottage_midea_selected() || cottage_gree_selected() || cottage_daikin_selected()) {
+    if(cottage_midea_selected() || cottage_gree_selected() || cottage_daikin_selected() ||
+       cottage_wf_rac_selected()) {
         const uint32_t pump_id=cottage_midea_selected()?cottage_midea_calibration_identity():
-            cottage_gree_selected()?cottage_gree_calibration_identity():cottage_daikin_calibration_identity();
+            cottage_gree_selected()?cottage_gree_calibration_identity():cottage_daikin_selected()?
+            cottage_daikin_calibration_identity():cottage_wf_rac_calibration_identity();
         for(int i=0;i<4;++i) {h^=(pump_id>>(8*i))&0xFFu;h*=16777619u;}
     }
     return h;
@@ -2723,7 +2736,7 @@ static enevina::cottage::HistoryInputs history_collect() {
         }
     }
     const bool sse_fresh=observed.received && climate_time>0 && now>=climate_time && now-climate_time<=180;
-    if(midea || cottage_gree_selected() || cottage_daikin_selected()) {
+    if(direct_lan_pump_selected()) {
         const auto live=optimizer_pump_state(now,midea);
         in.pump_online=live.source==enevina::PumpStateSource::DirectLan;
         in.setpoint_valid=in.pump_online && std::isfinite(live.setpoint_c);
@@ -2795,7 +2808,7 @@ static void freshness_endpoint() {
     const bool sse_fresh=observed.received && climate_time>0 && now>=climate_time && now-climate_time<=180;
     in.pump_configured=site.pump_adapter[0]!=0;
     const bool midea=cottage_midea_selected();
-    if(midea || cottage_gree_selected() || cottage_daikin_selected()) {
+    if(direct_lan_pump_selected()) {
         const auto live=optimizer_pump_state(now,midea);
         in.pump_fresh=live.source==enevina::PumpStateSource::DirectLan;
         in.pump_age_s=in.pump_fresh?now-live.evidence.received_utc:-1;
@@ -3077,6 +3090,7 @@ void setup() {
     cottage_midea_service_register_routes(web);
     cottage_gree_register_routes(web);
     cottage_daikin_register_routes(web);
+    cottage_wf_rac_register_routes(web);
     cottage_control_registration(); // restore prior explicit choice only
     web.onNotFound([](){
         if(cottage_wifi_request_via_ap(web)) {
@@ -3120,6 +3134,7 @@ static void cottage_local_lan_worker(void*) {
     for(;;) {
         if(cottage_gree_needs_worker())cottage_gree_tick();
         if(cottage_daikin_needs_worker())cottage_daikin_tick();
+        if(cottage_wf_rac_needs_worker())cottage_wf_rac_tick();
         vTaskDelay(pdMS_TO_TICKS(250));
     }
 }
@@ -3137,7 +3152,8 @@ void loop() {
            xTaskCreatePinnedToCore(cottage_midea_service_worker,"cottage_midea",
                                    10240,nullptr,1,&task_midea,0)!=pdPASS)
             Serial.println("MIDEA_WORKER: insufficient memory");
-        if(!task_local_lan && (cottage_gree_needs_worker() || cottage_daikin_needs_worker()) &&
+        if(!task_local_lan && (cottage_gree_needs_worker() || cottage_daikin_needs_worker() ||
+           cottage_wf_rac_needs_worker()) &&
            xTaskCreatePinnedToCore(cottage_local_lan_worker,"cottage_local_lan",8192,nullptr,1,&task_local_lan,0)!=pdPASS)
             Serial.println("LOCAL_LAN_WORKER: insufficient memory");
     }

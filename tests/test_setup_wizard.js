@@ -26,6 +26,22 @@ vm.createContext(ctx);
 vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,wzSavePump,wzFinish,roomTempFields,saveRoomTemp,WZ};',ctx);
 const A=ctx.api;
 
+{
+  const loadPart=(name,next)=>src.slice(src.indexOf('function '+name+'('),src.indexOf(next,src.indexOf('function '+name+'(')));
+  const modal={hidden:false};
+  const panel={parentElement:modal};
+  const card={prepend(node){node.parentElement=this;}};
+  const elements={'wf-rac-connection':panel,'wf-rac-card':card,wizard:modal};
+  const noop=()=>{};
+  const env={WZ:{open:true},wzStopPolling:noop,wzUpdateMideaPolling:noop,wzRestoreMideaPanel:noop,
+    wzRestoreMideaPilot:noop,wzRestoreGreePanel:noop,wzRestoreDaikinPanel:noop,
+    document:{getElementById:id=>elements[id],body:{classList:{remove:noop}}}};
+  vm.runInNewContext(loadPart('wzRestoreWfRacPanel','function wzRestoreDaikinPanel(')+
+    loadPart('wzClose','async function wzOpen(')+'wzClose()',env);
+  assert.equal(panel.parentElement,card,'closing setup restores the WF-RAC panel to Settings');
+  assert.equal(modal.hidden,true);
+}
+
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
 assert.equal(A.wzParseLatLon('61.4638, 24.0760'),'61.4638,24.0760');
 assert.equal(A.wzParseLatLon('-33.8688;151.2093'),'-33.8688,151.2093');
@@ -471,6 +487,19 @@ console.log('devices step helpers ok');
   ctx.daikinCommit=async id=>events.push(['daikin',id]);
   await A.wzSavePump(false);
   assert.deepEqual(events,[['daikin',19],{pump_adapter:'daikin_local_api',setup_step:'5'}]);
+  events.length=0;
+  await A.wzSavePump(true);
+  assert.deepEqual(events,[{setup_step:'5'}]);
+  events.length=0;
+  A.WZ.adapter='mhi_wf_rac_lan';
+  ctx.wfRacBusy=false;ctx.wfRacDirty=true;
+  ctx.fetchJSON=async path=>{assert.equal(path,'/api/wf-rac/status?draft=true');return {configured:true,fresh:true,draft_id:44};};
+  await assert.rejects(A.wzSavePump(false),/WF-RAC/);
+  assert.deepEqual(events,[]);
+  ctx.wfRacDirty=false;
+  ctx.wfRacCommit=async id=>events.push(['wf-rac',id]);
+  await A.wzSavePump(false);
+  assert.deepEqual(events,[['wf-rac',44],{pump_adapter:'mhi_wf_rac_lan',setup_step:'5'}]);
   events.length=0;
   await A.wzSavePump(true);
   assert.deepEqual(events,[{setup_step:'5'}]);
