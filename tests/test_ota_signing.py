@@ -95,8 +95,8 @@ class SignedPullReleaseCapabilityTests(unittest.TestCase):
 
     def test_real_publisher_accepts_matching_channel_and_refuses_wrong_channel(self):
         from unittest.mock import patch
-        manifest="https://ota.test/manifest.txt"
-        firmware_url="https://ota.test/firmware.bin"
+        manifest="https://ota.test/ENEVINA-Lite/field/manifest.txt"
+        firmware_url="https://ota.test/ENEVINA-Lite/field/firmware.bin"
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             publisher=ec.generate_private_key(ec.SECP256R1())
@@ -165,8 +165,10 @@ class ArduinoRollbackSourceGuardTests(unittest.TestCase):
         root=Path(__file__).resolve().parents[1]
         code=(root/"firmware/cottage/src/main.cpp").read_text()
         self.assertIn("task_optimizer!=nullptr && task_ota!=nullptr;",code)
-        self.assertIn('xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota"',code)
-        self.assertIn('16384,nullptr,1,&task_ota,1)!=pdPASS',code)
+        self.assertRegex(
+            code,r'xTaskCreatePinnedToCore\(cottage_ota_worker,"cottage_ota",\s*'
+                 r'\d+,nullptr,1,&task_ota,1\)!=pdPASS'
+        )
         self.assertIn('task_ota=nullptr;',code)
     def test_regular_platformio_usb_upload_is_fail_closed(self):
         import subprocess
