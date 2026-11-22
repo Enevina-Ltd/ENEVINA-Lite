@@ -3463,7 +3463,7 @@ function showDaikin(s){
   const command=p=>!p?'—':p.power===false?translateFi('Pois päältä')+' '+time(p.utc):
     Number.isFinite(p.target_c)?fmt(p.target_c,1)+' °C '+time(p.utc):'—';
   text('control-last',translateFi('Pyydetty')+' '+command(s.requested)+' · '+
-    translateFi('Lähetetty')+' '+command(s.sent)+' · '+
+    translateFi('Lähetys aloitettu')+' '+command(s.sent)+' · '+
     translateFi('Vahvistettu pumpulta')+' '+command(s.confirmed));
 }
 async function reloadDaikin(){
