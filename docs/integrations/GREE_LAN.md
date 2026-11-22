@@ -8,7 +8,7 @@ The state includes power, operating mode, Celsius setpoint, and indoor temperatu
 
 ## Local control trial
 
-After pairing, approve an exact heating model and its supported whole-degree Celsius setpoint range in the setup summary or Settings. The pilot is tied to that enrollment and boot. The device must report a Celsius setpoint and frost mode must be known inactive. The manual controls offer setpoint changes, HEAT and OFF. Automatic HEAT and OFF use the shared policy and the same worker queue. Manual control resumes after disabling automation. Manual and automatic mode changes share the 30-minute dwell. Setpoint-only changes remain available during that interval.
+After pairing, approve an exact heating model and its supported whole-degree Celsius setpoint range in the setup summary or Settings. The pilot is tied to that enrollment and boot. The device must report a Celsius setpoint and frost mode must be known inactive. Calibration ignores heating mode while frost status is active or unknown. The manual controls offer setpoint changes, HEAT and OFF. Automatic HEAT and OFF use the shared policy and the same worker queue. Manual control resumes after disabling automation. Manual and automatic mode changes share the 30-minute dwell. Setpoint-only changes remain available during that interval.
 
 Automatic requests use the existing thermostat and price control during calibration. A calibrated residential plan can request supported whole-degree setpoints. The worker reads before sending, cancels a superseded automatic proposal when the remote has changed the state, and verifies the command with a separate status exchange. The dashboard shows requested, sent and confirmed settings. Capabilities beyond these heating controls remain outside this pilot.
 

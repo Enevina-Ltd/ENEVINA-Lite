@@ -337,6 +337,11 @@ std::string command_request(Cipher cipher,const Key& key,std::string_view device
 bool heating_state_known(const Reading& reading) {
     return reading.frost==false && reading.setpoint_c.has_value();
 }
+PumpRoomMode heating_room_mode(const Reading& reading) {
+    if(!heating_state_known(reading))return PumpRoomMode::Unknown;
+    if(!reading.power)return PumpRoomMode::Off;
+    return reading.mode==Mode::Heat?PumpRoomMode::Heat:PumpRoomMode::Other;
+}
 bool changes_operating_mode(const Patch& patch,const Reading& reading) {
     return (patch.power && *patch.power!=reading.power) ||
         (reading.power && patch.mode && *patch.mode!=reading.mode);

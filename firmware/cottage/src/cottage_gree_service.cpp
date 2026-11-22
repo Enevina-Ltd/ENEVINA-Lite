@@ -115,7 +115,7 @@ bool fresh(const Sample& s,uint32_t revision) {
 
 bool heating(const Reading& r) {return r.power && r.mode==Mode::Heat;}
 bool same_request(const Reading& a,const Reading& b) {
-    return a.power==b.power && a.mode==b.mode && a.setpoint_c==b.setpoint_c;
+    return a.power==b.power && a.mode==b.mode && a.setpoint_c==b.setpoint_c && a.frost==b.frost;
 }
 void publish_reading(const std::optional<Reading>& reading,const Link& link) {
     const uint32_t now=millis();
@@ -668,7 +668,7 @@ enevina::PumpRoomState cottage_gree_room_state() {
     out.configuration_generation=revision;
     if(s.utc>=1700000000)out.evidence={s.utc,0,false};
     const auto& r=*s.reading;
-    out.mode=!r.power?PumpRoomMode::Off:r.mode==Mode::Heat?PumpRoomMode::Heat:PumpRoomMode::Other;
+    out.mode=heating_room_mode(r);
     if(r.setpoint_c)out.setpoint_c=*r.setpoint_c;
     if(r.indoor_c)out.indoor_c=*r.indoor_c;
     return out;

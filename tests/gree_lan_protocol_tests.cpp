@@ -74,10 +74,13 @@ int main() {
         assert(permits_heating_patch(setpoint,*reading,pilot));
         assert(!permits_heating_patch({std::nullopt,std::nullopt,27},*reading,pilot));
         assert(!permits_heating_patch({true,Mode::Cool,22},*reading,pilot));
+        assert(heating_room_mode(*reading)==enevina::PumpRoomMode::Heat);
         auto frost=*reading;frost.frost=true;
         assert(!permits_heating_patch({false,{},{}},frost,pilot));
+        assert(heating_room_mode(frost)==enevina::PumpRoomMode::Unknown);
         frost.frost.reset();
         assert(!permits_heating_patch(setpoint,frost,pilot));
+        assert(heating_room_mode(frost)==enevina::PumpRoomMode::Unknown);
         auto outside=*reading;outside.setpoint_c=27;
         assert(permits_heating_patch({false,{},{}},outside,pilot));
         constexpr uint32_t dwell=30*60*1000;
