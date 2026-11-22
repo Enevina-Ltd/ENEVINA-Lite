@@ -44,6 +44,10 @@ The Daikin S21 codec implements the published protocol facts independently. Refe
 
 The native Haier codec implements the protocol facts described by [HaierProtocol at d3334a1](https://github.com/paveldn/HaierProtocol/tree/d3334a1be24da142dd7fb68c6d2abfd628bfaded) (MIT) and [ESPHome Haier at 1feda1b](https://github.com/esphome/esphome/tree/1feda1bcaa861a5f2e933f2c65d599e44f4b132b/esphome/components/haier) (GPL-3.0). No upstream source files or ESPHome runtime are linked.
 
+## Panasonic direct UART reference
+
+Lite's CN-CNT and CN-WLAN adapters use message layout and transaction behavior documented by [DomiStyle Panasonic AC at c56eb4f](https://github.com/DomiStyle/esphome-panasonic-ac/tree/c56eb4f85ad93cfbe0e89aee72b646740ee103ae). Preserve [its MIT notice](third_party/esphome-panasonic-ac/LICENSE) with the adapted protocol tables. No ESPHome code or runtime is linked.
+
 ## Mandatory release checks
 
 1. Build each supported firmware variant reproducibly from the pinned toolchain and record exact framework, component, library and bootloader versions and SHA-256 of deliverables.

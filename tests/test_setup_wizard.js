@@ -40,7 +40,8 @@ const A=ctx.api;
   const cn105Card={prepend(node){node.parentElement=this;}};
   const s21Panel={parentElement:modal},s21Card={prepend(node){node.parentElement=this;}};
   const haierPanel={parentElement:modal},haierCard={prepend(node){node.parentElement=this;}};
-  const elements={'haier-connection':haierPanel,'haier-card':haierCard,'wf-rac-connection':panel,'wf-rac-card':card,wizard:modal,
+  const panasonicPanel={parentElement:modal},panasonicCard={prepend(node){node.parentElement=this;}};
+  const elements={'panasonic-connection':panasonicPanel,'panasonic-card':panasonicCard,'haier-connection':haierPanel,'haier-card':haierCard,'wf-rac-connection':panel,'wf-rac-card':card,wizard:modal,
     'daikin-dsiot-connection':dsiotPanel,'daikin-dsiot-card':dsiotCard,
     'cn105-direct-connection':cn105Panel,'cn105-direct-card':cn105Card,
     'daikin-s21-connection':s21Panel,'daikin-s21-card':s21Card};
@@ -56,6 +57,7 @@ const A=ctx.api;
   assert.equal(cn105Panel.parentElement,cn105Card,'closing setup restores the direct CN105 panel to Settings');
   assert.equal(s21Panel.parentElement,s21Card,'closing setup restores the S21 panel to Settings');
   assert.equal(haierPanel.parentElement,haierCard,'closing setup restores the Haier panel to Settings');
+  assert.equal(panasonicPanel.parentElement,panasonicCard,'closing setup restores the Panasonic panel to Settings');
   assert.equal(modal.hidden,true);
 }
 
@@ -578,6 +580,19 @@ console.log('devices step helpers ok');
   ctx.haierCommit=async id=>events.push(['haier',id]);
   await A.wzSavePump(false);
   assert.deepEqual(events,[['haier',66],{pump_adapter:'haier_uart',setup_step:'5'}]);
+
+  events.length=0;
+  A.WZ.adapter='panasonic_uart';
+  ctx.panasonicBusy=false;
+  ctx.fetchJSON=async path=>{
+    assert.equal(path,'/api/panasonic/status?draft=true');
+    return {configured:true,fresh:false};
+  };
+  await assert.rejects(A.wzSavePump(false),/Panasonic/);
+  ctx.fetchJSON=async()=>({configured:true,fresh:true,draft_id:77,protocol:'CN-WLAN'});
+  ctx.panasonicCommit=async id=>events.push(['panasonic',id]);
+  await A.wzSavePump(false);
+  assert.deepEqual(events,[['panasonic',77],{pump_adapter:'panasonic_uart',setup_step:'5'}]);
   events.length=0;
   await A.wzSavePump(true);
   assert.deepEqual(events,[{setup_step:'5'}]);

@@ -116,6 +116,11 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      "identified protocol, power, mode, setpoint and supported temperature readings",
      "model-approved HEAT, OFF and Celsius setpoint",0,0,0,
      "checksum-valid pump poll with CRC when negotiated",true,"docs/integrations/HAIER_UART.md"},
+    {"panasonic_uart","Panasonic","Air-to-air CZ-TACG1 CN-CNT or DNSK-P11 CN-WLAN (no field-verified models)",
+     HeatPumpType::AirToAir,AdapterLink::SerialBus,AdapterMaturity::FirmwareControlExperimental,
+     "identified bus protocol, power, mode, setpoint and supported temperatures",
+     "model-approved HEAT, OFF and half-degree Celsius setpoint",0,0,0,
+     "checksum-valid status poll; WLAN also matches the request counter",true,"docs/integrations/PANASONIC_UART.md"},
 };
 inline constexpr size_t adapter_catalog_size=sizeof(adapter_catalog)/sizeof(adapter_catalog[0]);
 
@@ -138,7 +143,8 @@ inline bool adapter_selectable_in_lite_firmware(const char* id) {
         ((std::strcmp(e->id,"midea_lan")==0 || std::strcmp(e->id,"gree_ewpe_lan")==0 ||
           std::strcmp(e->id,"daikin_local_api")==0 || std::strcmp(e->id,"mhi_wf_rac_lan")==0 ||
           std::strcmp(e->id,"mitsubishi_cn105_direct")==0 || std::strcmp(e->id,"daikin_s21")==0 ||
-           std::strcmp(e->id,"haier_uart")==0) &&
+           std::strcmp(e->id,"haier_uart")==0 ||
+           std::strcmp(e->id,"panasonic_uart")==0) &&
          e->maturity==AdapterMaturity::FirmwareControlExperimental));
 }
 inline const char* adapter_maturity_name(AdapterMaturity m) {
