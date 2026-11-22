@@ -4,19 +4,10 @@ The device never receives the CA private key or firmware signing private key.
 """
 import argparse, json, os
 from pathlib import Path
-from urllib.parse import urlsplit
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography import x509
 from cottage_ota_channel import channel_tag
-
-def validate_url(url,expected_path):
-    parsed=urlsplit(url)
-    if (parsed.scheme!="https" or not parsed.hostname or parsed.username or
-        parsed.password or parsed.query or parsed.fragment or
-        parsed.path!=expected_path):
-        raise ValueError("Only a direct verified HTTPS OTA endpoint is permitted")
-    return (parsed.hostname,parsed.port)
 
 def main():
     p=argparse.ArgumentParser()
@@ -25,8 +16,6 @@ def main():
     p.add_argument("--firmware-url",required=True)
     p.add_argument("--output",required=True,type=Path)
     a=p.parse_args()
-    if validate_url(a.manifest_url,"/manifest.txt")!=validate_url(a.firmware_url,"/firmware.bin"):
-        p.error("Manifest and firmware must use same HTTPS authority")
     ca=(a.root/"ca-public.pem").read_text(encoding="ascii").strip()+"\n"
     key=(a.root/"publisher-public.pem").read_text(encoding="ascii").strip()+"\n"
     x509.load_pem_x509_certificate(ca.encode("ascii"))
@@ -35,7 +24,10 @@ def main():
         p.error("Firmware publisher public key must be ECDSA P-256")
     if a.output.exists():
         p.error("Refusing to overwrite local trust anchors without explicit review")
-    marker=channel_tag(a.manifest_url,a.firmware_url,ca,key)
+    try:
+        marker=channel_tag(a.manifest_url,a.firmware_url,ca,key)
+    except ValueError as exc:
+        p.error(str(exc))
     content=(
         "#pragma once\n"
         "// Generated private board configuration: trust anchors are public keys only.\n"

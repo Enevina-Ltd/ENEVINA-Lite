@@ -67,6 +67,61 @@ class SignedPullReleaseCapabilityTests(unittest.TestCase):
             self.assertNotEqual(tag,changed)
             self.assertFalse(ota.is_signed_pull_capable_image(image,changed))
 
+    def test_static_project_directory_is_part_of_the_channel(self):
+        root = "https://ota.example"
+        dist = root + "/ENEVINA-Lite/ota/field"
+        lab = root + "/ENEVINA-Lite/ota/lab"
+        ca, key = "ca", "public-key"
+        def tag(directory):
+            return channel_tag(directory + "/manifest.txt", directory + "/firmware.bin", ca, key)
+        self.assertNotEqual(tag(root), tag(dist))
+        self.assertNotEqual(tag(lab), tag(dist))
+        with self.assertRaises(ValueError):
+            channel_tag(dist + "/manifest.txt", lab + "/firmware.bin", ca, key)
+        for path in ("/ota/../", "/ota//", "/%2e/", "/./", "/with%20space/", "/a\\\\b/", "/a\t/"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                channel_tag(root + path + "manifest.txt", root + path + "firmware.bin", ca, key)
+        for suffix in ("?latest", "?", "#"):
+            with self.subTest(suffix=suffix), self.assertRaises(ValueError):
+                channel_tag(dist + "/manifest.txt" + suffix, dist + "/firmware.bin", ca, key)
+
+    def test_real_header_generator_accepts_a_project_directory(self):
+        import subprocess
+        from datetime import datetime, timedelta, timezone
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes
+
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            private=ec.generate_private_key(ec.SECP256R1())
+            subject=x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,"test OTA root")])
+            now=datetime.now(timezone.utc)
+            ca=(x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
+                .public_key(private.public_key()).serial_number(1)
+                .not_valid_before(now-timedelta(days=1)).not_valid_after(now+timedelta(days=1))
+                .sign(private,hashes.SHA256()).public_bytes(serialization.Encoding.PEM).decode("ascii"))
+            key=private.public_key().public_bytes(serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo).decode("ascii")
+            (root/"ca-public.pem").write_text(ca,encoding="ascii")
+            (root/"publisher-public.pem").write_text(key,encoding="ascii")
+            directory="https://ota.test/ENEVINA-Lite/ota/field"
+            manifest=directory+"/manifest.txt"
+            firmware=directory+"/firmware.bin"
+            path=Path(__file__).resolve().parents[1]/"tools/cottage_ota_generate_header.py"
+            header=root/"anchors.hpp"
+            args=[sys.executable,str(path),"--root",str(root),"--output",str(header),
+                  "--manifest-url",manifest,"--firmware-url",firmware]
+            fail=subprocess.run(args[:-1]+["https://ota.test/lab/firmware.bin"],capture_output=True,text=True)
+            self.assertEqual(fail.returncode,2)
+            self.assertFalse(header.exists())
+            subprocess.run(args,check=True,capture_output=True,text=True)
+            result=header.read_text(encoding="ascii")
+            self.assertIn(manifest,result)
+            self.assertIn(firmware,result)
+            self.assertIn(channel_tag(manifest,firmware,ca,key),result)
+            self.assertNotIn("PRIVATE KEY",result)
+
     def test_channel_digest_in_generator_and_build(self):
         root=Path(__file__).resolve().parents[1]
         generator=(root/"tools/cottage_ota_generate_header.py").read_text()
@@ -77,8 +132,8 @@ class SignedPullReleaseCapabilityTests(unittest.TestCase):
 
     def test_real_publisher_accepts_matching_channel_and_refuses_wrong_channel(self):
         from unittest.mock import patch
-        manifest="https://ota.test/manifest.txt"
-        firmware_url="https://ota.test/firmware.bin"
+        manifest="https://ota.test/ENEVINA-Lite/field/manifest.txt"
+        firmware_url="https://ota.test/ENEVINA-Lite/field/firmware.bin"
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             publisher=ec.generate_private_key(ec.SECP256R1())
@@ -147,8 +202,10 @@ class ArduinoRollbackSourceGuardTests(unittest.TestCase):
         root=Path(__file__).resolve().parents[1]
         code=(root/"firmware/cottage/src/main.cpp").read_text()
         self.assertIn("task_optimizer!=nullptr && task_ota!=nullptr;",code)
-        self.assertIn('xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota"',code)
-        self.assertIn('16384,nullptr,1,&task_ota,1)!=pdPASS',code)
+        self.assertRegex(
+            code,r'xTaskCreatePinnedToCore\(cottage_ota_worker,"cottage_ota",\s*'
+                 r'\d+,nullptr,1,&task_ota,1\)!=pdPASS'
+        )
         self.assertIn('task_ota=nullptr;',code)
     def test_regular_platformio_usb_upload_is_fail_closed(self):
         import subprocess
