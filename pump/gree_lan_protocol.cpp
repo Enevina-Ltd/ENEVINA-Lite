@@ -337,6 +337,13 @@ std::string command_request(Cipher cipher,const Key& key,std::string_view device
 bool heating_state_known(const Reading& reading) {
     return reading.frost==false && reading.setpoint_c.has_value();
 }
+bool changes_operating_mode(const Patch& patch,const Reading& reading) {
+    return (patch.power && *patch.power!=reading.power) ||
+        (reading.power && patch.mode && *patch.mode!=reading.mode);
+}
+bool dwell_allows(const Patch& patch,const Reading& reading,uint32_t elapsed,uint32_t minimum) {
+    return !changes_operating_mode(patch,reading) || elapsed>=minimum;
+}
 bool permits_heating_patch(const Patch& patch,const Reading& reading,const PumpHeatingLimits& limits) {
     return limits.heating && heating_state_known(reading) &&
         (!patch.setpoint_c || limits.accepts(*patch.setpoint_c)) &&

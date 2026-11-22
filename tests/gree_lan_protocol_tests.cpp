@@ -80,6 +80,14 @@ int main() {
         assert(!permits_heating_patch(setpoint,frost,pilot));
         auto outside=*reading;outside.setpoint_c=27;
         assert(permits_heating_patch({false,{},{}},outside,pilot));
+        constexpr uint32_t dwell=30*60*1000;
+        assert(!dwell_allows({false,{},{}},*reading,1000,dwell));
+        assert(dwell_allows({false,{},{}},*reading,dwell,dwell));
+        assert(dwell_allows(setpoint,*reading,1000,dwell));
+        auto off=*reading;off.power=false;
+        assert(!dwell_allows({true,Mode::Heat,22},off,dwell-1,dwell));
+        auto cooling=*reading;cooling.mode=Mode::Cool;
+        assert(!dwell_allows({true,Mode::Heat,22},cooling,0,dwell));
         const auto changed=read(R"({"t":"dat","cols":["Pow","Mod","TemUn","SetTem"],"dat":[1,4,0,22]})");
         assert(changed && confirmed(setpoint,*changed));
         assert(command_request(variant,*key,*unit,{false,Mode::Heat,30}).empty());

@@ -3224,7 +3224,8 @@ const greeTexts={
   confirmed:'Gree-pumppu vahvisti komennon.',
   unconfirmed:'Gree-pumppu ei vahvistanut komentoa.',
   external_change:'Gree-pumpun asetus muuttui. Ohjaus arvioidaan uudelleen.',
-  send_failed:'Gree-komennon lähetys epäonnistui.'
+  send_failed:'Gree-komennon lähetys epäonnistui.',
+  mode_dwell:'Ohjaus odottaa lämmitystilan vähimmäiskestoa, eikä lähetä uutta komentoa.'
 };
 function showGree(s){
   const result=!s.fresh&&(s.result==='ok'||s.result==='paired')?'':s.result;

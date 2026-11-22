@@ -46,6 +46,8 @@ std::optional<Reading> parse_status(Cipher cipher,const Key& key,std::string_vie
                                     std::string_view datagram);
 std::string command_request(Cipher cipher,const Key& key,std::string_view device,const Patch& patch);
 bool heating_state_known(const Reading& reading);
+bool changes_operating_mode(const Patch& patch,const Reading& reading);
+bool dwell_allows(const Patch& patch,const Reading& reading,uint32_t elapsed,uint32_t minimum);
 bool permits_heating_patch(const Patch& patch,const Reading& reading,const PumpHeatingLimits& limits);
 bool confirmed(const Patch& patch,const Reading& reading);
 }

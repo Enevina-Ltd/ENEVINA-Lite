@@ -125,7 +125,7 @@ void publish_reading(const std::optional<Reading>& reading,const Link& link) {
         state.request_since_ms=now;
     }
     if(!reading || !continuous || reading->power!=state.sample.reading->power ||
-       reading->mode!=state.sample.reading->mode)
+       (reading->power && reading->mode!=state.sample.reading->mode))
         state.mode_since_ms=now;
     if(reading) {
         if(!continuous)state.dwell.reset(now);
@@ -143,6 +143,10 @@ void install(const Config& config,const std::optional<Reading>& reading,const Li
     state.requested={};state.sent={};state.confirmed={};
     state.automatic_confirmed_utc=0;state.automatic_queued_utc=0;
     publish_reading(reading,link);
+}
+uint32_t dwell_elapsed() {
+    const auto now=millis();
+    return std::min(static_cast<uint32_t>(now-state.mode_since_ms),state.dwell.since_change(now));
 }
 bool can_queue() {
     return !state.busy && state.queued.work==Work::None &&
@@ -411,6 +415,8 @@ WriteOutcome write_command(const Job& job,const Config& config,const PumpHeating
     xSemaphoreTake(guard,portMAX_DELAY);
     if(job.link.current() && request.revision==state.revision)
         publish_reading(outcome.reading,job.link);
+    const bool mode_allowed=dwell_allows(request.patch,*outcome.reading,dwell_elapsed(),
+                                        mitsubishi_min_mode_dwell_ms);
     xSemaphoreGive(guard);
     const auto before=*outcome.reading;
     if(request.automatic && !same_request(before,request.previous)) {
@@ -418,6 +424,7 @@ WriteOutcome write_command(const Job& job,const Config& config,const PumpHeating
     }
     if(!permits_heating_patch(request.patch,before,limits)) {outcome.result="unsupported";return outcome;}
     if(confirmed(request.patch,before)) {outcome.result="already_applied";return outcome;}
+    if(!mode_allowed) {outcome.result="mode_dwell";return outcome;}
     IPAddress target;
     const auto packet=command_request(config.cipher,config.key,config.device,request.patch);
     if(!target_ip(config.host,target) || packet.empty() || !command_current(job))return outcome;
@@ -430,7 +437,7 @@ WriteOutcome write_command(const Job& job,const Config& config,const PumpHeating
     xSemaphoreTake(guard,portMAX_DELAY);
     if(job.link.current() && request.revision==state.revision) {
         state.sent={request.patch,outcome.sent_utc};
-        if(request.patch.power && *request.patch.power!=before.power)
+        if(changes_operating_mode(request.patch,before))
             state.dwell.command_dispatched(millis());
     }
     xSemaphoreGive(guard);
@@ -535,9 +542,11 @@ void cottage_gree_register_routes(WebServer& web) {
             web.send(400,"application/json","{\"error\":\"unsupported\"}");return;
         }
         xSemaphoreTake(guard,portMAX_DELAY);
-        const bool allowed=cottage_gree_selected() && !cottage_gree_automatic_enabled() &&
+        const bool ready=cottage_gree_selected() && !cottage_gree_automatic_enabled() &&
             revision==String(state.revision) && can_queue() &&
             permits_heating_patch(patch,*state.sample.reading,state.limits);
+        const bool allowed=ready && dwell_allows(patch,*state.sample.reading,dwell_elapsed(),
+                                               mitsubishi_min_mode_dwell_ms);
         if(allowed) {
             Request request{};
             request.patch=patch;
@@ -545,7 +554,8 @@ void cottage_gree_register_routes(WebServer& web) {
             queue_command(request,active_link());
         }
         xSemaphoreGive(guard);
-        web.send(allowed?202:409,"application/json",allowed?"{\"queued\":true}":"{\"error\":\"pilot_required\"}");
+        web.send(allowed?202:409,"application/json",allowed?"{\"queued\":true}":
+            ready?"{\"error\":\"mode_dwell\"}":"{\"error\":\"pilot_required\"}");
     });
     web.on("/api/gree/commit",HTTP_POST,[&web](){
         if(!web_ready(web,true))return;
@@ -607,7 +617,7 @@ ControlBlock cottage_gree_submit_automatic(const PumpRoomState& earlier,ControlS
             proposal.current_heat=heating(reading);
             proposal.current_setpoint_c=*reading.setpoint_c;
             proposal.cn105_link_fresh=proposal.bridge_get_ok=true;
-            proposal.ms_since_mode_change=state.dwell.since_change(millis());
+            proposal.ms_since_mode_change=dwell_elapsed();
             const auto decision=choose_pump_control(proposal,state.limits,HeatTransition::Combined);
             result=decision.gate;
             if(decision.step!=ControlStep::None) {
