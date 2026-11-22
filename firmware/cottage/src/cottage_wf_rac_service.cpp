@@ -167,7 +167,7 @@ void queue(Command command) {
     state.sent={};
     state.result="write_queued";
 }
-std::optional<double> degrees(const String& value) {
+std::optional<double> parse_target_c(const String& value) {
     if(value.length()<2 || value.length()>4)return {};
     const char* input=value.c_str();
     if(input[0]<'0' || input[0]>'9' || input[1]<'0' || input[1]>'9' ||
@@ -499,7 +499,7 @@ void cottage_wf_rac_register_routes(WebServer& web) {
         if(!ready(web,true))return;
         const String enabled=web.arg("enabled"),device=web.arg("device"),expected=web.arg("revision");
         const String name=web.arg("model"),operator_id=web.arg("operator");
-        const auto low=degrees(web.arg("min")),high=degrees(web.arg("max"));
+        const auto low=parse_target_c(web.arg("min")),high=parse_target_c(web.arg("max"));
         const bool requested=enabled=="true";
         if((!requested && enabled!="false") ||
            (requested && (!low || !high || *low>=*high || name.length()<3 ||
@@ -533,7 +533,7 @@ void cottage_wf_rac_register_routes(WebServer& web) {
         Patch patch;
         if(action=="off")patch.power=false;
         else if(action=="heat" || action=="target") {
-            patch.target_c=degrees(web.arg("target"));
+            patch.target_c=parse_target_c(web.arg("target"));
             if(action=="heat") {patch.power=true;patch.heat=true;}
         }
         if(action!="off" && !patch.target_c) {
