@@ -85,10 +85,11 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      "model-approved manual and automatic HEAT, OFF and whole-degree setpoint",0,0,0,
      "direct LAN response; reported values have no pump timestamp",true,
      "docs/integrations/GREE_LAN.md"},
-    {"daikin_local_api","Daikin","BRP069Axx/Bxx, BRP072A42/A43 (research)",
-     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::DocumentedOnly,
-     "not implemented","not implemented",0,0,0,"not implemented",false,
-     "PR #25 LOCAL_WIFI_COMPATIBILITY.md"},
+    {"daikin_local_api","Daikin","Legacy local HTTP (no field-verified models)",
+     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareReadOnly,
+     "identity, state, setpoint and optional measurements directly from the LAN module",
+     "not enabled",0,0,0,"direct LAN response; reported values have no pump timestamp",false,
+     "docs/integrations/DAIKIN_LEGACY.md"},
 };
 inline constexpr size_t adapter_catalog_size=sizeof(adapter_catalog)/sizeof(adapter_catalog[0]);
 

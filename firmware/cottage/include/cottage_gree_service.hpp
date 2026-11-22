@@ -5,7 +5,7 @@ class WebServer;
 bool cottage_gree_selected();
 bool cottage_gree_needs_worker();
 void cottage_gree_register_routes(WebServer& server);
-void cottage_gree_worker(void*);
+void cottage_gree_tick();
 enevina::PumpRoomState cottage_gree_room_state();
 uint32_t cottage_gree_calibration_identity();
 uint32_t cottage_gree_configuration_generation();
