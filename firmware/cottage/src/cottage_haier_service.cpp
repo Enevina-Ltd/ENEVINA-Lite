@@ -8,7 +8,7 @@ using namespace enevina;
 using namespace enevina::cottage;
 namespace wire=enevina::haier;
 
-struct HaierWire {
+struct HaierWire : SerialHeatingWire {
     using Settings=wire::Climate;
     using Patch=wire::Patch;
     static constexpr auto owner=PumpUartOwner::Haier;

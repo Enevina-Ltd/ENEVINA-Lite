@@ -8,7 +8,7 @@ using namespace enevina;
 using namespace enevina::cottage;
 namespace wire=enevina::s21;
 
-struct S21Wire {
+struct S21Wire : SerialHeatingWire {
     using Settings=wire::Climate;
     using Patch=wire::Patch;
     static constexpr auto owner=PumpUartOwner::DaikinS21;

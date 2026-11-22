@@ -55,7 +55,7 @@ class MpcControlWiring(unittest.TestCase):
 
     def test_existing_gates_unchanged_and_before_any_command(self):
         # Other adapters cannot reach the CN105 writer.
-        self.assertLess(TICK.index("if(!midea && !gree && !daikin && !wf_rac && !direct_cn105 && !s21 && !haier && !cn105_selected())"),
+        self.assertLess(TICK.index("if(!midea && !gree && !daikin && !wf_rac && !direct_cn105 && !s21 && !haier && !panasonic && !cn105_selected())"),
                         TICK.index("active_control_proposal("))
         self.assertLess(TICK.index("if(!control_armed.load())return;"),
                         TICK.index("active_control_proposal("))
@@ -109,6 +109,7 @@ class MpcControlWiring(unittest.TestCase):
         self.assertLess(TICK.index("cottage_cn105_direct_submit_automatic("), TICK.index("cn105_bridge_post("))
         self.assertLess(TICK.index("cottage_daikin_s21_submit_automatic("), TICK.index("cn105_bridge_post("))
         self.assertLess(TICK.index("cottage_haier_submit_automatic("), TICK.index("cn105_bridge_post("))
+        self.assertLess(TICK.index("cottage_panasonic_submit_automatic("), TICK.index("cn105_bridge_post("))
         self.assertNotIn("cn105_bridge_get", view)
         self.assertNotIn("cn105_bridge_get", WORKER)
         self.assertIn("o.heat_valid=known_heating_mode(view) && view.request_minutes>=14 &&", WORKER)
@@ -119,6 +120,15 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("state.automatic_queued_utc>=in.plan.computed_utc", arb)
         self.assertIn("state.automatic_confirmed_utc<=now", arb)
         self.assertNotIn("bridge_observed", MAIN)
+
+    def test_panasonic_requires_explicit_pump_bus_evidence(self):
+        source = (ROOT / "firmware/cottage/src/cottage_panasonic_service.cpp").read_text(encoding="utf-8")
+        setup = source.split("static bool connect(const Link& link)", 1)[1].split("static bool fill(", 1)[0]
+        self.assertLess(setup.index("if(const auto wlan=handshake(link))return *wlan;"),
+                        setup.index("family=wire::Family::Cnt;"))
+        self.assertEqual(setup.count("cnt_query(link)"), 2)
+        self.assertIn("p.sequence()!=sequence",
+                      (ROOT / "pump/panasonic_uart.cpp").read_text(encoding="utf-8"))
 
     def test_model_bound_to_indoor_sensor_and_plan_display_uses_controller_validity(self):
         # Codex P2 #1 (PR #63): the learned model describes the room the bound

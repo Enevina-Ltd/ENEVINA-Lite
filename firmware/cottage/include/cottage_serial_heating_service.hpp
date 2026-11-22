@@ -17,6 +17,15 @@
 #include <optional>
 
 namespace enevina::cottage {
+struct SerialHeatingWire {
+    template<typename Link>
+    static void idle(const Link&) {}
+    template<typename Link>
+    static bool prepare_to_write(const Link&) {return cottage_pump_uart.drain();}
+    template<typename Settings>
+    static void write_dispatched(const Settings&) {}
+};
+
 template<typename Protocol>
 class SerialHeatingService {
     using Settings=typename Protocol::Settings;
@@ -215,8 +224,9 @@ class SerialHeatingService {
         if(!allowed) {result.status="mode_dwell";return result;}
         const auto frame=Protocol::command(before.climate,command.patch,limits);
         if(!frame || !permit) {result.status="unsupported_command";return result;}
-        if(!cottage_pump_uart.drain() || !authorized(job))return result;
+        if(!Protocol::prepare_to_write(job.link) || !authorized(job))return result;
         if(!cottage_pump_uart.send(frame->bytes.data(),frame->size)) {result.status="send_failed";return result;}
+        Protocol::write_dispatched(before.climate);
         xSemaphoreTake(gate,portMAX_DELAY);
         if(job.link.current() && command.bus==cottage_pump_uart.generation()) {
             state.sent={command.patch,time(nullptr)};
@@ -525,7 +535,10 @@ public:
         state.busy=job.baud!=0;
         xSemaphoreGive(gate);
         if(!job.baud) {
-            if(!is_selected && cottage_pump_uart.owned_by(Protocol::owner))disconnect();
+            if(cottage_pump_uart.owned_by(Protocol::owner)) {
+                if(is_selected && link.current())Protocol::idle(link);
+                else disconnect();
+            }
             return;
         }
         const auto outcome=job.command?perform_write(job,limits):WriteResult{};

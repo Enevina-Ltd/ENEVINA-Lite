@@ -8,7 +8,7 @@ using namespace enevina;
 using namespace enevina::cottage;
 namespace wire=enevina::cn105_uart;
 
-struct Cn105Wire {
+struct Cn105Wire : SerialHeatingWire {
     using Settings=wire::Settings;
     using Patch=wire::Patch;
     static constexpr auto owner=PumpUartOwner::MitsubishiCn105;
