@@ -54,7 +54,7 @@ class MpcControlWiring(unittest.TestCase):
 
     def test_existing_gates_unchanged_and_before_any_command(self):
         # Other adapters cannot reach the CN105 writer.
-        self.assertLess(TICK.index("if(!midea && !gree && !daikin && !wf_rac && !cn105_selected())"),
+        self.assertLess(TICK.index("if(!midea && !gree && !daikin && !wf_rac && !direct_cn105 && !cn105_selected())"),
                         TICK.index("active_control_proposal("))
         self.assertLess(TICK.index("if(!control_armed.load())return;"),
                         TICK.index("active_control_proposal("))
@@ -105,6 +105,7 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("if(cottage_daikin_selected())return cottage_daikin_room_state();", view)
         self.assertLess(TICK.index("cottage_daikin_submit_automatic("), TICK.index("cn105_bridge_post("))
         self.assertLess(TICK.index("cottage_wf_rac_submit_automatic("), TICK.index("cn105_bridge_post("))
+        self.assertLess(TICK.index("cottage_cn105_direct_submit_automatic("), TICK.index("cn105_bridge_post("))
         self.assertNotIn("cn105_bridge_get", view)
         self.assertNotIn("cn105_bridge_get", WORKER)
         self.assertIn("o.heat_valid=known_heating_mode(view) && view.request_minutes>=14 &&", WORKER)
