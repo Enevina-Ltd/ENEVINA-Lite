@@ -7,6 +7,11 @@ const m=/<script id="wizard-script">([\s\S]*?)<\/script>/.exec(header);
 assert(m,'wizard script block missing');
 const src=m[1];
 
+// Settings cards are referenced by ID when attaching status and command handlers.
+const settingsHtml=header.split('<script id="wizard-script">')[0];
+const settingsIds=[...settingsHtml.matchAll(/<[\w-]+[^>]*?\sid="([^"]+)"/g)].map(match=>match[1]);
+assert.deepEqual(settingsIds.filter((id,i)=>settingsIds.indexOf(id)!==i),[],'duplicate dashboard IDs');
+
 // Every Finnish literal with non-ASCII letters must have an English entry.
 const dict=JSON.parse(header.split('const UI_EN=Object.freeze(')[1].split(/\);\r?\nconst UI_EN_FRAGMENTS/)[0]);
 const literals=[...src.matchAll(/WT\('([^']*)'\)/g)].map(x=>x[1]);
