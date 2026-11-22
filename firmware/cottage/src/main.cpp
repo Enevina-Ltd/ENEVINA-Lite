@@ -30,6 +30,7 @@
 #include "cottage_midea_service.hpp"
 #include "cottage_gree_service.hpp"
 #include "cottage_daikin_service.hpp"
+#include "cottage_daikin_dsiot_service.hpp"
 #include "cottage_wf_rac_service.hpp"
 #include "pump/adapter_catalog.hpp"
 #include "cottage/control_intent.hpp"
@@ -771,6 +772,7 @@ static enevina::PumpRoomState optimizer_pump_state(int64_t now,bool midea) {
     if(midea)return cottage_midea_room_state();
     if(cottage_gree_selected())return cottage_gree_room_state();
     if(cottage_daikin_selected())return cottage_daikin_room_state();
+    if(cottage_daikin_dsiot_selected())return cottage_daikin_dsiot_room_state();
     if(cottage_wf_rac_selected())return cottage_wf_rac_room_state();
     PumpRoomState state{};
     xSemaphoreTake(lock_data,portMAX_DELAY);
@@ -874,6 +876,8 @@ static TemperatureSample selected_room_sample(int64_t now,const RoomTemperatureC
         state=cottage_gree_room_state();
     } else if(cottage_daikin_selected()) {
         state=cottage_daikin_room_state();
+    } else if(cottage_daikin_dsiot_selected()) {
+        state=cottage_daikin_dsiot_room_state();
     } else if(cottage_wf_rac_selected()) {
         state=cottage_wf_rac_room_state();
     } else if(cn105_selected()) {
@@ -1063,6 +1067,7 @@ static uint32_t lan_configuration_revision(bool midea) {
     if(midea)return cottage_midea_configuration_generation();
     if(cottage_gree_selected())return cottage_gree_configuration_generation();
     if(cottage_daikin_selected())return cottage_daikin_configuration_generation();
+    if(cottage_daikin_dsiot_selected())return cottage_daikin_dsiot_configuration_generation();
     return cottage_wf_rac_selected()?cottage_wf_rac_configuration_generation():0;
 }
 static bool expected_control_proposal_current(BootstrapAction expected,double target_c) {
@@ -1626,11 +1631,13 @@ static uint32_t identifier_identity() {
         h^=correction&0xFFu;h*=16777619u;
         h^=correction>>8;h*=16777619u;
     }
-    if(cottage_midea_selected() || cottage_gree_selected() || cottage_daikin_selected() ||
-       cottage_wf_rac_selected()) {
-        const uint32_t pump_id=cottage_midea_selected()?cottage_midea_calibration_identity():
-            cottage_gree_selected()?cottage_gree_calibration_identity():cottage_daikin_selected()?
-            cottage_daikin_calibration_identity():cottage_wf_rac_calibration_identity();
+    if(direct_lan_pump_selected()) {
+        uint32_t pump_id=0;
+        if(cottage_midea_selected())pump_id=cottage_midea_calibration_identity();
+        else if(cottage_gree_selected())pump_id=cottage_gree_calibration_identity();
+        else if(cottage_daikin_selected())pump_id=cottage_daikin_calibration_identity();
+        else if(cottage_daikin_dsiot_selected())pump_id=cottage_daikin_dsiot_calibration_identity();
+        else if(cottage_wf_rac_selected())pump_id=cottage_wf_rac_calibration_identity();
         for(int i=0;i<4;++i) {h^=(pump_id>>(8*i))&0xFFu;h*=16777619u;}
     }
     return h;
@@ -3120,6 +3127,7 @@ void setup() {
     cottage_midea_service_register_routes(web);
     cottage_gree_register_routes(web);
     cottage_daikin_register_routes(web);
+    cottage_daikin_dsiot_register_routes(web);
     cottage_wf_rac_register_routes(web);
     cottage_control_registration(); // restore prior explicit choice only
     web.onNotFound([](){
@@ -3164,6 +3172,7 @@ static void cottage_local_lan_worker(void*) {
     for(;;) {
         if(cottage_gree_needs_worker())cottage_gree_tick();
         if(cottage_daikin_needs_worker())cottage_daikin_tick();
+        if(cottage_daikin_dsiot_needs_worker())cottage_daikin_dsiot_tick();
         if(cottage_wf_rac_needs_worker())cottage_wf_rac_tick();
         vTaskDelay(pdMS_TO_TICKS(250));
     }
@@ -3183,7 +3192,7 @@ void loop() {
                                    10240,nullptr,1,&task_midea,0)!=pdPASS)
             Serial.println("MIDEA_WORKER: insufficient memory");
         if(!task_local_lan && (cottage_gree_needs_worker() || cottage_daikin_needs_worker() ||
-           cottage_wf_rac_needs_worker()) &&
+           cottage_daikin_dsiot_needs_worker() || cottage_wf_rac_needs_worker()) &&
            xTaskCreatePinnedToCore(cottage_local_lan_worker,"cottage_local_lan",8192,nullptr,1,&task_local_lan,0)!=pdPASS)
             Serial.println("LOCAL_LAN_WORKER: insufficient memory");
     }

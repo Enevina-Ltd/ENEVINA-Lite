@@ -35,7 +35,7 @@ struct PumpHeatingLimits {
 
 enum class PumpRoomMode : uint8_t { Unknown, Off, Heat, Other };
 enum class PumpStateSource : uint8_t { None, Gateway, VerifiedBus, DirectLan };
-enum class PumpRoomProtocol : uint8_t { Unknown, Cn105EspHome, MideaV2Ac, MideaV3Ac, GreeEcb, GreeGcm, DaikinLegacy, MhiWfRac };
+enum class PumpRoomProtocol : uint8_t { Unknown, Cn105EspHome, MideaV2Ac, MideaV3Ac, GreeEcb, GreeGcm, DaikinLegacy, MhiWfRac, DaikinDsiot };
 
 struct PumpRoomState {
     PumpRoomProtocol protocol=PumpRoomProtocol::Unknown;

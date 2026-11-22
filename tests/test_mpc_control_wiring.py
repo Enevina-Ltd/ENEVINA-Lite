@@ -35,6 +35,7 @@ class MpcControlWiring(unittest.TestCase):
     def test_direct_lan_history_and_freshness_use_the_selected_adapter(self):
         pump = MAIN.split("static enevina::PumpRoomState optimizer_pump_state(", 1)[1].split("\n}\n", 1)[0]
         self.assertIn("if(cottage_wf_rac_selected())return cottage_wf_rac_room_state();", pump)
+        self.assertIn("if(cottage_daikin_dsiot_selected())return cottage_daikin_dsiot_room_state();", pump)
         for function in ("static enevina::cottage::HistoryInputs history_collect()",
                          "static void freshness_endpoint()"):
             body = MAIN.split(function, 1)[1].split("\n}\n", 1)[0]

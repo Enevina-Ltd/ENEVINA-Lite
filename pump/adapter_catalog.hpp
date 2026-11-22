@@ -96,6 +96,10 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      "local module identity, operating mode, setpoint and optional temperature",
      "model-approved HEAT, OFF and setpoint on the original HTTP module",0,0,0,
      "LAN response; reported values have no pump timestamp",true,"docs/integrations/MHI_WF_RAC.md"},
+    {"daikin_dsiot","Daikin","DSIoT local interface (no field-verified models)",
+     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareReadOnly,
+     "module identity, heating setpoint and optional temperatures via DSIoT", "not enabled",0,0,0,
+     "LAN response; reported values have no pump timestamp",false,"docs/integrations/DAIKIN_DSIOT.md"},
 };
 inline constexpr size_t adapter_catalog_size=sizeof(adapter_catalog)/sizeof(adapter_catalog[0]);
 
