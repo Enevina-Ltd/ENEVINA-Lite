@@ -12,7 +12,8 @@ struct Cn105Wire {
     using Settings=wire::Settings;
     using Patch=wire::Patch;
     static constexpr auto owner=PumpUartOwner::MitsubishiCn105;
-    static constexpr auto protocol=PumpRoomProtocol::Cn105Direct;
+    static auto protocol(const Settings&) {return PumpRoomProtocol::Cn105Direct;}
+    static const char* protocol_label(const Settings&) {return "CN105";}
     static constexpr uint32_t format=SERIAL_8E1;
     static constexpr const char* adapter_id="mitsubishi_cn105_direct";
     static constexpr const char* api_root="/api/cn105-direct";

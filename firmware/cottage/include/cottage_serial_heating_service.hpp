@@ -295,6 +295,7 @@ class SerialHeatingService {
         }
         if(Protocol::valid_baud(baud))cJSON_AddNumberToObject(root,"baud",baud);
         if(current) {
+            cJSON_AddStringToObject(root,"protocol",Protocol::protocol_label(sample.climate));
             if(const auto power=Protocol::power(sample.climate))cJSON_AddBoolToObject(root,"power",*power);
             if(const auto mode=Protocol::mode(sample.climate))cJSON_AddNumberToObject(root,"mode",*mode);
             if(sample.climate.target_c)cJSON_AddNumberToObject(root,"target_c",*sample.climate.target_c);
@@ -498,7 +499,7 @@ public:
         if(!fresh(sample) || sample.bus_generation!=cottage_pump_uart.generation() ||
            sample.received_utc<1700000000)return out;
         out.source=PumpStateSource::VerifiedBus;
-        out.protocol=Protocol::protocol;
+        out.protocol=Protocol::protocol(sample.climate);
         out.type=HeatPumpType::AirToAir;
         out.endpoint_generation=sample.link.endpoint;out.link_generation=sample.bus_generation;
         out.mode=Protocol::heating_mode(sample.climate);
