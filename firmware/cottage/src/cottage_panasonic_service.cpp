@@ -56,6 +56,9 @@ struct PanasonicWire : SerialHeatingWire {
         return state.family==wire::Family::Cnt?"CN-CNT":"CN-WLAN";
     }
     static double step(const Settings& state) {return state.defrost==true || !state.target_c?0:.5;}
+    static bool same_settings(const Settings& previous,const Settings& current) {
+        return wire::same_settings(previous,current);
+    }
     static auto command(const Settings& before,const Patch& patch,const PumpHeatingLimits& limits) {
         return wire::command(before,patch,limits,tx.load());
     }
