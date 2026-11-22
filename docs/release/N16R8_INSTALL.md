@@ -4,11 +4,11 @@ N16R8 denotes 16 MiB of flash and 8 MiB of OPI PSRAM. Check the module marking a
 
 ## Build a complete package
 
-Build the application and the rollback bootloader from the same checked-out source commit. Use Python with PlatformIO Core 6.1.19 for the application. The firmware configuration pins the platform, Arduino framework, toolchain and BLE dependency.
+Build the application and the rollback bootloader from the same checked-out source commit. Use Python with PlatformIO Core 6.1.19 for the application. The firmware configuration pins the platform, Arduino framework, toolchain and BLE dependency. The release target gives source and SDK files stable paths in the ELF debug information, which keeps the application descriptor's ELF digest reproducible.
 
 ```sh
 python -m pip install platformio==6.1.19
-python -m platformio run -d firmware/cottage -e esp32s3_cottage_shadow
+python -m platformio run -d firmware/cottage -e esp32s3_cottage_release
 ```
 
 Activate the Espressif ESP-IDF 5.5.5 environment for the bootloader. The verified amd64 container is `espressif/idf@sha256:6e2800a69f1c6521a5651da524f811e237d13e34cad369687916d0ad0bc4ef89`. From the repository root run:
@@ -17,7 +17,7 @@ Activate the Espressif ESP-IDF 5.5.5 environment for the bootloader. The verifie
 idf.py -C firmware/cottage/bootloader-rollback-idf55 -B build build
 python tools/cottage_install_package.py \
   --idf-build firmware/cottage/bootloader-rollback-idf55/build \
-  --pio-build firmware/cottage/.pio/build/esp32s3_cottage_shadow \
+  --pio-build firmware/cottage/.pio/build/esp32s3_cottage_release \
   --source "$(git rev-parse HEAD)" --output enevina-lite-n16r8.zip
 ```
 
