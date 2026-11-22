@@ -133,7 +133,7 @@ struct PanasonicWire : SerialHeatingWire {
         return reading;
     }
     template<typename Link>
-    static bool handshake(const Link& link) {
+    static std::optional<bool> handshake(const Link& link) {
         if(esp_read_mac(module_mac.data(),ESP_MAC_WIFI_STA)!=ESP_OK)return false;
         tx.store(0);
         if(!transmit(wire::wlan_handshake(1,0).packet,link))return false;
@@ -150,7 +150,10 @@ struct PanasonicWire : SerialHeatingWire {
                     return p.is_wlan(step.reply_group,step.reply_code);
                 }).has_value();
             }
-            if(!answered)return false;
+            if(!answered) {
+                if(i==2 && link.current())return std::nullopt;
+                return false;
+            }
             tx.store(wire::next_sequence(seq));
         }
         const auto initiate=wire::wlan_handshake(13,tx.load());
@@ -176,14 +179,19 @@ struct PanasonicWire : SerialHeatingWire {
     }
     template<typename Link>
     static bool connect(const Link& link) {
-        family=wire::Family::Cnt;defrost={};reader={};initial_received=false;
-        if(const auto state=cnt_query(link)) {
-            initial=*state;initial_received=true;
-            return true;
-        }
-        family=wire::Family::Wlan;reader={};
+        // WLAN units may also emit unsolicited 0x70 defrost frames. Once the
+        // WLAN probe responds, do not reinterpret those as a CNT connection.
+        family=wire::Family::Wlan;defrost={};reader={};initial_received=false;
         if(!cottage_pump_uart.drain())return false;
-        return handshake(link);
+        if(const auto wlan=handshake(link))return *wlan;
+
+        family=wire::Family::Cnt;
+        if(!cnt_query(link))return false;
+        vTaskDelay(pdMS_TO_TICKS(250));
+        const auto state=cnt_query(link);
+        if(!state)return false;
+        initial=*state;initial_received=true;
+        return true;
     }
     template<typename Sample,typename Link>
     static bool fill(Sample& sample,const Link& link) {

@@ -121,6 +121,15 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("state.automatic_confirmed_utc<=now", arb)
         self.assertNotIn("bridge_observed", MAIN)
 
+    def test_panasonic_requires_explicit_pump_bus_evidence(self):
+        source = (ROOT / "firmware/cottage/src/cottage_panasonic_service.cpp").read_text(encoding="utf-8")
+        setup = source.split("static bool connect(const Link& link)", 1)[1].split("static bool fill(", 1)[0]
+        self.assertLess(setup.index("if(const auto wlan=handshake(link))return *wlan;"),
+                        setup.index("family=wire::Family::Cnt;"))
+        self.assertEqual(setup.count("cnt_query(link)"), 2)
+        self.assertIn("p.sequence()!=sequence",
+                      (ROOT / "pump/panasonic_uart.cpp").read_text(encoding="utf-8"))
+
     def test_model_bound_to_indoor_sensor_and_plan_display_uses_controller_validity(self):
         # Codex P2 #1 (PR #63): the learned model describes the room the bound
         # RuuviTag measures; re-binding resets learning and revokes plans.
