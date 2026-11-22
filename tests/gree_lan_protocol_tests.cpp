@@ -70,6 +70,16 @@ int main() {
         const auto decoded=unpack(variant,*key,false,"app",*unit,command);
         assert(decoded && decoded->find("\"opt\":[\"SetTem\"]")!=std::string::npos);
         assert(!confirmed(setpoint,*reading));
+        const enevina::PumpHeatingLimits pilot{18,26,1,true,true};
+        assert(permits_heating_patch(setpoint,*reading,pilot));
+        assert(!permits_heating_patch({std::nullopt,std::nullopt,27},*reading,pilot));
+        assert(!permits_heating_patch({true,Mode::Cool,22},*reading,pilot));
+        auto frost=*reading;frost.frost=true;
+        assert(!permits_heating_patch({false,{},{}},frost,pilot));
+        frost.frost.reset();
+        assert(!permits_heating_patch(setpoint,frost,pilot));
+        auto outside=*reading;outside.setpoint_c=27;
+        assert(permits_heating_patch({false,{},{}},outside,pilot));
         const auto changed=read(R"({"t":"dat","cols":["Pow","Mod","TemUn","SetTem"],"dat":[1,4,0,22]})");
         assert(changed && confirmed(setpoint,*changed));
         assert(command_request(variant,*key,*unit,{false,Mode::Heat,30}).empty());

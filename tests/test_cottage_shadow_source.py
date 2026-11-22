@@ -119,7 +119,7 @@ class ShadowSurfaceTests(unittest.TestCase):
                        "independent_freeze_protection_verified", "safety_reason"):
             self.assertIn(marker,self.main)
         status=self.main.split("static void status_endpoint()",1)[1]
-        self.assertIn("const bool armed=midea?cottage_midea_automatic_enabled():control_armed.load();",status)
+        self.assertIn("const bool armed=active_control_armed(midea);",status)
         self.assertIn('cJSON_AddBoolToObject(root,"physical_writes",armed)',status)
         self.assertIn('cJSON_AddBoolToObject(root,"control_armed",armed)',status)
         self.assertIn('health.independent_freeze_protection_verified=false;',self.main)

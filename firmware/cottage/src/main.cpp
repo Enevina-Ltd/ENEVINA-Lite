@@ -128,6 +128,7 @@ static std::atomic<bool> control_armed{false};
 static std::atomic<uint32_t> control_armed_endpoint{0};
 static std::atomic<uint32_t> control_permission_generation{0};
 static std::atomic<uint32_t> control_armed_midea_revision{0};
+static std::atomic<uint32_t> control_armed_gree_revision{0};
 // Owner decision 18.11.2026: >= 30 min between HEAT<->OFF changes. Last change
 // = last mode command sent, last change observed via bridge GET, boot or
 // arming (unknown history -> wait). millis()-based, survives NTP jumps.
@@ -764,6 +765,7 @@ static void mpc_mode_target(bool& heating_allowed,double& target_c) {
 static enevina::PumpRoomState optimizer_pump_state(int64_t now,bool midea) {
     using namespace enevina;
     if(midea)return cottage_midea_room_state();
+    if(cottage_gree_selected())return cottage_gree_room_state();
     PumpRoomState state{};
     xSemaphoreTake(lock_data,portMAX_DELAY);
     if(verified_cn105_link.current() && valid_cn105(pump,now) &&
@@ -812,7 +814,7 @@ static ArbiterInput build_arbiter_input(int64_t now,const TemperatureSample& t) 
     in.pump_state_known=known_heating_mode(state);
     in.pump_heat=state.mode==enevina::PumpRoomMode::Heat;
     in.pump_setpoint_c=state.setpoint_c;
-    in.own_transition_confirmed=in.plan.has_plan && (midea?
+    in.own_transition_confirmed=in.plan.has_plan && ((midea || cottage_gree_selected())?
         state.automatic_queued_utc>=in.plan.computed_utc &&
         state.automatic_confirmed_utc>=state.automatic_queued_utc &&
         state.automatic_confirmed_utc<=now &&
@@ -1008,12 +1010,45 @@ bool cottage_midea_automatic_write_current(uint32_t authorization_generation,
            selected_room_sample(time(nullptr)).received;
 }
 
-bool cottage_midea_automatic_proposal_current(BootstrapAction expected,double target_c) {
+void cottage_gree_automatic_cancel() {
+    cottage_midea_automatic_cancel();
+}
+bool cottage_gree_automatic_enabled() {
+    return control_armed.load() && cottage_gree_selected() &&
+        control_armed_endpoint.load()==site_settings_endpoint_generation() &&
+        control_armed_gree_revision.load()==cottage_gree_configuration_generation();
+}
+static bool active_control_armed(bool midea) {
+    if(midea)return cottage_midea_automatic_enabled();
+    if(cottage_gree_selected())return cottage_gree_automatic_enabled();
+    return cn105_selected() && control_armed.load();
+}
+static uint32_t lan_configuration_revision(bool midea) {
+    if(midea)return cottage_midea_configuration_generation();
+    return cottage_gree_selected()?cottage_gree_configuration_generation():0;
+}
+static bool expected_control_proposal_current(BootstrapAction expected,double target_c) {
     const int64_t now=time(nullptr);
     const auto current=active_control_proposal(now,selected_room_sample(now));
     return current.action==expected && (expected==BootstrapAction::Off ||
         (expected==BootstrapAction::HeatSetpoint &&
          std::fabs(current.heat_setpoint_c-target_c)<=0.001));
+}
+
+bool cottage_midea_automatic_proposal_current(BootstrapAction expected,double target_c) {
+    return expected_control_proposal_current(expected,target_c);
+}
+bool cottage_gree_automatic_write_current(uint32_t authorization,uint32_t config,
+        uint32_t settings,const BootstrapDecision& proposal) {
+    if(control_permission_generation.load()!=authorization ||
+       !cottage_gree_automatic_enabled() || !wifi_ok.load() || !clock_ok() ||
+       cottage_ota_network_maintenance() || !c23_config_storage_verified() ||
+       c23_config_generation()!=config || site_settings_generation()!=settings)
+        return false;
+    const auto now=time(nullptr);
+    if(c23_mode_config().mode!=CottageMode::Cold && !selected_room_sample(now).received)
+        return false;
+    return expected_control_proposal_current(proposal.action,proposal.heat_setpoint_c);
 }
 
 static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
@@ -1188,16 +1223,15 @@ static void cottage_control_disarm() {
 static void cottage_control_tick() {
     control_gate.store(static_cast<int>(ControlBlock::Disabled));
     const bool midea=cottage_midea_selected();
-    if(!midea && !cn105_selected()) {
+    const bool gree=cottage_gree_selected();
+    if(!midea && !gree && !cn105_selected()) {
         if(control_armed.load())cottage_control_disarm();
         return;
     }
     if(!control_armed.load())return;
     const uint32_t authorization_generation=control_permission_generation.load();
     const uint32_t site_generation=site_settings_generation();
-    if(midea && !cottage_midea_automatic_enabled()) {
-        return;
-    }
+    if((midea || gree) && !active_control_armed(midea))return;
     // Arming is bound to the configured pump. A changed CN105 endpoint or
     // adapter revokes it; a reboot restores only the same pump identity.
     if(control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
@@ -1240,6 +1274,13 @@ static void cottage_control_tick() {
         // calibrated CN105 model cannot transfer to a different pump.
         const auto reading=cottage_midea_room_state();
         const auto gate=cottage_midea_submit_automatic(reading,candidate,
+            authorization_generation,config_generation,site_generation);
+        control_gate.store(static_cast<int>(gate));
+        return;
+    }
+    if(gree) {
+        const auto reading=cottage_gree_room_state();
+        const auto gate=cottage_gree_submit_automatic(reading,candidate,
             authorization_generation,config_generation,site_generation);
         control_gate.store(static_cast<int>(gate));
         return;
@@ -1347,7 +1388,7 @@ static void cottage_control_tick() {
 static String control_connection_key(bool midea) {
     return String(site_settings_endpoint_generation())+"/"+
         String(cottage_wifi_link_generation())+"/"+
-        String(midea?cottage_midea_configuration_generation():0);
+        String(lan_configuration_revision(midea));
 }
 static void cottage_control_registration() {
     // User's previously chosen automation survives a same-image restart.
@@ -1406,7 +1447,8 @@ static void cottage_control_registration() {
             web.send(409,"application/json","{\"saved\":false,\"error\":\"CONNECTION_CHANGED\"}");
             return;
         }
-        if(requested && !midea && !cn105_selected()) {
+        const bool gree=cottage_gree_selected();
+        if(requested && !midea && !gree && !cn105_selected()) {
             web.send(409,"application/json",
                 "{\"saved\":false,\"error\":\"ADAPTER_READ_ONLY\"}");
             return;
@@ -1422,17 +1464,19 @@ static void cottage_control_registration() {
         const bool allowed=requested ?
             control_current_image_sha256(digest) &&
             !pending_ota && !cottage_ota_confirmation_pending() : true;
-        if(midea) {
-            if(requested && (!allowed || !cottage_midea_automatic_ready())) {
-                web.send(409,"application/json",
-                    "{\"saved\":false,\"error\":\"MIDEA_NOT_READY\"}");
+        if(midea || gree) {
+            if(requested && (!allowed ||
+               !(midea?cottage_midea_automatic_ready():cottage_gree_automatic_ready()))) {
+                web.send(409,"application/json",midea?
+                    "{\"saved\":false,\"error\":\"MIDEA_NOT_READY\"}":
+                    "{\"saved\":false,\"error\":\"GREE_NOT_READY\"}");
                 return;
             }
-            // Midea approval is volatile and bound to the exact LAN config.
-            // It is never restored from Mitsubishi intent or after reboot.
+            // LAN pilot approval is volatile and bound to this enrollment.
             control_permission_generation.fetch_add(1);
             control_armed_endpoint.store(site_settings_endpoint_generation());
-            control_armed_midea_revision.store(cottage_midea_configuration_generation());
+            if(midea)control_armed_midea_revision.store(cottage_midea_configuration_generation());
+            else control_armed_gree_revision.store(cottage_gree_configuration_generation());
             control_armed.store(requested);
             web.send(200,"application/json","{\"saved\":true}");
             return;
@@ -1469,7 +1513,7 @@ static bool cottage_cancel(void*) {
 static bool variable_setpoint_model_selected() {
     const auto cfg=c23_mode_config();
     ComfortBand legacy{};
-    return cottage_midea_selected() || cfg.mode==CottageMode::Occupied ||
+    return cottage_midea_selected() || cottage_gree_selected() || cfg.mode==CottageMode::Occupied ||
         (cfg.mode==CottageMode::Hold && !mpc_comfort_band(cfg.hold_target_c,legacy));
 }
 static const char* model_blob_key(bool variable) {return variable?"rls2":"rls1";}
@@ -1494,8 +1538,9 @@ static uint32_t identifier_identity() {
         h^=correction&0xFFu;h*=16777619u;
         h^=correction>>8;h*=16777619u;
     }
-    if(std::strcmp(s.pump_adapter,"midea_lan")==0) {
-        const uint32_t pump_id=cottage_midea_calibration_identity();
+    if(std::strcmp(s.pump_adapter,"midea_lan")==0 || std::strcmp(s.pump_adapter,"gree_ewpe_lan")==0) {
+        const uint32_t pump_id=std::strcmp(s.pump_adapter,"midea_lan")==0?
+            cottage_midea_calibration_identity():cottage_gree_calibration_identity();
         for(int i=0;i<4;++i) {h^=(pump_id>>(8*i))&0xFFu;h*=16777619u;}
     }
     return h;
@@ -1843,7 +1888,8 @@ static void optimizer_worker(void*) {
                 after.mode!=view.mode || after.endpoint_generation!=view.endpoint_generation ||
                 after.link_generation!=view.link_generation ||
                 after.configuration_generation!=view.configuration_generation ||
-                (!midea && known_heating_mode(view) && view.request_generation!=observed_mode_generation) ||
+                (view.source==enevina::PumpStateSource::VerifiedBus &&
+                    view.request_generation!=observed_mode_generation) ||
                 site_settings_generation()!=optimizer_site_generation;
             MpcPlanRecord record=po.record;
             if(mode_changed) {
@@ -1976,9 +2022,10 @@ static void status_endpoint() {
     const BootstrapDecision bootstrap=bootstrap_preview(now,selected);
     cJSON* root=cJSON_CreateObject();
     const bool midea=cottage_midea_selected();
-    const bool armed=midea?cottage_midea_automatic_enabled():control_armed.load();
+    const bool armed=active_control_armed(midea);
     cJSON_AddStringToObject(root,"mode",armed?
-        (midea?"MIDEA_AUTOMAATIO_KAYTOSSA":"CN105_AUTOMAATIO_KAYTOSSA"):"VARJOTILA_EI_KOMENTOJA");
+        (midea?"MIDEA_AUTOMAATIO_KAYTOSSA":cottage_gree_selected()?
+            "GREE_AUTOMAATIO_KAYTOSSA":"CN105_AUTOMAATIO_KAYTOSSA"):"VARJOTILA_EI_KOMENTOJA");
     cJSON_AddBoolToObject(root,"physical_writes",armed);
     cJSON_AddBoolToObject(root,"control_armed",armed);
     cJSON_AddStringToObject(root,"control_connection",control_connection_key(midea).c_str());
@@ -2432,7 +2479,7 @@ static void mpc_endpoint() {
         "\"reset_state\":\"%s\",\"reset_failures\":%u,",
         static_cast<long long>(now),mpc_run_state_name(arb.mpc_state),
         mpc_fallback_name(arb.fallback),proposal_source_name(arb.source),
-        (midea?cottage_midea_automatic_enabled():control_armed.load())?"true":"false",
+        active_control_armed(midea)?"true":"false",
         confirmed?"true":"false",pump_verified?"true":"false",
         arb_in.pump_state_known?"true":"false",calibration_state_name(cal.state),calibration_block_name(cal.block),cal.samples,
         cal.heating_slots,cal.off_slots,cal.starts,cal.stops,cal.skipped,cal.outliers,
@@ -2611,7 +2658,7 @@ static enevina::cottage::HistoryInputs history_collect() {
     const bool midea=cottage_midea_selected();
     in.indoor_source_id=in.indoor_from_pump?
         (static_cast<uint64_t>(site_settings_endpoint_generation())<<32) |
-            (midea?cottage_midea_configuration_generation():0):
+            lan_configuration_revision(midea):
         c23_indoor_binding_id();
     const TemperatureSample te=selected_room_sample(now,room);
     in.indoor_valid=valid_temperature(te,now);
@@ -2628,8 +2675,8 @@ static enevina::cottage::HistoryInputs history_collect() {
         }
     }
     const bool sse_fresh=observed.received && climate_time>0 && now>=climate_time && now-climate_time<=180;
-    if(midea) {
-        const auto live=cottage_midea_room_state();
+    if(midea || cottage_gree_selected()) {
+        const auto live=midea?cottage_midea_room_state():cottage_gree_room_state();
         in.pump_online=live.source==enevina::PumpStateSource::DirectLan;
         in.setpoint_valid=in.pump_online && std::isfinite(live.setpoint_c);
         in.setpoint_c=live.setpoint_c;
@@ -2653,7 +2700,7 @@ static enevina::cottage::HistoryInputs history_collect() {
     const BootstrapDecision d=active_control_proposal(now,te);
     in.action=d.action==BootstrapAction::Off?1:d.action==BootstrapAction::HeatSetpoint?2:
               d.action==BootstrapAction::Hold?3:0;
-    in.armed=midea?cottage_midea_automatic_enabled():control_armed.load();
+    in.armed=active_control_armed(midea);
     in.commands_sent=control_commands_sent.load();
     in.commands_confirmed=control_commands_confirmed.load();
     in.commands_failed=control_commands_failed.load();
@@ -2700,8 +2747,8 @@ static void freshness_endpoint() {
     const bool sse_fresh=observed.received && climate_time>0 && now>=climate_time && now-climate_time<=180;
     in.pump_configured=site.pump_adapter[0]!=0;
     const bool midea=cottage_midea_selected();
-    if(midea) {
-        const auto live=cottage_midea_room_state();
+    if(midea || cottage_gree_selected()) {
+        const auto live=midea?cottage_midea_room_state():cottage_gree_room_state();
         in.pump_fresh=live.source==enevina::PumpStateSource::DirectLan;
         in.pump_age_s=in.pump_fresh?now-live.evidence.received_utc:-1;
     } else {
@@ -2710,7 +2757,7 @@ static void freshness_endpoint() {
         in.pump_age_s=verified_pump_age(now,cn105_fresh,cp.captured_utc,
                                         sse_fresh,climate_time);
     }
-    in.control_armed=midea?cottage_midea_automatic_enabled():control_armed.load();
+    in.control_armed=active_control_armed(midea);
     const Freshness f=assess_freshness(in);
     web.sendHeader("Cache-Control","no-store");
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);

@@ -12,11 +12,15 @@
 #include <WiFiUdp.h>
 #include <cJSON.h>
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cstring>
+#include <cmath>
 #include <ctime>
 
 namespace {
+using namespace enevina;
+using namespace enevina::cottage;
 using namespace enevina::gree;
 constexpr char adapter_id[]="gree_ewpe_lan";
 constexpr uint32_t config_version=1;
@@ -50,17 +54,30 @@ struct Candidate {
     char host[16]{},device[18]{};
     Cipher cipher=Cipher::Ecb;
 };
-enum class Work { None, Scan, Pair, Read };
+enum class Work { None, Scan, Pair, Read, Write };
+struct Request {
+    Patch patch{};
+    Reading previous{};
+    uint32_t revision=0,authorization=0,settings=0,mode_config=0;
+    BootstrapDecision proposal{};
+    int64_t queued=0;
+    bool automatic=false;
+};
 struct Job {
     Work work=Work::None;
     Config proposed{};
     Link link{};
     bool draft=false;
+    Request request{};
 };
 struct Draft {
     Config config{};
     Sample sample{};
     uint32_t id=0;
+};
+struct Receipt {
+    Patch patch{};
+    int64_t utc=0;
 };
 struct State {
     Config saved{};
@@ -75,9 +92,17 @@ struct State {
     bool busy=false;
     const char* result="not_tested";
     const char* draft_result="not_tested";
+    uint32_t pilot_revision=0,pilot_endpoint=0;
+    char pilot_model[48]{};
+    PumpHeatingLimits limits{};
+    MitsubishiModeHistory dwell{};
+    uint32_t mode_since_ms=0,request_since_ms=0,request_generation=0;
+    int64_t automatic_confirmed_utc=0,automatic_queued_utc=0;
+    Receipt requested{},sent{},confirmed{};
 };
 
 SemaphoreHandle_t guard=nullptr;
+std::atomic<uint32_t> active_revision{0};
 State state{};
 Link active_link() {
     return {site_settings_endpoint_generation(),cottage_wifi_link_generation()};
@@ -88,6 +113,50 @@ bool fresh(const Sample& s,uint32_t revision) {
         static_cast<uint32_t>(millis()-s.received_ms)<=fresh_s*1000;
 }
 
+bool heating(const Reading& r) {return r.power && r.mode==Mode::Heat;}
+bool same_request(const Reading& a,const Reading& b) {
+    return a.power==b.power && a.mode==b.mode && a.setpoint_c==b.setpoint_c;
+}
+void publish_reading(const std::optional<Reading>& reading,const Link& link) {
+    const uint32_t now=millis();
+    const bool continuous=fresh(state.sample,state.revision);
+    if(!reading || !continuous || !same_request(*reading,*state.sample.reading)) {
+        ++state.request_generation;
+        state.request_since_ms=now;
+    }
+    if(!reading || !continuous || reading->power!=state.sample.reading->power ||
+       reading->mode!=state.sample.reading->mode)
+        state.mode_since_ms=now;
+    if(reading) {
+        if(!continuous)state.dwell.reset(now);
+        state.dwell.observe(heating(*reading),now,true);
+    }
+    state.sample={reading,time(nullptr),now,link,state.revision};
+}
+void install(const Config& config,const std::optional<Reading>& reading,const Link& link) {
+    state.saved=config;
+    ++state.revision;
+    // Publish the new identity before the worker or settings can reuse the old pilot.
+    active_revision.store(state.revision);
+    state.limits={};
+    state.pilot_model[0]=0;
+    state.requested={};state.sent={};state.confirmed={};
+    state.automatic_confirmed_utc=0;state.automatic_queued_utc=0;
+    publish_reading(reading,link);
+}
+bool can_queue() {
+    return !state.busy && state.queued.work==Work::None &&
+        state.limits.heating && state.pilot_revision==state.revision &&
+        state.pilot_endpoint==site_settings_endpoint_generation() &&
+        fresh(state.sample,state.revision) && heating_state_known(*state.sample.reading);
+}
+void queue_command(Request request,const Link& link) {
+    request.queued=time(nullptr);
+    state.queued={Work::Write,{},link,false,request};
+    state.requested={request.patch,request.queued};
+    state.sent={};
+    state.result="write_queued";
+}
 bool local_peer(const IPAddress& ip) {
     const uint8_t a=ip[0],b=ip[1];
     const bool private_ip=a==10 || (a==192 && b==168) || (a==172 && b>=16 && b<=31);
@@ -220,6 +289,16 @@ size_t scan(const Link& link,std::array<Candidate,max_candidates>& out) {
     return count;
 }
 
+void receipt(cJSON* root,const char* name,const Receipt& value) {
+    const auto& p=value.patch;
+    if(!p.power && !p.mode && !p.setpoint_c)return;
+    if(auto* entry=cJSON_AddObjectToObject(root,name)) {
+        if(p.power)cJSON_AddBoolToObject(entry,"power",*p.power);
+        if(p.mode)cJSON_AddNumberToObject(entry,"mode",static_cast<unsigned>(*p.mode));
+        if(p.setpoint_c)cJSON_AddNumberToObject(entry,"target_c",*p.setpoint_c);
+        if(value.utc>=1700000000)cJSON_AddNumberToObject(entry,"utc",value.utc);
+    }
+}
 void status(WebServer& web,bool draft_view) {
     xSemaphoreTake(guard,portMAX_DELAY);
     const State s=state;
@@ -233,6 +312,25 @@ void status(WebServer& web,bool draft_view) {
     cJSON_AddBoolToObject(root,"configured",configured(shown_config));
     cJSON_AddBoolToObject(root,"fresh",is_fresh);
     if(staged)cJSON_AddNumberToObject(root,"draft_id",s.draft.id);
+    cJSON_AddNumberToObject(root,"revision",s.revision);
+    const bool selected=cottage_gree_selected();
+    const bool approved=selected && s.limits.heating && s.pilot_revision==s.revision &&
+        s.pilot_endpoint==site_settings_endpoint_generation();
+    const bool automatic=selected && cottage_gree_automatic_enabled();
+    cJSON_AddBoolToObject(root,"pilot_approved",approved);
+    cJSON_AddBoolToObject(root,"automatic",automatic);
+    cJSON_AddBoolToObject(root,"write_available",approved && !automatic && !staged &&
+        is_fresh && s.sample.reading && heating_state_known(*s.sample.reading));
+    if(approved) {
+        cJSON_AddStringToObject(root,"pilot_model",s.pilot_model);
+        cJSON_AddNumberToObject(root,"minimum_c",s.limits.minimum_c);
+        cJSON_AddNumberToObject(root,"maximum_c",s.limits.maximum_c);
+    }
+    if(selected) {
+        receipt(root,"requested",s.requested);
+        receipt(root,"sent",s.sent);
+        receipt(root,"confirmed",s.confirmed);
+    }
     cJSON_AddBoolToObject(root,"busy",s.busy || s.queued.work!=Work::None);
     cJSON_AddStringToObject(root,"result",draft_view?s.draft_result:s.result);
     if(configured(shown_config)) {
@@ -284,6 +382,75 @@ void enqueue(WebServer& web,Work work,Config proposed={}) {
     web.send(pending?409:202,"application/json",pending?
         "{\"error\":\"busy\"}":"{\"queued\":true}");
 }
+bool value_between(const String& arg,int& out) {
+    if(arg.length()!=2 || arg[0]<'0' || arg[0]>'9' || arg[1]<'0' || arg[1]>'9')return false;
+    out=(arg[0]-'0')*10+(arg[1]-'0');
+    return out>=16 && out<=30;
+}
+bool command_current(const Job& job) {
+    if(!job.link.current() || !cottage_gree_selected() || cottage_ota_network_maintenance() ||
+       job.request.revision!=active_revision.load())return false;
+    if(!job.request.automatic)return !cottage_gree_automatic_enabled();
+    return cottage_gree_automatic_write_current(job.request.authorization,job.request.mode_config,
+                                                job.request.settings,job.request.proposal);
+}
+struct WriteOutcome {
+    const char* result="write_cancelled";
+    std::optional<Reading> reading;
+    int64_t sent_utc=0,confirmed_utc=0;
+    bool sent=false,confirmed=false;
+};
+WriteOutcome write_command(const Job& job,const Config& config,const PumpHeatingLimits& limits) {
+    WriteOutcome outcome;
+    const auto& request=job.request;
+    if(!command_current(job))return outcome;
+    outcome.reading=read(config,job.link);
+    if(!outcome.reading) {outcome.result="read_failed";return outcome;}
+    // Let a fresh preflight inform the same room source and next plan, including
+    // external remote changes. Do not send an automatic proposal based on an old state.
+    xSemaphoreTake(guard,portMAX_DELAY);
+    if(job.link.current() && request.revision==state.revision)
+        publish_reading(outcome.reading,job.link);
+    xSemaphoreGive(guard);
+    const auto before=*outcome.reading;
+    if(request.automatic && !same_request(before,request.previous)) {
+        outcome.result="external_change";return outcome;
+    }
+    if(!permits_heating_patch(request.patch,before,limits)) {outcome.result="unsupported";return outcome;}
+    if(confirmed(request.patch,before)) {outcome.result="already_applied";return outcome;}
+    IPAddress target;
+    const auto packet=command_request(config.cipher,config.key,config.device,request.patch);
+    if(!target_ip(config.host,target) || packet.empty() || !command_current(job))return outcome;
+    {
+        WiFiUDP udp;
+        outcome.sent=send(udp,target,packet);
+    }
+    if(!outcome.sent) {outcome.result="send_failed";return outcome;}
+    outcome.sent_utc=time(nullptr);
+    xSemaphoreTake(guard,portMAX_DELAY);
+    if(job.link.current() && request.revision==state.revision) {
+        state.sent={request.patch,outcome.sent_utc};
+        if(request.patch.power && *request.patch.power!=before.power)
+            state.dwell.command_dispatched(millis());
+    }
+    xSemaphoreGive(guard);
+    // A new status datagram on its own socket verifies only this exact write.
+    // A SET acknowledgement or a preflight value cannot reach this branch.
+    outcome.reading.reset();
+    for(unsigned i=0;i<3 && job.link.current();++i) {
+        vTaskDelay(pdMS_TO_TICKS(350));
+        if(const auto after=read(config,job.link)) {
+            outcome.reading=after;
+            if(confirmed(request.patch,*after)) {
+                outcome.confirmed=true;
+                outcome.confirmed_utc=time(nullptr);
+                break;
+            }
+        }
+    }
+    outcome.result=outcome.confirmed?"confirmed":"unconfirmed";
+    return outcome;
+}
 }
 
 bool cottage_gree_selected() {
@@ -324,6 +491,62 @@ void cottage_gree_register_routes(WebServer& web) {
         strlcpy(proposed.device,device.c_str(),sizeof(proposed.device));
         enqueue(web,Work::Pair,proposed);
     });
+    web.on("/api/gree/pilot",HTTP_POST,[&web](){
+        if(!web_ready(web,true))return;
+        const String model=web.arg("model"),id=web.arg("device"),enable=web.arg("enabled");
+        if(!cottage_gree_selected() || (enable!="true" && enable!="false")) {
+            web.send(409,"application/json","{\"error\":\"unsupported\"}");return;
+        }
+        const bool requested=enable=="true";
+        int minimum=0,maximum=0;
+        if(requested && (model.length()<3 || model.length()>47 || !device_id(id.c_str()) ||
+           !value_between(web.arg("min"),minimum) || !value_between(web.arg("max"),maximum) ||
+           minimum>=maximum)) {
+            web.send(400,"application/json","{\"error\":\"model_limits\"}");return;
+        }
+        xSemaphoreTake(guard,portMAX_DELAY);
+        const bool same=device_id(id.c_str())==device_id(state.saved.device);
+        const bool allowed=!state.busy && state.queued.work==Work::None &&
+            (!requested || (same && fresh(state.sample,state.revision) &&
+                            heating_state_known(*state.sample.reading)));
+        if(allowed) {
+            cottage_gree_automatic_cancel();
+            state.pilot_revision=state.revision;
+            state.pilot_endpoint=site_settings_endpoint_generation();
+            strlcpy(state.pilot_model,requested?model.c_str():"",sizeof(state.pilot_model));
+            state.limits=requested?PumpHeatingLimits{static_cast<double>(minimum),
+                static_cast<double>(maximum),1,true,true}:PumpHeatingLimits{};
+            state.dwell.reset(millis());
+        }
+        xSemaphoreGive(guard);
+        web.send(allowed?200:409,"application/json",allowed?"{\"saved\":true}":"{\"error\":\"pilot_required\"}");
+    });
+    web.on("/api/gree/control",HTTP_POST,[&web](){
+        if(!web_ready(web,true))return;
+        const String action=web.arg("action"),revision=web.arg("revision");
+        const String target=web.arg("target");
+        Patch patch;
+        int setpoint=0;
+        if(action=="off")patch.power=false;
+        else if((action=="target" || action=="heat") && value_between(target,setpoint)) {
+            patch.setpoint_c=setpoint;
+            if(action=="heat") {patch.mode=Mode::Heat;patch.power=true;}
+        } else {
+            web.send(400,"application/json","{\"error\":\"unsupported\"}");return;
+        }
+        xSemaphoreTake(guard,portMAX_DELAY);
+        const bool allowed=cottage_gree_selected() && !cottage_gree_automatic_enabled() &&
+            revision==String(state.revision) && can_queue() &&
+            permits_heating_patch(patch,*state.sample.reading,state.limits);
+        if(allowed) {
+            Request request{};
+            request.patch=patch;
+            request.revision=state.revision;
+            queue_command(request,active_link());
+        }
+        xSemaphoreGive(guard);
+        web.send(allowed?202:409,"application/json",allowed?"{\"queued\":true}":"{\"error\":\"pilot_required\"}");
+    });
     web.on("/api/gree/commit",HTTP_POST,[&web](){
         if(!web_ready(web,true))return;
         const String expected=web.arg("draft_id");
@@ -333,9 +556,9 @@ void cottage_gree_register_routes(WebServer& web) {
             !state.busy && state.queued.work==Work::None;
         const bool saved=matched && store_config(state.draft.config);
         if(saved) {
-            state.saved=state.draft.config;
-            state.sample=state.draft.sample;
-            state.sample.config=++state.revision;
+            install(state.draft.config,state.draft.sample.reading,state.draft.sample.link);
+            state.sample.utc=state.draft.sample.utc;
+            state.sample.received_ms=state.draft.sample.received_ms;
             state.result="paired";
             state.draft={};
         }
@@ -345,6 +568,71 @@ void cottage_gree_register_routes(WebServer& web) {
     });
 }
 
+uint32_t cottage_gree_configuration_generation() {return active_revision.load();}
+bool cottage_gree_automatic_ready() {
+    if(!guard || !cottage_gree_selected())return false;
+    xSemaphoreTake(guard,portMAX_DELAY);
+    const bool ready=can_queue();
+    xSemaphoreGive(guard);
+    return ready;
+}
+uint32_t cottage_gree_calibration_identity() {
+    if(!guard)return 0;
+    xSemaphoreTake(guard,portMAX_DELAY);
+    const auto config=state.saved;
+    xSemaphoreGive(guard);
+    if(!configured(config))return 0;
+    const auto id=device_id(config.device);
+    if(!id)return 0;
+    uint32_t hash=2166136261u;
+    for(const char digit:*id) {hash^=static_cast<uint8_t>(digit);hash*=16777619u;}
+    hash^=static_cast<uint8_t>(config.cipher);
+    return hash*16777619u;
+}
+ControlBlock cottage_gree_submit_automatic(const PumpRoomState& earlier,ControlSnapshot proposal,
+        uint32_t authorization,uint32_t config,uint32_t settings) {
+    if(!guard || !cottage_gree_automatic_enabled())return ControlBlock::Disabled;
+    xSemaphoreTake(guard,portMAX_DELAY);
+    ControlBlock result=ControlBlock::InputsUnverified;
+    if(can_queue() && earlier.configuration_generation==state.revision &&
+       earlier.request_generation==state.request_generation &&
+       earlier.endpoint_generation==state.sample.link.endpoint &&
+       earlier.link_generation==state.sample.link.wifi) {
+        const auto& reading=*state.sample.reading;
+        if(!reading.power || reading.mode==Mode::Heat) {
+            const auto initial=proposal.proposal;
+            if(initial.action==BootstrapAction::HeatSetpoint)
+                proposal.proposal.heat_setpoint_c=std::clamp(std::round(initial.heat_setpoint_c),
+                    state.limits.minimum_c,state.limits.maximum_c);
+            proposal.current_heat=heating(reading);
+            proposal.current_setpoint_c=*reading.setpoint_c;
+            proposal.cn105_link_fresh=proposal.bridge_get_ok=true;
+            proposal.ms_since_mode_change=state.dwell.since_change(millis());
+            const auto decision=choose_pump_control(proposal,state.limits,HeatTransition::Combined);
+            result=decision.gate;
+            if(decision.step!=ControlStep::None) {
+                Request request{};
+                request.previous=reading;
+                request.revision=state.revision;
+                request.authorization=authorization;
+                request.mode_config=config;
+                request.settings=settings;
+                request.proposal=initial;
+                request.automatic=true;
+                if(decision.step==ControlStep::SetOff)request.patch.power=false;
+                else {
+                    request.patch.setpoint_c=static_cast<int>(decision.target_c);
+                    if(decision.step==ControlStep::SetHeat) {
+                        request.patch.mode=Mode::Heat;request.patch.power=true;
+                    }
+                }
+                queue_command(request,state.sample.link);
+            }
+        }
+    }
+    xSemaphoreGive(guard);
+    return result;
+}
 enevina::PumpRoomState cottage_gree_room_state() {
     using namespace enevina;
     PumpRoomState out{};
@@ -353,6 +641,13 @@ enevina::PumpRoomState cottage_gree_room_state() {
     const auto s=state.sample;
     const auto revision=state.revision;
     const auto cipher=state.saved.cipher;
+    out.heating=state.limits;
+    out.request_generation=state.request_generation;
+    const auto now=millis();
+    out.mode_minutes=static_cast<uint32_t>(now-state.mode_since_ms)/60000;
+    out.request_minutes=static_cast<uint32_t>(now-state.request_since_ms)/60000;
+    out.automatic_confirmed_utc=state.automatic_confirmed_utc;
+    out.automatic_queued_utc=state.automatic_queued_utc;
     xSemaphoreGive(guard);
     if(!fresh(s,revision))return out;
     out.source=PumpStateSource::DirectLan;
@@ -385,6 +680,7 @@ void cottage_gree_worker(void*) {
             job={Work::Read,{},link};
         const bool using_draft=job.draft && state.draft.id && state.draft.sample.link.current();
         const Config old=using_draft?state.draft.config:state.saved;
+        const auto limits=state.limits;
         state.queued={};
         state.busy=job.work!=Work::None;
         xSemaphoreGive(guard);
@@ -395,6 +691,7 @@ void cottage_gree_worker(void*) {
         const char* result="link_changed";
         Config candidate=job.proposed;
         std::optional<Reading> reading;
+        WriteOutcome command{};
         std::array<Candidate,max_candidates> found{};
         size_t count=0;
         if(job.link.current()) {
@@ -416,6 +713,9 @@ void cottage_gree_worker(void*) {
                     reading=read(candidate,job.link);
                     result=reading?"paired":"read_failed";
                 } else result="bind_failed";
+            } else if(job.work==Work::Write) {
+                command=write_command(job,old,limits);
+                result=command.result;
             } else {
                 if(configured(old))reading=read(old,job.link);
                 result=!configured(old)?"not_configured":reading?"ok":"read_failed";
@@ -434,14 +734,22 @@ void cottage_gree_worker(void*) {
                     const uint32_t id=state.next_draft;
                     state.draft={candidate,{reading,time(nullptr),millis(),job.link,id},id};
                 } else if(store_config(candidate)) {
-                    state.saved=candidate;
-                    state.sample={reading,time(nullptr),millis(),job.link,++state.revision};
+                    install(candidate,reading,job.link);
                     state.draft={};
                 } else result="store_failed";
+            } else if(job.work==Work::Write && job.request.revision==state.revision) {
+                if(command.reading || command.sent)publish_reading(command.reading,job.link);
+                if(command.confirmed) {
+                    state.confirmed={job.request.patch,command.confirmed_utc};
+                    if(job.request.automatic) {
+                        state.automatic_queued_utc=job.request.queued;
+                        state.automatic_confirmed_utc=command.confirmed_utc;
+                    }
+                }
             } else if(job.work==Work::Read && using_draft) {
                 state.draft.sample={reading,time(nullptr),millis(),job.link,state.draft.id};
             } else if(job.work==Work::Read) {
-                state.sample={reading,time(nullptr),millis(),job.link,state.revision};
+                publish_reading(reading,job.link);
             }
         } else result="link_changed";
         (job.draft?state.draft_result:state.result)=result;

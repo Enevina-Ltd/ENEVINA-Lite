@@ -334,6 +334,16 @@ std::string command_request(Cipher cipher,const Key& key,std::string_view device
     return pack(cipher,key,false,"app",device,"{\"t\":\"cmd\",\"mac\":\""+
         std::string(device)+"\",\"opt\":["+options+"],\"p\":["+values+"]}");
 }
+bool heating_state_known(const Reading& reading) {
+    return reading.frost==false && reading.setpoint_c.has_value();
+}
+bool permits_heating_patch(const Patch& patch,const Reading& reading,const PumpHeatingLimits& limits) {
+    return limits.heating && heating_state_known(reading) &&
+        (!patch.setpoint_c || limits.accepts(*patch.setpoint_c)) &&
+        (!patch.mode || *patch.mode==Mode::Heat) &&
+        (patch.power || patch.mode || patch.setpoint_c) &&
+        !(patch.power==false && (patch.mode || patch.setpoint_c));
+}
 bool confirmed(const Patch& patch,const Reading& reading) {
     return (patch.power || patch.mode || patch.setpoint_c) &&
         (!patch.power || reading.power==*patch.power) &&
