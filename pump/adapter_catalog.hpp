@@ -86,9 +86,10 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      "direct LAN response; reported values have no pump timestamp",true,
      "docs/integrations/GREE_LAN.md"},
     {"daikin_local_api","Daikin","Legacy local HTTP (no field-verified models)",
-     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareReadOnly,
+     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::FirmwareControlExperimental,
      "identity, state, setpoint and optional measurements directly from the LAN module",
-     "not enabled",0,0,0,"direct LAN response; reported values have no pump timestamp",false,
+     "model-approved manual and automatic HEAT, OFF and setpoint",0,0,0,
+     "direct LAN response; reported values have no pump timestamp",true,
      "docs/integrations/DAIKIN_LEGACY.md"},
 };
 inline constexpr size_t adapter_catalog_size=sizeof(adapter_catalog)/sizeof(adapter_catalog[0]);
