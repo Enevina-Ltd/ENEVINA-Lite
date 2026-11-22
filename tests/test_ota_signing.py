@@ -67,6 +67,23 @@ class SignedPullReleaseCapabilityTests(unittest.TestCase):
             self.assertNotEqual(tag,changed)
             self.assertFalse(ota.is_signed_pull_capable_image(image,changed))
 
+    def test_static_project_directory_is_part_of_the_channel(self):
+        root = "https://ota.example"
+        dist = root + "/ENEVINA-Lite/ota/field"
+        lab = root + "/ENEVINA-Lite/ota/lab"
+        ca, key = "ca", "public-key"
+        def tag(directory):
+            return channel_tag(directory + "/manifest.txt", directory + "/firmware.bin", ca, key)
+        self.assertNotEqual(tag(root), tag(dist))
+        self.assertNotEqual(tag(lab), tag(dist))
+        with self.assertRaises(ValueError):
+            channel_tag(dist + "/manifest.txt", lab + "/firmware.bin", ca, key)
+        for path in ("/ota/../", "/ota//", "/%2e/", "/./", "/with%20space/", "/a\\\\b/", "/a\t/"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                channel_tag(root + path + "manifest.txt", root + path + "firmware.bin", ca, key)
+        with self.assertRaises(ValueError):
+            channel_tag(dist + "/manifest.txt?latest", dist + "/firmware.bin", ca, key)
+
     def test_channel_digest_in_generator_and_build(self):
         root=Path(__file__).resolve().parents[1]
         generator=(root/"tools/cottage_ota_generate_header.py").read_text()
