@@ -29,16 +29,20 @@ const A=ctx.api;
 {
   const loadPart=(name,next)=>src.slice(src.indexOf('function '+name+'('),src.indexOf(next,src.indexOf('function '+name+'(')));
   const modal={hidden:false};
-  const panel={parentElement:modal};
+  const panel={parentElement:modal},dsiotPanel={parentElement:modal};
   const card={prepend(node){node.parentElement=this;}};
-  const elements={'wf-rac-connection':panel,'wf-rac-card':card,wizard:modal};
+  const dsiotCard={prepend(node){node.parentElement=this;}};
+  const elements={'wf-rac-connection':panel,'wf-rac-card':card,wizard:modal,
+    'daikin-dsiot-connection':dsiotPanel,'daikin-dsiot-card':dsiotCard};
   const noop=()=>{};
   const env={WZ:{open:true},wzStopPolling:noop,wzUpdateMideaPolling:noop,wzRestoreMideaPanel:noop,
     wzRestoreMideaPilot:noop,wzRestoreGreePanel:noop,wzRestoreDaikinPanel:noop,
     document:{getElementById:id=>elements[id],body:{classList:{remove:noop}}}};
-  vm.runInNewContext(loadPart('wzRestoreWfRacPanel','function wzRestoreDaikinPanel(')+
+  vm.runInNewContext(loadPart('wzRestoreWfRacPanel','function wzRestoreDsiotPanel(')+
+    loadPart('wzRestoreDsiotPanel','function wzRestoreDaikinPanel(')+
     loadPart('wzClose','async function wzOpen(')+'wzClose()',env);
   assert.equal(panel.parentElement,card,'closing setup restores the WF-RAC panel to Settings');
+  assert.equal(dsiotPanel.parentElement,dsiotCard,'closing setup restores the DSIoT panel to Settings');
   assert.equal(modal.hidden,true);
 }
 
@@ -500,6 +504,22 @@ console.log('devices step helpers ok');
   ctx.wfRacCommit=async id=>events.push(['wf-rac',id]);
   await A.wzSavePump(false);
   assert.deepEqual(events,[['wf-rac',44],{pump_adapter:'mhi_wf_rac_lan',setup_step:'5'}]);
+  events.length=0;
+  await A.wzSavePump(true);
+  assert.deepEqual(events,[{setup_step:'5'}]);
+  events.length=0;
+  A.WZ.adapter='daikin_dsiot';
+  ctx.dsiotBusy=false;ctx.dsiotDirty=false;
+  ctx.fetchJSON=async path=>{
+    assert.equal(path,'/api/daikin-dsiot/status?draft=true');
+    return {configured:true,fresh:false,draft_id:47};
+  };
+  await assert.rejects(A.wzSavePump(false),/DSIoT/);
+  assert.deepEqual(events,[]);
+  ctx.fetchJSON=async()=>({configured:true,fresh:true,draft_id:47});
+  ctx.dsiotCommit=async id=>events.push(['dsiot',id]);
+  await A.wzSavePump(false);
+  assert.deepEqual(events,[['dsiot',47],{pump_adapter:'daikin_dsiot',setup_step:'5'}]);
   events.length=0;
   await A.wzSavePump(true);
   assert.deepEqual(events,[{setup_step:'5'}]);

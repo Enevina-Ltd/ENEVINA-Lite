@@ -34,6 +34,8 @@ The local HTTP adapter is independently authored C++. The references supplied wi
 
 WF-RAC framing follows the MIT-licensed [Mitsubishi-WF-RAC-Integration reference](https://github.com/blues-sechseck/Mitsubishi-WF-RAC-Integration/tree/4acf985ccc8ce2859c7322ccbfa6ff4bbe818174). The native C++ temperature conversion tables were adapted from [pywfrac at 39a5568](https://github.com/blues-sechseck/pywfrac/tree/39a5568901ed6897ba1045ab2b0453d7bc8c53e0). Preserve [the MIT notice](third_party/pywfrac/LICENSE) when distributing those tables. Lite uses its own C++ framing and has no Python, Home Assistant or cloud dependency for this adapter.
 
+Daikin DSIoT uses an original C++ implementation of the message format described by [Hubitat-Daikin-BRP084 at 0712ecb](https://github.com/Mclass294/Hubitat-Daikin-BRP084/tree/0712ecb567608c9c6298f73f96904276f2bd2ce5) under Apache-2.0 and [pydaikin at 3c88d3f](https://github.com/fredrike/pydaikin/tree/3c88d3fe1ccd64e94c7d54ce52643f2c44cf6058) under GPL-3.0. No Groovy or GPL source files are included or linked.
+
 ## Mandatory release checks
 
 1. Build each supported firmware variant reproducibly from the pinned toolchain and record exact framework, component, library and bootloader versions and SHA-256 of deliverables.
