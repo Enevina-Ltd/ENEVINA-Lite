@@ -26,6 +26,22 @@ vm.createContext(ctx);
 vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,wzSavePump,wzFinish,roomTempFields,saveRoomTemp,WZ};',ctx);
 const A=ctx.api;
 
+{
+  const loadPart=(name,next)=>src.slice(src.indexOf('function '+name+'('),src.indexOf(next,src.indexOf('function '+name+'(')));
+  const modal={hidden:false};
+  const panel={parentElement:modal};
+  const card={prepend(node){node.parentElement=this;}};
+  const elements={'wf-rac-connection':panel,'wf-rac-card':card,wizard:modal};
+  const noop=()=>{};
+  const env={WZ:{open:true},wzStopPolling:noop,wzUpdateMideaPolling:noop,wzRestoreMideaPanel:noop,
+    wzRestoreMideaPilot:noop,wzRestoreGreePanel:noop,wzRestoreDaikinPanel:noop,
+    document:{getElementById:id=>elements[id],body:{classList:{remove:noop}}}};
+  vm.runInNewContext(loadPart('wzRestoreWfRacPanel','function wzRestoreDaikinPanel(')+
+    loadPart('wzClose','async function wzOpen(')+'wzClose()',env);
+  assert.equal(panel.parentElement,card,'closing setup restores the WF-RAC panel to Settings');
+  assert.equal(modal.hidden,true);
+}
+
 // coordinates: dot decimals only, ranges enforced, canonical 4 decimals
 assert.equal(A.wzParseLatLon('61.4638, 24.0760'),'61.4638,24.0760');
 assert.equal(A.wzParseLatLon('-33.8688;151.2093'),'-33.8688,151.2093');

@@ -1491,7 +1491,19 @@ async function wzNext(skip){
   }catch(e){wzSay(e.message,true);}
   finally{WZ.busy=false;document.getElementById('wz-next').disabled=false;}
 }
-function wzClose(){WZ.open=false;wzStopPolling();wzUpdateMideaPolling();wzRestoreMideaPanel(true);wzRestoreMideaPilot();wzRestoreGreePanel();wzRestoreDaikinPanel();const w=document.getElementById('wizard');if(w)w.hidden=true;document.body.classList.remove('wz-open');}
+function wzClose(){
+  WZ.open=false;
+  wzStopPolling();
+  wzUpdateMideaPolling();
+  wzRestoreMideaPanel(true);
+  wzRestoreMideaPilot();
+  wzRestoreGreePanel();
+  wzRestoreDaikinPanel();
+  wzRestoreWfRacPanel();
+  const w=document.getElementById('wizard');
+  if(w)w.hidden=true;
+  document.body.classList.remove('wz-open');
+}
 async function wzOpen(fromSettings){
   const w=document.getElementById('wizard');if(!w)return;
   try{await wzLoadRegions();}catch(e){
