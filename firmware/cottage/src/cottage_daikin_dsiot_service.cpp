@@ -146,7 +146,9 @@ void status(WebServer& web) {
     if(!root) {web.send(503,"application/json","{}");return;}
     const bool current=fresh(sample);
     cJSON_AddBoolToObject(root,"configured",configured(config));
+    // This age describes the module's HTTP response. Its indoor state may be cached.
     cJSON_AddBoolToObject(root,"fresh",current);
+    cJSON_AddBoolToObject(root,"pump_side_fresh",false);
     cJSON_AddBoolToObject(root,"busy",busy);
     if(staged)cJSON_AddNumberToObject(root,"draft_id",id);
     cJSON_AddStringToObject(root,"result",result);
@@ -266,14 +268,12 @@ enevina::PumpRoomState cottage_daikin_dsiot_room_state() {
     result.configuration_generation=state.revision;
     xSemaphoreGive(gate);
     if(!fresh(snapshot))return result;
-    result.source=PumpStateSource::DirectLan;
+    // Successful DSIoT requests can return the adapter's cached indoor values.
+    // Retain them in the module's status endpoint, separate from control evidence.
+    result.source=PumpStateSource::Gateway;
     result.protocol=PumpRoomProtocol::DaikinDsiot;
     result.type=HeatPumpType::AirToAir;
     result.endpoint_generation=snapshot.link.endpoint;result.link_generation=snapshot.link.wifi;
-    result.mode=heating_mode(snapshot.reading);
-    if(snapshot.reading.target_c)result.setpoint_c=*snapshot.reading.target_c;
-    if(snapshot.reading.indoor_c)result.indoor_c=*snapshot.reading.indoor_c;
-    if(snapshot.reading.outdoor_c)result.outdoor_c=*snapshot.reading.outdoor_c;
     if(snapshot.received_utc>=1700000000)result.evidence={snapshot.received_utc,0,false};
     return result;
 }

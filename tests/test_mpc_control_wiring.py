@@ -42,6 +42,15 @@ class MpcControlWiring(unittest.TestCase):
             self.assertIn("if(direct_lan_pump_selected())", body)
             self.assertIn("optimizer_pump_state(now,midea)", body)
 
+    def test_dsiot_cached_module_status_is_display_only(self):
+        source = (ROOT / "firmware/cottage/src/cottage_daikin_dsiot_service.cpp").read_text(encoding="utf-8")
+        state = source.split("cottage_daikin_dsiot_room_state() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("PumpStateSource::Gateway", state)
+        self.assertNotIn("PumpStateSource::DirectLan", state)
+        self.assertNotIn("result.indoor_c", state)
+        self.assertNotIn("result.mode", state)
+        self.assertIn('cJSON_AddBoolToObject(root,"pump_side_fresh",false)', source)
+
     def test_existing_gates_unchanged_and_before_any_command(self):
         # Other adapters cannot reach the CN105 writer.
         self.assertLess(TICK.index("if(!midea && !gree && !daikin && !wf_rac && !cn105_selected())"),
