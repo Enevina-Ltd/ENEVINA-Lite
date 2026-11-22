@@ -3,7 +3,7 @@
 #include <atomic>
 
 namespace enevina::cottage {
-enum class PumpUartOwner : uint8_t { None, MitsubishiCn105, DaikinS21 };
+enum class PumpUartOwner : uint8_t { None, MitsubishiCn105, DaikinS21, Haier };
 
 // A single worker owns UART1. Routes and control policy read the session epoch
 // so changing the serial protocol invalidates outstanding work immediately.

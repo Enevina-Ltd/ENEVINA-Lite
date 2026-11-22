@@ -40,6 +40,10 @@ The direct Mitsubishi Electric CN105 driver uses its own codec based on the [ESP
 
 The Daikin S21 codec implements the published protocol facts independently. References are [esphome-daikin-s21 at 1ff4298](https://github.com/asund/esphome-daikin-s21/tree/1ff429896af20b477903818a515ad2ee25a26e6e) and [ESP32-Faikout at 12b13cc](https://codeberg.org/RevK/ESP32-Faikout/src/commit/12b13cc403872c17d9cf00e53b83558a5ec9a81b), both GPL-3.0. No upstream source files or ESPHome runtime are included or linked for this adapter.
 
+## Haier direct UART references
+
+The native Haier codec implements the protocol facts described by [HaierProtocol at d3334a1](https://github.com/paveldn/HaierProtocol/tree/d3334a1be24da142dd7fb68c6d2abfd628bfaded) (MIT) and [ESPHome Haier at 1feda1b](https://github.com/esphome/esphome/tree/1feda1bcaa861a5f2e933f2c65d599e44f4b132b/esphome/components/haier) (GPL-3.0). No upstream source files or ESPHome runtime are linked.
+
 ## Mandatory release checks
 
 1. Build each supported firmware variant reproducibly from the pinned toolchain and record exact framework, component, library and bootloader versions and SHA-256 of deliverables.

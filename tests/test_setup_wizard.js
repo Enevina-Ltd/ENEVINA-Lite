@@ -34,7 +34,8 @@ const A=ctx.api;
   const dsiotCard={prepend(node){node.parentElement=this;}};
   const cn105Card={prepend(node){node.parentElement=this;}};
   const s21Panel={parentElement:modal},s21Card={prepend(node){node.parentElement=this;}};
-  const elements={'wf-rac-connection':panel,'wf-rac-card':card,wizard:modal,
+  const haierPanel={parentElement:modal},haierCard={prepend(node){node.parentElement=this;}};
+  const elements={'haier-connection':haierPanel,'haier-card':haierCard,'wf-rac-connection':panel,'wf-rac-card':card,wizard:modal,
     'daikin-dsiot-connection':dsiotPanel,'daikin-dsiot-card':dsiotCard,
     'cn105-direct-connection':cn105Panel,'cn105-direct-card':cn105Card,
     'daikin-s21-connection':s21Panel,'daikin-s21-card':s21Card};
@@ -49,6 +50,7 @@ const A=ctx.api;
   assert.equal(dsiotPanel.parentElement,dsiotCard,'closing setup restores the DSIoT panel to Settings');
   assert.equal(cn105Panel.parentElement,cn105Card,'closing setup restores the direct CN105 panel to Settings');
   assert.equal(s21Panel.parentElement,s21Card,'closing setup restores the S21 panel to Settings');
+  assert.equal(haierPanel.parentElement,haierCard,'closing setup restores the Haier panel to Settings');
   assert.equal(modal.hidden,true);
 }
 
@@ -558,6 +560,19 @@ console.log('devices step helpers ok');
   ctx.daikinS21Commit=async id=>events.push(['s21',id]);
   await A.wzSavePump(false);
   assert.deepEqual(events,[['s21',55],{pump_adapter:'daikin_s21',setup_step:'5'}]);
+
+  events.length=0;
+  A.WZ.adapter='haier_uart';
+  ctx.haierBusy=false;
+  ctx.fetchJSON=async path=>{
+    assert.equal(path,'/api/haier/status?draft=true');
+    return {configured:true,fresh:false};
+  };
+  await assert.rejects(A.wzSavePump(false),/Haier/);
+  ctx.fetchJSON=async()=>({configured:true,fresh:true,draft_id:66,protocol:'SmartAir2'});
+  ctx.haierCommit=async id=>events.push(['haier',id]);
+  await A.wzSavePump(false);
+  assert.deepEqual(events,[['haier',66],{pump_adapter:'haier_uart',setup_step:'5'}]);
   events.length=0;
   await A.wzSavePump(true);
   assert.deepEqual(events,[{setup_step:'5'}]);

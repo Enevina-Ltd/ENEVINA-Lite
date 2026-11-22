@@ -12,7 +12,8 @@ struct S21Wire {
     using Settings=wire::Climate;
     using Patch=wire::Patch;
     static constexpr auto owner=PumpUartOwner::DaikinS21;
-    static constexpr auto protocol=PumpRoomProtocol::DaikinS21;
+    static auto protocol(const Settings&) {return PumpRoomProtocol::DaikinS21;}
+    static const char* protocol_label(const Settings&) {return "S21";}
     static constexpr uint32_t format=SERIAL_8E2;
     static constexpr const char* adapter_id="daikin_s21";
     static constexpr const char* api_root="/api/daikin-s21";
