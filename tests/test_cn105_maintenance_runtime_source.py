@@ -15,17 +15,16 @@ class CN105Maintenance(unittest.TestCase):
         self.assertIn("valid_temperature(sample,now)",earlier)
         self.assertIn("proposal.action==BootstrapAction::Unavailable",earlier)
         later=body[body.index(marker):]
-        self.assertIn("cn105_bridge_get(observed_heat,observed_setpoint)",later)
-        self.assertIn("control_note_observed_mode(observed_heat)",later)
         self.assertIn("ControlBlock::NoProposal",later)
-        # HOLD is read-only/NoProposal. Actionable requests now use
-        # cn105_room_state(), which requires a fresh bridge GET.
+        self.assertIn("cn105_room_state()",earlier)
+        # HOLD is read-only/NoProposal. Actionable requests require the
+        # bridge GET above to have succeeded on the current connection.
         self.assertLess(later.index("ControlBlock::NoProposal"),
-                        later.index("const auto current=cn105_room_state();"))
-        self.assertIn("if(current.source!=enevina::PumpStateSource::Gateway)",later)
+                        later.index("if(bridge.source!=enevina::PumpStateSource::Gateway"))
         room=SRC.split("static enevina::PumpRoomState cn105_room_state() {",1)[1].split(
             "void cottage_midea_automatic_cancel()",1)[0]
         self.assertIn("if(!cn105_bridge_get(heat,setpoint)",room)
+        self.assertIn("control_note_observed_mode(heat,{endpoint,link});",room)
         self.assertIn("PumpStateSource::Gateway",room)
         self.assertIn("ControlBlock::InputsUnverified",later)
         self.assertIn("choose_mitsubishi_control(candidate)",later)

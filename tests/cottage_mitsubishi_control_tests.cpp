@@ -35,6 +35,52 @@ static void shared_gate_respects_driver_limits_and_dwell() {
 
 int main() {
     shared_gate_respects_driver_limits_and_dwell();
+    {
+        constexpr uint32_t minute=60u*1000u;
+        auto start=base();
+        BootstrapInput room{};
+        room.indoor_fresh=true;
+        room.indoor_c=7.2;
+        room.desired_room_c=12;
+        start.proposal=bootstrap_price_decision(room);
+        assert(start.proposal.reason==BootstrapReason::ThermostatWithoutPrices);
+        assert(start.proposal.heat_setpoint_c==16.0);
+        start.current_setpoint_c=16.0;
+        MitsubishiModeHistory bridge;
+        bridge.observe_bridge(false,minute);
+        start.ms_since_mode_change=bridge.since_change(minute);
+        assert(choose_mitsubishi_control(start).step==ControlStep::SetHeat);
+
+        bridge.command_dispatched(2*minute);
+        // The first readback may still show OFF. Turning automation back on
+        // cannot erase an attempted write or allow a duplicate HEAT.
+        bridge.observe_bridge(false,3*minute);
+        start.ms_since_mode_change=bridge.since_change(3*minute);
+        assert(choose_mitsubishi_control(start).gate==ControlBlock::ModeDwell);
+        bridge.observe_bridge(true,4*minute);
+        bridge.observe_bridge(false,5*minute);
+        start.ms_since_mode_change=bridge.since_change(6*minute);
+        assert(choose_mitsubishi_control(start).gate==ControlBlock::ModeDwell);
+
+        MitsubishiModeHistory running;
+        running.observe_bridge(true,minute);
+        auto stop=start;
+        stop.current_heat=true;
+        stop.proposal.action=BootstrapAction::Off;
+        stop.ms_since_mode_change=running.since_change(minute);
+        assert(choose_mitsubishi_control(stop).gate==ControlBlock::ModeDwell);
+
+        // A read gap or endpoint change is different from arming.
+        MitsubishiModeHistory disconnected;
+        disconnected.observe_bridge(false,minute);
+        disconnected.observe_bridge(false,8*minute);
+        start.ms_since_mode_change=disconnected.since_change(8*minute);
+        assert(choose_mitsubishi_control(start).gate==ControlBlock::ModeDwell);
+        disconnected.reset(9*minute);
+        disconnected.observe_bridge(false,9*minute);
+        start.ms_since_mode_change=disconnected.since_change(9*minute);
+        assert(choose_mitsubishi_control(start).gate==ControlBlock::ModeDwell);
+    }
     auto s=base();
     assert(choose_mitsubishi_control(s).step==ControlStep::Setpoint);
     s.armed=false;

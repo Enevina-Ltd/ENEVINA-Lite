@@ -142,37 +142,25 @@ static std::atomic<uint32_t> control_armed_cn105_direct_revision{0},control_arme
 static std::atomic<uint32_t> control_armed_s21_revision{0},control_armed_s21_bus{0};
 static std::atomic<uint32_t> control_armed_haier_revision{0},control_armed_haier_bus{0};
 static std::atomic<uint32_t> control_armed_panasonic_revision{0},control_armed_panasonic_bus{0};
-// Owner decision 18.11.2026: >= 30 min between HEAT<->OFF changes. Last change
-// = last mode command sent, last change observed via bridge GET, boot or
-// arming (unknown history -> wait). millis()-based, survives NTP jumps.
-// Boot = unknown history (dwell starts at millis()==0). Shared by the web
-// task (arming) and the optimizer task, serialized by mode_history_lock.
+// 30 min between HEAT/OFF commands and observed changes. Arming does not
+// change pump mode. Track bridge observations even while disarmed.
+// Owned by the optimizer task after setup restores the saved authorization.
 static MitsubishiModeHistory control_mode_history{};
-static portMUX_TYPE mode_history_lock=portMUX_INITIALIZER_UNLOCKED;
-static void control_note_observed_mode(bool heating) {
+static uint32_t control_mode_history_endpoint=0;
+static void control_note_observed_mode(bool heating,Cn105LinkIdentity link) {
+    if(!link.current())return;
     const uint32_t now=millis();
-    portENTER_CRITICAL(&mode_history_lock);
-    control_mode_history.observe(heating,now);
-    portEXIT_CRITICAL(&mode_history_lock);
+    if(control_mode_history_endpoint!=link.endpoint) {
+        control_mode_history_endpoint=link.endpoint;
+        control_mode_history.reset(now);
+    }
+    control_mode_history.observe_bridge(heating,now);
 }
 static void control_note_mode_dispatch() {
-    const uint32_t now=millis();
-    portENTER_CRITICAL(&mode_history_lock);
-    control_mode_history.command_dispatched(now);
-    portEXIT_CRITICAL(&mode_history_lock);
-}
-static void control_reset_mode_history() {
-    const uint32_t now=millis();
-    portENTER_CRITICAL(&mode_history_lock);
-    control_mode_history.reset(now);
-    portEXIT_CRITICAL(&mode_history_lock);
+    control_mode_history.command_dispatched(millis());
 }
 static uint32_t control_ms_since_mode_change() {
-    const uint32_t now=millis();
-    portENTER_CRITICAL(&mode_history_lock);
-    const uint32_t since=control_mode_history.since_change(now);
-    portEXIT_CRITICAL(&mode_history_lock);
-    return since;
+    return control_mode_history.since_change(millis());
 }
 static std::atomic<int> control_gate{static_cast<int>(ControlBlock::Disabled)};
 static std::atomic<int> control_last_step{static_cast<int>(ControlStep::None)};
@@ -1036,6 +1024,7 @@ static enevina::PumpRoomState cn105_room_state() {
     double setpoint=0;
     if(!cn105_bridge_get(heat,setpoint) || endpoint!=site_settings_endpoint_generation() ||
        link!=cottage_wifi_link_generation())return state;
+    control_note_observed_mode(heat,{endpoint,link});
     state.type=HeatPumpType::AirToAir;
     state.protocol=PumpRoomProtocol::Cn105EspHome;
     state.endpoint_generation=endpoint;
@@ -1214,8 +1203,9 @@ bool cottage_panasonic_automatic_write_current(uint32_t authorization,uint32_t c
 }
 
 static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
-                              uint32_t config_generation,uint32_t site_generation,
-                              uint32_t link_generation,ControlStep step,double required_target,
+                              uint32_t authorization_generation,uint32_t config_generation,
+                              uint32_t site_generation,Cn105LinkIdentity link,
+                              ControlStep step,double required_target,
                               bool expected_heat,double expected_setpoint) {
     if(!cn105_selected())return false;
     control_post_stage.store(1);
@@ -1223,6 +1213,8 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     // A browser settings change (URL, tariff) supersedes an in-flight command
     // exactly like a mode change does; no new gate, same cancellation points.
     if(!command.valid || !control_armed.load() || !wifi_ok.load() ||
+       control_permission_generation.load()!=authorization_generation ||
+       cottage_ota_network_maintenance() || !link.current() ||
        control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
         control_post_stage.store(-1);return false;
     }
@@ -1242,10 +1234,13 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
         control_post_stage.store(-3);return false;
     }
     control_post_stage.store(3);
-    if(bridge_heat!=expected_heat || std::fabs(bridge_setpoint-expected_setpoint)>0.001) {
-        control_note_observed_mode(bridge_heat);
+    if(!link.current())return false;
+    control_note_observed_mode(bridge_heat,link);
+    if(bridge_heat!=expected_heat || std::fabs(bridge_setpoint-expected_setpoint)>0.001)
         return false;
-    }
+    const bool changes_mode=step==ControlStep::SetHeat || step==ControlStep::SetOff;
+    if(changes_mode && control_ms_since_mode_change()<mitsubishi_min_mode_dwell_ms)
+        return false;
     const auto latest=active_control_proposal(now,current_temp);
     if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
        (latest.action!=BootstrapAction::HeatSetpoint ||
@@ -1258,6 +1253,8 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     // Network-budget wait is another cancellation point. A user's updated
     // settings always supersede an in-flight automatic command.
     if(!control_armed.load() || !c23_config_storage_verified() ||
+       control_permission_generation.load()!=authorization_generation ||
+       cottage_ota_network_maintenance() || !link.current() ||
        c23_config_generation()!=config_generation ||
        site_settings_generation()!=site_generation ||
        !wifi_ok.load() || !clock_ok())return false;
@@ -1283,22 +1280,27 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     // Last cancellation point after all potentially blocking preparation.
     xSemaphoreTake(lock_data,portMAX_DELAY);
     const bool dispatch=control_armed.load() && c23_config_storage_verified() &&
+        control_permission_generation.load()==authorization_generation &&
+        wifi_ok.load() && clock_ok() && !cottage_ota_network_maintenance() &&
         c23_config_generation()==config_generation &&
         site_settings_generation()==site_generation &&
-        cn105_command_link.current() && cn105_command_link.wifi==link_generation &&
+        cn105_command_link.current() && cn105_command_link.wifi==link.wifi &&
         control_armed_endpoint.load()==cn105_command_link.endpoint;
-    if(dispatch)cn105_command_readback.sent={step,required_target,time(nullptr)};
+    if(dispatch) {
+        const int64_t sent_utc=time(nullptr);
+        cn105_command_readback.sent={step,required_target,sent_utc};
+        control_last_step.store(static_cast<int>(step));
+        control_last_command_utc.store(sent_utc);
+        control_commands_sent.fetch_add(1);
+        // A failed preparation must not start dwell. An uncertain POST
+        // response still counts because the pump may have changed mode.
+        if(changes_mode)control_note_mode_dispatch();
+    }
     xSemaphoreGive(lock_data);
     if(!dispatch) {
         req.end();
         return false;
     }
-    // Codex P2 (post-merge #28): start the dwell only when a mode POST is
-    // really dispatched (after every precondition); a failed preparation
-    // must not block the next attempt for 30 min. An uncertain response or
-    // failed readback still counts: the command may have taken effect.
-    if(step==ControlStep::SetHeat || step==ControlStep::SetOff)
-        control_note_mode_dispatch();
     const int code=req.POST("");
     control_post_http_code.store(code);
     control_post_stage.store(code>=200 && code<300?6:-6);
@@ -1396,6 +1398,10 @@ static void cottage_control_tick() {
         if(control_armed.load())cottage_control_disarm();
         return;
     }
+    // Use the existing optimizer tick for both read-only observations and
+    // preflight. Keep the same read cadence across arming and sensor gaps.
+    const auto bridge=cn105_selected() && wifi_ok.load() && clock_ok() &&
+        !cottage_ota_network_maintenance() ? cn105_room_state() : enevina::PumpRoomState{};
     if(!control_armed.load())return;
     const uint32_t authorization_generation=control_permission_generation.load();
     const uint32_t site_generation=site_settings_generation();
@@ -1496,17 +1502,13 @@ static void cottage_control_tick() {
         return;
     }
     // A HOLD proposal does not authorize any physical command. A failed
-    // *optional* bridge observation must not mislabel it as an unsafe    // heating command; still attempt a read to maintain the 30-min dwell
-    // history and avoid a stale observation gap at the next HEAT request.
+    // observation must not turn it into an input error.
     if(proposal.action==BootstrapAction::Hold) {
-        bool observed_heat=false;double observed_setpoint=0;
-        if(cn105_bridge_get(observed_heat,observed_setpoint))
-            control_note_observed_mode(observed_heat);
         control_gate.store(static_cast<int>(ControlBlock::NoProposal));
         return;
     }
-    const auto current=cn105_room_state();
-    if(current.source!=enevina::PumpStateSource::Gateway) {
+    const Cn105LinkIdentity link{bridge.endpoint_generation,bridge.link_generation};
+    if(bridge.source!=enevina::PumpStateSource::Gateway || !link.current()) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
     }
@@ -1521,10 +1523,9 @@ static void cottage_control_tick() {
     }
     candidate.cn105_link_fresh=true; // direct bridge GET above succeeded
     candidate.bridge_get_ok=true; // separate live ESPHome GET succeeded
-    const bool current_heat=current.mode==enevina::PumpRoomMode::Heat;
+    const bool current_heat=bridge.mode==enevina::PumpRoomMode::Heat;
     candidate.current_heat=current_heat;
-    candidate.current_setpoint_c=current.setpoint_c;
-    control_note_observed_mode(current_heat);
+    candidate.current_setpoint_c=bridge.setpoint_c;
     candidate.ms_since_mode_change=control_ms_since_mode_change();
     const auto decision=choose_mitsubishi_control(candidate);
     control_gate.store(static_cast<int>(decision.gate));
@@ -1545,16 +1546,11 @@ static void cottage_control_tick() {
     if(!request.valid || !control_armed.load())return;
     xSemaphoreTake(lock_data,portMAX_DELAY);
     if(!cn105_command_link.current())cn105_command_readback={};
-    cn105_command_link={current.endpoint_generation,current.link_generation};
+    cn105_command_link=link;
     cn105_command_readback.requested={decision.step,decision.target_c,now};
     xSemaphoreGive(lock_data);
-    control_last_step.store(static_cast<int>(decision.step));
-    control_last_command_utc.store(now);
-    control_commands_sent.fetch_add(1);
-    const uint32_t link_generation=current.link_generation;
-    const bool sent=link_generation==cottage_wifi_link_generation() &&
-        cn105_bridge_post(request,config_generation,site_generation,link_generation,decision.step,
-                         decision.target_c,current_heat,current.setpoint_c);
+    const bool sent=cn105_bridge_post(request,authorization_generation,config_generation,
+        site_generation,link,decision.step,decision.target_c,current_heat,bridge.setpoint_c);
     // ESPHome may acknowledge the POST before updating its REST state.
     // Confirm only what the bridge GET reports, never claim UART proof.
     bool confirmed=false;
@@ -1566,13 +1562,13 @@ static void cottage_control_tick() {
             bool read_heating=false;
             double read_setpoint=0;
             if(!cn105_bridge_get(read_heating,read_setpoint))continue;
-            if(site_settings_generation()!=site_generation ||
-               cottage_wifi_link_generation()!=link_generation)break;
-            control_note_observed_mode(read_heating);
+            if(site_settings_generation()!=site_generation || !link.current())break;
+            control_note_observed_mode(read_heating,link);
             last_heating=read_heating;last_setpoint=read_setpoint;
             confirmed=decision.step==ControlStep::Setpoint ?
                 std::fabs(read_setpoint-decision.target_c)<=0.001 :
-                decision.step==ControlStep::SetHeat ? read_heating :
+                decision.step==ControlStep::SetHeat ?
+                read_heating && std::fabs(read_setpoint-decision.target_c)<=0.001 :
                 !read_heating;
             if(confirmed)break;
         }
@@ -1635,7 +1631,10 @@ static void cottage_control_registration() {
         prefs.end();
     }
     control_armed_endpoint.store(site_settings_endpoint_generation());
-    control_reset_mode_history();
+    control_mode_history_endpoint=site_settings_endpoint_generation();
+    // A previously armed image might have sent a mode command just before
+    // restarting. Its RAM history is gone, so keep the conservative dwell.
+    if(restore)control_mode_history.reset(millis());
     if(must_revoke && !cottage_control_revoke_saved_intent())
         Serial.println("CONTROL_WARN: stale authorization revoke failed");
     control_armed.store(restore && !must_revoke);
@@ -1732,19 +1731,21 @@ static void cottage_control_registration() {
             web.send(200,"application/json","{\"saved\":true}");
             return;
         }
+        // Honor a stop immediately, even if NVS cannot save it for reboot.
+        if(!requested) {
+            control_armed.store(false);
+            control_permission_generation.fetch_add(1);
+        }
         const auto record=control_intent_for(
             site_settings_snapshot(),requested && allowed,digest);
         // Exact pump/adapter AND signed/USB image identity together.
         // Reclaim only re-fetchable forecast/price caches on an explicitly
         // authorized user request when durable NVS authorization cannot fit.
         const bool stored=allowed && control_save_user_arm(record);
-        if(stored) {
+        if(stored && requested) {
             control_armed_endpoint.store(site_settings_endpoint_generation());
-            // Arming starts the dwell window: mode history while disarmed
-            // is unknown (manual remote changes are not observed).
-            control_reset_mode_history();
             control_permission_generation.fetch_add(1);
-            control_armed.store(requested);
+            control_armed.store(true);
         }
         web.send(stored?200:500,"application/json",
             stored?"{\"saved\":true}":"{\"saved\":false}");

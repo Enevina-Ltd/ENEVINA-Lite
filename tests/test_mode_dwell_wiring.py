@@ -17,7 +17,7 @@ POST = MAIN.split("static bool cn105_bridge_post(", 1)[1].split(
 class ModeDwellWiring(unittest.TestCase):
     def test_snapshot_gets_time_since_last_mode_change(self):
         self.assertIn("candidate.ms_since_mode_change=", TICK)
-        self.assertLess(TICK.index("control_note_observed_mode(current_heat);"),
+        self.assertLess(TICK.index("cn105_room_state()"),
                         TICK.index("choose_mitsubishi_control(candidate)"))
 
     def test_dwell_starts_at_actual_dispatch(self):
@@ -29,16 +29,28 @@ class ModeDwellWiring(unittest.TestCase):
         self.assertGreater(start, POST.rindex("c23_config_generation()!=config_generation", 0,
                                               POST.index('req.POST("")')))
 
-    def test_readback_and_arming_update_history(self):
-        self.assertIn("control_note_observed_mode(read_heating);", TICK)
-        arm = MAIN.split('web.on("/api/control/arm"', 1)[1].split('control_save_user_arm(record)',1)[1]
-        self.assertLess(arm.index("control_reset_mode_history();"),
-                        arm.index("control_armed.store(requested)"))
+    def test_history_is_observed_even_when_disarmed_without_resetting_on_arm(self):
+        self.assertLess(TICK.index("cn105_room_state()"),
+                        TICK.index("if(!control_armed.load())return;"))
+        arm = MAIN.split('web.on("/api/control/arm"', 1)[1].split(
+            "static uint64_t cottage_now_ms",1)[0]
+        self.assertNotIn("control_reset_mode_history", arm)
+        self.assertIn("control_note_observed_mode(read_heating,", TICK)
 
-    def test_history_is_shared_class_with_lock(self):
+    def test_post_requires_current_authorization_and_no_ota_maintenance(self):
+        last_check = POST.split("const bool dispatch=", 1)[1].split("if(dispatch)", 1)[0]
+        self.assertIn("control_permission_generation.load()==authorization_generation", last_check)
+        self.assertIn("!cottage_ota_network_maintenance()", last_check)
+        self.assertIn("wifi_ok.load() && clock_ok()", last_check)
+        self.assertNotIn("control_commands_sent.fetch_add(1)", TICK)
+        self.assertLess(POST.index("control_commands_sent.fetch_add(1)"),
+                        POST.index('req.POST("")'))
+
+    def test_history_is_owned_by_the_optimizer_after_setup(self):
         self.assertIn("static MitsubishiModeHistory control_mode_history{};", MAIN)
         self.assertIn("candidate.ms_since_mode_change=control_ms_since_mode_change();", TICK)
-        self.assertIn("portENTER_CRITICAL(&mode_history_lock);", MAIN)
+        self.assertLess(MAIN.index("cottage_control_registration();"),
+                        MAIN.index("xTaskCreatePinnedToCore(optimizer_worker"))
 
 
 if __name__ == "__main__":

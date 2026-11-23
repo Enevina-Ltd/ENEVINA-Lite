@@ -26,8 +26,17 @@ class NvsRearm(unittest.TestCase):
     self.assertIn("control_arm_nvs_last_error.store(last_write_error);",SRC)
  def test_fail_closed_and_operational_counters(self):
     self.assertIn("const bool stored=allowed && control_save_user_arm(record);",SRC)
-    self.assertIn("if(stored) {",SRC)
-    self.assertIn("control_armed.store(requested);",SRC)
+    arm=SRC.split("const bool stored=allowed && control_save_user_arm(record);",1)[1]
+    self.assertIn("if(stored && requested) {",arm)
+    self.assertIn("control_armed.store(true);",arm)
     for marker in ('"control_arm_nvs_reclaimed"','"control_arm_nvs_save_failures"','"control_arm_nvs_last_error"'):
      self.assertIn(marker,SRC)
+ def test_requested_disarm_blocks_writes_before_nvs_commit(self):
+    arm=SRC.split('const auto record=control_intent_for(\n            site_settings_snapshot(),requested',1)
+    self.assertEqual(len(arm),2)
+    before_save=arm[0].rsplit('web.on("/api/control/arm"',1)[1]
+    self.assertIn('if(!requested) {',before_save)
+    last_disarm=before_save.split('if(!requested) {',1)[1]
+    self.assertIn('control_armed.store(false);',last_disarm)
+    self.assertIn('control_permission_generation.fetch_add(1);',last_disarm)
 if __name__=="__main__":unittest.main()
