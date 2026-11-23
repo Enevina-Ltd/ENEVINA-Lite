@@ -90,6 +90,9 @@ add_test(NAME cottage_bin_tests COMMAND cottage_bin_tests)
 add_executable(cottage_cn105_source_proof_tests tests/cottage_cn105_source_proof_tests.cpp)
 target_link_libraries(cottage_cn105_source_proof_tests PRIVATE enevina_cottage)
 add_test(NAME cottage_cn105_source_proof_tests COMMAND cottage_cn105_source_proof_tests)
+add_executable(cn105_bridge_poll_tests tests/cn105_bridge_poll_tests.cpp)
+target_include_directories(cn105_bridge_poll_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME cn105_bridge_poll_tests COMMAND cn105_bridge_poll_tests)
 
 # Confirmed HEAT/OFF dwell age from the CN105 stream, reset on loss.
 add_executable(cottage_mode_timing_tests tests/cottage_mode_timing_tests.cpp)

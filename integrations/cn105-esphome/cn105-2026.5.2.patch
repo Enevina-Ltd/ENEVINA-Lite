@@ -1,0 +1,58 @@
+diff --git a/components/cn105/climate.py b/components/cn105/climate.py
+index eabaed4..4995d19 100644
+--- a/components/cn105/climate.py
++++ b/components/cn105/climate.py
+@@ -91,0 +92 @@ CONF_FUNCTIONS_SENSOR = "functions_sensor"
++CONF_ENEVINA_SNAPSHOT_SENSOR = "enevina_verified_snapshot"
+@@ -394,0 +396,6 @@ CONFIG_SCHEMA = (
++            cv.Optional(CONF_ENEVINA_SNAPSHOT_SENSOR): cv.All(
++                cv.only_on_esp32,
++                text_sensor.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC).extend({
++                    cv.Required(CONF_NAME): cv.one_of("Enevina CN105 Verified Snapshot"),
++                }),
++            ),
+@@ -641,0 +649,4 @@ def to_code(config):
++    if CONF_ENEVINA_SNAPSHOT_SENSOR in config:
++        snapshot = yield text_sensor.new_text_sensor(config[CONF_ENEVINA_SNAPSHOT_SENSOR])
++        cg.add(var.set_enevina_snapshot_sensor(snapshot))
++
+diff --git a/components/cn105/cn105.cpp b/components/cn105/cn105.cpp
+index 226e4ba..d3de242 100644
+--- a/components/cn105/cn105.cpp
++++ b/components/cn105/cn105.cpp
+@@ -378,0 +379 @@ void CN105Climate::setHeatpumpConnected(bool state) {
++    this->invalidate_enevina_snapshot_(false);
+diff --git a/components/cn105/cn105.h b/components/cn105/cn105.h
+index e34205b..a32631f 100644
+--- a/components/cn105/cn105.h
++++ b/components/cn105/cn105.h
+@@ -4,0 +5 @@
++#include "enevina_verified_poll.h"
+@@ -99,0 +101,3 @@ namespace esphome {
++        void set_enevina_snapshot_sensor(text_sensor::TextSensor* sensor) {
++            enevina_snapshot_sensor_=sensor;
++        }
+@@ -303,0 +308,9 @@ namespace esphome {
++        void begin_enevina_read_cycle_();
++        void observe_enevina_tx_(const uint8_t* packet,int length);
++        void observe_enevina_rx_();
++        void invalidate_enevina_snapshot_(bool connected);
++        void publish_enevina_snapshot_(bool connected,bool complete);
++        enevina_cn105::VerifiedPoll enevina_poll_;
++        text_sensor::TextSensor* enevina_snapshot_sensor_=nullptr;
++        bool enevina_snapshot_published_=false;
++        bool enevina_epoch_attempted_=false;
+diff --git a/components/cn105/hp_readings.cpp b/components/cn105/hp_readings.cpp
+index 917d039..be84fb2 100644
+--- a/components/cn105/hp_readings.cpp
++++ b/components/cn105/hp_readings.cpp
+@@ -50,0 +51 @@ void CN105Climate::processDataPacket() {
++    this->observe_enevina_rx_();
+diff --git a/components/cn105/hp_writings.cpp b/components/cn105/hp_writings.cpp
+index b15901f..59baf4f 100644
+--- a/components/cn105/hp_writings.cpp
++++ b/components/cn105/hp_writings.cpp
+@@ -101,0 +102 @@ void CN105Climate::writePacket(uint8_t* packet, int length, bool checkIsActive)
++        this->observe_enevina_tx_(packet,length);
+@@ -450,0 +452 @@ void CN105Climate::buildAndSendRequestsInfoPackets() {
++        this->begin_enevina_read_cycle_();
