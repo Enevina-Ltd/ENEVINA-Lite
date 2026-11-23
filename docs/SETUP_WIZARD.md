@@ -36,8 +36,11 @@ and operating-mode changes below have Node and firmware-build evidence.
 Legacy installations without an explicitly saved temperature source default to RuuviTag for backward compatibility; a new setup without an indoor RuuviTag proposes the pump source. Both sources can always be chosen manually. RuuviTag supplies humidity data for drying mode but is **not required** for ordinary heating or price optimization. The heat
 pump choice uses a fresh Midea V2/V3 0xAC LAN reading or a source-verified
 CN105 UART observation from the current bridge. A receipt timestamp from an
-ordinary CN105 SSE snapshot does not verify a UART read. If the chosen source
-stops reporting, ordinary automatic heating waits for a fresh reading.
+ordinary CN105 SSE snapshot does not verify a UART read.
+
+The configured Hold (Ylläpito) or Occupied (Asuttu) target is available without any RuuviTag reading. Actual automatic commands still require a fresh selected indoor temperature, whether reported by the pump or by RuuviTag. Missing Ruuvi humidity may leave a separate advisory unavailable, but cannot remove the owner's normal heating target. Drying (Kuivanapito) retains its humidity requirement and must not be activated by pump temperature alone.
+
+If the chosen source stops reporting, ordinary automatic heating waits for a fresh reading.
 Manual pump controls remain available under the pump's own requirements.
 
 The correction applies to the room temperature used for control and to
