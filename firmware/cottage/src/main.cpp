@@ -259,6 +259,16 @@ static void* json_alloc_psram(size_t n) {
     return heap_caps_malloc(n,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
 }
 static void json_free_psram(void* p) {heap_caps_free(p);}
+// Only the selected driver should reserve a task stack. This is especially
+// important on N16R8: an unrelated CN105 SSE reader and an unconfigured
+// Shelly reader together use >13 KiB of scarce internal memory.
+static bool cn105_reader_needed(const enevina::cottage::SiteSettings& site) {
+    return std::strcmp(site.pump_adapter,"mitsubishi_cn105_esphome")==0 &&
+        enevina::cottage::valid_cn105_events_url(site.cn105_url);
+}
+static bool shelly_reader_needed(const enevina::cottage::SiteSettings& site) {
+    return enevina::cottage::valid_shelly_base_url(site.shelly_url);
+}
 // A/B OTA boot verification: no new image is confirmed immediately merely
 // because the bootloader reached setup(). With an ESP-IDF rollback-capable
 // bootloader, a boot failure or reset before confirmation falls back safely.
@@ -287,6 +297,13 @@ static void verify_new_ota_boot() {
     }
 #endif
     if(elapsed<60000) return; // allow BLE, WebServer, RTOS to settle
+    // A driver that is not configured is intentionally absent, not a failed
+    // boot check. Conversely, a configured optional reader must exist before
+    // accepting a signed image so OTA cannot skip required functionality.
+    const auto selected_site=site_settings_snapshot();
+    const bool readers_ready=
+        (!cn105_reader_needed(selected_site) || task_sse!=nullptr) &&
+        (!shelly_reader_needed(selected_site) || task_shelly!=nullptr);
     // Never confirm a candidate that cannot receive the next signed OTA.
     const bool healthy=cottage_ota_configured() &&
         boot_ui_started && wifi_ok.load() &&
@@ -294,8 +311,7 @@ static void verify_new_ota_boot() {
         ESP.getPsramSize()>=7*1024*1024 &&
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>=64*1024 &&
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>=16*1024 &&
-        task_sse!=nullptr && task_shelly!=nullptr &&
-        task_optimizer!=nullptr && task_ota!=nullptr;
+        readers_ready && task_optimizer!=nullptr && task_ota!=nullptr;
     if(healthy) {
         // Power loss can occur after bootloader VALID and before NVS good.
         // Retry the same durable NVS transaction on both PENDING and VALID
@@ -3311,10 +3327,8 @@ void setup() {
     enevina_firmware::history_initialize();   // PSRAM ring + dedicated history partition
     enevina_firmware::start_market_reader();
     enevina_firmware::start_weather_reader(site_settings_snapshot().fmi_latlon);
-    xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",8192,nullptr,2,&task_sse,0);
-    // Lazily start the Midea polling task after a Midea is actually selected.
-    // A CN105 controller must not reserve a second pump driver's stack.
-    xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",5120,nullptr,2,&task_shelly,0);
+    // CN105 and Shelly workers start on demand (like Midea/LAN drivers).
+    // A Midea-only device without a meter must not reserve their stacks.
     xTaskCreatePinnedToCore(history_worker,"cottage_hist",6144,nullptr,1,&task_history,0);
     // BLE already running. CN105 writes are gated by explicit local arming.
     xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
@@ -3349,6 +3363,15 @@ void loop() {
     static uint32_t last_midea_check_ms=0;
     if(static_cast<uint32_t>(millis()-last_midea_check_ms)>=2000) {
         last_midea_check_ms=millis();
+        const auto selected_site=site_settings_snapshot();
+        if(!task_sse && cn105_reader_needed(selected_site) &&
+           xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",
+                                   8192,nullptr,2,&task_sse,0)!=pdPASS)
+            Serial.println("CN105_READER: insufficient memory");
+        if(!task_shelly && shelly_reader_needed(selected_site) &&
+           xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",
+                                   5120,nullptr,2,&task_shelly,0)!=pdPASS)
+            Serial.println("SHELLY_READER: insufficient memory");
         if(!task_midea && cottage_midea_service_needs_worker() &&
            xTaskCreatePinnedToCore(cottage_midea_service_worker,"cottage_midea",
                                    10240,nullptr,1,&task_midea,0)!=pdPASS)
