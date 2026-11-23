@@ -11,6 +11,8 @@ void site_settings_initialize();             // once in setup(), before workers
 enevina::cottage::SiteSettings site_settings_snapshot(); // thread-safe copy
 uint32_t site_settings_generation();         // increments on every commit
 enevina::cottage::RoomTemperatureConfig site_room_temperature_config();
+// True only after the owner explicitly selected and NVS-confirmed a source.
+bool site_room_temperature_configured();
 // Increments only when the pump identity changes (CN105 URL or adapter).
 // Armed CN105 control is bound to the identity it was enabled for.
 uint32_t site_settings_endpoint_generation();

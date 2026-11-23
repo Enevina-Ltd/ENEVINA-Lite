@@ -1,6 +1,7 @@
 #include "cottage/ruuvi_v5.hpp"
 #include "cottage/air_humidity.hpp"
 #include "cottage/price_bootstrap.hpp"
+#include "cottage/telemetry.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -256,7 +257,28 @@ int main() {
            hold.direct_setpoint_below_mitsubishi_min&&
            hold.advisory_heat_needed && !hold.physical_writes_allowed);
     hold=evaluate_cottage_mode(cfg,wet,false,true,0,0);
-    assert(!hold.has_target && !hold.advisory_heat_needed);
+    assert(hold.has_target && near(hold.target_c,12) && !hold.advisory_heat_needed);
+    assert(hold.advisory==ModeAdvisory::SensorUnavailable);
+    auto unbound_hold=evaluate_cottage_mode(cfg,AirMoisture{},false,false,0,0);
+    assert(unbound_hold.has_target && near(unbound_hold.target_c,12));
+    assert(!unbound_hold.advisory_heat_needed && !unbound_hold.physical_writes_allowed);
+    // Separate room-temperature selection feeds the price controller. A
+    // missing Ruuvi cannot erase the configured target or force 'unavailable'.
+    constexpr int64_t now=1800000000;
+    enevina::PumpRoomState verified_pump{};
+    verified_pump.source=enevina::PumpStateSource::DirectLan;
+    verified_pump.evidence.received_utc=now-5;
+    verified_pump.indoor_c=10.0;
+    const auto measured=room_temperature_sample(
+        {RoomTemperatureSource::Pump,0},{},verified_pump,now);
+    assert(valid_temperature(measured,now));
+    BootstrapInput pump_input{};
+    pump_input.indoor_fresh=valid_temperature(measured,now);
+    pump_input.indoor_c=measured.indoor_c;
+    pump_input.desired_room_c=unbound_hold.target_c;
+    assert(bootstrap_price_decision(pump_input).action==BootstrapAction::HeatSetpoint);
+    pump_input.indoor_fresh=false;
+    assert(bootstrap_price_decision(pump_input).action==BootstrapAction::Unavailable);
     cfg.hold_target_c=18;
     hold=evaluate_cottage_mode(cfg,wet,true,true,0,0);
     assert(!hold.direct_setpoint_below_mitsubishi_min);
@@ -280,7 +302,20 @@ int main() {
     assert(!lived.has_target);
     cfg.occupied_target_c=21.0;
     lived=evaluate_cottage_mode(cfg,wet,false,true,0,0);
-    assert(!lived.has_target && !lived.advisory_heat_needed);
+    assert(lived.has_target && near(lived.target_c,21.0) && !lived.advisory_heat_needed);
+    assert(lived.advisory==ModeAdvisory::SensorUnavailable);
+    auto pump_only=evaluate_cottage_mode(cfg,AirMoisture{},false,false,0,0);
+    assert(pump_only.has_target && near(pump_only.target_c,21.0));
+    BootstrapInput living_input{};
+    living_input.indoor_fresh=true;
+    living_input.indoor_c=19.0;
+    living_input.desired_room_c=pump_only.target_c;
+    assert(bootstrap_price_decision(living_input).action==BootstrapAction::HeatSetpoint);
+    // Drying remains humidity-gated: the same missing Ruuvi must NOT enable it.
+    cfg.mode=CottageMode::Drying;
+    auto no_rh=evaluate_cottage_mode(cfg,AirMoisture{},false,true,8,24ULL*3600000);
+    assert(!no_rh.has_target && drying_blocks_heat(no_rh));
+    cfg.mode=CottageMode::Occupied;
     cfg.mode=CottageMode::Hold;
     hold=evaluate_cottage_mode(cfg,wet,true,true,0,0);
     assert(hold.has_target && near(hold.target_c,12));

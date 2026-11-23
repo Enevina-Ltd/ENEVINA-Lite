@@ -52,6 +52,7 @@ struct StoredV1 {
 SemaphoreHandle_t guard=nullptr;
 SiteSettings current{};
 RoomTemperatureConfig room_temperature{};
+std::atomic<bool> room_temperature_configured{false};
 struct StoredRoomTemperature {
     uint32_t magic=0x45525431; // ERT1
     uint16_t version=1;
@@ -319,6 +320,7 @@ void site_settings_initialize() {
     guard=xSemaphoreCreateMutex();
     if(!guard) abort();
     SiteSettings s=compiled_defaults();
+    room_temperature_configured.store(false);
     Preferences p;
     if(p.begin("site",true)) {
         comfort_pending.store(p.isKey(kComfortKey));
@@ -329,8 +331,10 @@ void site_settings_initialize() {
            stored_room.reserved==0 && stored_room.size==sizeof(stored_room)) {
             RoomTemperatureConfig candidate{static_cast<RoomTemperatureSource>(stored_room.source),
                 stored_room.correction_c100};
-            if(enevina::cottage::valid_room_temperature_config(candidate))
+            if(enevina::cottage::valid_room_temperature_config(candidate)) {
                 room_temperature=candidate;
+                room_temperature_configured.store(true);
+            }
         }
         Stored blob{};
         StoredV1 old{};
@@ -508,6 +512,7 @@ bool site_comfort_transaction_finish(const enevina::cottage::CottageModeConfig& 
        !enevina::cottage::comfort_mode_matches(tx,cfg))return false;
     return site_comfort_transaction_abandon();
 }
+bool site_room_temperature_configured() { return room_temperature_configured.load(); }
 RoomTemperatureConfig site_room_temperature_config() {
     if(!guard)return {};
     xSemaphoreTake(guard,portMAX_DELAY);
@@ -636,6 +641,7 @@ void site_settings_register_routes(WebServer& web) {
         snprintf(json,sizeof(json),"{\"source\":\"%s\",\"correction_c\":%.2f}",
             config.source==RoomTemperatureSource::Pump?"pump":"ruuvi",
             static_cast<double>(config.correction_c100)/100.0);
+        // A default is not an explicit owner selection until it is in NVS.
         web.sendHeader("Cache-Control","no-store");
         web.send(200,"application/json",json);
     });
@@ -663,7 +669,11 @@ void site_settings_register_routes(WebServer& web) {
         const RoomTemperatureConfig next{source=="pump"?RoomTemperatureSource::Pump:
             RoomTemperatureSource::Ruuvi,static_cast<int16_t>(std::lround(c*100.0))};
         const auto current_config=site_room_temperature_config();
-        if(current_config.source==next.source && current_config.correction_c100==next.correction_c100) {
+        const bool changed=current_config.source!=next.source ||
+            current_config.correction_c100!=next.correction_c100;
+        // The factory Ruuvi default is not a saved choice. Even an explicit
+        // selection of that same value must create a persistent NVS record.
+        if(!changed && room_temperature_configured.load()) {
             web.send(200,"application/json","{\"saved\":true}");
             return;
         }
@@ -678,13 +688,15 @@ void site_settings_register_routes(WebServer& web) {
             readback.magic==stored.magic && readback.version==stored.version &&
             readback.size==stored.size && readback.reserved==stored.reserved &&
             readback.source==stored.source && readback.correction_c100==stored.correction_c100;
+        p.end();
         if(!saved) {
             web.send(507,"application/json","{\"saved\":false,\"error\":\"NVS\"}");
             return;
         }
         xSemaphoreTake(guard,portMAX_DELAY);
         room_temperature=next;
-        generation.fetch_add(1);
+        room_temperature_configured.store(true);
+        if(changed)generation.fetch_add(1);
         xSemaphoreGive(guard);
         web.send(200,"application/json","{\"saved\":true}");
     });

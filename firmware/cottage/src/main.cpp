@@ -2429,6 +2429,8 @@ static void status_endpoint() {
     else cJSON_AddNullToObject(root,"independent_c");
     cJSON_AddStringToObject(root,"room_temperature_source",
         room.source==RoomTemperatureSource::Pump?"pump":"ruuvi");
+    cJSON_AddBoolToObject(root,"room_temperature_source_configured",
+        site_room_temperature_configured());
     cJSON_AddNumberToObject(root,"room_temperature_correction_c",
         static_cast<double>(room.correction_c100)/100.0);
     if(selected.received) {

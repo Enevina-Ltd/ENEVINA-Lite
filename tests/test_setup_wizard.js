@@ -28,7 +28,7 @@ assert.deepEqual(missing,[],'missing English translations');
 
 const ctx={document:{},state:{},translateFi:s=>s,uiLanguage:'fi',siteErrors:{},maturityText:{}};
 vm.createContext(ctx);
-vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,wzSavePump,wzFinish,roomTempFields,saveRoomTemp,WZ};',ctx);
+vm.runInContext(src+';this.api={wzBlankTariff,wzParseLatLon,wzTariffFields,wzSummary,wzComfortFields,WZ_PROFILES,wzNeedsAction,wzAgeText,wzSensorLine,wzSensorState,wzBindNeedsConfirm,wzShellyText,wzDevicesFields,wzSetShellyAddress,wzSignalText,wzStartStep,wzMinor,wzZoneLabel,wzNum,WZ_STEPS,wzSaveComfort,wzSavePump,wzFinish,roomTempFields,wzInitialRoomTemperature,saveRoomTemp,wzNext,WZ};',ctx);
 const A=ctx.api;
 
 {
@@ -181,6 +181,28 @@ for(const p of A.WZ_PROFILES)assert(!/%|€|EUR/.test(p.text),p.id);
   assert.equal(check(21).state,'ok');
   assert.equal(check(null).state,'warn');
 }
+// A new pump installation works without buying, binding or scanning RuuviTag.
+{
+  const setup=(bound,configured,adapter='midea_lan')=>
+    A.wzInitialRoomTemperature({air:{bound},room_temperature_source:'ruuvi',
+      room_temperature_source_configured:configured,room_temperature_correction_c:0},
+      {pump_adapter:adapter});
+  assert.deepEqual(JSON.parse(JSON.stringify(setup(false,false))),
+    {source:'pump',offset:'0',pending:true},'fresh install must offer pump source');
+  assert.deepEqual({...setup(true,false)},{},'existing indoor Ruuvi remains selected');
+  assert.deepEqual({...setup(false,true)},{},'never override an explicit Ruuvi choice');
+  assert.deepEqual({...setup(false,false,'')},{},'do not select a missing pump');
+  assert.deepEqual({...setup(undefined,false)},{},'unknown binding is not an absent Ruuvi');
+  const withPump=A.wzSummary({status:{air:{bound:false,sensor_fresh:false},
+    room_temperature_source:'pump',room_temperature_c:21.5}});
+  assert.equal(withPump.find(x=>x.key==='sensor').state,'ok',
+    'a confirmed pump indoor reading must work without RuuviTag');
+  const noReading=A.wzSummary({status:{air:{bound:false,sensor_fresh:false},
+    room_temperature_source:'pump',room_temperature_c:null}});
+  assert.equal(noReading.find(x=>x.key==='sensor').state,'warn',
+    'never fabricate pump temperature when it is not reported');
+}
+console.log('room source without Ruuvi regression OK');
 console.log('comfort step helpers ok');
 
 // ---- devices step: sensors and meter ---------------------------------------
@@ -239,6 +261,36 @@ console.log('comfort step helpers ok');
 console.log('devices step helpers ok');
 
 (async()=>{
+  // Step 6 must persist the recommended pump source BEFORE advancing to
+  // comfort, even if the owner did not manually touch the dropdown.
+  {
+    const events=[];
+    ctx.document={getElementById:()=>({disabled:false,textContent:'',className:''})};
+    ctx.wzRender=()=>{};
+    ctx.wzSaveComfort=async skip=>events.push(['comfort',skip]);
+    ctx.state.site={pump_adapter:'midea_lan'};
+    ctx.state.status={air:{bound:false,config_token:'setup-test-token'},
+      room_temperature_source:'ruuvi',room_temperature_source_configured:false,
+      room_temperature_correction_c:0};
+    ctx.airPostLocal=async (url,fields)=>events.push([url,{...fields}]);
+    A.WZ.step=5;A.WZ.busy=false;
+    A.WZ.roomTemperature=A.wzInitialRoomTemperature(ctx.state.status,ctx.state.site);
+    await A.wzNext(false);
+    assert.deepEqual(events,[
+      ['/api/temperature-source',{source:'pump',correction_c:'0.00'}],
+      ['comfort',false]],'pump source must save before comfort step');
+    assert.equal(A.WZ.step,6);
+    assert.equal(ctx.state.status.room_temperature_source,'pump');
+    assert.equal(ctx.state.status.room_temperature_source_configured,true);
+    events.length=0;
+    A.WZ.step=5;
+    A.WZ.roomTemperature={source:'pump',offset:'0',pending:true};
+    ctx.airPostLocal=async()=>{throw Error('NVS');};
+    await A.wzNext(false);
+    assert.equal(A.WZ.step,5,'NVS failure keeps the setup on this step');
+    assert.equal(A.WZ.roomTemperature.pending,true,'failed source save must be retryable');
+    assert.deepEqual(events,[],'no comfort commit after failed room source save');
+  }
   {
     ctx.state.status={air:{},room_temperature_source:'ruuvi',room_temperature_correction_c:0};
     const saved=[];
