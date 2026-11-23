@@ -48,8 +48,13 @@ class ReadOnlyTLSServer(http.server.ThreadingHTTPServer):
             request.settimeout(5.0)
             with self.tls_context.wrap_socket(
                     request,server_side=True,do_handshake_on_connect=False) as tls:
+                # Reject stalled handshakes quickly, but a validated 2.5 MiB
+                # image is consumed slowly while ESP32 verifies and flashes
+                # 2 KiB at a time. Give each streaming write more time without
+                # weakening TLS, the IP allowlist or the image size limit.
                 tls.settimeout(5.0)
                 tls.do_handshake()
+                tls.settimeout(45.0)
                 super().finish_request(tls,client_address)
         except (OSError,ssl.SSLError):
             # A stalled, aborted, or non-TLS connection must not crash or

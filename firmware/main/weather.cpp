@@ -314,7 +314,16 @@ uint32_t weather_reader_stack_free() {
 }
 bool ensure_weather_reader() {
     if(weather_task)return true;
-    if(xTaskCreate(poll_weather,"weather_read",7168,nullptr,3,
+    // Lite N16R8 has a shared TLS memory budget: physical MET Norway
+    // polling left 3552 bytes of its 7168-byte stack unused. Retain
+    // 6144 bytes under the Lite guard (still >2 KiB measured margin).
+    // Non-Lite firmware keeps its original weather reader stack.
+#ifdef COTTAGE_SHARED_MEMORY_GUARD
+    constexpr uint32_t kWeatherReaderStack=6144;
+#else
+    constexpr uint32_t kWeatherReaderStack=7168;
+#endif
+    if(xTaskCreate(poll_weather,"weather_read",kWeatherReaderStack,nullptr,3,
                    &weather_task)==pdPASS)return true;
     ESP_LOGE(tag,"weather task creation failed");
     return false;

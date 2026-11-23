@@ -27,6 +27,13 @@ bool cottage_ota_acknowledge_history_upgrade(uint32_t version,uint32_t event_utc
 bool cottage_ota_last_successful_update(uint32_t& utc,uint32_t& version);
 uint32_t cottage_ota_last_candidate();
 int cottage_ota_status();
+// Read-only diagnostics for last signed-OTA attempt. No tokens, URLs or keys.
+const char* cottage_ota_problem_stage();
+const char* cottage_ota_problem_reason();
+uint32_t cottage_ota_problem_free_internal();
+uint32_t cottage_ota_problem_largest_internal();
+uint32_t cottage_ota_image_lease_attempts();
+uint32_t cottage_ota_inflight_memory_waits();
 // Temporary read-only worker pause during eligible signed-image download.
 // Never persists user settings and never changes an automation authorization.
 bool cottage_ota_network_maintenance();
