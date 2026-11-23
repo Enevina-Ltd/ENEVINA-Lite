@@ -268,6 +268,7 @@ static void events_debounce_and_commands() {
     // commands: counter deltas become events; a counter that resets (reboot) does not
     in=sample(t+10);in.commands_sent=2;in.commands_confirmed=1;rec_.observe(in,store,ev);
     CHECK(ev.count()==5&&ev.newest(1).kind==static_cast<uint8_t>(HistoryEventKind::CommandSent)&&ev.newest(1).value==2);
+    CHECK(ev.newest(0).arg==0); // old counter-only observations stay anonymous
     in=sample(t+20);in.commands_sent=0;in.commands_confirmed=0;rec_.observe(in,store,ev);   // reset
     CHECK(ev.count()==5);
     in=sample(t+30);in.commands_failed=1;rec_.observe(in,store,ev);
@@ -275,6 +276,60 @@ static void events_debounce_and_commands() {
     // ring is bounded
     for(int i=0;i<300;++i) ev.put({static_cast<uint32_t>(T0+i),1,0,0});
     CHECK(ev.count()==kEventSlots&&ev.newest(0).utc==static_cast<uint32_t>(T0+299));
+}
+
+static void pump_cost_and_readback_evidence() {
+    HistoryStore store(8);
+    const uint32_t first=static_cast<uint32_t>(T0/900);
+    const auto put=[&](unsigned offset,unsigned scope,unsigned minutes,
+                       unsigned currency,int32_t price) {
+        HistoryRecord r=rec(first+offset,12);
+        r.power_w=1000;
+        r.price_e5=price;
+        r.flags=(scope<<kPowerScopeShift)|(minutes<<kPowerCoverageShift)|
+                (currency<<kPriceCurrencyShift);
+        CHECK(store.put(r));
+    };
+    put(0,1,15,1,20000); // 0.050 EUR
+    put(1,1,6,1,-10000); // -0.010 EUR
+    put(2,0,15,1,20000); // unknown scope
+    put(3,2,15,1,20000); // house
+    put(4,1,15,0,20000); // unknown currency
+    put(5,1,15,1,kMissingI32);
+    HistoryPoint points[8]{};
+    HistorySummary summary;
+    CHECK(build_history_series(store,T0+5*900,6,3,points,8,summary)==2);
+    CHECK(std::fabs(summary.pump_cost.value()-0.04)<1e-9);
+    CHECK(summary.pump_cost.minutes==21);
+
+    HistoryRecorder recorder;
+    EventLog events;
+    recorder.observe(sample(T0+6*900),store,events);
+    auto in=sample(T0+6*900+10);
+    in.commands_confirmed=1;
+    in.cn105_ack={static_cast<uint32_t>(in.utc-2),2,2,160};
+    recorder.observe(in,store,events);
+    CHECK(events.newest(0).utc==in.utc-2 && events.newest(0).arg!=0);
+    MemFile record_file,event_file;
+    HistoryPersistence persistence(record_file,event_file);
+    CHECK(persistence.flush(store,events));
+    HistoryStore restored_store(8);
+    EventLog restored_events;
+    HistoryPersistence restored(record_file,event_file);
+    CHECK(restored.load(restored_store,restored_events).events==events.count());
+    CHECK(restored_events.newest(0).arg==events.newest(0).arg);
+    std::string json;
+    history_json("24h",3,points,2,summary,restored_events,T0,"EUR","unknown",true,
+                 [&](const char* part){json+=part;});
+    CHECK(json.find("\"pump_cost\":0.04000")!=std::string::npos);
+    CHECK(json.find("\"control_step\":\"HEAT\"")!=std::string::npos);
+    CHECK(json.find("\"readback\":\"CN105_GATEWAY_GET\"")!=std::string::npos);
+    CHECK(json.find("\"target_c\":16.0")!=std::string::npos);
+
+    put(6,1,15,2,20000); // supported but different currency
+    CHECK(build_history_series(store,T0+6*900,7,1,points,8,summary)==7);
+    CHECK(std::isnan(summary.pump_cost.value()));
+    CHECK(summary.pump_cost.minutes==36);
 }
 
 static void series_and_summary() {
@@ -842,6 +897,7 @@ int main() {
     meter_scope_is_stored_with_each_record();
     recorder_clock_rules();
     events_debounce_and_commands();
+    pump_cost_and_readback_evidence();
     series_and_summary();
     json_is_valid();
     persistence_roundtrip_and_wear();

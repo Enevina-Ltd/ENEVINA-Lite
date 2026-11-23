@@ -176,6 +176,13 @@ private:
 };
 
 // ---- recorder ---------------------------------------------------------------
+struct HistoryCn105Ack {
+    uint32_t utc=0;
+    uint8_t step=0;   // 1 setpoint, 2 HEAT, 3 OFF
+    uint8_t source=0; // 1 MPC, 2 price control, 3 thermostat
+    uint16_t target_c10=0;
+};
+
 struct HistoryInputs {
     bool clock_trusted=false;
     int64_t utc=0;
@@ -193,6 +200,7 @@ struct HistoryInputs {
     uint8_t action=0;          // 0 unknown, 1 off, 2 heat, 3 hold
     bool armed=false;
     uint32_t commands_sent=0,commands_confirmed=0,commands_failed=0;   // monotone counters
+    HistoryCn105Ack cn105_ack{};
     int reset_reason=0;
     uint32_t ota_good_version=0;   // last version the signed OTA confirmed good (0 = unknown)
     uint32_t ota_upgrade_event_version=0; // signed OTA proof, not just a new observed number
@@ -421,8 +429,20 @@ private:
     void command_events(const HistoryInputs& in,EventLog& events) {
         auto emit=[&](HistoryEventKind k,uint32_t now,uint32_t& before) {
             if(now>before) {
-                events.put({static_cast<uint32_t>(in.utc),static_cast<uint8_t>(k),0,
-                            static_cast<int16_t>(std::min<uint32_t>(now-before,32000))});
+                HistoryEvent event{static_cast<uint32_t>(in.utc),static_cast<uint8_t>(k),0,
+                                   static_cast<int16_t>(std::min<uint32_t>(now-before,32000))};
+                const auto& ack=in.cn105_ack;
+                // We know the details of the last confirmation only.
+                if(k==HistoryEventKind::CommandConfirmed && now-before==1 &&
+                   ack.utc>0 && ack.utc<=in.utc && ack.step>=1 && ack.step<=3 &&
+                   ack.source<=3 && (ack.step==3?ack.target_c10==0:
+                     (ack.target_c10>=160 && ack.target_c10<=260))) {
+                    event.utc=ack.utc;
+                    event.source=static_cast<uint8_t>(HistorySource::Pump);
+                    event.arg=0x80000000u | ack.step | (uint32_t(ack.source)<<3) |
+                              (uint32_t(ack.target_c10)<<8);
+                }
+                events.put(event);
             }
             before=now;                      // a counter that went down (reboot) just re-bases
         };

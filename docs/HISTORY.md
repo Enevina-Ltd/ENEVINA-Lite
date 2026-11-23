@@ -16,7 +16,9 @@ the zone currency, the controller's proposal (off / heat / hold), whether automa
 control was armed, and pump/Wi-Fi presence flags. A separate ring keeps the last 128
 **events**: boot (with reset reason), loss and return of Wi-Fi / pump data / room
 sensor / prices (with the outage duration), and counters of commands sent,
-acknowledged and failed.
+acknowledged and failed. An individually recorded Mitsubishi command can also
+include its control source, action and target with a timestamp from the matching
+CN105 bridge GET readback. This is separate from verified UART learning data.
 
 ## Rules that keep it honest
 
@@ -55,6 +57,10 @@ acknowledged and failed.
 * The UI reports both record coverage and **verified power-measurement minutes**
   and warns about gaps, unknown/mixed price currencies, or missing persistence.
   Estimated energy from uncovered periods is not invented.
+* **Pump cost is an estimate** using each eligible quarter-hour's stored price
+  and covered electricity use. The summary counts only slots recorded with a
+  confirmed pump-only meter and a known tariff currency. It reports the covered
+  minutes and omits the total if no currency is known or eligible currencies differ.
 
 ## Flash use (bounded)
 

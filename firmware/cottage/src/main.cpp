@@ -169,6 +169,7 @@ static std::atomic<uint32_t> control_commands_confirmed{0};
 static std::atomic<uint32_t> control_commands_failed{0};
 static std::atomic<int64_t> control_last_command_utc{0};
 static std::atomic<int64_t> control_last_ack_utc{0};
+static HistoryCn105Ack cn105_history_ack{}; // protected by lock_data
 static std::atomic<int64_t> control_last_bridge_read_utc{0};
 // Observe the physical CN105 command path without serial access.
 static std::atomic<int> control_post_stage{0};
@@ -1570,8 +1571,14 @@ static void cottage_control_tick() {
     }
     if(confirmed) {
         control_post_stage.store(8);
+        const int64_t ack_utc=time(nullptr);
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        cn105_history_ack={static_cast<uint32_t>(ack_utc),
+            static_cast<uint8_t>(decision.step),static_cast<uint8_t>(arbitration.source),
+            static_cast<uint16_t>(std::lround(decision.target_c*10))};
         control_commands_confirmed.fetch_add(1);
-        control_last_ack_utc.store(time(nullptr));
+        control_last_ack_utc.store(ack_utc);
+        xSemaphoreGive(lock_data);
         // An MPC decision counts as executed only when the readback shows
         // the planned state itself (the requested HEAT setpoint or OFF), not merely an
         // intermediate setpoint step.
@@ -2938,6 +2945,8 @@ static enevina::cottage::HistoryInputs history_collect() {
     int64_t climate_time=0;
     xSemaphoreTake(lock_data,portMAX_DELAY);
     cp=pump;observed=sse_observed_pump;st=consumption;climate_time=climate_utc;
+    in.commands_confirmed=control_commands_confirmed.load();
+    in.cn105_ack=cn105_history_ack;
     xSemaphoreGive(lock_data);
     const auto room=site_room_temperature_config();
     in.indoor_from_pump=room.source==RoomTemperatureSource::Pump;
@@ -2995,7 +3004,6 @@ static enevina::cottage::HistoryInputs history_collect() {
               d.action==BootstrapAction::Hold?3:0;
     in.armed=active_control_armed(midea);
     in.commands_sent=control_commands_sent.load();
-    in.commands_confirmed=control_commands_confirmed.load();
     in.commands_failed=control_commands_failed.load();
     in.reset_reason=boot_reset_reason_code;
     in.ota_good_version=cottage_ota_good_version();
