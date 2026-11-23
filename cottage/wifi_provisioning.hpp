@@ -239,6 +239,33 @@ private:
     ConnectTarget connect_request_=ConnectTarget::None;
 };
 
+// Bounded STATION reconnect while the *saved* home Wi-Fi is disconnected.
+// Arduino-ESP32 2.0.17 retries only selected disconnect reasons and its
+// automatic retry can leave a station offline. This is a network reconnect,
+// not a task watchdog, reset loop or new security gate. Never touch a live
+// setup-wizard candidate or change the stored SSID/password.
+class WifiLinkRetry {
+public:
+    bool due(uint32_t now_ms,WifiPhase phase,bool has_stored,bool has_ip) {
+        if(has_ip || !has_stored ||
+           (phase!=WifiPhase::Reconnecting && phase!=WifiPhase::Recovery)) {
+            pending_=false;
+            return false;
+        }
+        if(!pending_) {
+            pending_=true;
+            last_ms_=now_ms;
+            return false;
+        }
+        if(static_cast<uint32_t>(now_ms-last_ms_)<30000u)return false;
+        last_ms_=now_ms;
+        return true;
+    }
+private:
+    uint32_t last_ms_=0;
+    bool pending_=false;
+};
+
 // The open setup AP is phase 1 ONLY: Wi-Fi provisioning. Every other route
 // (pump control arming, mode/site settings, status with its CSRF token, OTA)
 // must be refused when the request arrives through the setup AP, so a nearby

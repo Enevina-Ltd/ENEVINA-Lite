@@ -30,6 +30,26 @@ class WifiOnboardingSource(unittest.TestCase):
         # Open AP only while needed: closes after the grace period.
         self.assertIn("else if(!machine.ap_should_run() && ap_active) stop_ap();", WIFI)
 
+    def test_bounded_reconnect_on_lost_saved_station_only(self):
+        # Source wiring + host-tested backoff: Wi-Fi event data is real,
+        # but cannot be reconstructed for an already-offline field board.
+        self.assertIn('station_disconnect_count.fetch_add(1)', WIFI)
+        self.assertIn('last_disconnected_ms.store(millis())', WIFI)
+        self.assertIn('"last_disconnect_reason",last_reason.load()', WIFI)
+        self.assertIn('"disconnect_count",station_disconnect_count.load()', WIFI)
+        self.assertIn('"reconnect_attempts",station_reconnect_attempts.load()', WIFI)
+        self.assertIn('if(link_retry.due(now,machine.phase(now),machine.has_stored(),got_ip.load())) {', WIFI)
+        # A stale "connected" Wi-Fi status without a valid DHCP address
+        # must not suppress the bounded rejoin.
+        self.assertNotIn('WiFi.status()!=WL_CONNECTED', WIFI.split('void cottage_wifi_loop() {',1)[1])
+        self.assertIn('if(WiFi.reconnect())station_reconnect_accepts.fetch_add(1);', WIFI)
+        self.assertNotIn('esp_restart()', WIFI)
+        self.assertNotIn('ESP.restart()', WIFI)
+        core=(ROOT/'cottage/wifi_provisioning.hpp').read_text(encoding='utf-8')
+        self.assertIn('class WifiLinkRetry', core)
+        self.assertIn('now_ms-last_ms_', core)
+        self.assertIn('phase!=WifiPhase::Reconnecting && phase!=WifiPhase::Recovery', core)
+
     def test_credentials_stored_only_after_verified_join(self):
         self.assertIn("WiFi.persistent(false)", WIFI)
         loop = WIFI.split("void cottage_wifi_loop()", 1)[1]
