@@ -22,7 +22,9 @@ class TestInternalRam(unittest.TestCase):
         self.assertIn("sensor_registry.observe(parsed,ms)",air)
         self.assertIn("NimBLEDevice::getScan()",air)
         self.assertIn("if(!scan)",air)
-        self.assertIn('c23_ble_worker,"cottage_ruuvi",6144',MAIN)
+        # Physical N16R8 watermarks justified a 5 KiB BLE stack while
+        # leaving more than 2 KiB measured headroom for scanner callbacks.
+        self.assertIn('c23_ble_worker,"cottage_ruuvi",5120',MAIN)
         self.assertIn('xTaskCreate(poll_prices,"market_read",8192',MARKET)
     def test_no_phantom_midea_stack_when_other_pump_is_selected(self):
         self.assertIn("cottage_midea_service_needs_worker()",MAIN)
@@ -35,7 +37,12 @@ class TestInternalRam(unittest.TestCase):
     def test_weather_worker_created_after_site_selection(self):
         self.assertIn("if(configured)ensure_weather_reader();",WEATHER)
         self.assertIn("if(enabled && !ensure_weather_reader())return false;",WEATHER)
-        self.assertIn('xTaskCreate(poll_weather,"weather_read",7168',WEATHER)
+        # Lite recovers 1 KiB internal RAM for signed OTA; all other
+        # firmware targets retain the earlier 7168-byte stack.
+        self.assertIn('#ifdef COTTAGE_SHARED_MEMORY_GUARD',WEATHER)
+        self.assertIn('constexpr uint32_t kWeatherReaderStack=6144;',WEATHER)
+        self.assertIn('constexpr uint32_t kWeatherReaderStack=7168;',WEATHER)
+        self.assertIn('xTaskCreate(poll_weather,"weather_read",kWeatherReaderStack',WEATHER)
         self.assertIn("if(changed && weather_task)xTaskNotifyGive(weather_task)",WEATHER)
 
     def test_existing_tls_and_ble_memory_guards_not_reduced(self):
