@@ -2565,6 +2565,16 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"ota_signed_good_version",cottage_ota_good_version());
     cJSON_AddNumberToObject(root,"ota_signed_candidate",cottage_ota_last_candidate());
     cJSON_AddNumberToObject(root,"ota_signed_status",cottage_ota_status());
+    cJSON_AddStringToObject(root,"ota_problem_stage",cottage_ota_problem_stage());
+    cJSON_AddStringToObject(root,"ota_problem_reason",cottage_ota_problem_reason());
+    cJSON_AddNumberToObject(root,"ota_problem_free_internal",
+                            cottage_ota_problem_free_internal());
+    cJSON_AddNumberToObject(root,"ota_problem_largest_internal",
+                            cottage_ota_problem_largest_internal());
+    cJSON_AddNumberToObject(root,"ota_image_lease_attempts",
+                            cottage_ota_image_lease_attempts());
+    cJSON_AddNumberToObject(root,"ota_inflight_memory_waits",
+                            cottage_ota_inflight_memory_waits());
     cJSON_AddBoolToObject(root,"ota_network_maintenance",
                            cottage_ota_network_maintenance());
     cJSON_AddNumberToObject(root,"ota_downloaded_bytes",
@@ -3319,7 +3329,10 @@ void setup() {
     boot_validation_started_ms=millis();
     enableLoopWDT(); // Arduino ESP32 loop-task hardware watchdog.
     // Initialize BLE before starting memory-heavy HTTPS workers.
-    xTaskCreatePinnedToCore(c23_ble_worker,"cottage_ruuvi",6144,nullptr,1,&task_ruuvi,0);
+    // N16R8 field minimum free stack was 4376 / 6144 bytes with active
+    // scanning. Reserve 5120 bytes, retaining >2 KiB of measured headroom
+    // while reclaiming 1 KiB internal RAM for signed TLS OTA.
+    xTaskCreatePinnedToCore(c23_ble_worker,"cottage_ruuvi",5120,nullptr,1,&task_ruuvi,0);
     for(int i=0;i<150 && !c23_ble_initialized();++i)
         delay(20);
     if(!c23_ble_initialized())
@@ -3373,8 +3386,11 @@ void loop() {
                                    5120,nullptr,2,&task_shelly,0)!=pdPASS)
             Serial.println("SHELLY_READER: insufficient memory");
         if(!task_midea && cottage_midea_service_needs_worker() &&
+           // Pilot high-water free: 5744 / 10240 bytes, after actual
+           // Midea V3 polling. 8192 preserves >3 KiB measured headroom
+           // and returns 2 KiB internal RAM to signed OTA TLS.
            xTaskCreatePinnedToCore(cottage_midea_service_worker,"cottage_midea",
-                                   10240,nullptr,1,&task_midea,0)!=pdPASS)
+                                   8192,nullptr,1,&task_midea,0)!=pdPASS)
             Serial.println("MIDEA_WORKER: insufficient memory");
         if(!task_local_lan && (cottage_gree_needs_worker() || cottage_daikin_needs_worker() ||
            cottage_daikin_dsiot_needs_worker() || cottage_wf_rac_needs_worker() ||
