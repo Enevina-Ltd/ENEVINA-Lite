@@ -78,6 +78,14 @@ static void room_temperature_uses_the_selected_fresh_source() {
     pump.source=PumpStateSource::DirectLan;
     const auto b=room_temperature_sample(selected,ruuvi,pump,now);
     check(valid_temperature(b,now) && b.indoor_c==21.0 && b.captured_utc==now-5,"calibrated LAN reading");
+    const TemperatureSample no_ruuvi{};
+    const auto pump_only=room_temperature_sample(selected,no_ruuvi,pump,now);
+    check(valid_temperature(pump_only,now) && pump_only.indoor_c==21.0,
+          "pump temperature works without Ruuvi");
+    pump.indoor_c=std::numeric_limits<double>::quiet_NaN();
+    check(!room_temperature_sample(selected,no_ruuvi,pump,now).received,
+          "missing pump indoor temperature is not replaced by setpoint");
+    pump.indoor_c=22.5;
     check(!room_temperature_sample(selected,ruuvi,pump,now+90).received,"stale LAN reading");
     pump.source=PumpStateSource::VerifiedBus;
     pump.evidence={now-5,now-200,true};
