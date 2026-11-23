@@ -16,8 +16,8 @@ and operating-mode changes below have Node and firmware-build evidence.
 | 3 Market area | `price_zone` | Labels like `Sweden – Stockholm (SE3)` / `Ruotsi – Tukholma (SE3)`. Required, no default for multi-zone countries. |
 | 4 Contract | tariff keys, `tariff_confirmed` | Amounts in the zone currency's minor unit (snt / öre / øre / gr). Nothing is pre-filled with invented values; *Skip* leaves the contract marked unconfirmed. |
 | 5 Heat pump | `pump_adapter`, `cn105_url`, local Midea credentials | Select the connection. For Midea, discover a compatible appliance or enter its address and device ID. V2 uses local discovery details. V3 also needs the device's existing local token and key. Save and verify a fresh state read before continuing. |
-| 6 Temperature and optimization | Operating mode, room target, comfort limits and profile | Choose RuuviTag or the heat pump as the room temperature source, with an optional correction from −5 to +5 °C. Then choose the operating mode, room target and profile. Continuing saves the mode, target, and comfort limits together using the durable Comfort journal. |
-| 7 Sensors and meter | RuuviTag binding, `shelly_url`, meter scope | Scan for sensors or enter the details manually. Confirm whether the optional meter measures the heat pump. |
+| 6 Temperature and optimization | Operating mode, room target, comfort limits and profile | Select the pump's fresh reported room temperature or an optional RuuviTag, with a correction from −5 to +5 °C. For new setups with a selected pump and no bound indoor RuuviTag, the wizard suggests **pump** and persists this choice when advancing. A previously saved selection is never silently overwritten. Then choose the operating mode, room target and profile. Continuing saves the mode, target, and comfort limits together using the durable Comfort journal. |
+| 7 Sensors and meter | RuuviTag binding, `shelly_url`, meter scope | Optional: scan/bind RuuviTag sensors and Shelly power meter. Neither is required when the pump supplies a verified, fresh room reading. Confirm meter scope only if a meter is connected. |
 | 8 Summary | Chosen control permission, `setup_complete`, `setup_step` | Review the current connection, sensor and optimization state. Select manual or automatic control. Midea model approval is available here for the configured device. A refused automatic choice leaves the wizard open with the reason. |
 
 * Every step persists `setup_step` on the device, so closing the tab or reloading
@@ -33,7 +33,7 @@ and operating-mode changes below have Node and firmware-build evidence.
 
 ## Room temperature source
 
-RuuviTag is the default and supplies humidity data for drying mode. The heat
+Legacy installations without an explicitly saved temperature source default to RuuviTag for backward compatibility; a new setup without an indoor RuuviTag proposes the pump source. Both sources can always be chosen manually. RuuviTag supplies humidity data for drying mode but is **not required** for ordinary heating or price optimization. The heat
 pump choice uses a fresh Midea V2/V3 0xAC LAN reading or a source-verified
 CN105 UART observation from the current bridge. A receipt timestamp from an
 ordinary CN105 SSE snapshot does not verify a UART read. If the chosen source
@@ -59,7 +59,7 @@ in a quarter that spans the change.
 
 ## Not covered / known gaps
 
-* No physical device or phone test; the device-side `/api/geocode` worker and TLS
+* No physical device or phone test of these wizard changes; the device-side `/api/geocode` worker and TLS
   to the geocoder have never run on hardware.
 * Midea discovery and the new operating-mode step still need a physical ESP32-S3
   and phone browser test. The Midea connection test performs a read. The summary
