@@ -190,7 +190,11 @@ CottageModePlan evaluate_cottage_mode(const CottageModeConfig& cfg,
         p.advisory=ModeAdvisory::NoHeating;
         return p;
     }
-    if(!indoor.valid||!fresh) {
+    // Drying needs measured humidity and its exposure duration. The ordinary
+    // Hold/Occupied target is a user setting, not a RuuviTag measurement:
+    // preserving it without Ruuvi is essential when a verified pump room
+    // temperature is the selected control source.
+    if(cfg.mode==CottageMode::Drying && (!indoor.valid||!fresh)) {
         p.advisory=ModeAdvisory::SensorUnavailable;
         return p;
     }
@@ -223,12 +227,20 @@ CottageModePlan evaluate_cottage_mode(const CottageModeConfig& cfg,
             p.advisory=ModeAdvisory::SensorUnavailable;return p;
         }
         p.target_c=target;p.has_target=true;
-        p.advisory=ModeAdvisory::BelowTemperatureTarget;
+        // This advisory describes the optional local humidity/Ruuvi display.
+        // The physical controller separately validates the selected room
+        // temperature (pump or Ruuvi) before it sends any command.
+        p.advisory=indoor.valid&&fresh?ModeAdvisory::BelowTemperatureTarget:
+            ModeAdvisory::SensorUnavailable;
     } else {
         p.advisory=ModeAdvisory::NoHeating;
         return p;
     }
     p.direct_setpoint_below_mitsubishi_min=p.target_c<16;
+    // Never infer a room temperature from the configured target. When Ruuvi
+    // is absent, the advisory has no heat-needed claim; live price/thermostat
+    // control uses the independently verified selected sensor instead.
+    if(!indoor.valid||!fresh)return p;
     p.advisory_heat_needed=indoor.temperature_c<p.target_c-0.5;
     if(p.advisory_heat_needed&&p.direct_setpoint_below_mitsubishi_min)
         p.advisory=ModeAdvisory::UnsupportedBelow16;
