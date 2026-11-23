@@ -2851,10 +2851,11 @@ function showPlan(){
   text('plan-min',ok&&number(p.minimum_c)!==null?fmt(p.minimum_c,1)+' °C':'—');
   text('home-plan-next',ok?'Seuraava jakso '+time(p.slots[0].utc)+': '+(p.slots[0].heat?'HEAT '+fmt(p.slots[0].setpoint_c??16,1)+' °C':'OFF'):
     hasFallback?'Lähtötason ehdotus: '+proposed:'Hyväksytty optimointisuunnitelma puuttuu.');
+  const roomSource=s.room_temperature_source==='pump'?'Pumpun oma anturi':'RuuviTag';
   text('home-plan-reason',ok?'Simuloitu MPC-ehdotus. Automaattiohjaus toimii erillisellä hintaohjauspolulla.':
-    hasFallback?(priced?'Ruuvi + 15 min kokonaishinnat; ':'Hintadata puuttuu: Ruuvi-huonetermostaatti; ')+
+    hasFallback?'Huonelämpötila: '+roomSource+'; '+(priced?'15 min kokonaishinnat käytössä; ':'hintatiedot puuttuvat, termostaattiohjaus; ')+
       'huonetavoite '+fmt(s.bootstrap_room_target_c,1)+' °C; syy: '+(s.bootstrap_reason||'—')+
-      '. CN105-ohjaus edellyttää käyttäjän valintaa.':
+      '. Automaattiohjaus edellyttää käyttäjän valintaa.':
     'Ehdotus estetty: '+(s.bootstrap_reason||'puutteelliset lähtötiedot')+'.');
   text('plan-warning',ok?'Ehdotukset ovat laskennallisia. Fyysiset ohjauskäskyt ovat estettyjä.':
     hasFallback?(priced?'Lähtötason hintaohjaus: ':'Hintojen puuttuessa termostaatti: ')+
