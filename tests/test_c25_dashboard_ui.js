@@ -106,6 +106,11 @@ const run=x=>vm.runInContext(x,context);
   assert.match($('home-sensor').textContent,/Pumpun oma anturi/);
   assert.equal($('connection-dot').className,'dot ok');
   assert.equal($('home-rh').textContent,'—');
+  // A price/thermostat fallback must describe the selected heat-pump
+  // temperature source, not claim a RuuviTag or CN105 is mandatory.
+  run("state.plan={valid:false};state.status={...state.status,bootstrap_action:'HOLD',bootstrap_price_data_valid:true,bootstrap_room_target_c:21};showPlan()");
+  assert.match($('home-plan-reason').textContent,/Pumpun oma anturi/);
+  assert.doesNotMatch($('home-plan-reason').textContent,/Ruuvi|CN105/);
   run("state.status={...state.status,room_temperature_c:null,air:{...state.status.air,sensor_fresh:true}};showStatus()");
   assert.match($('home-temp').textContent,/Ei tuoretta/);
   assert.equal($('connection-dot').className,'dot bad');
