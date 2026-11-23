@@ -1,0 +1,48 @@
+# Build-only example. Pins and Wi-Fi are for an isolated ESP32-S3 bench.
+esphome:
+  name: enevina-cn105-bench
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+wifi:
+  ssid: "isolated-bench"
+  password: "bench-example"
+
+logger:
+  baud_rate: 0
+
+web_server:
+  port: 80
+  version: 1
+
+time:
+  - platform: sntp
+    id: bench_clock
+    timezone: UTC
+
+uart:
+  id: cn105_uart
+  tx_pin: GPIO17
+  rx_pin: GPIO18
+  baud_rate: 2400
+  data_bits: 8
+  parity: EVEN
+  stop_bits: 1
+
+external_components:
+  - source:
+      type: local
+      path: upstream/components
+    components: [cn105]
+
+climate:
+  - platform: cn105
+    id: heat_pump
+    name: Mitsubishi Electric MSZ-FD25VA
+    uart_id: cn105_uart
+    update_interval: 5s
+    enevina_verified_snapshot:
+      name: Enevina CN105 Verified Snapshot
