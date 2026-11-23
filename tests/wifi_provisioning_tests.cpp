@@ -238,7 +238,30 @@ static void unsaved_attempt_cannot_replace_fallback_on_next_join_failure() {
     assert(w.take_connect_request()==ConnectTarget::Stored);
     assert(std::strcmp(w.stored().ssid,"Vanha")==0 && !w.take_commit());
 }
+static void station_reconnect_does_not_reset_or_reprovision() {
+    WifiLinkRetry retry;
+    const WifiPhase lost=WifiPhase::Reconnecting,setup=WifiPhase::Trying;
+    assert(!retry.due(0,lost,true,false));
+    assert(!retry.due(29999,lost,true,false));
+    assert(retry.due(30000,lost,true,false));
+    assert(!retry.due(59999,WifiPhase::Recovery,true,false));
+    assert(retry.due(60000,WifiPhase::Recovery,true,false));
+    assert(!retry.due(60500,lost,true,true));  // Got IP resets backoff
+    assert(!retry.due(61000,lost,true,false));
+    assert(!retry.due(90999,lost,true,false));
+    assert(retry.due(91000,lost,true,false));
+    assert(!retry.due(92000,setup,true,false));  // Never break setup wizard
+    assert(!retry.due(122000,lost,false,false)); // No stored credentials
+    assert(!retry.due(123000,lost,true,false));
+    assert(retry.due(153000,lost,true,false));
+    assert(!retry.due(10,lost,true,true));
+    assert(!retry.due(UINT32_MAX-100,lost,true,false));
+    assert(!retry.due(29000,lost,true,false)); // wraparound safe
+    assert(retry.due(30000,lost,true,false));
+}
+
 int main() {
+    station_reconnect_does_not_reset_or_reprovision();
     failed_save_keeps_fallback_and_can_be_retried();
     unsaved_attempt_cannot_replace_fallback_on_next_join_failure();
     setup_ap_only_provisions_wifi();

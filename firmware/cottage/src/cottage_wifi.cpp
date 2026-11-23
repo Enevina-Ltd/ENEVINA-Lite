@@ -19,6 +19,11 @@ namespace {
 WebServer* server=nullptr;
 DNSServer dns;
 WifiProvisioning machine;
+WifiLinkRetry link_retry;
+std::atomic<uint32_t> station_disconnect_count{0};
+std::atomic<uint32_t> station_reconnect_attempts{0};
+std::atomic<uint32_t> station_reconnect_accepts{0};
+std::atomic<uint32_t> last_disconnected_ms{0};
 bool ap_active=false;
 bool mdns_started=false;
 bool legacy_migration_pending=false;
@@ -31,6 +36,8 @@ std::atomic<uint32_t> link_generation{0};
 void on_wifi_event(WiFiEvent_t event,WiFiEventInfo_t info) {
     if(event==ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
         last_reason.store(info.wifi_sta_disconnected.reason);
+        station_disconnect_count.fetch_add(1);
+        last_disconnected_ms.store(millis());
         got_ip.store(false);
         link_generation.fetch_add(1);
         cottage_midea_link_disconnected();
@@ -169,6 +176,15 @@ void status_route() {
         cJSON_AddStringToObject(root,"url_numeric",a.numeric);
     }
     cJSON_AddStringToObject(root,"dhcp_hostname",unique_host);
+    // Read-only since-boot diagnostics. No secret values or access
+    // identifiers are serialized. /api/status already exposes reset reason.
+    cJSON_AddNumberToObject(root,"disconnect_count",station_disconnect_count.load());
+    cJSON_AddNumberToObject(root,"last_disconnect_reason",last_reason.load());
+    cJSON_AddNumberToObject(root,"last_disconnect_age_ms",
+        last_disconnected_ms.load()?now-last_disconnected_ms.load():0);
+    cJSON_AddNumberToObject(root,"reconnect_attempts",station_reconnect_attempts.load());
+    cJSON_AddNumberToObject(root,"reconnect_accepted",station_reconnect_accepts.load());
+    cJSON_AddBoolToObject(root,"sta_has_ip",got_ip.load());
     // Same existing per-boot CSRF token as /api/status (no new gate).
     cJSON_AddStringToObject(root,"token",c23_config_token());
     send_json(root);
@@ -331,6 +347,15 @@ void cottage_wifi_loop() {
     case ConnectTarget::None: break;
     }
     machine.tick(now,got_ip.load(),last_reason.load());
+    // The bundled Arduino Wi-Fi library only auto-retries a subset of
+    // disconnect reasons. When that policy fails, explicitly reattempt
+    // the already configured station at most once per 30 seconds. Do not
+    // interrupt an in-flight /setup candidate or a healthy station. Do not
+    // reboot, rewrite NVS, switch APs or bypass actuator authorization.
+    if(link_retry.due(now,machine.phase(now),machine.has_stored(),got_ip.load())) {
+        station_reconnect_attempts.fetch_add(1);
+        if(WiFi.reconnect())station_reconnect_accepts.fetch_add(1);
+    }
     if(machine.take_commit()) {
         const bool saved=persist(machine.candidate());
         machine.finish_commit(saved,millis());
