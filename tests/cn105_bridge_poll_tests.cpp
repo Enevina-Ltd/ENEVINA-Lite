@@ -93,6 +93,18 @@ int main() {
     CHECK(!read(p,room,68210,utc+9)); // duplicate
     p.sent(6,68215);
     CHECK(!read(p,status,68220,utc+10));
+
+    // The half-degree setpoint encoding 0x80 means unavailable.
+    auto unavailable=settings;
+    unavailable[16]=0x80;
+    p.begin();p.sent(2,68300);
+    CHECK(!read(p,checksum(unavailable),68400,utc+10));
+    p.sent(3,68400);
+    CHECK(!read(p,room,68500,utc+10));
+    p.sent(6,68500);
+    CHECK(!read(p,status,68600,utc+11));
+    CHECK(p.snapshot().sequence==2);
+
     CHECK(cycle(p,utc+11,69000));
     CHECK(p.snapshot().sequence==3);
     std::puts("PASS bridge-origin CN105 completed UART polls");

@@ -80,7 +80,7 @@ private:
         const auto mode=data[4]>8?data[4]-8:data[4];
         if(data[3]>1 || (mode!=1 && mode!=2 && mode!=3 && mode!=7 && mode!=8))
             return false;
-        if(data[11]==0 && data[5]>15)return false;
+        if(data[11]==0x80 || (data[11]==0 && data[5]>15))return false;
         staging_.target_half_c=data[11]?int(data[11])-128:2*(31-data[5]);
         if(staging_.target_half_c<0 || staging_.target_half_c>70)return false;
         staging_.mode=data[3]==0?"OFF":mode==1?"HEAT":"OTHER";
