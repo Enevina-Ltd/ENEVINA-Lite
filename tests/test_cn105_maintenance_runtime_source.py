@@ -18,8 +18,15 @@ class CN105Maintenance(unittest.TestCase):
         self.assertIn("cn105_bridge_get(observed_heat,observed_setpoint)",later)
         self.assertIn("control_note_observed_mode(observed_heat)",later)
         self.assertIn("ControlBlock::NoProposal",later)
+        # HOLD is read-only/NoProposal. Actionable requests now use
+        # cn105_room_state(), which requires a fresh bridge GET.
         self.assertLess(later.index("ControlBlock::NoProposal"),
-                        later.index("if(!cn105_bridge_get(current_heat,current_setpoint))"))
+                        later.index("const auto current=cn105_room_state();"))
+        self.assertIn("if(current.source!=enevina::PumpStateSource::Gateway)",later)
+        room=SRC.split("static enevina::PumpRoomState cn105_room_state() {",1)[1].split(
+            "void cottage_midea_automatic_cancel()",1)[0]
+        self.assertIn("if(!cn105_bridge_get(heat,setpoint)",room)
+        self.assertIn("PumpStateSource::Gateway",room)
         self.assertIn("ControlBlock::InputsUnverified",later)
         self.assertIn("choose_mitsubishi_control(candidate)",later)
     def test_get_memory_guard_and_bounded_retry(self):

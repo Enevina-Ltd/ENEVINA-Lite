@@ -17,7 +17,12 @@ class Cn105ReadRegression(unittest.TestCase):
         self.assertIn("req.setConnectTimeout(cn105_read_connect_timeout_ms)",READ)
         self.assertIn("if(!lease.held())",READ)
         self.assertIn("vTaskDelay(pdMS_TO_TICKS(cn105_read_retry_delay_ms))",READ)
-        self.assertLess(READ.index("req.end();"), READ.index("vTaskDelay(pdMS_TO_TICKS(cn105_read_retry_delay_ms))"))
+        # A lease refusal retries *before* HTTPClient exists; that first
+        # delay cannot require req.end(). For actual GET retries, the
+        # HTTP request must be closed before the next wait.
+        http=READ.split("WiFiClient client;",1)[1]
+        self.assertLess(http.index("req.end();"),
+                        http.index("vTaskDelay(pdMS_TO_TICKS(cn105_read_retry_delay_ms))"))
     def test_revalidate_source_identity_and_content(self):
         self.assertIn("strcmp(id->valuestring",READ)
         self.assertIn("mitsubishi_valid_setpoint(setpoint)",READ)
