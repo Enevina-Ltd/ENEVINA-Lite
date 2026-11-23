@@ -334,6 +334,7 @@ void test_meter_scope_rule() {
     {
         Sim sim;sim.pump_meter=true;
         BuildingIdentifier id;
+        id.select_electric_meter(17);
         for(int i=0;i<12*96;++i) id.add(sim.step());
         const auto r=id.report(sim.utc);
         const double p_true=sim.truth.heat_standby_kw-sim.truth.off_standby_kw+
@@ -367,7 +368,21 @@ void test_meter_scope_rule() {
         // only the electric model restarts, the building model stays.
         const double tau_before=r.model.tau_h;
         const uint32_t samples_before=r.samples;
-        id.reset_electric();
+        std::vector<uint8_t> image(BuildingIdentifier::blob_capacity);
+        size_t bytes=0;
+        CHECK(id.save(12,image.data(),image.size(),bytes));
+        BuildingIdentifier restored;
+        CHECK(restored.load(12,image.data(),bytes));
+        restored.select_electric_meter(17);
+        CHECK(restored.report(sim.utc).model.electric_trusted);
+        restored.select_electric_meter(0);
+        CHECK(!restored.report(sim.utc).model.electric_trusted);
+        CHECK(restored.report(sim.utc).samples==samples_before);
+        BuildingIdentifier legacy;
+        CHECK(legacy.load(12,image.data(),bytes-8));
+        CHECK(legacy.report(sim.utc).samples==samples_before);
+        CHECK(!legacy.report(sim.utc).model.electric_trusted);
+        id.select_electric_meter(18);
         const auto q=id.report(sim.utc);
         CHECK(q.model.electric_samples==0 && !q.model.electric_trusted && !q.model.absolute_bounds);
         CHECK(std::fabs(q.model.tau_h-tau_before)<1e-9 && q.samples==samples_before);

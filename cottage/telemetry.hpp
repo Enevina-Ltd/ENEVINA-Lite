@@ -16,7 +16,8 @@ struct ShellyTelemetry {
     bool received=false;
     int64_t captured_utc=0;
     double watts=0;
-    double total_wh=0; // May include all cottage loads; never pump-only.
+    double total_wh=0;
+    uint32_t meter_identity=0; // Proven owner scope of the settings used for this read.
 };
 struct TemperatureSample {
     bool received=false;

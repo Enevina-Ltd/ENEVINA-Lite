@@ -30,7 +30,7 @@ class MitsubishiModeHistory {
 public:
     static constexpr uint32_t observation_gap_ms=5u*60u*1000u;
     void reset(uint32_t now) { command_dispatched(now); seen_=-1; }
-    void command_dispatched(uint32_t now) { last_change_=now; initial_off_allowed_=false; }
+    void command_dispatched(uint32_t now) { last_change_=now; initial_observation_allowed_=false; }
     void observe(bool heating,uint32_t now,bool first_starts_dwell=false) {
         const int seen=heating?1:0;
         if(seen_<0?first_starts_dwell:
@@ -39,13 +39,13 @@ public:
         seen_=seen;
         last_observation_=now;
     }
-    // An initial gateway OFF observation without prior command authority
-    // is not a mode transition. Mitsubishi protects its own restart.
-    // Start conservatively if already in HEAT so we don't cut a new run.
+    // The first observation on a new, previously disarmed controller
+    // establishes state. Only a known transition or a conservative reset
+    // (e.g. restored authorization or changed endpoint) starts dwell.
     void observe_bridge(bool heating,uint32_t now) {
-        if(seen_<0 && initial_off_allowed_ && !heating)
+        if(seen_<0 && initial_observation_allowed_)
             last_change_=now-mitsubishi_min_mode_dwell_ms;
-        observe(heating,now,heating && initial_off_allowed_);
+        observe(heating,now);
     }
     uint32_t since_change(uint32_t now) const {
         return static_cast<uint32_t>(now-last_change_);
@@ -53,7 +53,7 @@ public:
 private:
     uint32_t last_change_=0,last_observation_=0;
     int seen_=-1;
-    bool initial_off_allowed_=true;
+    bool initial_observation_allowed_=true;
 };
 struct ControlSnapshot {
     bool armed=false;

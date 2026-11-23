@@ -208,13 +208,13 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("mode_comfort_limits_fit(site,mode)", boot)
         self.assertIn("apply_profile(input,site.profile,site.comfort_min_c,site.comfort_max_c", boot)
 
-    def test_meter_scope_rule_on_main(self):
-        self.assertIn("static bool shelly_meter_pump_only() {return false;}", MAIN)
-        self.assertIn("o.meter_pump_only=shelly_meter_pump_only();", WORKER)
-        self.assertIn("pi.meter_pump_only=shelly_meter_pump_only();", WORKER)
-        # Another meter's readings never blend into the electric model.
-        self.assertIn("const uint32_t meter_id=shelly_meter_pump_only()?shelly_meter_identity():0;", WORKER)
-        self.assertIn("id->reset_electric();", WORKER)
+    def test_meter_scope_uses_owner_confirmation_and_binds_both_reads(self):
+        self.assertIn("confirmed_shelly_meter_identity(site_settings_snapshot())", MAIN)
+        self.assertIn("confirmed_shelly_meter_identity(settings)", MAIN)
+        self.assertIn("slot.energy_meter_identity==meter_id", WORKER)
+        self.assertIn("meter.meter_identity==meter_id", WORKER)
+        self.assertIn("pi.meter_pump_only=meter_id!=0;", WORKER)
+        self.assertIn("id->select_electric_meter(meter_id);", WORKER)
 
     def test_learning_is_read_only_and_persisted_hourly(self):
         self.assertIn('nvs_open("cottage_mdl",NVS_READWRITE,&handle)', MAIN)

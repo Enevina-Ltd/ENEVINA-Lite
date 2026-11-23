@@ -167,10 +167,9 @@ public:
         : variable_setpoints_(variable_setpoints) { reset(); }
     void reset();
     bool variable_setpoints() const { return variable_setpoints_; }
-    // Forget ONLY the electric model (the thermal model describes the building
-    // and stays): called when the confirmed heat-pump-only meter changes or the
-    // confirmation is withdrawn, so another meter's readings never blend in.
-    void reset_electric();
+    // Retain the electric fit only while it belongs to the selected meter.
+    // Identity zero withdraws consent for the electric fit.
+    void select_electric_meter(uint32_t identity);
     // Optional prior (e.g. a deliberately wrong guess in tests). Weight is the
     // inverse prior covariance scale: small = weak prior. Never marks the
     // model calibrated; only data + walk-forward validation can.
@@ -193,7 +192,8 @@ public:
 
     // Fixed-size persistence image, versioned and CRC-protected. The
     // identity binds it to one pump/sensor configuration; a mismatch, a
-    // corrupt image or an older format is rejected (learning restarts).
+    // corrupt image or an unsupported format is rejected. Older supported
+    // images lack the meter identity and can restore only the thermal fit.
     static constexpr size_t blob_capacity=2048;
     bool save(uint32_t identity, uint8_t* out, size_t capacity, size_t& used) const;
     bool load(uint32_t identity, const uint8_t* in, size_t size);
@@ -210,6 +210,7 @@ private:
     bool variable_setpoints_=false;
     RlsState<thermal_n> thermal_{};
     RlsState<electric_n> electric_{};
+    uint32_t electric_meter_identity_=0;
     // Continuity of the HEAT/OFF request for start/stop regressors.
     int64_t prev_slot_utc_=0;
     int8_t prev_heat_=-1;

@@ -141,6 +141,18 @@ struct SiteSettings {
     ShellyScope shelly_scope=ShellyScope::Unknown;
 };
 
+// Zero denotes no owner-confirmed heat-pump-only source.
+inline uint32_t confirmed_shelly_meter_identity(const SiteSettings& settings) {
+    if(settings.shelly_scope!=ShellyScope::HeatPump ||
+       !valid_shelly_base_url(settings.shelly_url))return 0;
+    uint32_t hash=2166136261u;
+    for(const char* p=settings.shelly_url;*p;++p) {
+        hash^=static_cast<uint8_t>(*p);
+        hash*=16777619u;
+    }
+    return hash?hash:1;
+}
+
 // Byte layout of the shipped v1 settings blob (Finland-only, before regional
 // setup). It exists ONLY so devices that already hold a configuration keep it
 // on upgrade; members and order must never change.
