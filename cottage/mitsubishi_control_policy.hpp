@@ -29,8 +29,8 @@ constexpr uint32_t mitsubishi_min_mode_dwell_ms=30u*60u*1000u;
 class MitsubishiModeHistory {
 public:
     static constexpr uint32_t observation_gap_ms=5u*60u*1000u;
-    void reset(uint32_t now) { last_change_=now; seen_=-1; }
-    void command_dispatched(uint32_t now) { last_change_=now; }
+    void reset(uint32_t now) { command_dispatched(now); seen_=-1; }
+    void command_dispatched(uint32_t now) { last_change_=now; initial_off_allowed_=false; }
     void observe(bool heating,uint32_t now,bool first_starts_dwell=false) {
         const int seen=heating?1:0;
         if(seen_<0?first_starts_dwell:
@@ -39,12 +39,21 @@ public:
         seen_=seen;
         last_observation_=now;
     }
+    // An initial gateway OFF observation without prior command authority
+    // is not a mode transition. Mitsubishi protects its own restart.
+    // Start conservatively if already in HEAT so we don't cut a new run.
+    void observe_bridge(bool heating,uint32_t now) {
+        if(seen_<0 && initial_off_allowed_ && !heating)
+            last_change_=now-mitsubishi_min_mode_dwell_ms;
+        observe(heating,now,heating && initial_off_allowed_);
+    }
     uint32_t since_change(uint32_t now) const {
         return static_cast<uint32_t>(now-last_change_);
     }
 private:
     uint32_t last_change_=0,last_observation_=0;
     int seen_=-1;
+    bool initial_off_allowed_=true;
 };
 struct ControlSnapshot {
     bool armed=false;
@@ -57,7 +66,7 @@ struct ControlSnapshot {
     double current_setpoint_c=0;
     BootstrapDecision proposal{};
     // Time since the last HEAT<->OFF change that Lite sent OR observed via the
-    // bridge GET. The caller starts it at boot (unknown history -> wait).
+    // bridge GET. The caller also accounts for gaps and unknown history.
     uint32_t ms_since_mode_change=0;
     uint32_t min_mode_dwell_ms=mitsubishi_min_mode_dwell_ms;
 };
