@@ -73,6 +73,26 @@ const context={document,window:{addEventListener(){}},location:{hash:''},history
 vm.createContext(context);
 vm.runInContext(source,context,{filename:'dashboard.js'});
 const run=x=>vm.runInContext(x,context);
+const brandIds=['midea-v3-card','gree-card','daikin-card','daikin-dsiot-card',
+  'cn105-direct-card','daikin-s21-card','haier-card','panasonic-card','wf-rac-card',
+  'mitsubishi-read-card','site-cn105-field','device-cn105-label','device-cn105'];
+const brandCases=[
+  ['',[]],
+  ['midea_lan',['midea-v3-card']],
+  ['mitsubishi_cn105_esphome',['mitsubishi-read-card','site-cn105-field','device-cn105-label','device-cn105']],
+  ['mitsubishi_cn105_direct',['cn105-direct-card']],
+  ['mhi_wf_rac_lan',['wf-rac-card']],
+  ['gree_ewpe_lan',['gree-card']],
+  ['panasonic_uart',['panasonic-card']]
+];
+for(const [adapter,visible] of brandCases){
+  run('updatePumpPanels('+JSON.stringify(adapter)+')');
+  for(const id of brandIds)
+    assert.equal($(id).hidden,!visible.includes(id),
+      'Only the saved '+(adapter||'no')+' pump can show '+id);
+}
+// The existing CN105 telemetry regressions run with a selected CN105 bridge.
+run("state.site={pump_adapter:'mitsubishi_cn105_esphome'};updatePumpPanels(state.site.pump_adapter)");
 (async()=>{
   run("showGree({result:'ok',fresh:false,configured:false})");
   assert.equal($('gree-status').textContent,'Gree-yhteys odottaa lukutestiä.');
@@ -229,5 +249,48 @@ const run=x=>vm.runInContext(x,context);
   run("state.status={...state.status,cn105_control_confirmed:{step:'OFF',utc:1794900000}};showStatus()");
   assert.match($('control-last').textContent,/Vahvistettu pumpulta Pois päältä/);
   assert.equal($('home-dew').textContent,'11,0 °C');
+  // /api/settings is the authority: a draft selection must not reveal a
+  // different brand; a saved change must hide old controls immediately.
+  const previousFetch=context.fetch;
+  const names=[
+    {id:'midea_lan',manufacturer:'Midea',models:'V2/V3',selectable:true,link:'LAN',
+      maturity:'HOST_TESTED_ONLY',measurements:'temperature',commands:'HEAT'},
+    {id:'mitsubishi_cn105_esphome',manufacturer:'Mitsubishi Electric',models:'CN105',
+      selectable:true,link:'UART',maturity:'FIELD_PILOT',measurements:'temperature',commands:'HEAT'}
+  ];
+  const tariff={margin_c_per_kwh:0,transfer_day_c_per_kwh:0,
+    transfer_night_c_per_kwh:0,electricity_tax_c_per_kwh:0,vat_percent:0,
+    transfer_kind:'general',day_start_hour:7,night_start_hour:22,
+    components_include_vat:false};
+  let persistedPump='midea_lan';
+  context.fetch=async (url,req)=>url==='/api/settings'?
+    {ok:true,json:async()=>({pump_adapter:persistedPump,tariff,adapters:names})}:
+    previousFetch(url,req);
+  await run('reloadSite()');
+  assert.equal($('midea-v3-card').hidden,false);
+  assert.equal($('mitsubishi-read-card').hidden,true);
+  assert.equal($('device-cn105-label').hidden,true);
+  assert.equal($('site-cn105-field').hidden,true);
+  assert.equal($('adapter-rows').children.length,1,'only configured pump has a detail row');
+  assert.match($('adapter-rows').children[0].cells[0].textContent,/Midea/);
+  assert.equal($('site-adapter').children.length,3,'selector keeps both manufacturers and none');
+  assert.match($('control-last').textContent,/Odotetaan valitun pumpun/);
+  $('site-adapter').value='mitsubishi_cn105_esphome'; // unsaved draft
+  assert.equal($('mitsubishi-read-card').hidden,true,'draft must not show old CN105 telemetry');
+  assert.equal($('midea-v3-card').hidden,false,'save required to change brand');
+  persistedPump='mitsubishi_cn105_esphome';
+  await run('reloadSite()');
+  assert.equal($('midea-v3-card').hidden,true);
+  assert.equal($('mitsubishi-read-card').hidden,false);
+  assert.equal($('site-cn105-field').hidden,false);
+  assert.match($('adapter-rows').children[0].cells[0].textContent,/Mitsubishi/);
+  persistedPump='';
+  await run('reloadSite()');
+  assert.equal($('midea-v3-card').hidden,true);
+  assert.equal($('mitsubishi-read-card').hidden,true);
+  assert.equal($('device-cn105-label').hidden,true);
+  assert.match($('adapter-rows').children[0].cells[0].textContent,/ei ole valittu/);
+  context.fetch=previousFetch;
+  console.log('PASS dashboard manufacturer visibility on saved /api/settings changes');
   console.log('PASS dashboard mid-POST edits, out-of-order status success/failure, stale clearance and recovery');
 })().catch(e=>{console.error(e);process.exitCode=1});
