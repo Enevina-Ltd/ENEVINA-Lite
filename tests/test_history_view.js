@@ -71,6 +71,9 @@ assert.equal(A.hsEventText({k:3,s:2,v:300},dur),'Lämpöpumpun tiedonsiirto pala
 assert.equal(A.hsEventText({k:2,s:3,v:0},dur),'Huonelämpötila-anturi katkesi');
 assert(A.hsEventText({k:1,s:0,v:3},dur).endsWith('3)'));
 assert(A.hsEventText({k:4,s:0,v:2},dur).endsWith(': 2'));
+assert.equal(A.hsEventText({k:5,s:0,v:1},dur),'Pumppu kuittasi ohjauskomentoja: 1');
+assert(A.hsEventText({k:5,v:1,control_step:'HEAT',control_source:'PRICE_CONTROL',
+  target_c:16,readback:'CN105_GATEWAY_GET'},dur).includes('16 °C · Hintaohjaus'));
 assert(A.hsEventText({k:6,s:0,v:1},dur).includes('epäonnistui'));
 assert.equal(A.hsEventText({k:99,s:0,v:0},dur),'Tuntematon tapahtuma');
 assert.equal(A.hsEventText({k:2,s:77,v:0},dur),'? katkesi');         // unknown source is not hidden

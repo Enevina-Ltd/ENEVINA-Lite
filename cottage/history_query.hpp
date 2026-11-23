@@ -10,6 +10,18 @@ namespace enevina::cottage {
 constexpr size_t kMaxHistoryPoints=288;
 constexpr double kNaN=std::numeric_limits<double>::quiet_NaN();
 
+struct PumpCost {
+    double amount=0;
+    uint32_t minutes=0;
+    uint8_t currency=0; // 0 absent, 7 mixed
+    void add(double charge,uint8_t covered,uint8_t code) {
+        currency=currency && currency!=code?7:code;
+        amount+=charge;
+        minutes+=covered;
+    }
+    double value() const {return currency>=1 && currency<=5?amount:kNaN;}
+};
+
 struct HistoryPoint {
     int64_t t=0;                 // UTC of the bucket start
     double indoor=kNaN,rh=kNaN,outdoor=kNaN,setpoint=kNaN,power=kNaN,price=kNaN;
@@ -39,6 +51,7 @@ struct HistorySummary {
     uint8_t currency_mask=0;    // distinct currencies (incl. legacy unknown) in range
     size_t armed_slots=0;
     uint8_t scope_mask=0;        // bit s set: a present power slot was measured under scope s (0/1/2)
+    PumpCost pump_cost{};
     double coverage() const {return slots_total?static_cast<double>(slots_present)/static_cast<double>(slots_total):0;}
 };
 
@@ -82,10 +95,19 @@ inline size_t build_history_series(const HistoryStore& store,int64_t end_utc,siz
                 pw.add(r->power_w);
                 const uint8_t covered=history_power_coverage_minutes(r->flags);
                 if(covered) {
-                    summary.kwh+=r->power_w*(covered/60.0)/1000.0;
+                    const double kwh=r->power_w*(covered/60.0)/1000.0;
+                    summary.kwh+=kwh;
                     summary.verified_power_minutes+=covered;
                     p.verified_power_minutes+=covered;
                     ++summary.kwh_slots;
+                    const uint8_t code=static_cast<uint8_t>(
+                        (r->flags&kPriceCurrencyMask)>>kPriceCurrencyShift);
+                    // Same quarter-hour, a confirmed pump-only meter and
+                    // known currency. Do not fill missing power or tariffs.
+                    if(scope==1 && code>=1 && code<=5 && r->price_e5!=kMissingI32) {
+                        const double charge=kwh*(r->price_e5/1e5);
+                        summary.pump_cost.add(charge,covered,code);
+                    }
                 }
             }
             if(r->price_e5!=kMissingI32) {
@@ -155,6 +177,14 @@ inline void val(Emit& emit,double v,const char* fmt) {
     std::snprintf(b,sizeof(b),fmt,v);
     emit(b);
 }
+template<class Emit>
+inline void pump_cost_fields(Emit& emit,const PumpCost& cost) {
+    char b[100];
+    emit(",\"pump_cost\":");val(emit,cost.value(),"%.5f");
+    std::snprintf(b,sizeof(b),",\"pump_cost_currency\":\"%s\",\"pump_cost_minutes\":%u",
+                  history_currency_name(cost.currency),cost.minutes);
+    emit(b);
+}
 } // namespace history_detail
 
 // Streams the /api/history document. `meter_scope` in the output describes what
@@ -176,6 +206,7 @@ inline void history_json(const char* range_name,size_t step_slots,const HistoryP
         s.slots_total,s.slots_present,s.kwh_slots,s.armed_slots,s.verified_power_minutes);
     emit(b);
     emit("\"kwh\":");val(emit,(s.kwh_slots&&s.scope_mask!=0&&(s.scope_mask&(s.scope_mask-1))==0)?s.kwh:kNaN,"%.3f");
+    pump_cost_fields(emit,s.pump_cost);
     emit(",\"indoor\":{\"min\":");val(emit,s.indoor.min,"%.2f");
     emit(",\"max\":");val(emit,s.indoor.max,"%.2f");emit(",\"avg\":");val(emit,s.indoor.avg(),"%.2f");
     emit("},\"outdoor\":{\"min\":");val(emit,s.outdoor.min,"%.2f");
@@ -202,8 +233,20 @@ inline void history_json(const char* range_name,size_t step_slots,const HistoryP
     for(size_t i=0;i<events.count()&&shown<60;++i) {
         const HistoryEvent& e=events.newest(i);
         if(static_cast<int64_t>(e.utc)<from_utc) continue;
-        std::snprintf(b,sizeof(b),"%s{\"t\":%u,\"k\":%u,\"s\":%u,\"v\":%d,\"a\":%u}",shown?",":"",e.utc,e.kind,e.source,e.value,e.arg);
+        std::snprintf(b,sizeof(b),"%s{\"t\":%u,\"k\":%u,\"s\":%u,\"v\":%d,\"a\":%u",shown?",":"",e.utc,e.kind,e.source,e.value,e.arg);
         emit(b);
+        const unsigned step=e.arg&7u;
+        if(e.kind==static_cast<uint8_t>(HistoryEventKind::CommandConfirmed) &&
+           (e.arg&0x80000000u) && step>=1 && step<=3) {
+            const char* steps[]={"","SETPOINT","HEAT","OFF"};
+            const char* sources[]={"UNKNOWN","MPC","PRICE_CONTROL","THERMOSTAT"};
+            std::snprintf(b,sizeof(b),
+                ",\"control_step\":\"%s\",\"control_source\":\"%s\",\"readback\":\"CN105_GATEWAY_GET\",\"target_c\":",
+                steps[step],sources[(e.arg>>3)&3u]);
+            emit(b);
+            val(emit,step==3?kNaN:((e.arg>>8)&0xffffu)/10.0,"%.1f");
+        }
+        emit("}");
         ++shown;
     }
     emit("]}");
