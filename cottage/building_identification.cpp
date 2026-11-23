@@ -150,7 +150,9 @@ void BuildingIdentifier::reset() {
     rls_init(electric_,nullptr,prior_p);
 }
 
-void BuildingIdentifier::reset_electric() {
+void BuildingIdentifier::select_electric_meter(uint32_t identity) {
+    if(identity==electric_meter_identity_)return;
+    electric_meter_identity_=identity;
     rls_init(electric_,nullptr,prior_p);
     elec_err_sq_=0;elec_sq_=0;elec_on_=0;
     revision_++;
@@ -576,15 +578,22 @@ struct IdentifierImage {
     uint32_t ring_count, ring_head, windows_aborted, revision;
     uint32_t crc;
 };
-static_assert(sizeof(IdentifierImage)<=BuildingIdentifier::blob_capacity,
+struct MeterIdentifierImage {
+    IdentifierImage model;
+    uint32_t meter_identity;
+    uint32_t crc;
+};
+static_assert(sizeof(MeterIdentifierImage)==sizeof(IdentifierImage)+8);
+static_assert(sizeof(MeterIdentifierImage)<=BuildingIdentifier::blob_capacity,
               "identifier image must fit the NVS blob");
 constexpr uint32_t identifier_magic=0x454E4D31u; // "ENM1"
 
 bool BuildingIdentifier::save(uint32_t identity,uint8_t* out,size_t capacity,size_t& used) const {
     used=0;
-    if(!out || capacity<sizeof(IdentifierImage)) return false;
-    IdentifierImage b;
-    std::memset(static_cast<void*>(&b),0,sizeof(b));
+    if(!out || capacity<sizeof(MeterIdentifierImage)) return false;
+    MeterIdentifierImage image;
+    std::memset(static_cast<void*>(&image),0,sizeof(image));
+    auto& b=image.model;
     b.magic=identifier_magic;b.version=blob_version+(variable_setpoints_?1u:0u);b.identity=identity;
     b.size=sizeof(IdentifierImage);
     b.thermal=thermal_;b.electric=electric_;
@@ -604,15 +613,22 @@ bool BuildingIdentifier::save(uint32_t identity,uint8_t* out,size_t capacity,siz
     b.ring_count=ring_count_;b.ring_head=ring_head_;
     b.windows_aborted=windows_aborted_;b.revision=revision_;
     b.crc=id_crc32(reinterpret_cast<const uint8_t*>(&b),offsetof(IdentifierImage,crc));
-    std::memcpy(out,&b,sizeof(b));
-    used=sizeof(b);
+    image.meter_identity=electric_meter_identity_;
+    image.crc=id_crc32(reinterpret_cast<const uint8_t*>(&image),
+                        offsetof(MeterIdentifierImage,crc));
+    std::memcpy(out,&image,sizeof(image));
+    used=sizeof(image);
     return true;
 }
 
 bool BuildingIdentifier::load(uint32_t identity,const uint8_t* in,size_t size) {
-    if(!in || size!=sizeof(IdentifierImage)) return false;
-    IdentifierImage b;
-    std::memcpy(&b,in,sizeof(b));
+    const bool has_meter=size==sizeof(MeterIdentifierImage);
+    if(!in || (!has_meter && size!=sizeof(IdentifierImage))) return false;
+    MeterIdentifierImage image{};
+    std::memcpy(&image,in,size);
+    const auto& b=image.model;
+    if(has_meter && image.crc!=id_crc32(in,offsetof(MeterIdentifierImage,crc)))
+        return false;
     if(b.magic!=identifier_magic || b.version!=blob_version+(variable_setpoints_?1u:0u) ||
        b.size!=sizeof(IdentifierImage) || b.identity!=identity ||
        b.crc!=id_crc32(reinterpret_cast<const uint8_t*>(&b),offsetof(IdentifierImage,crc)))
@@ -629,14 +645,19 @@ bool BuildingIdentifier::load(uint32_t identity,const uint8_t* in,size_t size) {
        b.prev_heat<-1 || b.prev_heat>1 || !id_finite(b.window_pred))
         return false;
     BuildingIdentifier x(variable_setpoints_);
-    x.thermal_=b.thermal;x.electric_=b.electric;
+    x.thermal_=b.thermal;
+    if(has_meter) {
+        x.electric_meter_identity_=image.meter_identity;
+        x.electric_=b.electric;
+        x.elec_on_=b.elec_on;
+        x.elec_err_sq_=b.elec_err_sq;x.elec_sq_=b.elec_sq;
+    }
     x.prev_slot_utc_=b.prev_slot_utc;x.window_next_utc_=b.window_next_utc;
     x.last_sample_utc_=b.last_sample_utc;x.prev_heat_=static_cast<int8_t>(b.prev_heat);
     x.samples_=b.samples;x.heating_=b.heating;x.off_=b.off;x.starts_=b.starts;
-    x.stops_=b.stops;x.skipped_=b.skipped;x.elec_on_=b.elec_on;
+    x.stops_=b.stops;x.skipped_=b.skipped;
     x.outdoor_min_=b.outdoor_min;x.outdoor_max_=b.outdoor_max;
     x.start_outdoor_sum_=b.start_outdoor_sum;x.stop_outdoor_sum_=b.stop_outdoor_sum;
-    x.elec_err_sq_=b.elec_err_sq;x.elec_sq_=b.elec_sq;
     x.learning_ok_=b.learning_ok!=0;x.window_active_=b.window_active!=0;
     x.was_calibrated_=b.was_calibrated!=0;x.window_switch_=static_cast<uint8_t>(b.window_switch);
     std::memcpy(x.window_theta_,b.window_theta,sizeof(x.window_theta_));

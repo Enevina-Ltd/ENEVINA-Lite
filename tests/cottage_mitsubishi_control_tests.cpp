@@ -68,6 +68,9 @@ int main() {
         stop.current_heat=true;
         stop.proposal.action=BootstrapAction::Off;
         stop.ms_since_mode_change=running.since_change(minute);
+        assert(choose_mitsubishi_control(stop).step==ControlStep::SetOff);
+        running.command_dispatched(minute);
+        stop.ms_since_mode_change=running.since_change(2*minute);
         assert(choose_mitsubishi_control(stop).gate==ControlBlock::ModeDwell);
 
         // A read gap or endpoint change is different from arming.

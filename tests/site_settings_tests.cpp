@@ -336,16 +336,25 @@ static void profile_and_comfort_limits() {
 static void shelly_scope_setting() {
     SiteSettings s{};
     assert(s.shelly_scope==ShellyScope::Unknown);
+    assert(confirmed_shelly_meter_identity(s)==0);
     assert(apply_site_setting(s,"shelly_url","http://192.168.1.30")==SettingError::Ok);
+    assert(confirmed_shelly_meter_identity(s)==0);
     assert(apply_site_setting(s,"shelly_scope","heat_pump")==SettingError::Ok&&s.shelly_scope==ShellyScope::HeatPump);
+    const auto first_meter=confirmed_shelly_meter_identity(s);
+    assert(first_meter!=0);
     assert(apply_site_setting(s,"shelly_scope","pump")==SettingError::BadChoice);
     // Saving the same address keeps the confirmation ...
     assert(apply_site_setting(s,"shelly_url","http://192.168.1.30")==SettingError::Ok);
     assert(s.shelly_scope==ShellyScope::HeatPump);
+    assert(confirmed_shelly_meter_identity(s)==first_meter);
     // ... a different meter is unconfirmed until the owner says so again.
     assert(apply_site_setting(s,"shelly_url","http://192.168.1.31")==SettingError::Ok);
     assert(s.shelly_scope==ShellyScope::Unknown);
+    assert(confirmed_shelly_meter_identity(s)==0);
+    assert(apply_site_setting(s,"shelly_scope","heat_pump")==SettingError::Ok);
+    assert(confirmed_shelly_meter_identity(s)!=0 && confirmed_shelly_meter_identity(s)!=first_meter);
     assert(apply_site_setting(s,"shelly_scope","whole_house")==SettingError::Ok);
+    assert(confirmed_shelly_meter_identity(s)==0);
     assert(apply_site_setting(s,"shelly_url","")==SettingError::Ok&&s.shelly_scope==ShellyScope::Unknown);
     s.shelly_scope=static_cast<ShellyScope>(9);
     assert(!valid_site_settings(s));

@@ -223,16 +223,10 @@ static std::atomic<uint32_t> identifier_reset_failures{0};
 // A plan decision is NEVER reported as executed before this confirmation.
 static std::atomic<int64_t> mpc_confirmed_slot_utc{0};
 static std::atomic<int> mpc_confirmed_heat{-1};
-// Main has no owner confirmation of the Shelly measurement scope (the
-// stacked settings PR adds SiteSettings::shelly_scope). Until the owner
-// confirms "heat pump only", the meter is treated as whole-house/unknown:
-// it is shown as measured consumption but never used for COP or the MPC's
-// energy model.
-static bool shelly_meter_pump_only() {return false;}
-// Identity of the confirmed heat-pump-only meter (0 = none). When it changes
-// or the confirmation is withdrawn the electric model restarts, so another
-// meter's readings never blend into it. Constant on main (no confirmation).
-static uint32_t shelly_meter_identity() {return 0;}
+static uint32_t shelly_meter_identity() {
+    return confirmed_shelly_meter_identity(site_settings_snapshot());
+}
+static bool shelly_meter_pump_only() {return shelly_meter_identity()!=0;}
 // The owner's HARD comfort limits (0 = unset) from the profile settings. The
 // MPC band, plan and plan validity are bound to them; the price controller
 // applies the same limits through apply_profile() / mode_comfort_limits_fit().
@@ -668,7 +662,8 @@ static void shelly_worker(void*) {
                 if(root && cJSON_IsBool(output) &&
                    number(cJSON_GetObjectItemCaseSensitive(root,"apower"),watts,0,20000) &&
                    number(cJSON_GetObjectItemCaseSensitive(energy,"total"),wh,0,1e12)) {
-                    ShellyTelemetry next{true,time(nullptr),watts,wh};
+                    ShellyTelemetry next{true,time(nullptr),watts,wh,
+                                          confirmed_shelly_meter_identity(settings)};
                     xSemaphoreTake(lock_data,portMAX_DELAY);consumption=next;
                     shelly_relay_on=cJSON_IsTrue(output);
                     xSemaphoreGive(lock_data);
@@ -1922,6 +1917,7 @@ struct LearningSlot {
     uint32_t commands_sent=0;
     uint32_t config_generation=0;
     bool energy_ok=false;double total_wh=0;int64_t energy_utc=0;
+    uint32_t energy_meter_identity=0;
 };
 static void optimizer_worker(void*) {
     // N16R8 physical CN105/Shelly benchmark: the old ordinary new[] for
@@ -1965,7 +1961,7 @@ static void optimizer_worker(void*) {
     const bool restored=id && epoch_known &&
         identifier_load(*id,model_store_identity(identity,model_epoch));
     bool reset_unpersisted=false,reset_by_owner=false;
-    uint32_t electric_meter_id=0;
+    if(id)id->select_electric_meter(shelly_meter_identity());
     uint32_t last_reset_retry_ms=0;
     if(id) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
@@ -2002,6 +1998,7 @@ static void optimizer_worker(void*) {
                 epoch_known=load_model_epoch(model_store,model_epoch);
                 const bool domain_restored=epoch_known && !owner_reset &&
                     identifier_load(*id,model_store_identity(identity,model_epoch));
+                id->select_electric_meter(shelly_meter_identity());
                 reset_unpersisted=false;reset_by_owner=false;
                 slot=LearningSlot{};
                 saved_revision=id->report(now).revision;
@@ -2041,13 +2038,8 @@ static void optimizer_worker(void*) {
                 if(reset_by_owner) identifier_reset_state.store(reset_unpersisted?3:2);
             }
         }
-        if(id) {
-            const uint32_t meter_id=shelly_meter_pump_only()?shelly_meter_identity():0;
-            if(meter_id!=electric_meter_id) {
-                electric_meter_id=meter_id;
-                id->reset_electric();
-            }
-        }
+        const uint32_t meter_id=shelly_meter_identity();
+        if(id)id->select_electric_meter(meter_id);
         if(wifi_ok.load() && clock_ok() && prices && weather && aligned && hz && rows &&
            legacy && trend && id && id->variable_setpoints()==variable_setpoint_model_selected()) {
             // A fresh indoor measurement is not a forecast for an entire
@@ -2091,11 +2083,12 @@ static void optimizer_worker(void*) {
                 o.in_model_domain=id->variable_setpoints() || !view_heat ||
                     view.setpoint_c<=16.01;
                 const int64_t dt=meter.captured_utc-slot.energy_utc;
-                o.electric_valid=slot.energy_ok && valid_shelly(meter,now,60) &&
+                o.meter_pump_only=meter_id!=0 && slot.energy_meter_identity==meter_id &&
+                    meter.meter_identity==meter_id;
+                o.electric_valid=o.meter_pump_only && slot.energy_ok && valid_shelly(meter,now,60) &&
                     meter.total_wh>=slot.total_wh && dt>=600 && dt<=1200;
                 if(o.electric_valid)
                     o.electric_kwh=(meter.total_wh-slot.total_wh)/1000.0*900.0/double(dt);
-                o.meter_pump_only=shelly_meter_pump_only();
                 id->add(o);
             }
             slot.open=false;
@@ -2127,7 +2120,7 @@ static void optimizer_worker(void*) {
             mpc_mode_target(heating_allowed,target_c);
             PlannerInput pi{};
             pi.now_utc=now;pi.identifier=id;
-            pi.meter_pump_only=shelly_meter_pump_only();
+            pi.meter_pump_only=meter_id!=0;
             pi.currency_scale=currency_limit_scale(ms.currency);
             pi.heating_allowed=heating_allowed;pi.target_valid=heating_allowed;
             pi.target_c=target_c;
@@ -2244,6 +2237,7 @@ static void optimizer_worker(void*) {
             xSemaphoreGive(lock_data);
             slot.energy_ok=valid_shelly(meter,time(nullptr),30);
             slot.total_wh=meter.total_wh;slot.energy_utc=meter.captured_utc;
+            slot.energy_meter_identity=meter.meter_identity;
         }
         // Recompute on quarter-hour boundary, retries every minute when offline.
         const time_t t=time(nullptr);
@@ -2980,7 +2974,12 @@ static enevina::cottage::HistoryInputs history_collect() {
     }
     in.power_valid=valid_shelly(st,now);in.power_w=st.watts;
     in.power_sample_utc=st.captured_utc;
-    in.power_scope=static_cast<uint8_t>(site_settings_snapshot().shelly_scope);
+    const auto meter_settings=site_settings_snapshot();
+    auto scope=meter_settings.shelly_scope;
+    if(scope==ShellyScope::HeatPump &&
+       (!st.meter_identity || st.meter_identity!=confirmed_shelly_meter_identity(meter_settings)))
+        scope=ShellyScope::Unknown;
+    in.power_scope=static_cast<uint8_t>(scope);
     const auto market=enevina_firmware::market_status();
     in.prices_ok=market.current_price_valid;
     double total=0;
