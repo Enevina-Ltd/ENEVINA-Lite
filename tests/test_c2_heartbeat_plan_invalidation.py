@@ -42,14 +42,15 @@ class HeartbeatGapTests(TestCase):
         main=(ROOT/"firmware/cottage/src/main.cpp").read_text()
         self.assertIn("if(verified.mode!=pump.mode || !continuous || heating_target_changed)",main)
         self.assertIn("plan_count=0;\n                last_plan.status=MpcStatus::InvalidInput;",main)
-        self.assertIn("pump.mode==ObservedPumpMode::Off || pump.mode==ObservedPumpMode::Heat",main)
+        self.assertIn("cn105_gateway_requests.snapshot(now,ms,endpoint,link)",main)
 
     def test_solver_result_cannot_resurrect_pretransition_mode(self):
         main=(ROOT/"firmware/cottage/src/main.cpp").read_text()
         self.assertIn("++observed_mode_generation;",main)
         self.assertIn("const auto view=boundary?optimizer_pump_state(now,midea)",main)
         self.assertIn("const bool mode_changed=after.request_generation!=view.request_generation",main)
-        self.assertIn("view.request_generation!=observed_mode_generation",main)
+        self.assertIn("after.link_generation!=view.link_generation",main)
+        self.assertIn("same_cn105_gateway_request(slot.gateway_start,view)",main)
         assert main.index("if(mode_changed) {") < main.index("last_plan=result;")
         assert main.index("last_plan=result;") < main.index("xSemaphoreGive(lock_data);",main.index("if(mode_changed) {"))
 

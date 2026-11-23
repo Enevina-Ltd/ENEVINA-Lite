@@ -1,6 +1,7 @@
 // Building identification: parameter recovery, honest calibration states,
 // meter-scope rule, walk-forward validation, degradation and persistence.
 #include "cottage/building_identification.hpp"
+#include "cottage/cn105_gateway_request.hpp"
 #include "cottage/optimization_profile.hpp"
 #include "tests/cottage_closed_loop.hpp"
 #include <cassert>
@@ -85,6 +86,67 @@ void test_comfort_band() {
     CHECK(!mpc_comfort_band(16.0,b));
     CHECK(!mpc_comfort_band(NAN,b));
     CHECK(mpc_comfort_band(5.2,b) && b.lower_c>=5.0);
+}
+
+void test_standard_gateway_can_calibrate_without_uart_extension_or_meter() {
+    Sim sim;
+    BuildingIdentifier id;
+    CN105GatewayRequestHistory history;
+    uint64_t ms=10000;
+    unsigned accepted=0;
+    for(int i=0;i<12*96;++i) {
+        auto o=sim.step(); // simulated independent indoor measurement
+        CHECK(history.note(o.heat_requested,16,o.slot_utc,ms,1,1));
+        const auto begin=history.snapshot(o.slot_utc,ms,1,1);
+        for(unsigned minute=1;minute<=15;++minute)
+            CHECK(history.note(o.heat_requested,16,o.slot_utc+minute*60,ms+minute*60000,1,1));
+        const auto end=history.snapshot(o.slot_utc+900,ms+900000,1,1);
+        o.heat_valid=same_cn105_gateway_request(begin,end) && end.request_minutes>=14;
+        o.electric_valid=false;
+        o.meter_pump_only=false;
+        CHECK(!begin.evidence.source_time_verified && !end.evidence.source_time_verified);
+        accepted+=o.heat_valid;
+        id.add(o);
+        ms+=900000;
+    }
+    const auto r=id.report(sim.utc);
+    std::printf("Standard gateway simulated learning: slots=%u accepted=%u starts=%u stops=%u state=%s\n",
+        r.samples,accepted,r.starts,r.stops,calibration_state_name(r.state));
+    CHECK(accepted==12*96);
+    CHECK(r.state==CalibrationState::Calibrated);
+    CHECK(!r.model.electric_trusted && !r.model.cop_identified);
+    ComfortBand band{};
+    CHECK(mpc_comfort_band(12.0,band));
+    Parameters model{};
+    bool kwh=true;
+    CHECK(id.build_parameters(sim.utc,band,false,1.0,model,kwh)==ModelBuildError::None);
+    CHECK(!kwh && valid(model));
+}
+
+void test_gateway_requests_without_physical_response_do_not_calibrate() {
+    Sim sim;
+    sim.always_off=true; // physical heating never follows the reported request
+    BuildingIdentifier id;
+    CN105GatewayRequestHistory history;
+    uint64_t ms=10000;
+    for(int i=0;i<12*96;++i) {
+        auto o=sim.step();
+        o.heat_requested=(i/4)%2==0; // gateway can report plausible requests
+        CHECK(history.note(o.heat_requested,16,o.slot_utc,ms,1,1));
+        const auto begin=history.snapshot(o.slot_utc,ms,1,1);
+        for(unsigned minute=1;minute<=15;++minute)
+            CHECK(history.note(o.heat_requested,16,o.slot_utc+minute*60,ms+minute*60000,1,1));
+        const auto end=history.snapshot(o.slot_utc+900,ms+900000,1,1);
+        o.heat_valid=same_cn105_gateway_request(begin,end) && end.request_minutes>=14;
+        o.electric_valid=false;
+        o.meter_pump_only=false;
+        id.add(o);
+        ms+=900000;
+    }
+    const auto r=id.report(sim.utc);
+    std::printf("Gateway request without physical heating response: state=%s block=%s\n",
+        calibration_state_name(r.state),calibration_block_name(r.block));
+    CHECK(r.state!=CalibrationState::Calibrated);
 }
 
 void test_recovers_truth_and_calibrates() {
@@ -642,6 +704,8 @@ int main() {
     test_no_data_is_honest();
     test_comfort_band();
     test_recovers_truth_and_calibrates();
+    test_standard_gateway_can_calibrate_without_uart_extension_or_meter();
+    test_gateway_requests_without_physical_response_do_not_calibrate();
     test_residential_identification_and_planning();
     test_no_heating_never_calibrates();
     test_meter_scope_rule();

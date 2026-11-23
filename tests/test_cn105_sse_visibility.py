@@ -66,7 +66,7 @@ class Cn105SseVisibilityTests(unittest.TestCase):
         self.assertIn('if(must_revoke && !cottage_control_revoke_saved_intent())',MAIN)
         self.assertIn('control_armed.store(restore && !must_revoke)',MAIN)
         post = MAIN.split("static bool cn105_bridge_post(",1)[1].split(
-            "static void cottage_control_tick()",1)[0]
+            "static void cottage_control_tick(const enevina::PumpRoomState& bridge)",1)[0]
         self.assertIn('!control_armed.load()',post)
         # URL guard is applied at use time to the browser-configured value.
         self.assertIn('valid_cn105_events_url(settings.cn105_url)',MAIN)

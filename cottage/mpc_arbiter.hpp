@@ -57,9 +57,10 @@ struct ArbiterInput {
     // The owner's CURRENT hard comfort limits (0 = unset). A plan built from
     // other limits is revoked; limits that cannot hold the target are refused.
     ComfortLimits limits{};
-    // Pump HEAT/OFF from a SOURCE-VERIFIED, fresh pump poll only; a gateway
-    // HTTP/SSE receipt is not pump-origin evidence (Codex P1, PR #63).
+    // Direct pump observations or a separately identified gateway REQUEST
+    // observed via continuous GETs. The latter is not pump-origin evidence.
     bool pump_state_known=false;
+    bool pump_gateway_request=false;
     bool pump_heat=false;
     double pump_setpoint_c=0;
     // The pump readback confirmed THIS plan's first decision in its own slot

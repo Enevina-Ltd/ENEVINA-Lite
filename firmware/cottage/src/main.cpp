@@ -61,6 +61,7 @@
 #include "cottage/finnish_tariff.hpp"
 #include "cottage/sse_transport.hpp"
 #include "cottage/cn105_source_proof.hpp"
+#include "cottage/cn105_gateway_request.hpp"
 #include "../../main/market.hpp"
 #include "../../main/weather.hpp"
 
@@ -83,6 +84,7 @@ struct Cn105LinkIdentity {
     }
 };
 static Cn105LinkIdentity verified_cn105_link{}; // protected by lock_data
+static CN105GatewayRequestHistory cn105_gateway_requests{}; // protected by lock_data
 static Cn105LinkIdentity cn105_command_link{};
 static MitsubishiCommandReadback cn105_command_readback{}; // protected by lock_data
 // Legacy ESPHome /events exposes real device state as SSE, but the receipt
@@ -770,11 +772,10 @@ static void mpc_mode_target(bool& heating_allowed,double& target_c) {
     if(mode.mode==CottageMode::Drying && drying_blocks_heat(plan)) return;
     heating_allowed=true;target_c=plan.target_c;
 }
-// Pump HEAT/OFF for the MPC chain (planning, learning, plan validity): ONLY a
-// fresh, source-verified CN105 poll (pump-origin time + completed UART poll
-// proof). An ESPHome GET/SSE receipt can repeat cached state while the pump
-// link is down, so it is never used as evidence here (Codex P1, PR #63).
-// `minutes` is the verified, uninterrupted time in that mode.
+// Standard CN105 gateway GETs observe the control request. The thermal
+// model learns its measured effect, not a claim of fresh pump UART reads.
+// The optional UART proof is kept separately for actual bus measurements.
+static bool cn105_selected();
 static enevina::PumpRoomState optimizer_pump_state(int64_t now,bool midea) {
     using namespace enevina;
     if(midea)return cottage_midea_room_state();
@@ -786,25 +787,15 @@ static enevina::PumpRoomState optimizer_pump_state(int64_t now,bool midea) {
     if(cottage_daikin_s21_selected())return cottage_daikin_s21_room_state();
     if(cottage_haier_selected())return cottage_haier_room_state();
     if(cottage_panasonic_selected())return cottage_panasonic_room_state();
-    PumpRoomState state{};
+    if(!cn105_selected() || !wifi_ok.load() || !clock_ok() ||
+       cottage_ota_network_maintenance())return {};
+    const auto endpoint=site_settings_endpoint_generation();
+    const auto link=cottage_wifi_link_generation();
+    const auto ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
     xSemaphoreTake(lock_data,portMAX_DELAY);
-    if(verified_cn105_link.current() && valid_cn105(pump,now) &&
-       (pump.mode==ObservedPumpMode::Off || pump.mode==ObservedPumpMode::Heat)) {
-        const auto ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
-        state.protocol=PumpRoomProtocol::Cn105EspHome;
-        state.source=PumpStateSource::VerifiedBus;
-        state.mode=pump.mode==ObservedPumpMode::Heat?PumpRoomMode::Heat:PumpRoomMode::Off;
-        state.mode_minutes=observed_mode_duration.minutes(pump.mode,ms,true);
-        state.request_minutes=static_cast<unsigned>(
-            std::min<uint64_t>((ms-verified_cn105_request_since_ms)/60000,600));
-        state.setpoint_c=pump.setpoint_c;
-        state.request_generation=observed_mode_generation;
-        state.endpoint_generation=verified_cn105_link.endpoint;
-        state.link_generation=verified_cn105_link.wifi;
-        state.heating=mitsubishi_heating_limits;
-        state.evidence=pump.evidence;
-    }
+    const auto state=cn105_gateway_requests.snapshot(now,ms,endpoint,link);
     xSemaphoreGive(lock_data);
+    if(endpoint!=site_settings_endpoint_generation() || link!=cottage_wifi_link_generation())return {};
     return state;
 }
 static bool direct_lan_pump_selected() {
@@ -841,6 +832,8 @@ static ArbiterInput build_arbiter_input(int64_t now,const TemperatureSample& t) 
     xSemaphoreGive(lock_data);
     in.mode_generation=state.request_generation;
     in.pump_state_known=known_heating_mode(state);
+    in.pump_gateway_request=state.protocol==enevina::PumpRoomProtocol::Cn105EspHome &&
+        state.source==enevina::PumpStateSource::Gateway;
     in.pump_heat=state.mode==enevina::PumpRoomMode::Heat;
     in.pump_setpoint_c=state.setpoint_c;
     in.own_transition_confirmed=in.plan.has_plan && (uses_common_pump_state()?
@@ -918,6 +911,8 @@ static TemperatureSample selected_room_sample(int64_t now) {
     return selected_room_sample(now,site_room_temperature_config());
 }
 static bool cn105_bridge_get(bool& heating,double& target) {
+    const Cn105LinkIdentity link{site_settings_endpoint_generation(),cottage_wifi_link_generation()};
+    const auto perform=[&]()->bool {
     if(!cn105_selected()) return false;
     const String url=cn105_local_url(
         "/climate/Mitsubishi%20Electric%20MSZ-FD25VA?detail=all");
@@ -999,7 +994,6 @@ static bool cn105_bridge_get(bool& heating,double& target) {
         }
         if(verified) {
             if(attempt>0)cn105_get_recovered_count.fetch_add(1);
-            control_last_bridge_read_utc.store(time(nullptr));
             return true;
         }
         // Reject malformed/unauthorized/non-200 responses; only -11 (HTTP
@@ -1010,6 +1004,18 @@ static bool cn105_bridge_get(bool& heating,double& target) {
         vTaskDelay(pdMS_TO_TICKS(cn105_read_retry_delay_ms));
     }
     return false;
+    };
+    const bool ok=perform();
+    const int64_t utc=time(nullptr);
+    const auto ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
+    xSemaphoreTake(lock_data,portMAX_DELAY);
+    const bool current=ok && link.current() && wifi_ok.load() && clock_ok() &&
+        !cottage_ota_network_maintenance();
+    const bool observed=current && cn105_gateway_requests.note(heating,target,utc,ms,link.endpoint,link.wifi);
+    if(!observed)cn105_gateway_requests.invalidate();
+    else control_last_bridge_read_utc.store(utc);
+    xSemaphoreGive(lock_data);
+    return observed;
 }
 static enevina::PumpRoomState cn105_room_state() {
     using namespace enevina;
@@ -1237,7 +1243,8 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     const bool changes_mode=step==ControlStep::SetHeat || step==ControlStep::SetOff;
     if(changes_mode && control_ms_since_mode_change()<mitsubishi_min_mode_dwell_ms)
         return false;
-    const auto latest=active_control_proposal(now,current_temp);
+    const int64_t after_get_utc=time(nullptr);
+    const auto latest=active_control_proposal(after_get_utc,selected_room_sample(after_get_utc));
     if((step==ControlStep::Setpoint || step==ControlStep::SetHeat) &&
        (latest.action!=BootstrapAction::HeatSetpoint ||
         std::fabs(latest.heat_setpoint_c-required_target)>0.001))return false;
@@ -1380,7 +1387,7 @@ static void cottage_control_disarm() {
     if(!cottage_control_revoke_saved_intent())
         Serial.println("CONTROL_WARN: durable disarm write failed");
 }
-static void cottage_control_tick() {
+static void cottage_control_tick(const enevina::PumpRoomState& bridge) {
     control_gate.store(static_cast<int>(ControlBlock::Disabled));
     const bool midea=cottage_midea_selected();
     const bool gree=cottage_gree_selected();
@@ -1394,10 +1401,6 @@ static void cottage_control_tick() {
         if(control_armed.load())cottage_control_disarm();
         return;
     }
-    // Use the existing optimizer tick for both read-only observations and
-    // preflight. Keep the same read cadence across arming and sensor gaps.
-    const auto bridge=cn105_selected() && wifi_ok.load() && clock_ok() &&
-        !cottage_ota_network_maintenance() ? cn105_room_state() : enevina::PumpRoomState{};
     if(!control_armed.load())return;
     const uint32_t authorization_generation=control_permission_generation.load();
     const uint32_t site_generation=site_settings_generation();
@@ -1504,7 +1507,9 @@ static void cottage_control_tick() {
         return;
     }
     const Cn105LinkIdentity link{bridge.endpoint_generation,bridge.link_generation};
-    if(bridge.source!=enevina::PumpStateSource::Gateway || !link.current()) {
+    if(bridge.source!=enevina::PumpStateSource::Gateway || !link.current() ||
+       bridge.evidence.received_utc<=0 || now<bridge.evidence.received_utc ||
+       now-bridge.evidence.received_utc>180) {
         control_gate.store(static_cast<int>(ControlBlock::InputsUnverified));
         return;
     }
@@ -1589,6 +1594,10 @@ static void cottage_control_tick() {
             mpc_confirmed_heat.store(planned_heat?1:0);
         }
     } else {
+        // Do not learn across an uncertain command or its missing readback.
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        cn105_gateway_requests.invalidate();
+        xSemaphoreGive(lock_data);
         if(control_post_stage.load()==6)control_post_stage.store(-8);
         control_commands_failed.fetch_add(1);
     }
@@ -1780,6 +1789,8 @@ static uint32_t identifier_identity() {
     };
     mix(s.pump_adapter,sizeof(s.pump_adapter));
     mix(s.cn105_url,sizeof(s.cn105_url));
+    // Request-observation fits must never inherit the old UART-verified fit.
+    if(cn105_selected())mix("cn105-gateway-request-v1",sizeof("cn105-gateway-request-v1"));
     mix(s.fmi_latlon,sizeof(s.fmi_latlon));
     // The model describes the room the bound indoor sensor measures.
     const auto room=site_room_temperature_config();
@@ -1925,6 +1936,7 @@ struct LearningSlot {
     uint32_t config_generation=0;
     bool energy_ok=false;double total_wh=0;int64_t energy_utc=0;
     uint32_t energy_meter_identity=0;
+    enevina::PumpRoomState gateway_start{};
 };
 static void optimizer_worker(void*) {
     // N16R8 physical CN105/Shelly benchmark: the old ordinary new[] for
@@ -1981,6 +1993,18 @@ static void optimizer_worker(void*) {
     uint32_t saved_revision=id?id->report(0).revision:0;
     unsigned boundaries_since_save=0;
     for(;;) {
+        // Poll the existing standard API once per optimizer tick, even
+        // disarmed, BEFORE learning/planning. This avoids losing the first
+        // 15-min observation after every transition. The writer still
+        // performs its separate immediate pre-POST readback.
+        const bool observe_bridge=cn105_selected() && wifi_ok.load() && clock_ok() &&
+            !cottage_ota_network_maintenance();
+        const auto bridge=observe_bridge?cn105_room_state():enevina::PumpRoomState{};
+        if(!observe_bridge) {
+            xSemaphoreTake(lock_data,portMAX_DELAY);
+            cn105_gateway_requests.invalidate();
+            xSemaphoreGive(lock_data);
+        }
         const int64_t now=time(nullptr);
         const int64_t slot_start=(now/900)*900;
         bool boundary=false;
@@ -2079,12 +2103,14 @@ static void optimizer_worker(void*) {
                 o.indoor_valid=slot.indoor_ok && valid_temperature(ts,now);
                 o.indoor_start_c=slot.indoor_c;o.indoor_end_c=ts.indoor_c;
                 o.outdoor_valid=slot.outdoor_ok;o.outdoor_c=slot.outdoor_c;
-                // The verified pump mode at the slot end, held uninterrupted
-                // (source-verified polls, gaps reset the duration) since at
-                // most ~1 min after the slot began, and no command sent
-                // during the slot. A gateway receipt never labels data.
+                // For the standard CN105 bridge this is an observed REQUEST,
+                // not actual compressor activity. Both ends must be in the
+                // same continuous GET-observed request and link generation.
+                // An independent room measurement validates the thermal fit.
                 o.heat_valid=known_heating_mode(view) && view.request_minutes>=14 &&
-                    control_commands_sent.load()==slot.commands_sent;
+                    control_commands_sent.load()==slot.commands_sent &&
+                    (view.protocol!=enevina::PumpRoomProtocol::Cn105EspHome ||
+                     same_cn105_gateway_request(slot.gateway_start,view));
                 o.heat_requested=view_heat;
                 o.setpoint_c=view.setpoint_c;
                 o.in_model_domain=id->variable_setpoints() || !view_heat ||
@@ -2164,8 +2190,6 @@ static void optimizer_worker(void*) {
                 after.mode!=view.mode || after.endpoint_generation!=view.endpoint_generation ||
                 after.link_generation!=view.link_generation ||
                 after.configuration_generation!=view.configuration_generation ||
-                (view.source==enevina::PumpStateSource::VerifiedBus &&
-                    view.request_generation!=observed_mode_generation) ||
                 site_settings_generation()!=optimizer_site_generation;
             MpcPlanRecord record=po.record;
             if(mode_changed) {
@@ -2229,7 +2253,7 @@ static void optimizer_worker(void*) {
                     sizeof(reason_text));
             xSemaphoreGive(lock_data);
         }
-        cottage_control_tick();
+        cottage_control_tick(bridge);
         if(boundary) {
             // (5) Open the new slot AFTER this boundary's control decision:
             // a command sent later in the slot invalidates its observation.
@@ -2239,6 +2263,8 @@ static void optimizer_worker(void*) {
             slot.outdoor_ok=ws.available && weather_at(weather,wc,slot_start+450,slot.outdoor_c);
             slot.commands_sent=control_commands_sent.load();
             slot.config_generation=c23_config_generation();
+            if(cn105_selected())
+                slot.gateway_start=optimizer_pump_state(time(nullptr),false);
             xSemaphoreTake(lock_data,portMAX_DELAY);
             meter=consumption;
             xSemaphoreGive(lock_data);
@@ -2526,6 +2552,8 @@ static void status_endpoint() {
         cJSON_AddBoolToObject(root,"shelly_meter_pump_only",shelly_meter_pump_only());
         cJSON_AddBoolToObject(root,"mpc_pump_source_verified",
             valid_cn105(cp,now) && cp.evidence.source_time_verified);
+        cJSON_AddBoolToObject(root,"mpc_pump_connection_ready",inputs.pump_state_known);
+        cJSON_AddBoolToObject(root,"mpc_gateway_request",inputs.pump_gateway_request);
     }
     cJSON_AddBoolToObject(root,"independent_freeze_protection_verified",false);
     cJSON_AddNumberToObject(root,"safety_mode",static_cast<int>(current_safety.mode));
@@ -2761,11 +2789,11 @@ static void mpc_endpoint() {
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.sendHeader("Cache-Control","no-store");
     web.send(200,"application/json; charset=utf-8","");
-    char buf[640];
+    char buf[704];
     snprintf(buf,sizeof(buf),
         "{\"evidence\":\"MODEL_FROM_LOCAL_MEASUREMENTS\",\"now_utc\":%lld,\"state\":\"%s\","
         "\"fallback\":\"%s\",\"source\":\"%s\",\"armed\":%s,\"decision_confirmed\":%s,"
-        "\"pump_source_verified\":%s,\"pump_connection_ready\":%s,"
+        "\"pump_source_verified\":%s,\"pump_connection_ready\":%s,\"gateway_request\":%s,"
         "\"calibration\":{\"state\":\"%s\",\"block\":\"%s\",\"samples\":%u,\"heating_slots\":%u,"
         "\"off_slots\":%u,\"starts\":%u,\"stops\":%u,\"skipped\":%u,\"outliers\":%u,"
         "\"windows\":%u,\"windows_with_switch\":%u,\"windows_needed\":%u,\"restored\":%s,"
@@ -2775,7 +2803,8 @@ static void mpc_endpoint() {
         mpc_fallback_name(arb.fallback),proposal_source_name(arb.source),
         active_control_armed(midea)?"true":"false",
         confirmed?"true":"false",pump_verified?"true":"false",
-        arb_in.pump_state_known?"true":"false",calibration_state_name(cal.state),calibration_block_name(cal.block),cal.samples,
+        arb_in.pump_state_known?"true":"false",arb_in.pump_gateway_request?"true":"false",
+        calibration_state_name(cal.state),calibration_block_name(cal.block),cal.samples,
         cal.heating_slots,cal.off_slots,cal.starts,cal.stops,cal.skipped,cal.outliers,
         cal.windows,cal.windows_with_switch,CalibrationLimits::windows_needed,
         restored?"true":"false",saves,save_failures,save_skips,

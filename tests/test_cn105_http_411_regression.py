@@ -7,7 +7,7 @@ MAIN=(ROOT/"firmware/cottage/src/main.cpp").read_text()
 class CN105PostFraming(unittest.TestCase):
     def test_real_esp32_http_command_has_explicit_length(self):
         post=MAIN.split("static bool cn105_bridge_post(",1)[1].split(
-            "static void cottage_control_tick()",1)[0]
+            "static void cottage_control_tick(const enevina::PumpRoomState& bridge)",1)[0]
         self.assertIn('req.addHeader("Content-Length","0");',post)
         self.assertIn('req.addHeader("Content-Type","application/x-www-form-urlencoded");',post)
         self.assertIn('const int code=req.POST("");',post)

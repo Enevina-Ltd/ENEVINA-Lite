@@ -4680,6 +4680,7 @@ function render(){
     c.append(node('p','tiny muted',extra.join(' ')));
   } else c.append(node('p','callout',t('nomodel')));
   if((d.pump_connection_ready??d.pump_source_verified)===false)c.append(node('p','callout warn',t('unverified')));
+  else if(d.gateway_request===true)c.append(node('p','tiny muted',lang()==='en'?\'Learns from gateway requests and measured room response; UART proof is optional.\':\'Oppii sillan lämmityspyynnöistä ja mitatusta huonelämpötilasta; UART-todennus on valinnainen.\'));
   const ch=chart(d);
   if(ch){c.append(ch,legend());}
   const p=d.plan||{};

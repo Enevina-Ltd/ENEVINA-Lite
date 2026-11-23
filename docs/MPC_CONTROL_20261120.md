@@ -90,18 +90,21 @@ MPC:n turvamarginaali on 2 × testi-RMS (0,2–2,0 °C). Suunniteltu minimi
 (lattia + marginaali) on sama `tavoite − 0,5 °C`, jossa nykyinen
 termostaatti/hintaohjaus käynnistää lämmityksen.
 
-**Pumpun tila vain lähdetodennetusta mittauksesta (Codex P1, PR #63).**
-Opetusdatan HEAT/OFF-merkintä, suunnitelman lähtötila ja suunnitelman
-voimassaolo perustuvat vain tuoreeseen, lähdetodennettuun CN105-lukuun
-(`text_sensor/Enevina CN105 Verified Snapshot`: pumpun oma aikaleima ja
-valmis UART-luku). ESPHome-sillan GET tai SSE voi toistaa välimuistissa
-olevaa tilaa, vaikka pumppuyhteys olisi katkennut, joten niitä ei käytetä
-todisteena. Vartti opitaan vain, jos todennettu tila on pysynyt
-keskeytyksettä samana vähintään 14 minuuttia vartin lopussa ja vartin
-aikana ei lähetetty komentoa. **Seuraus:** ilman todennettua lukutodistetta
-malli pysyy tilassa `NO_DATA`, MPC ei ohjaa ja hintaohjaus jatkaa.
-`/api/status`:n `mpc_pump_source_verified`, `/api/mpc`:n
-`pump_source_verified` ja MPC-kortti kertovat tämän suoraan.
+**Yhteensopivuus tavallisen CN105-ohjaimen kanssa (23.11.2026).**
+ESPHome-sillan normaali HTTP GET kertoo ohjaimen ilmoittaman HEAT/OFF-pyynnön,
+ei varmennettua UART-lukemaa eikä kompressorin käyntitilaa. Lite oppii
+tämän pyynnön ja riippumattoman huonelämpötilan välisen vasteen. Sillan
+firmwarea ei tarvitse muuttaa. Vartin molemmissa päissä vaaditaan sama
+havaittu pyyntö ja yhteys, toistuvat onnistuneet GET-lukemat, vähintään
+14 minuutin havaittu jatkuvuus ja ei kesken vartin lähetettyä komentoa.
+Katko, virheellinen GET, epäselvä komentokuittaus tai muuttunut pyyntö
+katkaisee opetusjakson. Erillinen UART-todennus on edelleen käytettävissä
+varsinaisten pumppumittausten lähdetietona; sitä ei teeskennellä GET:stä.
+Malli kalibroidaan edelleen riippumattomilla 4 tunnin ennustetesteillä.
+MPC-rajapinta erottaa gateway_request-, pump_connection_ready- ja
+pump_source_verified-kentät. Mittarin käyttö energiamallissa on valinnaista,
+ja edellyttää omistajan vahvistamaa lämpöpumppukohtaista mittausta.
+Vanhat UART-lähteiset mallit eivät sekoitu uuteen pyyntömalliin.
 
 Opittavat varttitunnit
 hylätään myös, jos HEAT/OFF muuttui kesken jakson, tila ei ole tiedossa,
@@ -366,10 +369,12 @@ been run on a real heat pump and no board was flashed.**
 - **Identification** (`cottage/building_identification.*`): a 6-parameter
   RLS model of the same heat balance as `advance()`. It identifies the time
   constant, the heating lift, the start delay, the after-heat and a constant
-  gain, each with its uncertainty. HEAT/OFF labels, the plan's start state and plan
-  validity come ONLY from a fresh source-verified CN105 poll: an ESPHome GET
-  or SSE receipt is not pump-origin evidence. Without that proof stream the
-  model stays NO_DATA and price control continues (Codex P1, PR #63). The calibration state is honest and is
+  gain, each with its uncertainty. For the standard CN105 ESPHome bridge
+  the model uses continuous ordinary GET observations of the requested mode
+  and independent room-temperature response, not claims of actual UART
+  freshness. Verified UART telemetry is optional and remains separate.
+  A failed read or changed request breaks the observation window.
+  The calibration state is honest and is
   backed by walk-forward 4 h validation windows. **COP and absolute C/UA are
   not identifiable** from these measurements. With an owner-confirmed
   heat-pump-only meter it gives only lower bounds (COP ≥ 1). A whole-house or
@@ -412,7 +417,7 @@ been run on a real heat pump and no board was flashed.**
 
 ## Asuinlämmön muuttuvan asetusarvon MPC (21.11.2026)
 
-Sama suunnittelija käyttää Mitsubishi Electricin lähdetodennettua CN105-lukua
+Sama suunnittelija käyttää Mitsubishi Electricin tavallisen CN105-rajapinnan havaittua pyyntöä
 ja Midea V2/V3 0xAC:n tuoretta paikallista tilalukua. Se oppii vain
 varttijaksoista, joissa lämpötila, sää ja pyynnön yhtäjaksoisuus tunnetaan.
 Asetusarvon vaihtuminen tai katkos aloittaa uuden havaintojakson. Ohjaus
