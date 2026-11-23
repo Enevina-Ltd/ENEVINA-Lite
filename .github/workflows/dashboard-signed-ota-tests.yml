@@ -14,6 +14,11 @@ on:
       - 'tests/test_control_rearm_nvs_source.py'
       - 'tests/test_mode_dwell_wiring.py'
       - 'tests/test_mpc_control_wiring.py'
+      - 'tests/test_mpc_dashboard.js'
+      - 'tests/cn105_gateway_request_tests.cpp'
+      - 'tests/cottage_identification_tests.cpp'
+      - 'cottage/cn105_gateway_request.hpp'
+      - 'cottage/building_identification.*'
       - 'tests/test_dashboard_signed_ota.py'
       - 'tests/test_dashboard_translations.py'
       - 'tests/test_network_budget_diagnostic_source.py'
@@ -55,6 +60,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_control_rearm_nvs_source.py' -v
           python3 -m unittest discover -s tests -p 'test_mode_dwell_wiring.py' -v
           python3 -m unittest discover -s tests -p 'test_mpc_control_wiring.py' -v
+          node tests/test_mpc_dashboard.js
           node tests/test_c25_dashboard_ui.js
           node tests/test_wifi_setup_ui.js
           node tests/test_setup_wizard.js

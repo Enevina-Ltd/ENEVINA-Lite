@@ -1790,7 +1790,7 @@ static uint32_t identifier_identity() {
     mix(s.pump_adapter,sizeof(s.pump_adapter));
     mix(s.cn105_url,sizeof(s.cn105_url));
     // Request-observation fits must never inherit the old UART-verified fit.
-    if(cn105_selected())mix("cn105-gateway-request-v1",sizeof("cn105-gateway-request-v1"));
+    if(cn105_selected())mix("cn105-gateway-request-v2",sizeof("cn105-gateway-request-v2"));
     mix(s.fmi_latlon,sizeof(s.fmi_latlon));
     // The model describes the room the bound indoor sensor measures.
     const auto room=site_room_temperature_config();
@@ -2104,17 +2104,28 @@ static void optimizer_worker(void*) {
                 o.indoor_start_c=slot.indoor_c;o.indoor_end_c=ts.indoor_c;
                 o.outdoor_valid=slot.outdoor_ok;o.outdoor_c=slot.outdoor_c;
                 // For the standard CN105 bridge this is an observed REQUEST,
-                // not actual compressor activity. Both ends must be in the
-                // same continuous GET-observed request and link generation.
-                // An independent room measurement validates the thermal fit.
-                o.heat_valid=known_heating_mode(view) && view.request_minutes>=14 &&
-                    control_commands_sent.load()==slot.commands_sent &&
-                    (view.protocol!=enevina::PumpRoomProtocol::Cn105EspHome ||
-                     same_cn105_gateway_request(slot.gateway_start,view));
+                // not actual compressor activity. Accept a constant request
+                // or one continuously bracketed mode transition; reject
+                // unknown intervals. Independent room response validates it.
+                const bool no_command=control_commands_sent.load()==slot.commands_sent;
+                o.heat_valid=known_heating_mode(view) && view.request_minutes>=14 && no_command;
                 o.heat_requested=view_heat;
                 o.setpoint_c=view.setpoint_c;
-                o.in_model_domain=id->variable_setpoints() || !view_heat ||
-                    view.setpoint_c<=16.01;
+                if(view.protocol==enevina::PumpRoomProtocol::Cn105EspHome) {
+                    o.heat_valid=o.heat_valid && same_cn105_gateway_request(slot.gateway_start,view);
+                    if(!o.heat_valid && no_command && known_heating_mode(view)) {
+                        double fraction=0;
+                        xSemaphoreTake(lock_data,portMAX_DELAY);
+                        const bool observed=cn105_gateway_requests.single_mode_transition(slot.gateway_start,view,fraction);
+                        xSemaphoreGive(lock_data);
+                        if(observed) {
+                            o.heat_valid=true;o.transition_before_fraction=fraction;
+                            if(!view_heat)o.setpoint_c=slot.gateway_start.setpoint_c;
+                        }
+                    }
+                }
+                o.in_model_domain=id->variable_setpoints() ||
+                    (!view_heat && o.transition_before_fraction<0) || o.setpoint_c<=16.01;
                 const int64_t dt=meter.captured_utc-slot.energy_utc;
                 o.meter_pump_only=meter_id!=0 && slot.energy_meter_identity==meter_id &&
                     meter.meter_identity==meter_id;

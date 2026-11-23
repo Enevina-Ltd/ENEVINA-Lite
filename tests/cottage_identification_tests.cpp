@@ -123,6 +123,62 @@ void test_standard_gateway_can_calibrate_without_uart_extension_or_meter() {
     CHECK(!kwh && valid(model));
 }
 
+// Independent minute-level plant, switches at irregular times, not at
+// quarter-hour boundaries. Gateway polls bracket the switch, never claim
+// a compressor timestamp. The model is still evaluated in 15-min windows.
+void test_gateway_mid_slot_switches_can_calibrate() {
+    Sim sim;
+    BuildingIdentifier id;
+    CN105GatewayRequestHistory history;
+    bool heat=false;
+    unsigned mode_age=120;
+    double indoor=12.0,meas=12.0;
+    uint64_t ms=10000;
+    CHECK(history.note(false,16,sim.utc,ms,1,1));
+    unsigned mixed=0,accepted=0;
+    for(int i=0;i<16*96;++i) {
+        SlotObservation o{};
+        o.slot_utc=sim.utc;o.indoor_valid=true;o.indoor_start_c=meas;
+        const double to=sim.outdoor(sim.utc);
+        o.outdoor_valid=true;o.outdoor_c=to+0.1*sim.rng.normal();
+        const auto begin=history.snapshot(sim.utc,ms,1,1);
+        for(unsigned minute=1;minute<=15;++minute) {
+            if(mode_age>=30 && minute!=15 &&
+               ((!heat && indoor<11.5)||(heat && indoor>12.5))) {
+                heat=!heat;mode_age=0;
+            }
+            const double heating=heat && mode_age>=sim.truth.startup_delay_minutes?
+                heat_capacity_kw(sim.truth,to):0.0;
+            const double afterheat=!heat && mode_age<15?
+                sim.truth.stop_afterheat_kwh/slot_hours:0.0;
+            const double a=std::exp(-sim.truth.loss_kw_per_c/(60*sim.truth.thermal_mass_kwh_per_c));
+            indoor=to+(indoor-to)*a+(sim.gain_kw+heating+afterheat)/sim.truth.loss_kw_per_c*(1-a);
+            ++mode_age;
+            CHECK(history.note(heat,16,sim.utc+minute*60,ms+minute*60000,1,1));
+        }
+        const auto end=history.snapshot(sim.utc+900,ms+900000,1,1);
+        o.indoor_end_c=meas=std::round((indoor+0.02*sim.rng.normal())*100.0)/100.0;
+        o.heat_requested=heat;o.setpoint_c=16;
+        o.heat_valid=same_cn105_gateway_request(begin,end) && end.request_minutes>=14;
+        double f=0;
+        if(!o.heat_valid && history.single_mode_transition(begin,end,f)) {
+            o.heat_valid=true;o.transition_before_fraction=f;++mixed;
+        }
+        accepted+=o.heat_valid;
+        id.add(o);
+        sim.utc+=900;ms+=900000;
+    }
+    const auto r=id.report(sim.utc);
+    std::printf("Asynchronous gateway: eligible=%u mixed=%u starts=%u stops=%u windows=%u rms=%.3f state=%s block=%s\n",
+        accepted,mixed,r.starts,r.stops,r.windows,r.validation_rms_c,
+        calibration_state_name(r.state),calibration_block_name(r.block));
+    CHECK(mixed>20 && r.starts>10 && r.stops>10);
+    CHECK(r.state==CalibrationState::Calibrated);
+    CHECK(r.windows_with_switch>=CalibrationLimits::switch_windows_needed);
+    CHECK(!r.model.electric_trusted);
+    CHECK(rel(r.model.tau_h,sim.truth.thermal_mass_kwh_per_c/sim.truth.loss_kw_per_c)<0.2);
+}
+
 void test_gateway_requests_without_physical_response_do_not_calibrate() {
     Sim sim;
     sim.always_off=true; // physical heating never follows the reported request
@@ -705,6 +761,7 @@ int main() {
     test_comfort_band();
     test_recovers_truth_and_calibrates();
     test_standard_gateway_can_calibrate_without_uart_extension_or_meter();
+    test_gateway_mid_slot_switches_can_calibrate();
     test_gateway_requests_without_physical_response_do_not_calibrate();
     test_residential_identification_and_planning();
     test_no_heating_never_calibrates();

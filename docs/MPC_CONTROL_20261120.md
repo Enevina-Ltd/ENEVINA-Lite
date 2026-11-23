@@ -94,11 +94,15 @@ termostaatti/hintaohjaus käynnistää lämmityksen.
 ESPHome-sillan normaali HTTP GET kertoo ohjaimen ilmoittaman HEAT/OFF-pyynnön,
 ei varmennettua UART-lukemaa eikä kompressorin käyntitilaa. Lite oppii
 tämän pyynnön ja riippumattoman huonelämpötilan välisen vasteen. Sillan
-firmwarea ei tarvitse muuttaa. Vartin molemmissa päissä vaaditaan sama
-havaittu pyyntö ja yhteys, toistuvat onnistuneet GET-lukemat, vähintään
-14 minuutin havaittu jatkuvuus ja ei kesken vartin lähetettyä komentoa.
-Katko, virheellinen GET, epäselvä komentokuittaus tai muuttunut pyyntö
-katkaisee opetusjakson. Erillinen UART-todennus on edelleen käytettävissä
+firmwarea ei tarvitse muuttaa. Vartin molemmissa päissä vaaditaan sama yhteys ja toistuvat onnistuneet
+GET-lukemat. Muuttumattoman pyynnön lisäksi hyväksytään yksi yhteyden
+katkeamatta havaittu HEAT/OFF-vaihto. Vaihtoajan arvio on viimeisen vanhan
+ja ensimmäisen uuden GET-havainnon puoliväli, ei UART- tai kompressorin
+aikaleima. Lämpö- ja sähkömalli käyttävät arvioitua HEAT-osuutta sekä
+käynnistys-/pysäytysregressoreita; arvio on likimääräinen ja mallin
+ennustetarkkuus todennetaan edelleen 4 h ikkunoissa. Katko, virheellinen
+GET, useampi muutos, asetusarvon muutos tai kesken vartin lähetetty
+Lite-komento hylkää jakson. Erillinen UART-todennus on edelleen käytettävissä
 varsinaisten pumppumittausten lähdetietona; sitä ei teeskennellä GET:stä.
 Malli kalibroidaan edelleen riippumattomilla 4 tunnin ennustetesteillä.
 MPC-rajapinta erottaa gateway_request-, pump_connection_ready- ja
@@ -107,7 +111,7 @@ ja edellyttää omistajan vahvistamaa lämpöpumppukohtaista mittausta.
 Vanhat UART-lähteiset mallit eivät sekoitu uuteen pyyntömalliin.
 
 Opittavat varttitunnit
-hylätään myös, jos HEAT/OFF muuttui kesken jakson, tila ei ole tiedossa,
+hylätään myös, jos HEAT/OFF vaihtui ilman yllä kuvattua havaintoketjua, tila ei ole tiedossa,
 asetusarvo on yli 16 °C (HEAT 16 °C -mallin ulkopuolella), sisälämpö on yli
 15,3 °C lämmitettäessä, mittaus puuttuu tai jatkuvuus katkesi. MPC ei
 myöskään ekstrapoloi: jos ennustettu ulkolämpö on yli 3 K opitun alueen

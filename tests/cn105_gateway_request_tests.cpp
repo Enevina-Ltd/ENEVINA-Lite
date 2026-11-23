@@ -48,5 +48,34 @@ int main(){
     CHECK(h.note(false,16,t+1029,ms+1149000,1,2));
     auto rollback=h.snapshot(t+1029,ms+1149000,1,2);
     CHECK(rollback.request_minutes==0 && !same_cn105_gateway_request(f,rollback));
+    // A single mid-slot change is observable; two changes or a broken
+    // connection are not. The estimated midpoint has one-poll uncertainty.
+    {
+        CN105GatewayRequestHistory tracker;
+        CHECK(tracker.note(false,16,t,ms,1,1));
+        const auto begin=tracker.snapshot(t,ms,1,1);
+        for(unsigned i=1;i<=15;++i) CHECK(tracker.note(i>=6,16,t+60*i,ms+60000*i,1,1));
+        const auto end=tracker.snapshot(t+900,ms+900000,1,1);
+        double f=0;
+        CHECK(tracker.single_mode_transition(begin,end,f));
+        CHECK(std::fabs(f-5.5/15.0)<1e-9);
+        tracker.invalidate();
+        CHECK(!tracker.single_mode_transition(begin,end,f));
+    }
+    for(int scenario=0;scenario<4;++scenario) {
+        CN105GatewayRequestHistory tracker;
+        CHECK(tracker.note(false,16,t,ms,1,1));
+        const auto begin=tracker.snapshot(t,ms,1,1);
+        for(unsigned i=1;i<=15;++i) {
+            if(scenario==0 && i>=3 && i<=6)continue; // gap
+            if(scenario==1 && i==6)tracker.invalidate(); // failed GET
+            const bool heat=scenario==2?(i>=3 && i<6)||i>=9:i>=6;
+            const unsigned endpoint=scenario==3 && i>=6?2:1;
+            CHECK(tracker.note(heat,16,t+60*i,ms+60000*i,endpoint,1));
+        }
+        const auto end=tracker.snapshot(t+900,ms+900000,scenario==3?2:1,1);
+        double f=0;
+        CHECK(!tracker.single_mode_transition(begin,end,f));
+    }
     std::puts("CN105 standard gateway request regressions PASS");
 }
