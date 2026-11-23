@@ -1923,22 +1923,38 @@ struct LearningSlot {
     bool energy_ok=false;double total_wh=0;int64_t energy_utc=0;
 };
 static void optimizer_worker(void*) {
-    auto* prices=new enevina_firmware::PricePoint[200];
-    auto* weather=new enevina::OutdoorPoint[64];
-    auto* aligned=new Spot15[200];
+    // N16R8 physical CN105/Shelly benchmark: the old ordinary new[] for
+    // these four sub-16-KiB arrays consumed scarce *internal* heap. Reserve
+    // all model/planning scratch in PSRAM instead, leaving unchanged BLE,
+    // TLS/OTA memory gates and unchanged internal FreeRTOS task stacks.
+    // Explicit caps prevent a silent internal-heap fallback on PSRAM failure.
+    constexpr auto scratch_caps=MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT;
+    auto* prices=static_cast<enevina_firmware::PricePoint*>(heap_caps_malloc(
+        sizeof(enevina_firmware::PricePoint)*200,scratch_caps));
+    auto* weather=static_cast<enevina::OutdoorPoint*>(heap_caps_malloc(
+        sizeof(enevina::OutdoorPoint)*64,scratch_caps));
+    auto* aligned=static_cast<Spot15*>(heap_caps_malloc(
+        sizeof(Spot15)*200,scratch_caps));
     // Large planning buffers in PSRAM, never on the 16-KiB task stack.
     auto* hz=static_cast<HorizonResult*>(heap_caps_malloc(sizeof(HorizonResult),
         MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     auto* rows=static_cast<PlanRow*>(heap_caps_malloc(sizeof(PlanRow)*max_horizon_slots,
         MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
-    auto* legacy=new (std::nothrow) Row[max_horizon_slots];
+    auto* legacy=static_cast<Row*>(heap_caps_malloc(
+        sizeof(Row)*max_horizon_slots,scratch_caps));
     auto* trend=static_cast<TrendPoint*>(heap_caps_malloc(
         sizeof(TrendPoint)*BuildingIdentifier::trend_slots,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     void* id_mem=heap_caps_malloc(sizeof(BuildingIdentifier),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     const bool initial_variable=variable_setpoint_model_selected();
     BuildingIdentifier* id=id_mem?new(id_mem) BuildingIdentifier(initial_variable):nullptr;
+    if(prices) for(size_t i=0;i<200;++i) new(prices+i) enevina_firmware::PricePoint();
+    if(weather) for(size_t i=0;i<64;++i) new(weather+i) enevina::OutdoorPoint();
+    if(aligned) for(size_t i=0;i<200;++i) new(aligned+i) Spot15();
     if(hz) new(hz) HorizonResult();
     if(rows) for(size_t i=0;i<max_horizon_slots;++i) new(rows+i) PlanRow();
+    if(legacy) for(size_t i=0;i<max_horizon_slots;++i) new(legacy+i) Row();
+    if(!prices || !weather || !aligned || !legacy)
+        Serial.println("OPTIMIZER_WARN: PSRAM scratch unavailable; planning disabled");
     uint32_t identity=identifier_identity();
     // The stored model is bound to site identity AND the persistent reset
     // epoch; an unreadable epoch means the blob may be a reset-away model.
