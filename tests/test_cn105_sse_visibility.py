@@ -50,14 +50,21 @@ class Cn105SseVisibilityTests(unittest.TestCase):
         # CN105 writes are now a separately armed path, not a promotion of SSE
         # into verified pump-origin telemetry or calibration.
         self.assertIn('static std::atomic<bool> control_armed{false}',MAIN)
-        self.assertIn('cJSON_AddBoolToObject(root,"control_armed",control_armed.load())',MAIN)
+        # Effective permission checks pump identity and configuration.
+        self.assertIn("const bool armed=active_control_armed(midea);",MAIN)
+        self.assertIn('cJSON_AddBoolToObject(root,"control_armed",armed)',MAIN)
         self.assertIn('cJSON_AddBoolToObject(root,"bootstrap_executable",false)',MAIN)
         self.assertIn("health.independent_freeze_protection_verified=false;",MAIN)
         self.assertIn("cn105_source_verifier.accept(p,verified)",MAIN)
         self.assertIn("cottage_ota_confirmation_pending()",MAIN)
         self.assertIn('c23_authorize_local_setting(web.arg("token").c_str())',MAIN)
         self.assertIn('control_armed.store(false)',MAIN)
-        self.assertIn('if(prefs.getBool("armed",false))prefs.putBool("armed",false)',MAIN)
+        # Old unsealed armed key was replaced by signed-image and pump
+        # identity-bound intent1; reject stale intent on OTA/identity change.
+        self.assertIn('const bool valid_image=control_current_image_sha256(',MAIN)
+        self.assertIn('control_intent_restorable(saved,site_settings_snapshot(),',MAIN)
+        self.assertIn('if(must_revoke && !cottage_control_revoke_saved_intent())',MAIN)
+        self.assertIn('control_armed.store(restore && !must_revoke)',MAIN)
         post = MAIN.split("static bool cn105_bridge_post(",1)[1].split(
             "static void cottage_control_tick()",1)[0]
         self.assertIn('!control_armed.load()',post)

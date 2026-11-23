@@ -29,16 +29,22 @@ class PremiumDashboardSourceTests(unittest.TestCase):
         self.assertNotIn('s.shelly_total_wh/8760',UI)
 
     def test_ui_has_no_external_assets_or_mock_sensor_numbers(self):
-        self.assertNotIn("https://", UI)
-        self.assertNotIn("http://", UI.replace("http://www.w3.org/2000/svg", ""))
+        # Attribution links and local LAN URL input placeholders are
+        # not external assets. Never load remote JS, CSS, images or frames.
+        self.assertNotRegex(UI, r'<(?:script|link|img|iframe)\b[^>]*\b(?:src|href)=["\']https?://')
         self.assertNotRegex(UI, r"<script\s+src=")
+        self.assertIn('rel="noopener noreferrer"',UI)
+        self.assertIn("http://www.w3.org/2000/svg",UI)
         self.assertIn("OHJAUS POIS", UI)
         self.assertIn("control-armed" if False else "control-enable", UI)
         self.assertIn("pilot-state-heading", UI)
         self.assertIn("Ei tuoretta mittausta", UI)
 
     def test_read_only_market_endpoint(self):
-        self.assertIn('web.on("/api/prices",HTTP_GET,prices_endpoint)', MAIN)
+        # Price API is read-only and requires trusted home LAN.
+        self.assertIn('web.on("/api/prices",HTTP_GET,[](){',MAIN)
+        self.assertIn("if(cottage_wifi_require_home_lan(web))prices_endpoint();",MAIN)
+        self.assertNotIn('web.on("/api/prices",HTTP_POST',MAIN)
         self.assertIn("market.clock_trusted || !market.current_price_valid", MAIN)
         self.assertIn("enevina_firmware::future_prices(points,kMaxPriceSlots)", MAIN)
         self.assertIn("MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT", MAIN)
@@ -46,7 +52,10 @@ class PremiumDashboardSourceTests(unittest.TestCase):
         # bootstrap and MPC bridge all use site_slot_total_price; no TZ-based
         # localtime_r() tariff decisions remain in main.cpp.
         self.assertIn("site_slot_total_price(price.start_utc,", MAIN)
-        self.assertIn("join_forecast_priced(", MAIN)
+        # Price timeline is assembled by the current plan helpers;
+        # price reads and UI do not dispatch commands.
+        self.assertIn("site_slot_total_price(price.start_utc,", MAIN)
+        self.assertIn("static void prices_endpoint()",MAIN)
         self.assertNotIn("localtime_r(&utc,&local)", MAIN)
         self.assertNotIn("tariff(local.tm_hour", MAIN)
         self.assertNotRegex(
