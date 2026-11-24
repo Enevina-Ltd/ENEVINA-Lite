@@ -11,6 +11,18 @@ namespace enevina::cottage {
 // models the control input of the gateway; physical response is learned
 // independently from measured room temperature (and optional pump meter).
 // Neither an SSE receipt nor a gateway GET manufactures bus provenance.
+// Deltas from the start of one learning interval, plus the actual local
+// command dispatch and standard gateway GET acknowledgement. No UART proof.
+struct CN105SlotCommands {
+    uint32_t sent=0,confirmed=0,failed=0;
+    ControlStep step=ControlStep::None;
+    int64_t sent_utc=0,ack_utc=0;
+    double target_c=0;
+};
+struct CN105LearningRequest {
+    bool valid=false;
+    double before_fraction=-1.0; // unchanged request if -1, otherwise one switch
+};
 class CN105GatewayRequestHistory {
 public:
     static constexpr uint64_t max_gap_ms=180000;
@@ -35,6 +47,8 @@ public:
             transition_valid_=continuous && heat_!=heat;
             transition_before_utc_=received_utc_;
             transition_after_utc_=utc;
+            transition_before_ms_=received_ms_;
+            transition_after_ms_=ms;
             transition_generation_=generation_+1;
         }
         if(mode_changed)mode_since_ms_=ms;
@@ -66,13 +80,21 @@ public:
         s.evidence={received_utc_,0,false};
         return s;
     }
+    bool matches_current(const PumpRoomState& end) const {
+        return valid_ && end.source==PumpStateSource::Gateway &&
+            end.protocol==PumpRoomProtocol::Cn105EspHome &&
+            end.endpoint_generation==endpoint_ && end.link_generation==link_ &&
+            end.request_generation==generation_ && end.evidence.received_utc==received_utc_ &&
+            end.mode==(heat_?PumpRoomMode::Heat:PumpRoomMode::Off) &&
+            std::isfinite(end.setpoint_c) && std::fabs(end.setpoint_c-target_)<=0.001;
+    }
     // Approximate the transition time by the midpoint of its observed GET
     // bracket. Multiple changes, a communication gap, changed identity or
     // invalid endpoints are not eligible. Fraction is relative to the actual
     // two boundary observations, not a claim of UART timing.
     bool single_mode_transition(const PumpRoomState& begin,const PumpRoomState& end,
                                 double& fraction_before) const {
-        if(!valid_ || !transition_valid_ ||
+        if(!matches_current(end) || !transition_valid_ ||
            begin.source!=PumpStateSource::Gateway || end.source!=PumpStateSource::Gateway ||
            begin.protocol!=PumpRoomProtocol::Cn105EspHome || end.protocol!=PumpRoomProtocol::Cn105EspHome ||
            begin.endpoint_generation!=end.endpoint_generation || end.endpoint_generation!=endpoint_ ||
@@ -87,15 +109,48 @@ public:
         const int64_t start=begin.evidence.received_utc,finish=end.evidence.received_utc;
         if(start<=0 || finish-start<840 || finish-start>960 ||
            transition_before_utc_<start || transition_after_utc_>finish ||
-           transition_after_utc_<=transition_before_utc_)return false;
+           transition_after_utc_<transition_before_utc_ ||
+           transition_after_ms_<=transition_before_ms_)return false;
+        // Rapid local GET acknowledgement may land in the same UTC second.
+        // A strictly ordered monotonic bracket proves distinct observations;
+        // the second-resolution midpoint is accurate to within one second.
         fraction_before=(double(transition_before_utc_-start)+
             0.5*double(transition_after_utc_-transition_before_utc_))/double(finish-start);
+        return fraction_before>0 && fraction_before<1;
+    }
+    // A Lite-originated transition is just as useful as an external one,
+    // but only if exactly one mode POST was dispatched and acknowledged,
+    // and continuous GET history independently brackets that very change.
+    // A request with uncertain outcome or extra setpoint/ mode commands
+    // must not be treated as observed heating input.
+    bool confirmed_mode_transition(const PumpRoomState& begin,const PumpRoomState& end,
+            const CN105SlotCommands& cmd,double& fraction_before) const {
+        if(cmd.sent!=1 || cmd.confirmed!=1 || cmd.failed!=0)return false;
+        if(end.mode==PumpRoomMode::Heat) {
+            if(cmd.step!=ControlStep::SetHeat || !std::isfinite(cmd.target_c) ||
+               std::fabs(cmd.target_c-end.setpoint_c)>0.001)return false;
+        } else if(end.mode==PumpRoomMode::Off) {
+            if(cmd.step!=ControlStep::SetOff)return false;
+        } else return false;
+        double observed=0;
+        if(!single_mode_transition(begin,end,observed))return false;
+        const int64_t start=begin.evidence.received_utc,finish=end.evidence.received_utc;
+        if(cmd.sent_utc<start || cmd.sent_utc>transition_after_utc_ ||
+           cmd.ack_utc<transition_after_utc_ || cmd.ack_utc>finish ||
+           cmd.ack_utc<cmd.sent_utc)return false;
+        // A GET of the old request may follow the POST while the bridge is
+        // processing it. The actual change cannot be inferred before either
+        // that observation or dispatch. Still use an estimated midpoint, not
+        // a fabricated physical compressor timestamp.
+        const int64_t lower=std::max(transition_before_utc_,cmd.sent_utc);
+        fraction_before=(double(lower-start)+0.5*double(transition_after_utc_-lower))/double(finish-start);
         return fraction_before>0 && fraction_before<1;
     }
 private:
     bool transition_valid_=false;
     uint32_t transition_generation_=0;
     int64_t transition_before_utc_=0,transition_after_utc_=0;
+    uint64_t transition_before_ms_=0,transition_after_ms_=0;
     bool valid_=false,heat_=false;
     double target_=0;
     uint32_t generation_=0,endpoint_=0,link_=0;
@@ -114,5 +169,18 @@ inline bool same_cn105_gateway_request(const PumpRoomState& begin,const PumpRoom
         begin.mode==end.mode &&
         (end.mode==PumpRoomMode::Off ||
          (end.mode==PumpRoomMode::Heat && std::fabs(begin.setpoint_c-end.setpoint_c)<=0.001));
+}
+// Single shared eligibility rule for host tests and production runtime.
+inline CN105LearningRequest cn105_learning_request(const CN105GatewayRequestHistory& history,
+        const PumpRoomState& begin,const PumpRoomState& end,const CN105SlotCommands& commands) {
+    if(begin.evidence.received_utc<=0 || !history.matches_current(end))return {};
+    const int64_t span=end.evidence.received_utc-begin.evidence.received_utc;
+    if(span<840 || span>960)return {};
+    const bool quiet=commands.sent==0 && commands.confirmed==0 && commands.failed==0;
+    if(quiet && end.request_minutes>=14 && same_cn105_gateway_request(begin,end))return {true,-1.0};
+    double fraction=0;
+    const bool transition=quiet?history.single_mode_transition(begin,end,fraction):
+        history.confirmed_mode_transition(begin,end,commands,fraction);
+    return transition?CN105LearningRequest{true,fraction}:CN105LearningRequest{};
 }
 } // namespace enevina::cottage

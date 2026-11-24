@@ -43,6 +43,13 @@ enum class CalibrationBlock : uint8_t {
 };
 const char* calibration_state_name(CalibrationState s);
 const char* calibration_block_name(CalibrationBlock b);
+// Diagnostic for the last completed observation, separate from the
+// longer-term calibration requirements. Not stored in the model blob.
+enum class LearningObservation : uint8_t {
+    None, Accepted, NeedPrevious, RoomInvalid, OutdoorInvalid, RequestInvalid,
+    OutsideDomain, InvalidTransition, NumericalReject
+};
+const char* learning_observation_name(LearningObservation state);
 
 // One completed 15-minute UTC slot. Every flag is the caller's honest
 // statement about its source; an invalid field simply skips that use.
@@ -120,6 +127,7 @@ struct CalibrationReport {
     double planning_uncertainty_c=0;        // fed to Parameters when calibrated
     int64_t last_sample_utc=0, last_window_utc=0;
     uint32_t revision=0;                    // increments on every model update
+    LearningObservation last_observation=LearningObservation::None;
     ModelEstimate model{};
 };
 
@@ -238,6 +246,7 @@ private:
     CalibrationBlock block_=CalibrationBlock::TooFewSamples;
     int64_t last_sample_utc_=0;
     uint32_t revision_=0;
+    LearningObservation last_observation_=LearningObservation::None;
     // Display-only, not persisted.
     std::array<TrendPoint,trend_slots> trend_{};
     uint32_t trend_count_=0, trend_head_=0;

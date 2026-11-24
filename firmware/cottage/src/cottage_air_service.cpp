@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cstdio>
 #include <string>
+#include <new>
 #include "cottage_config.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_site_settings.hpp"
@@ -184,7 +185,7 @@ bool save_config() {
             unlock();
             return false;
         }
-        history=AirHistory{};
+        history.clear();
         history_changed=false;
         history_origin_clean=true;
     }
@@ -245,15 +246,19 @@ void checkpoint() {
        history.newest(0).hour_utc>=0x80000000u) {
         unlock();return;
     }
-    const AirHistoryDump dump=history.dump();
+    auto* mem=heap_caps_malloc(sizeof(AirHistoryDump),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!mem) {unlock();return;}
+    auto* dump=new(mem) AirHistoryDump{};
+    history.dump_into(*dump);
     Preferences prefs;
     if(prefs.begin("cottage_hist",false)) {
-        if(prefs.putBytes("hourly_v1",&dump,sizeof(dump))==sizeof(dump)) {
+        if(prefs.putBytes("hourly_v1",dump,sizeof(*dump))==sizeof(*dump)) {
             history_changed=false;
             stores++;
         }
         prefs.end();
     }
+    dump->~AirHistoryDump();heap_caps_free(dump);
     // NVS failure keeps history_changed set for the next checkpoint.
     unlock();
 }
@@ -431,10 +436,13 @@ void c23_initialize() {
     if(hp.begin("cottage_hist",origin_verified)) {
         if(origin_verified) {
             if(hp.getBytesLength("hourly_v1")==sizeof(AirHistoryDump)) {
-                AirHistoryDump stored{};
-                if(hp.getBytes("hourly_v1",&stored,sizeof(stored))==
-                   sizeof(stored))
-                    history.restore(stored); // CRC and UTC consistency
+                auto* mem=heap_caps_malloc(sizeof(AirHistoryDump),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+                if(mem) {
+                    auto* stored=new(mem) AirHistoryDump{};
+                    if(hp.getBytes("hourly_v1",stored,sizeof(*stored))==sizeof(*stored))
+                        history.restore(*stored); // CRC and UTC consistency
+                    stored->~AirHistoryDump();heap_caps_free(stored);
+                }
             }
         } else {
             // Purge unknown-origin history BEFORE persisting a new
@@ -1036,7 +1044,7 @@ void c23_register_routes(WebServer& web) {
                 // in-flight command preparation built from the old room.
                 ++config_generation;
                 alarm_engine=MoistureMonitor(warning_limits);
-                history=AirHistory{}; // never mix two sensors in one series
+                history.clear(); // never mix two sensors in one series
                 history_changed=false;
                 last_store_ms=uptime_ms();
             }

@@ -47,6 +47,7 @@
 #include "cottage/forecast_bridge.hpp"
 #include "cottage/building_identification.hpp"
 #include "cottage/model_persistence.hpp"
+#include "cottage/learning_observation.hpp"
 #include "cottage/mpc_arbiter.hpp"
 #include "cottage/mpc_planner.hpp"
 #include "cottage/ruuvi.hpp"
@@ -280,6 +281,11 @@ static size_t horizon_price_slots=0,horizon_weather_slots=0,horizon_slots=0;
 static HorizonLimit horizon_limit=HorizonLimit::None;
 static uint32_t mpc_solve_ms=0,mpc_solve_worst_ms=0,mpc_solves=0,mpc_solver_failures=0;
 static uint32_t identifier_nvs_saves=0,identifier_nvs_failures=0,identifier_nvs_skipped=0;
+static uint32_t identifier_file_saves=0,identifier_file_failures=0; // lock_data
+static std::atomic<int> identifier_checkpoint_backend{0}; // 0 none, 1 NVS, 2 LittleFS
+static std::atomic<int32_t> identifier_nvs_free_entries{-1};
+static std::atomic<uint32_t> identifier_nvs_required_entries{0};
+static int64_t identifier_last_saved_sample_utc=0; // lock_data, actual completed slot
 static bool identifier_restored=false;
 // Owner-requested model reset: 0 none, 1 requested (not yet processed), 2 persisted,
 // 3 the NVS erase/epoch write could not be verified (retried; never reported as done).
@@ -1883,6 +1889,19 @@ static uint32_t identifier_identity() {
 }
 static std::atomic<bool> identifier_reset_requested{false};
 static bool identifier_load(BuildingIdentifier& id,uint32_t identity) {
+    identifier_checkpoint_backend.store(0);
+    constexpr size_t cap=BuildingIdentifier::blob_capacity;
+    auto* file_buf=static_cast<uint8_t*>(heap_caps_malloc(cap,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    if(!file_buf)return false;
+    size_t used=0;
+    const auto file=enevina_firmware::history_model_read(id.variable_setpoints(),file_buf,cap,used);
+    const bool restored=file==CheckpointRead::Read && id.load(identity,file_buf,used);
+    heap_caps_free(file_buf);
+    if(restored) {identifier_checkpoint_backend.store(2);return true;}
+    // A present-but-invalid or unreadable authoritative file is not an
+    // absent file. Do not resurrect an older NVS model in that case.
+    if(file!=CheckpointRead::Missing)return false;
+    // Migration from previously shipped firmware, when no file exists.
     Preferences prefs;
     if(!prefs.begin("cottage_mdl",true)) return false;
     const char* key=model_blob_key(id.variable_setpoints());
@@ -1896,25 +1915,37 @@ static bool identifier_load(BuildingIdentifier& id,uint32_t identity) {
         }
     }
     prefs.end();
+    if(ok)identifier_checkpoint_backend.store(1);
     return ok;
 }
-enum class ModelStore : uint8_t { Stored, SkippedLowSpace, Failed };
-// The 20-KiB NVS partition also holds Wi-Fi, the signed-OTA journal and the
-// arming record. The model (about 1.3 KiB) is written only while plenty of
-// entries stay free: an NVS blob update needs room for the new copy before
-// the old one is erased. Losing a few hours of learning is acceptable;
-// crowding out those records is not.
+enum class ModelStore : uint8_t { Stored, StoredFile, FileFailed, SkippedLowSpace, Failed };
+// Prefer verified atomic checkpoints in the existing history LittleFS.
+// Legacy NVS fallback is allowed only when the file is verifiably absent;
+// the original reserve for Wi-Fi, settings and OTA remains unchanged.
 static ModelStore identifier_store(const BuildingIdentifier& id,uint32_t identity) {
     constexpr size_t cap=BuildingIdentifier::blob_capacity;
     auto* buf=static_cast<uint8_t*>(heap_caps_malloc(cap,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     if(!buf) return ModelStore::Failed;
     size_t used=0;
     bool ok=id.save(identity,buf,cap,used);
-    nvs_stats_t stats{};
+    if(!ok) {heap_caps_free(buf);return ModelStore::Failed;}
     const size_t entries=(used+31)/32+4;
-    if(ok && (nvs_get_stats(nullptr,&stats)!=ESP_OK || stats.free_entries<2*entries+128)) {
-        heap_caps_free(buf);
-        return ModelStore::SkippedLowSpace;
+    nvs_stats_t stats{};
+    const bool known=nvs_get_stats(nullptr,&stats)==ESP_OK;
+    identifier_nvs_required_entries.store(static_cast<uint32_t>(2*entries+128));
+    identifier_nvs_free_entries.store(known?static_cast<int32_t>(stats.free_entries):-1);
+    if(enevina_firmware::history_model_write(id.variable_setpoints(),buf,used)) {
+        heap_caps_free(buf);identifier_checkpoint_backend.store(2);
+        return ModelStore::StoredFile;
+    }
+    // The existing NVS path is a fallback ONLY when the checkpoint file is
+    // verifiably absent. Never write behind an authoritative file.
+    if(enevina_firmware::history_model_present(id.variable_setpoints())) {
+        heap_caps_free(buf);return ModelStore::FileFailed;
+    }
+    if(!known) {heap_caps_free(buf);return ModelStore::Failed;}
+    if(stats.free_entries<2*entries+128) {
+        heap_caps_free(buf);return ModelStore::SkippedLowSpace;
     }
     if(ok) {
         nvs_handle_t handle=0;
@@ -1922,11 +1953,22 @@ static ModelStore identifier_store(const BuildingIdentifier& id,uint32_t identit
         if(err==ESP_OK) {
             err=nvs_set_blob(handle,model_blob_key(id.variable_setpoints()),buf,used);
             if(err==ESP_OK) err=nvs_commit(handle);
+            if(err==ESP_OK) {
+                size_t read_size=used;
+                auto* readback=static_cast<uint8_t*>(heap_caps_malloc(used,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+                if(!readback)err=ESP_ERR_NO_MEM;
+                else {
+                    err=nvs_get_blob(handle,model_blob_key(id.variable_setpoints()),readback,&read_size);
+                    if(err==ESP_OK && (read_size!=used || std::memcmp(readback,buf,used)!=0))err=ESP_FAIL;
+                    heap_caps_free(readback);
+                }
+            }
             nvs_close(handle);
         }
         ok=err==ESP_OK;
     }
     heap_caps_free(buf);
+    if(ok)identifier_checkpoint_backend.store(1);
     return ok?ModelStore::Stored:ModelStore::Failed;
 }
 // NVS side of the verifiable model reset (cottage/model_persistence.hpp):
@@ -1955,15 +1997,25 @@ struct NvsModelStore {
         return err==ESP_OK;
     }
     bool erase_model() {
+        const bool file_erased=enevina_firmware::history_model_erase(variable);
         nvs_handle_t handle=0;
+        const esp_err_t read=nvs_open("cottage_mdl",NVS_READONLY,&handle);
+        if(read==ESP_ERR_NVS_NOT_FOUND)return file_erased;
+        if(read!=ESP_OK)return false;
+        size_t n=0;
+        const esp_err_t present=nvs_get_blob(handle,model_blob_key(variable),nullptr,&n);
+        nvs_close(handle);
+        if(present==ESP_ERR_NVS_NOT_FOUND)return file_erased;
+        if(present!=ESP_OK)return false;
         if(nvs_open("cottage_mdl",NVS_READWRITE,&handle)!=ESP_OK) return false;
         esp_err_t err=nvs_erase_key(handle,model_blob_key(variable));
         bool ok=err==ESP_OK || err==ESP_ERR_NVS_NOT_FOUND;
         if(err==ESP_OK) ok=nvs_commit(handle)==ESP_OK;
         nvs_close(handle);
-        return ok;
+        return ok && file_erased;
     }
     bool model_present() {                    // true unless verified absent
+        if(enevina_firmware::history_model_present(variable))return true;
         nvs_handle_t handle=0;
         esp_err_t err=nvs_open("cottage_mdl",NVS_READONLY,&handle);
         if(err==ESP_ERR_NVS_NOT_FOUND) return false;
@@ -1994,9 +2046,11 @@ struct LearningSlot {
     bool open=false;
     int64_t utc=0;
     bool indoor_ok=false;double indoor_c=0;
+    int64_t indoor_utc=0,observed_utc=0;
+    uint64_t observed_ms=0;
     bool outdoor_ok=false;double outdoor_c=0;
-    uint32_t commands_sent=0;
-    uint32_t config_generation=0;
+    uint32_t commands_sent=0,commands_confirmed=0,commands_failed=0;
+    uint32_t config_generation=0,site_generation=0;
     bool energy_ok=false;double total_wh=0;int64_t energy_utc=0;
     uint32_t energy_meter_identity=0;
     enevina::PumpRoomState gateway_start{};
@@ -2049,12 +2103,14 @@ static void optimizer_worker(void*) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
         identifier=id;mpc_rows=rows;mpc_trend=trend;identifier_restored=restored;
         calibration_snapshot=id->report(time(nullptr));
+        identifier_last_saved_sample_utc=restored?calibration_snapshot.last_sample_utc:0;
         xSemaphoreGive(lock_data);
     }
     LearningSlot slot{};
     int64_t last_boundary=0;
     uint32_t saved_revision=id?id->report(0).revision:0;
-    unsigned boundaries_since_save=0;
+    LearningCheckpoint checkpoint;
+    checkpoint.reset(restored);
     for(;;) {
         // Poll the existing standard API once per optimizer tick, even
         // disarmed, BEFORE learning/planning. This avoids losing the first
@@ -2069,6 +2125,7 @@ static void optimizer_worker(void*) {
             xSemaphoreGive(lock_data);
         }
         const int64_t now=time(nullptr);
+        const uint64_t observation_ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
         const int64_t slot_start=(now/900)*900;
         bool boundary=false;
         if(id) {
@@ -2096,9 +2153,10 @@ static void optimizer_worker(void*) {
                 reset_unpersisted=false;reset_by_owner=false;
                 slot=LearningSlot{};
                 saved_revision=id->report(now).revision;
-                boundaries_since_save=0;
+                checkpoint.reset(domain_restored);
                 xSemaphoreTake(lock_data,portMAX_DELAY);
                 identifier_restored=domain_restored;
+                identifier_last_saved_sample_utc=domain_restored?id->report(now).last_sample_utc:0;
                 mpc_plan=MpcPlanRecord{};
                 plan_count=0;
                 last_plan.status=MpcStatus::InvalidInput;
@@ -2112,13 +2170,15 @@ static void optimizer_worker(void*) {
                     ModelResetResult::Persisted;
                 slot=LearningSlot{};
                 saved_revision=0;
-                boundaries_since_save=0;
+                checkpoint.reset(false);
                 reset_by_owner=owner_reset;
                 if(owner_reset) identifier_reset_state.store(reset_unpersisted?3:2);
                 if(reset_unpersisted) identifier_reset_failures.fetch_add(1);
                 last_reset_retry_ms=millis();
                 xSemaphoreTake(lock_data,portMAX_DELAY);
                 identifier_restored=false;
+                identifier_checkpoint_backend.store(0);
+                identifier_last_saved_sample_utc=0;
                 mpc_plan=MpcPlanRecord{};
                 plan_count=0;
                 last_plan.status=MpcStatus::InvalidInput;
@@ -2145,11 +2205,13 @@ static void optimizer_worker(void*) {
         cp=pump;meter=consumption;
         xSemaphoreGive(lock_data);
         const uint32_t optimizer_site_generation=site_settings_generation();
+        const uint32_t optimizer_config_generation=c23_config_generation();
         const bool midea=cottage_midea_selected();
         const auto view=boundary?optimizer_pump_state(now,midea):enevina::PumpRoomState{};
         const bool view_heat=view.mode==enevina::PumpRoomMode::Heat;
         ts=selected_room_sample(now);
         if(site_settings_generation()!=optimizer_site_generation ||
+           c23_config_generation()!=optimizer_config_generation ||
            (id && identifier_identity()!=identity))ts={};
         const auto ms=enevina_firmware::market_status();
         const auto ws=enevina_firmware::weather_status();
@@ -2160,10 +2222,14 @@ static void optimizer_worker(void*) {
             // (1) Close the previous slot: one identification observation.
             if(slot.open && slot.utc==slot_start-900 &&
                slot.config_generation==c23_config_generation() &&
+               slot.site_generation==optimizer_site_generation &&
                optimizer_site_generation==site_settings_generation()) {
                 SlotObservation o{};
                 o.slot_utc=slot.utc;
-                o.indoor_valid=slot.indoor_ok && valid_temperature(ts,now);
+                o.indoor_valid=slot.indoor_ok && valid_temperature(ts,now) &&
+                    learning_room_boundary(slot_start,ts.captured_utc,now) &&
+                    ts.captured_utc-slot.indoor_utc>=840 && ts.captured_utc-slot.indoor_utc<=960 &&
+                    learning_interval_span(slot.observed_utc,now,slot.observed_ms,observation_ms);
                 o.indoor_start_c=slot.indoor_c;o.indoor_end_c=ts.indoor_c;
                 o.outdoor_valid=slot.outdoor_ok;o.outdoor_c=slot.outdoor_c;
                 // For the standard CN105 bridge this is an observed REQUEST,
@@ -2175,17 +2241,27 @@ static void optimizer_worker(void*) {
                 o.heat_requested=view_heat;
                 o.setpoint_c=view.setpoint_c;
                 if(view.protocol==enevina::PumpRoomProtocol::Cn105EspHome) {
-                    o.heat_valid=o.heat_valid && same_cn105_gateway_request(slot.gateway_start,view);
-                    if(!o.heat_valid && no_command && known_heating_mode(view)) {
-                        double fraction=0;
-                        xSemaphoreTake(lock_data,portMAX_DELAY);
-                        const bool observed=cn105_gateway_requests.single_mode_transition(slot.gateway_start,view,fraction);
-                        xSemaphoreGive(lock_data);
-                        if(observed) {
-                            o.heat_valid=true;o.transition_before_fraction=fraction;
-                            if(!view_heat)o.setpoint_c=slot.gateway_start.setpoint_c;
-                        }
+                    CN105SlotCommands commands{};
+                    commands.sent=control_commands_sent.load()-slot.commands_sent;
+                    commands.confirmed=control_commands_confirmed.load()-slot.commands_confirmed;
+                    commands.failed=control_commands_failed.load()-slot.commands_failed;
+                    xSemaphoreTake(lock_data,portMAX_DELAY);
+                    if(cn105_command_link.current()) {
+                        commands.step=static_cast<ControlStep>(cn105_history_ack.step);
+                        commands.sent_utc=cn105_command_readback.sent.utc;
+                        commands.ack_utc=cn105_history_ack.utc;
+                        commands.target_c=cn105_history_ack.target_c10/10.0;
+                        // Both records must refer to the same dispatched step.
+                        if(commands.step!=cn105_command_readback.sent.step)
+                            commands.step=ControlStep::None;
                     }
+                    const auto input=cn105_learning_request(cn105_gateway_requests,
+                        slot.gateway_start,view,commands);
+                    xSemaphoreGive(lock_data);
+                    o.heat_valid=input.valid;
+                    o.transition_before_fraction=input.before_fraction;
+                    if(input.valid && input.before_fraction>0 && !view_heat)
+                        o.setpoint_c=slot.gateway_start.setpoint_c;
                 }
                 o.in_model_domain=id->variable_setpoints() ||
                     (!view_heat && o.transition_before_fraction<0) || o.setpoint_c<=16.01;
@@ -2199,17 +2275,23 @@ static void optimizer_worker(void*) {
                 id->add(o);
             }
             slot.open=false;
-            // (2) Persist at most every 6 h, only when the model changed.
-            const uint32_t revision=id->report(now).revision;
-            if(++boundaries_since_save>=24 && revision!=saved_revision) {
-                boundaries_since_save=0;
+            // (2) Checkpoint the first learned sample and then at most hourly
+            // when the model changed. Keep the NVS space reserve unchanged.
+            const auto learned=id->report(now);
+            const uint32_t revision=learned.revision;
+            if(checkpoint.due(learned.samples,revision!=saved_revision)) {
                 if(!epoch_known) epoch_known=load_model_epoch(model_store,model_epoch);
                 const ModelStore stored=epoch_known?
                     identifier_store(*id,model_store_identity(identity,model_epoch)):
                     ModelStore::Failed;
-                if(stored==ModelStore::Stored) saved_revision=revision;
+                if(stored==ModelStore::Stored || stored==ModelStore::StoredFile)
+                    saved_revision=revision;
                 xSemaphoreTake(lock_data,portMAX_DELAY);
-                if(stored==ModelStore::Stored) identifier_nvs_saves++;
+                if(stored==ModelStore::Stored || stored==ModelStore::StoredFile) {
+                    if(stored==ModelStore::StoredFile)identifier_file_saves++;
+                    else identifier_nvs_saves++;
+                    identifier_last_saved_sample_utc=learned.last_sample_utc;
+                } else if(stored==ModelStore::FileFailed)identifier_file_failures++;
                 else if(stored==ModelStore::SkippedLowSpace) identifier_nvs_skipped++;
                 else identifier_nvs_failures++;
                 xSemaphoreGive(lock_data);
@@ -2241,7 +2323,7 @@ static void optimizer_worker(void*) {
             pi.minutes_in_mode=view.mode_minutes;
             pi.horizon=hz;
             pi.mode_generation=view.request_generation;
-            pi.config_generation=c23_config_generation();
+            pi.config_generation=optimizer_config_generation;
             pi.settings_generation=optimizer_site_generation;
             pi.limits=owner_comfort_limits();
             pi.profile=site_settings_snapshot().profile;
@@ -2267,7 +2349,8 @@ static void optimizer_worker(void*) {
                 after.mode!=view.mode || after.endpoint_generation!=view.endpoint_generation ||
                 after.link_generation!=view.link_generation ||
                 after.configuration_generation!=view.configuration_generation ||
-                site_settings_generation()!=optimizer_site_generation;
+                site_settings_generation()!=optimizer_site_generation ||
+                c23_config_generation()!=optimizer_config_generation;
             MpcPlanRecord record=po.record;
             if(mode_changed) {
                 record.has_plan=false;record.planning_fallback=MpcFallback::PlanInputsChanged;
@@ -2333,13 +2416,24 @@ static void optimizer_worker(void*) {
         cottage_control_tick(bridge);
         if(boundary) {
             // (5) Open the new slot AFTER this boundary's control decision:
-            // a command sent later in the slot invalidates its observation.
+            // the next slot can also learn from one continuously observed,
+            // acknowledged CN105 mode transition later in the interval.
             slot=LearningSlot{};
             slot.open=true;slot.utc=slot_start;
-            slot.indoor_ok=valid_temperature(ts,now);slot.indoor_c=ts.indoor_c;
+            slot.indoor_ok=valid_temperature(ts,now) &&
+                learning_room_boundary(slot_start,ts.captured_utc,now);
+            slot.indoor_c=ts.indoor_c;slot.indoor_utc=ts.captured_utc;
+            slot.observed_utc=now;slot.observed_ms=observation_ms;
             slot.outdoor_ok=ws.available && weather_at(weather,wc,slot_start+450,slot.outdoor_c);
             slot.commands_sent=control_commands_sent.load();
-            slot.config_generation=c23_config_generation();
+            slot.commands_confirmed=control_commands_confirmed.load();
+            slot.commands_failed=control_commands_failed.load();
+            slot.config_generation=optimizer_config_generation;
+            slot.site_generation=optimizer_site_generation;
+            // A concurrent setting change must not relabel a pre-change reading.
+            if(slot.site_generation!=site_settings_generation() ||
+               slot.config_generation!=c23_config_generation() ||
+               (id && identifier_identity()!=identity))slot.indoor_ok=false;
             if(cn105_selected())
                 slot.gateway_start=optimizer_pump_state(time(nullptr),false);
             xSemaphoreTake(lock_data,portMAX_DELAY);
@@ -2846,6 +2940,8 @@ static void mpc_endpoint() {
                    failures=mpc_solver_failures,saves=identifier_nvs_saves,
                    save_failures=identifier_nvs_failures,save_skips=identifier_nvs_skipped;
     const bool restored=identifier_restored;
+    const uint32_t file_saves=identifier_file_saves,file_failures=identifier_file_failures;
+    const int64_t last_saved_sample=identifier_last_saved_sample_utc;
     const int reset_state=identifier_reset_state.load();
     const uint32_t reset_failures=identifier_reset_failures.load();
     const ShellyTelemetry meter=consumption;
@@ -2887,6 +2983,19 @@ static void mpc_endpoint() {
         restored?"true":"false",saves,save_failures,save_skips,
         reset_state==1?"REQUESTED":reset_state==2?"PERSISTED":
         reset_state==3?"PERSIST_FAILED":"NONE",reset_failures);
+    web.sendContent(buf);
+    snprintf(buf,sizeof(buf),
+        "\"last_observation\":\"%s\",\"last_saved_sample_utc\":%lld,"
+        "\"nvs_free_entries\":%ld,\"nvs_required_entries\":%u,"
+        "\"file_saves\":%u,\"file_failures\":%u,\"checkpoint_backend\":\"%s\","
+        "\"samples_needed\":%u,\"heating_needed\":%u,\"off_needed\":%u,"
+        "\"starts_needed\":%u,\"stops_needed\":%u,",
+        learning_observation_name(cal.last_observation),static_cast<long long>(last_saved_sample),
+        static_cast<long>(identifier_nvs_free_entries.load()),identifier_nvs_required_entries.load(),
+        file_saves,file_failures,identifier_checkpoint_backend.load()==2?"LITTLEFS":
+        identifier_checkpoint_backend.load()==1?"NVS":"NONE",
+        CalibrationLimits::min_samples,CalibrationLimits::min_heating,CalibrationLimits::min_off,
+        CalibrationLimits::min_starts,CalibrationLimits::min_stops);
     web.sendContent(buf);
     const bool have_model=cal.samples>0 && m.tau_h>0;
     char a[24],b[24],c[24],d[24],e[24],f[24],g[24],h[24];

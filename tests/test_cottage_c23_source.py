@@ -42,7 +42,7 @@ class C23SourceTests(unittest.TestCase):
         self.assertIn("6ULL*3600*1000",SERVICE)
 
     def test_sensor_rebinding_does_not_mix_history(self):
-        self.assertIn("history=AirHistory{}",SERVICE)
+        self.assertIn("history.clear()",SERVICE)
         self.assertIn('p.remove("hourly_v1")',SERVICE)
         self.assertIn("binding_changed",SERVICE)
 

@@ -100,8 +100,11 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("cn105_gateway_requests.snapshot(now,ms,endpoint,link)", view)
         self.assertNotIn("sse_observed_pump", view)
         self.assertNotIn("PumpStateSource::VerifiedBus", view)
-        self.assertIn("same_cn105_gateway_request(slot.gateway_start,view)", WORKER)
-        self.assertIn("cn105_gateway_requests.single_mode_transition(slot.gateway_start,view,fraction)", WORKER)
+        self.assertIn("cn105_learning_request(cn105_gateway_requests,", WORKER)
+        self.assertIn("slot.gateway_start,view,commands)", WORKER)
+        self.assertIn("commands.confirmed=control_commands_confirmed.load()-slot.commands_confirmed", WORKER)
+        self.assertIn("commands.failed=control_commands_failed.load()-slot.commands_failed", WORKER)
+        self.assertIn("commands.ack_utc=cn105_history_ack.utc", WORKER)
         self.assertIn("cn105-gateway-request-v2", MAIN)
         self.assertIn("cn105_gateway_requests.note(heating,target,utc,ms,link.endpoint,link.wifi)", MAIN)
         self.assertIn("cn105_gateway_requests.invalidate()", MAIN)
@@ -148,7 +151,7 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("++config_generation;", bind)
         self.assertIn("uint32_t c23_indoor_binding_id() {", air)
         self.assertIn("slot.config_generation==c23_config_generation()", WORKER)
-        self.assertIn("slot.config_generation=c23_config_generation();", WORKER)
+        self.assertIn("slot.config_generation=optimizer_config_generation;", WORKER)
         # Codex P2 #2: /api/plan and /api/mpc use the controller's validity.
         plan = MAIN.split("static void plan_endpoint() {", 1)[1].split("static void json_number_or_null", 1)[0]
         self.assertIn("plan_validity(", plan)
@@ -226,8 +229,15 @@ class MpcControlWiring(unittest.TestCase):
 
     def test_learning_is_read_only_and_persisted_hourly(self):
         self.assertIn('nvs_open("cottage_mdl",NVS_READWRITE,&handle)', MAIN)
-        self.assertIn("++boundaries_since_save>=24 && revision!=saved_revision", WORKER)
+        self.assertIn("checkpoint.due(learned.samples,revision!=saved_revision)", WORKER)
+        self.assertIn("learning_room_boundary(slot_start,ts.captured_utc,now)", WORKER)
+        self.assertIn("learning_interval_span(slot.observed_utc,now,slot.observed_ms,observation_ms)", WORKER)
+        self.assertIn("slot.site_generation==optimizer_site_generation", WORKER)
         self.assertIn("stats.free_entries<2*entries+128", MAIN)
+        self.assertIn("enevina_firmware::history_model_write(id.variable_setpoints(),buf,used)",MAIN)
+        self.assertIn("if(file!=CheckpointRead::Missing)return false;",MAIN)
+        self.assertIn("enevina_firmware::history_model_erase(variable)",MAIN)
+        self.assertIn("enevina_firmware::history_model_present(variable)",MAIN)
         self.assertIn("identifier_identity()", WORKER)
         self.assertIn('web.on("/api/model/reset",HTTP_POST', MAIN)
         reset = MAIN.split('web.on("/api/model/reset",HTTP_POST', 1)[1].split("});", 1)[0]

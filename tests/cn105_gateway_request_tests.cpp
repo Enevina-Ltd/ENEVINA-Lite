@@ -77,5 +77,70 @@ int main(){
         double f=0;
         CHECK(!tracker.single_mode_transition(begin,end,f));
     }
+    // An automatic mode command is usable only when exactly one confirmed
+    // dispatch explains the same independently observed single switch.
+    for(bool old_heat : {false,true}) {
+        CN105GatewayRequestHistory tracker;
+        CHECK(tracker.note(old_heat,16,t,ms,1,1));
+        auto begin=tracker.snapshot(t,ms,1,1);
+        for(unsigned i=1;i<=15;++i) CHECK(tracker.note(i<6?old_heat:!old_heat,16,t+60*i,ms+60000*i,1,1));
+        const auto end=tracker.snapshot(t+900,ms+900000,1,1);
+        const CN105SlotCommands command{1,1,0,old_heat?ControlStep::SetOff:ControlStep::SetHeat,t+357,t+360,16};
+        const auto good=cn105_learning_request(tracker,begin,end,command);
+        CHECK(good.valid && std::fabs(good.before_fraction-358.5/900.0)<1e-9);
+        auto external=cn105_learning_request(tracker,begin,end,{});
+        CHECK(external.valid && std::fabs(external.before_fraction-330.0/900.0)<1e-9);
+        for(int bad=0;bad<9;++bad) {
+            auto cmd=command;
+            if(bad==0)cmd.sent=2;
+            if(bad==1)cmd.confirmed=0;
+            if(bad==2)cmd.failed=1;
+            if(bad==3)cmd.step=ControlStep::Setpoint;
+            if(bad==4)cmd.sent_utc=t-1;
+            if(bad==5)cmd.sent_utc=t+361;
+            if(bad==6)cmd.ack_utc=t+359;
+            if(bad==7)cmd.ack_utc=t+901;
+            if(bad==8)cmd.step=old_heat?ControlStep::SetHeat:ControlStep::SetOff;
+            CHECK(!cn105_learning_request(tracker,begin,end,cmd).valid);
+        }
+        if(!old_heat) {
+            auto cmd=command;cmd.target_c=17;
+            CHECK(!cn105_learning_request(tracker,begin,end,cmd).valid);
+        }
+        tracker.invalidate();
+        CHECK(!cn105_learning_request(tracker,begin,end,command).valid);
+    }
+    {
+        CN105GatewayRequestHistory tracker;
+        CHECK(tracker.note(false,16,t,ms,1,1));
+        const auto begin=tracker.snapshot(t,ms,1,1);
+        for(unsigned i=1;i<=15;++i)CHECK(tracker.note(false,16,t+60*i,ms+60000*i,1,1));
+        const auto end=tracker.snapshot(t+900,ms+900000,1,1);
+        auto quiet=cn105_learning_request(tracker,begin,end,{});
+        CHECK(quiet.valid && quiet.before_fraction==-1);
+        CN105SlotCommands failure{};failure.failed=1;
+        CHECK(!cn105_learning_request(tracker,begin,end,failure).valid);
+        CN105SlotCommands setpoint{1,1,0,ControlStep::Setpoint,t+400,t+401,16};
+        CHECK(!cn105_learning_request(tracker,begin,end,setpoint).valid);
+        auto too_short=end;too_short.evidence.received_utc=t+839;
+        CHECK(!cn105_learning_request(tracker,begin,too_short,{}).valid);
+        auto forged=end;forged.setpoint_c=17;
+        CHECK(!cn105_learning_request(tracker,begin,forged,{}).valid);
+        tracker.invalidate();
+        CHECK(!cn105_learning_request(tracker,begin,end,{}).valid);
+    }
+    for(bool distinct_ms:{true,false}) {
+        CN105GatewayRequestHistory tracker;
+        CHECK(tracker.note(false,16,t,ms,1,1));
+        const auto begin=tracker.snapshot(t,ms,1,1);
+        for(unsigned i=1;i<=6;++i)CHECK(tracker.note(false,16,t+60*i,ms+60000*i,1,1));
+        CHECK(tracker.note(true,16,t+360,ms+360000+(distinct_ms?600:0),1,1));
+        for(unsigned i=7;i<=15;++i)CHECK(tracker.note(true,16,t+60*i,ms+60000*i,1,1));
+        const auto end=tracker.snapshot(t+900,ms+900000,1,1);
+        const CN105SlotCommands cmd{1,1,0,ControlStep::SetHeat,t+360,t+360,16};
+        const auto result=cn105_learning_request(tracker,begin,end,cmd);
+        CHECK(result.valid==distinct_ms);
+        if(distinct_ms)CHECK(std::fabs(result.before_fraction-0.4)<1e-9);
+    }
     std::puts("CN105 standard gateway request regressions PASS");
 }

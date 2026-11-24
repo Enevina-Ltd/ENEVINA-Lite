@@ -1,6 +1,8 @@
 // Reset of the learned model must survive NVS failures and reboots.
 #include "cottage/building_identification.hpp"
 #include "cottage/model_persistence.hpp"
+#include "cottage/learning_observation.hpp"
+#include "cottage/model_checkpoint.hpp"
 #include "tests/cottage_closed_loop.hpp"
 #include <cstdio>
 #include <cstring>
@@ -174,6 +176,88 @@ void test_unknown_epoch_never_counts_as_a_reset() {
     CHECK(persist_model_reset(e2,ep,k)==ModelResetResult::Persisted);
     CHECK(!e2.has_blob && e2.epoch==3 && !k);       // nothing guessed, epoch still unknown
 }
+struct FakeCheckpointFile : FileBackend {
+    std::vector<uint8_t> content,pending;
+    bool present=false,writing=false;
+    bool begin_fail=false,write_fail=false,commit_fail=false,read_fail=false,corrupt_commit=false;
+    bool exists()override{return present;}
+    size_t size()override{return content.size();}
+    bool read(size_t offset,void* dst,size_t n)override{
+        if(read_fail || offset>content.size() || n>content.size()-offset)return false;
+        std::memcpy(dst,content.data()+offset,n);return true;
+    }
+    bool append(const void*,size_t)override{return false;}
+    bool replace_begin()override{
+        if(begin_fail)return false;
+        pending.clear();writing=true;return true;
+    }
+    bool replace_write(const void* data,size_t n)override{
+        if(write_fail || !writing)return false;
+        auto p=static_cast<const uint8_t*>(data);pending.insert(pending.end(),p,p+n);return true;
+    }
+    bool replace_commit()override{
+        if(commit_fail || !writing)return false;
+        content=pending;present=true;writing=false;
+        if(corrupt_commit && !content.empty())content[0]^=1;
+        return true;
+    }
+    void replace_abort()override{pending.clear();writing=false;}
+};
+void test_atomic_model_checkpoint() {
+    FakeCheckpointFile file;
+    uint8_t buf[BuildingIdentifier::blob_capacity],out[BuildingIdentifier::blob_capacity];
+    size_t used=0,n=0;const auto original=learned();
+    CHECK(original.save(model_store_identity(base_identity,0),buf,sizeof(buf),used));
+    CHECK(read_model_checkpoint(file,out,sizeof(out),n)==CheckpointRead::Missing && n==0);
+    CHECK(write_model_checkpoint(file,buf,used));
+    CHECK(read_model_checkpoint(file,out,sizeof(out),n)==CheckpointRead::Read && n==used);
+    BuildingIdentifier restored;
+    CHECK(restored.load(model_store_identity(base_identity,0),out,n));
+    CHECK(restored.report(0).samples==original.report(0).samples);
+    CHECK(!restored.load(model_store_identity(base_identity,1),out,n)); // reset epoch changed
+    CHECK(!restored.load(model_store_identity(base_identity+1,0),out,n)); // changed room/pump
+    const auto baseline=file.content;
+    for(int fail=0;fail<3;++fail) {
+        file.begin_fail=fail==0;file.write_fail=fail==1;file.commit_fail=fail==2;
+        CHECK(!write_model_checkpoint(file,buf,used));
+        CHECK(file.content==baseline && !file.writing);
+    }
+    file.begin_fail=file.write_fail=file.commit_fail=false;
+    file.read_fail=true;
+    CHECK(read_model_checkpoint(file,out,sizeof(out),n)==CheckpointRead::Error && n==0);
+    CHECK(!write_model_checkpoint(file,buf,used)); // successful commit is not enough
+    file.read_fail=false;file.corrupt_commit=true;
+    CHECK(!write_model_checkpoint(file,buf,used));
+    CHECK(read_model_checkpoint(file,out,sizeof(out),n)==CheckpointRead::Read);
+    CHECK(!restored.load(model_store_identity(base_identity,0),out,n));
+    CHECK(restored.report(0).samples==original.report(0).samples);
+    file.content.resize(sizeof(out)+1);
+    CHECK(read_model_checkpoint(file,out,sizeof(out),n)==CheckpointRead::Error);
+}
+void test_learning_interval_and_checkpoint_policy() {
+    const int64_t t=1800000000;
+    CHECK(learning_room_boundary(t,t-15,t+1));
+    CHECK(!learning_room_boundary(t,t-120,t));
+    CHECK(!learning_room_boundary(t,t+5,t));
+    CHECK(!learning_room_boundary(t,t+61,t+62));
+    CHECK(learning_interval_span(t,t+900,1000,901000));
+    CHECK(learning_interval_span(t,t+859,1000,860000));
+    CHECK(!learning_interval_span(t,t+900,1000,871000)); // clock step
+    CHECK(!learning_interval_span(t,t+1000,1000,1001000));
+    CHECK(!learning_interval_span(t,t-1,1000,0));
+    LearningCheckpoint c;
+    c.reset(false);
+    CHECK(!c.due(0,true));CHECK(!c.due(0,true));
+    CHECK(c.due(1,true)); // first useful observation
+    for(int i=0;i<3;++i)CHECK(!c.due(2,true)); // even when write failed
+    CHECK(c.due(5,true));
+    for(int i=0;i<5;++i)CHECK(!c.due(5,false)); // unchanged model
+    CHECK(c.due(6,true));
+    c.reset(true); // a restored model is not immediately rewritten
+    for(int i=0;i<3;++i)CHECK(!c.due(8,true));
+    CHECK(c.due(9,true));
+}
+
 void test_identity_binds_epoch_and_site() {
     CHECK(model_store_identity(1,0)!=model_store_identity(1,1));
     CHECK(model_store_identity(1,5)!=model_store_identity(2,5));
@@ -191,6 +275,8 @@ int main() {
     test_new_learning_after_reset_persists_and_second_reset_works();
     test_unknown_epoch_never_counts_as_a_reset();
     test_identity_binds_epoch_and_site();
+    test_learning_interval_and_checkpoint_policy();
+    test_atomic_model_checkpoint();
     if(failures) {std::printf("%d failure(s)\n",failures);return 1;}
     std::printf("cottage_model_persistence_tests: all passed\n");
     return 0;

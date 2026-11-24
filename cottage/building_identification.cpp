@@ -107,6 +107,21 @@ const char* calibration_block_name(CalibrationBlock b) {
     return "UNKNOWN";
 }
 
+const char* learning_observation_name(LearningObservation s) {
+    switch(s) {
+    case LearningObservation::None:return "NONE";
+    case LearningObservation::Accepted:return "ACCEPTED";
+    case LearningObservation::NeedPrevious:return "NEED_PREVIOUS";
+    case LearningObservation::RoomInvalid:return "ROOM_INVALID";
+    case LearningObservation::OutdoorInvalid:return "OUTDOOR_INVALID";
+    case LearningObservation::RequestInvalid:return "REQUEST_INVALID";
+    case LearningObservation::OutsideDomain:return "OUTSIDE_DOMAIN";
+    case LearningObservation::InvalidTransition:return "INVALID_TRANSITION";
+    case LearningObservation::NumericalReject:return "NUMERICAL_REJECT";
+    }
+    return "NONE";
+}
+
 bool valid_comfort_limits_for_mpc(const ComfortLimits& l) {
     const auto ok=[](double v){
         return v==0 || (id_finite(v) && v>=5.0 && v<=26.0 &&
@@ -263,16 +278,26 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
     const bool contains_heat=heat || transition;
     const bool known_setpoint=!variable_setpoints_ || !contains_heat ||
         (id_finite(o.setpoint_c) && o.setpoint_c>=5.0 && o.setpoint_c<=35.0);
-    const bool slot_ok=valid_fraction && known_setpoint && o.heat_valid && o.indoor_valid &&
-        o.outdoor_valid && o.in_model_domain &&
-        id_finite(o.indoor_start_c) && id_finite(o.indoor_end_c) && id_finite(o.outdoor_c) &&
+    const bool room_ok=o.indoor_valid && id_finite(o.indoor_start_c) &&
+        id_finite(o.indoor_end_c) &&
         o.indoor_start_c>-10 && o.indoor_start_c<40 &&
         o.indoor_end_c>-10 && o.indoor_end_c<40 &&
-        o.outdoor_c>=-55 && o.outdoor_c<=45 &&
-        std::fabs(o.indoor_end_c-o.indoor_start_c)<3.0 &&
+        std::fabs(o.indoor_end_c-o.indoor_start_c)<3.0;
+    const bool outdoor_ok=o.outdoor_valid && id_finite(o.outdoor_c) &&
+        o.outdoor_c>=-55 && o.outdoor_c<=45;
+    const bool domain_ok=o.in_model_domain && known_setpoint &&
         // The pump's own 16 C thermostat throttles above ~15.5 C indoors.
         (variable_setpoints_ || !(contains_heat && o.indoor_start_c>15.3));
+    const bool slot_ok=valid_fraction && o.heat_valid && room_ok && outdoor_ok && domain_ok;
     const bool thermal_ok=contiguous && slot_ok && transition_contiguous;
+    last_observation_=!room_ok?LearningObservation::RoomInvalid:
+        !outdoor_ok?LearningObservation::OutdoorInvalid:
+        !o.heat_valid?LearningObservation::RequestInvalid:
+        !domain_ok?LearningObservation::OutsideDomain:
+        !valid_fraction?LearningObservation::InvalidTransition:
+        !contiguous?LearningObservation::NeedPrevious:
+        !transition_contiguous?LearningObservation::InvalidTransition:
+        LearningObservation::NumericalReject;
     last_sample_utc_=o.slot_utc;
     prev_slot_utc_=o.slot_utc;
     // A start/stop is only ever inferred between two ACCEPTED slots: a slot
@@ -295,6 +320,7 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
         push_trend(o.slot_utc+900,o.indoor_end_c,one_step,learning_ok_?open_loop:nan);
         if(updated) {
             samples_++;
+            last_observation_=LearningObservation::Accepted;
             if(u>0.05) heating_++;
             else if(!contains_heat) off_++;
             if(start) {starts_++;start_outdoor_sum_+=to;}
@@ -465,6 +491,7 @@ CalibrationReport BuildingIdentifier::report(int64_t now_utc) const {
     r.outliers=thermal_.outliers;
     r.windows=ring_count_;r.windows_aborted=windows_aborted_;
     r.last_sample_utc=last_sample_utc_;r.revision=revision_;
+    r.last_observation=last_observation_;
     r.model=estimate();
     const uint32_t k=std::min<uint32_t>(ring_count_,CalibrationLimits::windows_needed);
     if(k) {

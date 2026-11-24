@@ -123,6 +123,7 @@ struct Metrics {
     unsigned violation_slots=0, starts=0;
     double equalized_cost=0;         // cost + energy to return to the initial state
     unsigned mpc_active=0, mpc_attempts=0, solver_failures=0;
+    unsigned learned_range_limited_plans=0, invalid_learned_range_plans=0;
     unsigned calibrated_at_slot=0;   // 0 = calibrated before evaluation
     bool calibrated_at_end=false;
     double solve_ms_max=0, solve_ms_sum=0;
@@ -350,8 +351,17 @@ private:
         ai.bootstrap=boot;
         if(!calibrated) ai.plan.has_plan=false;
         const ArbiterOutput out=arbitrate(ai);
-        if(out.source==ProposalSource::Mpc) m.mpc_active++;
-        else m.fallbacks[mpc_fallback_name(out.fallback)]++;
+        if(out.source==ProposalSource::Mpc) {
+            m.mpc_active++;
+            if(hz.limit==HorizonLimit::LearnedOutdoorRange)++m.learned_range_limited_plans;
+            const auto estimate=id.report(now).model;
+            for(size_t k=0;k<po.record.count;++k) {
+                const double to=hz.bridge.periods[k].outdoor_c;
+                if(!std::isfinite(to) || to<estimate.outdoor_min_c-CalibrationLimits::outdoor_margin_c ||
+                   to>estimate.outdoor_max_c+CalibrationLimits::outdoor_margin_c)
+                    ++m.invalid_learned_range_plans;
+            }
+        } else m.fallbacks[mpc_fallback_name(out.fallback)]++;
         last_source_=out.source==ProposalSource::Mpc?"MPC":mpc_fallback_name(out.fallback);
         return out.proposal;
     }

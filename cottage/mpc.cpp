@@ -4,7 +4,13 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
-#include <vector>
+#include <cstdlib>
+#include <new>
+#include <type_traits>
+#include <utility>
+#ifdef ARDUINO
+#include <esp_heap_caps.h>
+#endif
 
 namespace enevina::cottage {
 namespace {
@@ -15,6 +21,56 @@ struct Node {
     // Final trajectory still uses double-precision physics::advance().
     float objective=std::numeric_limits<float>::infinity();
     float temperature=0;
+};
+// Six fixed-size workspaces; no hidden vector growth or throwing new.
+// An allocation failure returns ResourceLimit without producing a plan.
+template<class T> class MpcWorkspace {
+public:
+    static_assert(std::is_trivially_destructible<T>::value,"workspace elements must be trivial to destroy");
+    MpcWorkspace(size_t capacity,const MpcRunControls& controls)
+        : controls_(controls),capacity_(capacity) {
+        if(!capacity || capacity>std::numeric_limits<size_t>::max()/sizeof(T))return;
+        const size_t bytes=capacity*sizeof(T);
+        if(controls_.workspace_alloc) data_=static_cast<T*>(controls_.workspace_alloc(bytes,controls_.workspace_context));
+        else {
+#ifdef ARDUINO
+            data_=static_cast<T*>(heap_caps_malloc(bytes,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+#else
+            data_=static_cast<T*>(::operator new(bytes,std::nothrow));
+#endif
+        }
+        if(data_)for(size_t i=0;i<capacity_;++i)new(data_+i) T{};
+    }
+    ~MpcWorkspace() {
+        if(!data_)return;
+        if(controls_.workspace_free)controls_.workspace_free(data_,controls_.workspace_context);
+        else {
+#ifdef ARDUINO
+            heap_caps_free(data_);
+#else
+            ::operator delete(data_);
+#endif
+        }
+    }
+    MpcWorkspace(const MpcWorkspace&)=delete;
+    MpcWorkspace& operator=(const MpcWorkspace&)=delete;
+    bool valid()const {return data_!=nullptr;}
+    T* begin(){return data_;}
+    T* end(){return data_+size_;}
+    bool empty()const{return size_==0;}
+    T& operator[](size_t i){return data_[i];}
+    void fill(const T& value){size_=capacity_;std::fill(begin(),end(),value);}
+    void clear(){size_=0;}
+    bool push_back(const T& value){
+        if(size_>=capacity_)return false;
+        data_[size_++]=value;return true;
+    }
+    // Both buffers have the same allocator/context and capacity.
+    void swap(MpcWorkspace& other){std::swap(data_,other.data_);std::swap(size_,other.size_);}
+private:
+    const MpcRunControls& controls_;
+    T* data_=nullptr;
+    size_t capacity_=0,size_=0;
 };
 size_t key(size_t bin,size_t action,size_t age,size_t actions,size_t ages) {
     return (bin*actions+action)*ages+age;
@@ -41,6 +97,7 @@ MpcResult optimize(const Parameters& p, const State& initial,
         initial.indoor_c > p.maximum_indoor_c ||
         initial.indoor_c < p.critical_c ||
         memory_budget_bytes==0 ||
+        ((controls.workspace_alloc==nullptr)!=(controls.workspace_free==nullptr)) ||
         (std::isfinite(controls.terminal_min_c) &&
          controls.terminal_min_c > p.maximum_indoor_c))
         return result;
@@ -134,8 +191,13 @@ MpcResult optimize(const Parameters& p, const State& initial,
         const auto b=static_cast<long>(scaled+0.5f);
         return static_cast<size_t>(std::clamp(b,0L,static_cast<long>(bins-1)));
     };
-    std::vector<Node> current(states), next(states);
-    std::vector<uint16_t> parent(count*states,no_parent);
+    MpcWorkspace<Node> current(states,controls),next(states,controls);
+    MpcWorkspace<uint16_t> parent(count*states,controls);
+    MpcWorkspace<uint16_t> active(states,controls),next_active(states,controls),terminals(states,controls);
+    if(!current.valid() || !next.valid() || !parent.valid() ||
+       !active.valid() || !next_active.valid() || !terminals.valid())
+        return interrupted(MpcStatus::ResourceLimit);
+    current.fill(Node{});next.fill(Node{});parent.fill(no_parent);
     const size_t initial_age=std::min<size_t>(
         initial.minutes_in_mode/slot_minutes,age_max);
     const size_t first=representatives*key(bin_of(initial.indoor_c),
@@ -143,10 +205,8 @@ MpcResult optimize(const Parameters& p, const State& initial,
     current[first]={0.0f,static_cast<float>(initial.indoor_c)};
     // Traverse only reachable quantized states; a full-grid sweep
     // was the dominant runtime cost for cold/price-spike 48h cases.
-    std::vector<uint16_t> active,next_active;
-    active.reserve(states);
-    next_active.reserve(states);
-    active.push_back(static_cast<uint16_t>(first));
+    if(!active.push_back(static_cast<uint16_t>(first)))
+        return interrupted(MpcStatus::ResourceLimit);
     // State-independent physics precomputed once per forecast period.
     // Exact replay below still runs the unmodified advance() model.
     const double exact_alpha=std::exp(-p.loss_kw_per_c*slot_hours/
@@ -179,7 +239,7 @@ MpcResult optimize(const Parameters& p, const State& initial,
         const float price=static_cast<float>(period.total_price_eur_per_kwh);
         std::fill(next.begin(),next.end(),Node{});
         next_active.clear();
-        bool any=false;
+        bool any=false,frontier_full=false;
         for(const uint16_t from_index:active) {
             const size_t from=from_index;
             if(const auto stop=check_interrupt();stop!=MpcStatus::Ok)
@@ -222,8 +282,10 @@ MpcResult optimize(const Parameters& p, const State& initial,
                         setpoint_change_penalty:0.0f);
                 if(!std::isfinite(objective)) continue;
                 auto retain=[&](size_t slot) {
-                    if(!std::isfinite(next[slot].objective))
-                        next_active.push_back(static_cast<uint16_t>(slot));
+                    if(!std::isfinite(next[slot].objective) &&
+                       !next_active.push_back(static_cast<uint16_t>(slot))) {
+                        frontier_full=true;return;
+                    }
                     next[slot]={objective,temp};
                     parent[t*states+slot]=static_cast<uint16_t>(from);
                     any=true;
@@ -245,6 +307,7 @@ MpcResult optimize(const Parameters& p, const State& initial,
         }
         if(const auto stop=check_interrupt(true);stop!=MpcStatus::Ok)
             return interrupted(stop);
+        if(frontier_full)return interrupted(MpcStatus::ResourceLimit);
         if(!any) {result.status=MpcStatus::Infeasible;return result;}
         // Preserve the original ascending-index visit order so all DP
         // tie breaks (and therefore benchmark costs) remain identical.
@@ -255,14 +318,12 @@ MpcResult optimize(const Parameters& p, const State& initial,
     const double end_min=(std::isfinite(controls.terminal_min_c)?
         std::max(min_c,controls.terminal_min_c):std::max(min_c,initial.indoor_c))-1e-8;
     const float search_end_min=static_cast<float>(end_min)-1e-4f;
-    std::vector<uint16_t> terminals;
-    terminals.reserve(states);
     for(const uint16_t i:active) {
         if(const auto stop=check_interrupt();stop!=MpcStatus::Ok)
             return interrupted(stop);
         if(std::isfinite(current[i].objective) &&
-           current[i].temperature>=search_end_min)
-            terminals.push_back(i);
+           current[i].temperature>=search_end_min &&
+           !terminals.push_back(i))return interrupted(MpcStatus::ResourceLimit);
     }
     if(terminals.empty()) {result.status=MpcStatus::Infeasible;return result;}
     std::sort(terminals.begin(),terminals.end(),[&](uint16_t a,uint16_t b) {
