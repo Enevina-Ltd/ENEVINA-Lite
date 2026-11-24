@@ -3039,6 +3039,7 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"web_response_aborts",web.responseAborts());
     cJSON_AddNumberToObject(root,"web_request_rejects",web.requestRejects());
     cJSON_AddNumberToObject(root,"web_request_timeouts",web.requestTimeouts());
+    cJSON_AddNumberToObject(root,"history_read_busy",enevina_firmware::history_read_busy_count());
     cJSON_AddNumberToObject(root,"web_longest_write_ms",web.longestWriteMs());
     if(WiFi.status()==WL_CONNECTED)cJSON_AddNumberToObject(root,"wifi_rssi_dbm",WiFi.RSSI());
     else cJSON_AddNullToObject(root,"wifi_rssi_dbm");
