@@ -23,6 +23,18 @@ int main(){
     assert(parse("GET / HTTP/1.1\r\nHost: lite\r\nContent-Length: 1\r\n\r\nx")==HttpInput::BadRequest);
     assert(parse("GET / HTTP/1.1\r\nHost: lite\r\n\r\nextra")==HttpInput::BadRequest);
     assert(parse("DELETE /api/settings HTTP/1.1\r\nHost: lite\r\n\r\n")==HttpInput::Unsupported);
+    assert(!accepts_gzip("Host: lite\r\n"));
+    assert(accepts_gzip("Host: lite\r\nAccept-Encoding: br, gzip, deflate\r\n"));
+    assert(accepts_gzip("accept-encoding: GZIP ; q=0.125\r\n"));
+    assert(accepts_gzip("Accept-Encoding: gzip;q=1.000\r\n"));
+    assert(!accepts_gzip("Accept-Encoding: gzip;q=0, *;q=1\r\n"));
+    assert(!accepts_gzip("Accept-Encoding: gzip;q=0.000\r\n"));
+    assert(!accepts_gzip("Accept-Encoding: gzip;q=1.1\r\n"));
+    assert(!accepts_gzip("Accept-Encoding: gzip;q=0.0001\r\n"));
+    assert(!accepts_gzip("Accept-Encoding: gzip;q=oops\r\n"));
+    assert(!accepts_gzip("Accept-Encoding: x-gzip\r\n"));
+    assert(accepts_gzip("Accept-Encoding: *;q=0.2\r\n"));
+    assert(!accepts_gzip("Accept-Encoding: gzip\r\nAccept-Encoding: gzip;q=0\r\n"));
     const std::string start="POST /api/settings HTTP/1.1\r\nHost: lite\r\n";
     assert(parse(start+"Content-Length: 1\r\ncontent-length: 1\r\n\r\nx")==HttpInput::BadRequest);
     assert(parse(start+"Content-Length: -1\r\n\r\n")==HttpInput::BadRequest);

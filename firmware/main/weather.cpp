@@ -7,6 +7,7 @@
 #endif
 #include "weather.hpp"
 #include "weather_cache.hpp"
+#include "forecast_memory.hpp"
 #include "forecast/met_norway.hpp"
 #include "forecast/met_http_cache.hpp"
 #include "met_norway_tls.hpp"
@@ -60,10 +61,10 @@ void load_cache(uint32_t expected_generation,
                 const WeatherLocation& expected_location) {
     nvs_handle_t handle;
     if(nvs_open("enevina_weather",NVS_READONLY,&handle)!=ESP_OK) return;
-    auto* saved=new(std::nothrow) WeatherCache;
+    auto saved=forecast_buffer<WeatherCache>();
     if(saved) {
         size_t size=sizeof(*saved);
-        if(nvs_get_blob(handle,"weather_v2",saved,&size)==ESP_OK &&
+        if(nvs_get_blob(handle,"weather_v2",saved.get(),&size)==ESP_OK &&
            size==sizeof(*saved) &&
            valid_weather_cache(*saved,expected_location,time(nullptr))) {
             xSemaphoreTake(mutex,portMAX_DELAY);
@@ -73,7 +74,7 @@ void load_cache(uint32_t expected_generation,
             }
             xSemaphoreGive(mutex);
         }
-        delete saved;
+
     }
     nvs_close(handle);
 }
@@ -264,7 +265,7 @@ void poll_weather(void*) {
             const bool cache_present=previous.count>=2;
             const bool can_fetch=now>=failed_retry_not_before &&
                 (!cache_present || now>=previous.expires_utc);
-            auto* next=can_fetch ? new(std::nothrow) WeatherCache:nullptr;
+            auto next=can_fetch ? forecast_buffer<WeatherCache>():ForecastBuffer<WeatherCache>{};
             if(next) {
                 int http_status=0;
                 if(fetch_weather(*next,selected_lat,selected_lon,
@@ -300,7 +301,7 @@ void poll_weather(void*) {
                     ESP_LOGW(tag,"MET Norway unavailable (HTTP %d); cache retained",
                              http_status);
                 }
-                delete next;
+
             }
         }
         const int wait_ms=updated?60*60*1000:

@@ -34,32 +34,35 @@ class RegionalWiring(unittest.TestCase):
         self.assertIn("pi.currency_scale=currency_limit_scale(ms.currency)", (ROOT / "firmware/cottage/src/main.cpp").read_text())
 
     def test_region_change_invalidates_cache_and_inflight_fetch(self):
-        self.assertIn("++region_generation", MARKET)
+        self.assertIn("++region_generation;++cache_revision", MARKET)
         self.assertIn("generation==region_generation", MARKET)
-        self.assertIn('nvs_erase_key(handle,"price_v2")', MARKET)
-        # Stamp is written after the blob so a torn write is rejected on load.
-        self.assertLess(MARKET.index('nvs_set_blob(handle,cache_blob_key'),
-                        MARKET.index("nvs_set_str(handle,region_key,stamp)"))
-        # Rollback firmware reads price_v2 without a region stamp, so other
-        # regions must use a distinct key rather than poison its price cache.
+        save=MARKET.split("bool save_cache(",1)[1].split("void load_cache()",1)[0]
+        load=MARKET.split("void load_cache()",1)[1].split("// Fetches",1)[0]
         self.assertIn('regional_cache_key[]="price_reg_v2"',MARKET)
-        self.assertIn('legacy_fi?"price_v2":regional_cache_key',MARKET)
-        self.assertIn('const char* obsolete_key=legacy_fi?regional_cache_key:"price_v2"',MARKET)
-        self.assertIn('migrate_early_region',MARKET)
-        # No zone chosen = no fetch, never another country's prices.
+        self.assertIn("pack_regional_price_cache(value,id.area,id.currency",save)
+        self.assertIn("unpack_regional_price_cache(*packed,wanted.area,wanted.currency",load)
+        self.assertIn('fi?regional_cache_key:"price_v2"',save)
+        self.assertIn('nvs_set_blob(handle,"price_v2",&packed->data',save)
+        self.assertIn('nvs_set_blob(handle,regional_cache_key,packed.get()',save)
+        self.assertNotIn('nvs_set_str(handle,region_key',save)
+        self.assertLess(save.index('if(fi && !prior_fi'),save.index('erase_price_key(handle,region_key)'))
+        self.assertIn("err==ESP_ERR_NVS_NOT_FOUND",load)
+        self.assertIn("const bool accepted=identity_current_locked(wanted);",load)
+        self.assertIn("if(accepted) {\n        *cache=*saved;++cache_revision;",load)
+        foreign=load.split("} else {",1)[1].split("nvs_close(handle)",1)[0]
+        self.assertNotIn('"price_v2"',foreign)
+        self.assertNotIn('"price_v1"',foreign)
+        self.assertIn("expected->cache_revision!=cache_revision",MARKET)
         self.assertIn("market_set_region(nullptr,nullptr)", SITE)
         self.assertIn("if(!area[0])", MARKET)
 
     def test_boot_adoption_never_erases_the_saved_price_cache(self):
-        # Codex P1 (#55): the first region call at boot compared with the FI/EUR
-        # defaults and erased valid prices of every non-Finnish device.
-        body = MARKET.split("bool market_set_region(")[1]
-        self.assertIn("region_adopted", MARKET)
-        self.assertLess(body.index("if(!region_adopted)"), body.index('nvs_erase_key(handle,"price_v2")'))
-        first = body.split("if(!region_adopted) {")[1].split("return true;")[0]
-        self.assertNotIn("nvs_", first)
-        self.assertNotIn("++region_generation", first)
-        self.assertNotIn("cache=PriceCache{}", first)
+        # First adoption and runtime changes fence both asynchronous reads
+        # and fetches, without racing the reader's single atomic blob write.
+        body=MARKET.split("bool market_set_region(",1)[1].split("MarketStatus market_status",1)[0]
+        self.assertNotIn("nvs_",body)
+        self.assertIn("cache->count=0;cache->fetched_utc=0;",body)
+        self.assertIn("if(changed && reader_task)xTaskNotifyGive(reader_task);",body)
 
     def test_settings_v5_preserves_v4_and_older_rollback_keys(self):
         self.assertIn('constexpr uint16_t kVersion=5;',SITE)

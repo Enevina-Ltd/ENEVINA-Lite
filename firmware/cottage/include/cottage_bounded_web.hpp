@@ -17,6 +17,9 @@ public:
     uint32_t requestTimeouts()const{return request_timeouts_;}
     bool streamContent(const char* data);
     bool responseAborted()const{return aborted_;}
+    bool acceptsGzip()const {
+        return enevina::cottage::accepts_gzip(ingress_.head().headers);
+    }
     uint32_t responseAborts()const{return aborts_;}
     uint32_t longestWriteMs()const{return longest_write_ms_;}
 protected:

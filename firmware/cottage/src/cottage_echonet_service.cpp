@@ -516,7 +516,7 @@ void status(WebServer& web) {
         if(receipts_current){add_receipt(root,"requested",requested);add_receipt(root,"sent",sent);add_receipt(root,"confirmed",confirmed);}
     }
     char* data=cJSON_PrintUnformatted(root);
-    web.send(data?200:503,"application/json",data?data:"{}");cJSON_free(data);cJSON_Delete(root);
+    web.send_P(data?200:503,"application/json",data?data:"{}");cJSON_free(data);cJSON_Delete(root);
 }
 void enqueue(WebServer& web,Task task,el::Peer peer={}) {
     const bool draft=web.arg("draft")=="true";

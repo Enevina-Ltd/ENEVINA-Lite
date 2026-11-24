@@ -53,6 +53,11 @@ on:
       - 'tests/test_network_budget_diagnostic_source.py'
       - 'tests/test_boot_memory_admission.py'
       - 'firmware/main/market.*'
+      - 'firmware/main/market_cache_compact.hpp'
+      - 'firmware/main/forecast_memory.hpp'
+      - 'tests/test_dashboard_transport_efficiency.py'
+      - 'tests/test_regional_settings_source.py'
+      - 'tests/test_optimizer_scratch_psram_source.py'
       - 'firmware/main/weather.*'
       - 'tests/test_crash_stack_source.py'
       - 'cottage/forecast_bridge.*'
@@ -85,6 +90,9 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p 'test_dashboard_signed_ota.py' -v
           python3 -m unittest discover -s tests -p 'test_dashboard_translations.py' -v
+          python3 -m unittest discover -s tests -p 'test_dashboard_transport_efficiency.py' -v
+          python3 -m unittest discover -s tests -p 'test_regional_settings_source.py' -v
+          python3 -m unittest discover -s tests -p 'test_optimizer_scratch_psram_source.py' -v
           python3 -m unittest discover -s tests -p 'test_network_budget_diagnostic_source.py' -v
           python3 -m unittest discover -s tests -p 'test_boot_memory_admission.py' -v
           python3 -m unittest discover -s tests -p 'test_crash_stack_source.py' -v

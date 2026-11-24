@@ -14,7 +14,6 @@ class OptimizerPsram(unittest.TestCase):
             ("enevina_firmware::PricePoint","200"),
             ("enevina::OutdoorPoint","64"),
             ("Spot15","200"),
-            ("Row","max_horizon_slots"),
         ):
             self.assertIn(f"sizeof({ty})*{cap},scratch_caps)",WORKER)
         for previous in ("new enevina_firmware::PricePoint[200]",
@@ -28,11 +27,12 @@ class OptimizerPsram(unittest.TestCase):
             "if(prices) for(size_t i=0;i<200;++i) new(prices+i)",
             "if(weather) for(size_t i=0;i<64;++i) new(weather+i)",
             "if(aligned) for(size_t i=0;i<200;++i) new(aligned+i)",
-            "if(legacy) for(size_t i=0;i<max_horizon_slots;++i) new(legacy+i)",
             "if(wifi_ok.load() && clock_ok() && prices && weather && aligned && hz && rows &&",
-            "legacy && trend && id",
+            "trend && id",
         ):
             self.assertIn(expression,WORKER)
+        self.assertNotIn("plan_rows",MAIN)
+        self.assertNotIn("sizeof(Row)*max_horizon_slots",WORKER)
         self.assertIn("PSRAM scratch unavailable; planning disabled",WORKER)
         self.assertIn("MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT",WORKER)
         self.assertIn("cottage_ota_network_maintenance()",MAIN)

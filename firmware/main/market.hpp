@@ -21,6 +21,7 @@ struct MarketStatus {
     uint8_t last_error=0;   // enevina::DayAheadError (0 OK) or 101..104 transport
     int last_http_status=0;
     int64_t last_attempt_utc=0;
+    uint32_t region_generation=0,cache_revision=0;
 };
 struct PricePoint {
     int64_t start_utc=0;
@@ -41,5 +42,5 @@ bool market_set_region(const char* area,const char* currency);
 // after start_market_reader(); a change discards the old zone's cache.
 bool market_set_region(const char* area,const char* currency);
 MarketStatus market_status();
-size_t future_prices(PricePoint* output, size_t capacity);
+size_t future_prices(PricePoint* output, size_t capacity,const MarketStatus* expected=nullptr);
 }

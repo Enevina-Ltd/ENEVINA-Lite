@@ -629,7 +629,7 @@ void send_status(WebServer& web) {
     char* data=cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     web.sendHeader("Cache-Control","no-store");
-    web.send(data?200:503,"application/json; charset=utf-8",data?data:"{}");
+    web.send_P(data?200:503,"application/json; charset=utf-8",data?data:"{}");
     if(data)cJSON_free(data);
 }
 } // namespace

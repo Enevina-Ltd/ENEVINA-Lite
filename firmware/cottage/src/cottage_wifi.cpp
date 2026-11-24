@@ -152,7 +152,7 @@ void send_json(cJSON* root,int code=200) {
     cJSON_Delete(root);
     server->sendHeader("Cache-Control","no-store");
     if(!body) {server->send(503,"application/json","{}");return;}
-    server->send(code,"application/json; charset=utf-8",body);
+    server->send_P(code,"application/json; charset=utf-8",body);
     cJSON_free(body);
 }
 void status_route() {

@@ -439,7 +439,7 @@ void status(WebServer& web) {
             cJSON_AddStringToObject(root.get(),"mcu_firmware",sample.mcu_firmware);
     }
     JsonText data(cJSON_PrintUnformatted(root.get()),&cJSON_free);
-    web.send(data?200:503,"application/json",data?data.get():"{}");
+    web.send_P(data?200:503,"application/json",data?data.get():"{}");
 }
 void enqueue(WebServer& web,Task task,const char* address="") {
     xSemaphoreTake(lock,portMAX_DELAY);

@@ -47,6 +47,49 @@ inline bool split_header(std::string_view line,std::string_view& key,std::string
     for(unsigned char c:value)if((c<32&&c!='\t')||c==127)return false;
     return true;
 }
+// Accept explicit gzip with a positive RFC qvalue. Unknown/malformed
+// quality parameters are not opt-in. Explicit refusal beats a wildcard.
+inline bool positive_encoding_quality(std::string_view params) {
+    if(params.empty())return true;
+    params=ows(params);
+    const auto eq=params.find('=');
+    if(eq==std::string_view::npos || !iequal(ows(params.substr(0,eq)),"q"))return false;
+    const auto q=ows(params.substr(eq+1));
+    if(q.empty() || (q[0]!='0'&&q[0]!='1') || q.size()>5)return false;
+    if(q.size()==1)return q[0]=='1';
+    if(q[1]!='.')return false;
+    bool positive=q[0]=='1';
+    for(size_t i=2;i<q.size();++i) {
+        if(q[i]<'0'||q[i]>'9'||(q[0]=='1'&&q[i]!='0'))return false;
+        if(q[i]!='0')positive=true;
+    }
+    return positive;
+}
+inline bool accepts_gzip(std::string_view headers) {
+    bool explicit_gzip=false,gzip_allowed=true,wildcard=false,wildcard_allowed=true;
+    while(!headers.empty()) {
+        const auto end=headers.find("\r\n");
+        std::string_view key,value;
+        if(!split_header(headers.substr(0,end),key,value))return false;
+        if(iequal(key,"Accept-Encoding")) {
+            while(!value.empty()) {
+                const auto comma=value.find(',');
+                const auto item=ows(value.substr(0,comma));
+                const auto semi=item.find(';');
+                const auto coding=ows(item.substr(0,semi));
+                const bool positive=semi==std::string_view::npos ||
+                    positive_encoding_quality(item.substr(semi+1));
+                if(iequal(coding,"gzip")) {explicit_gzip=true;gzip_allowed&=positive;}
+                if(coding=="*"){wildcard=true;wildcard_allowed&=positive;}
+                if(comma==std::string_view::npos)break;
+                value.remove_prefix(comma+1);
+            }
+        }
+        if(end==std::string_view::npos)break;
+        headers.remove_prefix(end+2);
+    }
+    return explicit_gzip?gzip_allowed:(wildcard&&wildcard_allowed);
+}
 inline HttpInput parse_http_head(std::string_view bytes,HttpHead& head) {
     head={};
     if(bytes.size()>web_header_limit)return HttpInput::TooLarge;
