@@ -198,6 +198,7 @@ const char* horizon_limit_name(HorizonLimit l) {
     case HorizonLimit::BadPrice:return "BAD_PRICE";
     case HorizonLimit::WeatherEnd:return "WEATHER_END";
     case HorizonLimit::WeatherGap:return "WEATHER_GAP";
+    case HorizonLimit::LearnedOutdoorRange:return "LEARNED_OUTDOOR_RANGE";
     }
     return "UNKNOWN";
 }

@@ -9,6 +9,7 @@
 #include "tests/cottage_closed_loop.hpp"
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 using namespace enevina::cottage;
@@ -365,10 +366,40 @@ void test_planner() {
     {   auto d2=d;for(auto& w:d2.weather) w.temperature_c=-30.0;
         auto hz=join(d2,now0,now0,now0);auto pi=planner_input(id,hz,now0);
         CHECK(plan_mpc(pi,nullptr).record.planning_fallback==MpcFallback::OutdoorOutsideLearned); }
+    {   auto hz=fresh();auto pi=planner_input(id,hz,now0);
+        // The valid first day can be planned even if later weather leaves
+        // the learned domain. The forecast before that point is unchanged.
+        for(size_t i=96;i<hz.bridge.count;++i)hz.bridge.periods[i].outdoor_c=-40;
+        std::vector<PlanRow> rows(max_horizon_slots);
+        const auto o=plan_mpc(pi,rows.data());
+        CHECK(o.record.has_plan && o.record.count==96 && o.rows==96);
+        CHECK(hz.bridge.count==96 && hz.limit==HorizonLimit::LearnedOutdoorRange);
+        CHECK(rows[95].utc==now0+95*900);
+        CHECK(o.result.final_c>=o.record.band.target_c-1e-6); }
+    {   auto hz=fresh();auto pi=planner_input(id,hz,now0);
+        hz.bridge.periods[31].outdoor_c=-40;
+        CHECK(plan_mpc(pi,nullptr).record.planning_fallback==MpcFallback::OutdoorOutsideLearned); }
     {   auto hz=fresh();auto pi=planner_input(id,hz,now0);pi.controls.runtime_budget_ms=0;
         CHECK(plan_mpc(pi,nullptr).record.planning_fallback==MpcFallback::SolverTimeout); }
     {   auto hz=fresh();auto pi=planner_input(id,hz,now0);pi.memory_budget_bytes=1024;
         CHECK(plan_mpc(pi,nullptr).record.planning_fallback==MpcFallback::ResourceLimit); }
+    for(unsigned fail=1;fail<=6;++fail) {
+        struct AllocationProbe {unsigned call=0,fail=0,live=0;};
+        AllocationProbe probe{0,fail,0};
+        auto hz=fresh();auto pi=planner_input(id,hz,now0);
+        pi.controls.workspace_context=&probe;
+        pi.controls.workspace_alloc=[](size_t bytes,void* ctx)->void* {
+            auto& p=*static_cast<AllocationProbe*>(ctx);
+            if(++p.call==p.fail)return nullptr;
+            void* ptr=std::malloc(bytes);if(ptr)++p.live;return ptr;
+        };
+        pi.controls.workspace_free=[](void* ptr,void* ctx) {
+            auto& p=*static_cast<AllocationProbe*>(ctx);--p.live;std::free(ptr);
+        };
+        const auto o=plan_mpc(pi,nullptr);
+        CHECK(!o.record.has_plan && o.record.planning_fallback==MpcFallback::ResourceLimit);
+        CHECK(probe.live==0);
+    }
     {   // Plan bound to its slot: a horizon from another slot is refused.
         auto hz=fresh();auto pi=planner_input(id,hz,now0+900);
         CHECK(!plan_mpc(pi,nullptr).record.has_plan); }

@@ -83,7 +83,7 @@ bool AirHistory::add_hour(const AirMoisture& air,uint32_t hour) {
             // UTC series; the old uptime relative series was not civil time.
             if((points_[previous].hour_utc&0x80000000u) &&
                !(hour&0x80000000u)) {
-                points_={};count_=0;next_=0;
+                clear();
             } else return false;
         }
     }
@@ -98,14 +98,17 @@ const AirHistoryPoint& AirHistory::newest(size_t offset)const {
     return points_[(next_+cottage_history_hours-1-offset)%
                    cottage_history_hours];
 }
-AirHistoryDump AirHistory::dump()const {
-    AirHistoryDump d{};
-    d.count=count_;
-    for(size_t i=0;i<count_;i++) {
-        d.values[i]=newest(count_-1-i); // chronological
-    }
+void AirHistory::clear() {
+    points_.fill(AirHistoryPoint{});count_=0;next_=0;
+}
+void AirHistory::dump_into(AirHistoryDump& d)const {
+    d.magic=0x434F5448;d.version=1;d.count=count_;
+    d.values.fill(AirHistoryPoint{});
+    for(size_t i=0;i<count_;i++)d.values[i]=newest(count_-1-i);
     d.checksum=checksum(d);
-    return d;
+}
+AirHistoryDump AirHistory::dump()const {
+    AirHistoryDump d{};dump_into(d);return d;
 }
 bool AirHistory::restore(const AirHistoryDump& saved) {
     if(saved.magic!=0x434F5448||saved.version!=1||
@@ -120,7 +123,7 @@ bool AirHistory::restore(const AirHistoryDump& saved) {
            p.rh_centi>10000)return false;
         previous=p.hour_utc;
     }
-    points_={};count_=saved.count;
+    clear();count_=saved.count;
     for(size_t i=0;i<saved.count;i++)points_[i]=saved.values[i];
     next_=count_%cottage_history_hours;
     return true;

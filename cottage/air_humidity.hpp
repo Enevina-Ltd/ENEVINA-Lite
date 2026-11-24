@@ -62,6 +62,8 @@ public:
     size_t count()const {return count_;}
     const AirHistoryPoint& newest(size_t newest_offset)const;
     AirHistoryDump dump()const;
+    void dump_into(AirHistoryDump& out)const;
+    void clear();
     bool restore(const AirHistoryDump& saved);
 private:
     std::array<AirHistoryPoint,cottage_history_hours> points_{};

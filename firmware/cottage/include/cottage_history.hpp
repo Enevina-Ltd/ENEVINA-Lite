@@ -3,6 +3,7 @@
 // persistence on the otherwise unused "spiffs" partition, hourly batched
 // flushes, GET /api/history. See cottage/history_store.hpp for the rules.
 #include "cottage/history_store.hpp"
+#include "cottage/model_checkpoint.hpp"
 class WebServer;
 
 namespace enevina_firmware {
@@ -16,4 +17,10 @@ void history_observe(const enevina::cottage::HistoryInputs& inputs);
 void history_http(WebServer& web);
 // Newest event of a kind (persisted across reboots): utc and its 32-bit arg.
 bool history_last_event(uint8_t kind,uint32_t& utc,uint32_t& arg);
+// Separate fixed/variable model files on the already mounted LittleFS.
+// A failed mount/lock/read is not evidence that a checkpoint is absent.
+enevina::cottage::CheckpointRead history_model_read(bool variable,uint8_t* data,size_t cap,size_t& used);
+bool history_model_write(bool variable,const uint8_t* data,size_t used);
+bool history_model_erase(bool variable);
+bool history_model_present(bool variable); // true also when absence cannot be verified
 }

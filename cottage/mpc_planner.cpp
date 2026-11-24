@@ -95,9 +95,17 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     const double lo=m.outdoor_min_c-CalibrationLimits::outdoor_margin_c;
     const double hi=m.outdoor_max_c+CalibrationLimits::outdoor_margin_c;
     const double gain_kw=std::clamp(m.gain_rise_k*p.loss_kw_per_c,-29.0,29.0);
-    for(size_t i=0;i<b.count;++i)
-        if(b.periods[i].outdoor_c<lo || b.periods[i].outdoor_c>hi)
-            return no_plan(MpcFallback::OutdoorOutsideLearned);
+    // An uncertain weather tail does not invalidate today's supported
+    // prefix. Never extrapolate through the first unsupported slot; retain
+    // the existing minimum horizon, replay and terminal-temperature gates.
+    for(size_t i=0;i<b.count;++i) {
+        if(!std::isfinite(b.periods[i].outdoor_c) ||
+           b.periods[i].outdoor_c<lo || b.periods[i].outdoor_c>hi) {
+            if(i<in.min_slots)return no_plan(MpcFallback::OutdoorOutsideLearned);
+            b.count=i;in.horizon->limit=HorizonLimit::LearnedOutdoorRange;
+            break;
+        }
+    }
     Period* periods=b.periods.data();
     for(size_t i=0;i<b.count;++i) periods[i].internal_gain_kw=gain_kw;
     const State initial{in.indoor_c,in.pump_heat,in.minutes_in_mode};

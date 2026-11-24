@@ -89,6 +89,20 @@ const active={...learning,state:'ACTIVE',fallback:'NONE',source:'MPC',armed:true
     assert.ok(r.card.textContent.includes(language==='en'?'Learns from gateway requests':'Oppii sillan lämmityspyynnöistä'));
     assert.ok(!r.card.textContent.includes('A fresh pump reading is unavailable.'));
   }
+  for(const language of ['fi','en']){
+    const detail={...learning,calibration:{...learning.calibration,
+      samples_needed:192,heating_slots:7,off_slots:33,starts:2,stops:1,
+      last_observation:'REQUEST_INVALID',block:'NEED_SWITCHES',
+      last_saved_sample_utc:now-900,checkpoint_backend:'LITTLEFS'}};
+    r=await run(detail,language);
+    assert.ok(r.card.textContent.includes(language==='fi'?'Lämmitys 7/32':'Heating 7/32'));
+    assert.ok(r.card.textContent.includes(language==='fi'?'Käynnistykset 2/4':'Starts 2/4'));
+    assert.ok(r.card.textContent.includes(language==='fi'?'lämmityspyyntöä ei voitu todentaa':'heating request could not be verified'));
+    assert.ok(r.card.textContent.includes('LITTLEFS'));
+    const horizon={...active,plan:{...active.plan,horizon_limit:'LEARNED_OUTDOOR_RANGE'}};
+    r=await run(horizon,language);
+    assert.ok(r.card.textContent.includes(language==='fi'?'opitun ulkolämpötila-alueen raja':'learned outdoor-temperature range'));
+  }
   // Learning, English.
   r=await run(learning,'en');
   text=r.card.textContent;

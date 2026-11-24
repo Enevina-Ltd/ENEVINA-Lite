@@ -46,7 +46,7 @@ class BindingCommitTests(unittest.TestCase):
         self.assertIn("stored_indoor_mac_valid=parse_ruuvi_mac(",init)
         self.assertIn("verified_history_origin(",init)
         self.assertIn("if(origin_verified) {",init)
-        self.assertIn("history.restore(stored);",init)
+        self.assertIn("history.restore(*stored);",init)
         self.assertIn('hp.remove("hourly_v1")',init)
         self.assertIn("if(!old_history_cleared || !save_config())",init)
         self.assertIn("indoor_binding_persisted=false;",init)
@@ -57,7 +57,7 @@ class BindingCommitTests(unittest.TestCase):
         self.assertLess(init.index('hp.remove("hourly_v1")'),
                         init.index("!save_config()"))
         self.assertLess(init.index("if(origin_verified) {"),
-                        init.index("history.restore(stored);"))
+                        init.index("history.restore(*stored);"))
         self.assertIn("indoor_binding_persisted=origin_verified || !indoor_binding.bound()",init)
 
     def test_failed_boot_purge_cannot_be_bypassed_by_any_later_config_save(self):

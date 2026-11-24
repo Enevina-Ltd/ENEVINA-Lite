@@ -53,7 +53,7 @@ BridgeResult join_forecast_priced(int64_t now_utc,int64_t price_fetch_utc,
 //  * stale inputs (prices > 36 h, weather > 6 h old, or from the future)
 //    are unusable, exactly like join_forecast_priced().
 enum class HorizonLimit : uint8_t { None, MaxSlots, PriceEnd, PriceGap, BadPrice,
-    WeatherEnd, WeatherGap };
+    WeatherEnd, WeatherGap, LearnedOutdoorRange };
 struct HorizonResult {
     BridgeResult bridge{};
     size_t price_slots=0;    // contiguous priced slots available

@@ -86,6 +86,8 @@ SemaphoreHandle_t guard=nullptr;
 HistoryStore* store=nullptr;
 EventLog events;
 LfsFile records_file(kRecordsPath),events_file(kEventsPath);
+constexpr char kFixedModelPath[]="/model1.bin",kVariableModelPath[]="/model2.bin";
+LfsFile fixed_model_file(kFixedModelPath),variable_model_file(kVariableModelPath);
 HistoryPersistence* persistence=nullptr;
 HistoryRecorder recorder;
 bool persistent=false;
@@ -201,6 +203,36 @@ bool history_last_event(uint8_t kind,uint32_t& utc,uint32_t& arg) {
     }
     xSemaphoreGive(guard);
     return found;
+}
+
+CheckpointRead history_model_read(bool variable,uint8_t* data,size_t cap,size_t& used) {
+    used=0;
+    if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)
+        return CheckpointRead::Error;
+    auto& file=variable?variable_model_file:fixed_model_file;
+    const auto result=read_model_checkpoint(file,data,cap,used);
+    xSemaphoreGive(guard);return result;
+}
+bool history_model_write(bool variable,const uint8_t* data,size_t used) {
+    if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)return false;
+    auto& file=variable?variable_model_file:fixed_model_file;
+    const bool ok=write_model_checkpoint(file,data,used);
+    xSemaphoreGive(guard);return ok;
+}
+bool history_model_erase(bool variable) {
+    if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)return false;
+    auto& file=variable?variable_model_file:fixed_model_file;
+    const char* path=variable?kVariableModelPath:kFixedModelPath;
+    // A leftover temp is never loaded, but clean it before future writes.
+    file.remove_stale_temp();
+    const bool ok=(!file.exists() || LittleFS.remove(path)) && !file.exists();
+    xSemaphoreGive(guard);return ok;
+}
+bool history_model_present(bool variable) {
+    if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)return true;
+    auto& file=variable?variable_model_file:fixed_model_file;
+    const bool present=file.exists();
+    xSemaphoreGive(guard);return present;
 }
 
 void history_http(WebServer& web) {

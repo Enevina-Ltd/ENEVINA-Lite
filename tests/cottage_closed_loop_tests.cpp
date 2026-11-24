@@ -41,7 +41,12 @@ int main() {
         }
         if(s.name=="sensor_outage") CHECK(fallback(m,"TEMPERATURE_STALE")==24);
         if(s.name=="weather_price_outage") CHECK(fallback(m,"FORECAST_UNAVAILABLE")>=48);
-        if(s.name=="cold_spell") CHECK(fallback(m,"OUTDOOR_OUTSIDE_LEARNED_RANGE")>0);
+        CHECK(m.invalid_learned_range_plans==0);
+        if(s.name=="cold_spell") {
+            CHECK(m.learned_range_limited_plans>0);
+            // A supported prefix replaces a needless full-horizon fallback.
+            // The separate planner regression refuses a <8 h prefix.
+        }
         // Price-feature scenarios: the MPC is cheaper at equal final energy.
         if(s.name=="price_spike" || s.name=="cheap_night_expensive_morning" ||
            s.name=="negative_prices" || s.name=="price_spike_pump_meter")

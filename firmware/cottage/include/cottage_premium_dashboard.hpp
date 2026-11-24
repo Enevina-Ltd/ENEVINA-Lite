@@ -4524,7 +4524,7 @@ fi:{title:'Ennakoiva säätö (MPC)',active:'Käytössä',calibrating:'Kalibroid
  price:'Kokonaishinta',heating:'Lämmitys (suunnitelma)',band:'Mukavuusalue',now:'nyt',h:'h',
  err:'MPC-tietoja ei saatu laitteelta.',sim:'Kaikki luvut ovat laitteen omia laskelmia; säästöjä ei väitetä.',
  limit_MAX_48H:'48 h',limit_PRICES_END:'hinnat loppuvat',limit_PRICE_GAP:'hinnoissa aukko',limit_BAD_PRICE:'hinta ei kelpaa',
- limit_WEATHER_END:'sääennuste loppuu',limit_WEATHER_GAP:'sääennusteessa aukko',limit_NONE:'—',
+ limit_WEATHER_END:'sääennuste loppuu',limit_WEATHER_GAP:'sääennusteessa aukko',limit_LEARNED_OUTDOOR_RANGE:'opitun ulkolämpötila-alueen raja',limit_NONE:'—',
  rejected:'Aiempi suunnitelma ei ole käytössä: ',
  unverified:'Pumpulta ei ole tuoretta tilalukemaa. MPC odottaa seuraavaa kelvollista lukemaa.'},
 en:{title:'Predictive control (MPC)',active:'Active',calibrating:'Calibrating',fallback:'Fallback',
@@ -4542,7 +4542,7 @@ en:{title:'Predictive control (MPC)',active:'Active',calibrating:'Calibrating',f
  price:'Total price',heating:'Heating (plan)',band:'Comfort band',now:'now',h:'h',
  err:'MPC data could not be read from the device.',sim:'All numbers are the device’s own calculations; no savings are claimed.',
  limit_MAX_48H:'48 h',limit_PRICES_END:'prices end',limit_PRICE_GAP:'gap in prices',limit_BAD_PRICE:'invalid price',
- limit_WEATHER_END:'weather forecast ends',limit_WEATHER_GAP:'gap in weather forecast',limit_NONE:'—',
+ limit_WEATHER_END:'weather forecast ends',limit_WEATHER_GAP:'gap in weather forecast',limit_LEARNED_OUTDOOR_RANGE:'learned outdoor-temperature range',limit_NONE:'—',
  rejected:'The earlier plan is not being executed: ',
  unverified:'A fresh pump reading is unavailable. MPC waits for the next valid reading.'}};
 const WHY={
@@ -4566,6 +4566,12 @@ en:{NONE:'',MODEL_LEARNING:'the model is still learning from measurements',MODEL
  COMFORT_LIMITS_INVALID:'your temperature limits are contradictory or too close to the target'}};
 const STATE={fi:{NO_DATA:'ei mittauksia',LEARNING:'oppii',VALIDATING:'testataan',CALIBRATED:'kalibroitu',DEGRADED:'heikentynyt'},
  en:{NO_DATA:'no measurements',LEARNING:'learning',VALIDATING:'testing',CALIBRATED:'calibrated',DEGRADED:'degraded'}};
+const LEARNING_BLOCK={
+ fi:{TOO_FEW_SAMPLES:'lisää mittausjaksoja tarvitaan',NEED_HEATING_SLOTS:'tarvitaan lämmitysjaksoja',NEED_OFF_SLOTS:'tarvitaan jäähtymisjaksoja',NEED_SWITCHES:'tarvitaan lisää tilanvaihtoja',PARAMETERS_IMPLAUSIBLE:'lämpömallin parametrit eivät vielä kelpaa',PARAMETERS_UNCERTAIN:'mallin epävarmuus on liian suuri',NEED_VALIDATION_WINDOWS:'ennustetestit kesken',VALIDATION_ERROR_HIGH:'ennustevirhe liian suuri',VALIDATION_BIAS_HIGH:'ennusteessa liikaa harhaa',RECENT_VALIDATION_FAILED:'viimeisimmät ennustetestit epäonnistuivat',VALIDATION_STALE:'ennustetestit vanhentuneet'},
+ en:{TOO_FEW_SAMPLES:'more measured slots needed',NEED_HEATING_SLOTS:'heating slots needed',NEED_OFF_SLOTS:'cooling slots needed',NEED_SWITCHES:'more mode switches needed',PARAMETERS_IMPLAUSIBLE:'thermal model parameters not yet plausible',PARAMETERS_UNCERTAIN:'model uncertainty too high',NEED_VALIDATION_WINDOWS:'prediction tests incomplete',VALIDATION_ERROR_HIGH:'prediction error too high',VALIDATION_BIAS_HIGH:'prediction bias too high',RECENT_VALIDATION_FAILED:'recent prediction tests failed',VALIDATION_STALE:'prediction tests stale'}};
+const LEARNING_OBS={
+ fi:{ACCEPTED:'hyväksytty',NEED_PREVIOUS:'odottaa peräkkäistä jaksoa',ROOM_INVALID:'sisälämpötila tai mittausväli ei kelpaa',OUTDOOR_INVALID:'ulkolämpötila ei kelpaa',REQUEST_INVALID:'lämmityspyyntöä ei voitu todentaa',OUTSIDE_DOMAIN:'mittaus mallin alueen ulkopuolella',INVALID_TRANSITION:'tilanvaihtoa ei voitu todentaa',NUMERICAL_REJECT:'mallin päivitys hylättiin'},
+ en:{ACCEPTED:'accepted',NEED_PREVIOUS:'waiting for consecutive slots',ROOM_INVALID:'room measurement or interval invalid',OUTDOOR_INVALID:'outdoor temperature invalid',REQUEST_INVALID:'heating request could not be verified',OUTSIDE_DOMAIN:'measurement outside model domain',INVALID_TRANSITION:'mode transition unverified',NUMERICAL_REJECT:'model update rejected'}};
 const lang=()=>uiLanguage==='en'?'en':'fi';
 const t=k=>MT[lang()][k]??MT.fi[k]??k;
 const num=v=>typeof v==='number'&&Number.isFinite(v)?v:null;
@@ -4630,11 +4636,13 @@ function chart(d){
     s.append(svg('path',{d:pp,fill:'none',stroke:'var(--green)','stroke-width':2.2}));
   }
   if(past.length){
-    const mp=past.map((p,i)=>(i?'L':'M')+x(p.utc)+' '+y(p.measured_c)).join(' ');
+    const line=(points,key)=>points.map((p,i)=>
+      (i&&p.utc===points[i-1].utc+900?'L':'M')+x(p.utc)+' '+y(p[key])).join(' ');
+    const mp=line(past,'measured_c');
     s.append(svg('path',{d:mp,fill:'none',stroke:'var(--ink)','stroke-width':2}));
     const pred=past.filter(p=>num(p.open_loop_c)!==null);
     if(pred.length>1){
-      const pr=pred.map((p,i)=>(i?'L':'M')+x(p.utc)+' '+y(p.open_loop_c)).join(' ');
+      const pr=line(pred,'open_loop_c');
       s.append(svg('path',{d:pr,fill:'none',stroke:'var(--green)','stroke-width':1.6,'stroke-dasharray':'4 3'}));
     }
   }
@@ -4665,10 +4673,25 @@ function render(){
   const g=node('div','mpc-grid');
   g.append(box(t('source'),t(d.source||'NONE')));
   g.append(box(t('calib'),STATE[lang()][cal.state]||cal.state||'—',
-    t('samples')+' '+(cal.samples??0)+' / 192 · '+t('windows')+' '+Math.min(cal.windows??0,cal.windows_needed??12)+' / '+(cal.windows_needed??12)));
+    t('samples')+' '+(cal.samples??0)+' / '+(cal.samples_needed??192)+' · '+t('windows')+' '+Math.min(cal.windows??0,cal.windows_needed??12)+' / '+(cal.windows_needed??12)));
   g.append(box(t('valid'),num(cal.validation_rms_c)===null?'—':f(cal.validation_rms_c,2)+' °C',
     num(cal.validation_bias_c)===null?null:t('bias')+' '+f(cal.validation_bias_c,2)+' °C · '+t('margin')+' '+f(cal.planning_uncertainty_c,2)+' °C'));
   c.append(g);
+  const block=LEARNING_BLOCK[lang()][cal.block];
+  if(block)c.append(node('p','tiny muted',block));
+  if(typeof cal.heating_slots==='number'){
+    const counts=lang()==='en'?
+      'Heating '+cal.heating_slots+'/'+(cal.heating_needed??32)+' · Cooling '+(cal.off_slots??0)+'/'+(cal.off_needed??32)+' · Starts '+(cal.starts??0)+'/'+(cal.starts_needed??4)+' · Stops '+(cal.stops??0)+'/'+(cal.stops_needed??4):
+      'Lämmitys '+cal.heating_slots+'/'+(cal.heating_needed??32)+' · Jäähtyminen '+(cal.off_slots??0)+'/'+(cal.off_needed??32)+' · Käynnistykset '+(cal.starts??0)+'/'+(cal.starts_needed??4)+' · Pysäytykset '+(cal.stops??0)+'/'+(cal.stops_needed??4);
+    c.append(node('p','tiny muted',counts));
+  }
+  const obs=LEARNING_OBS[lang()][cal.last_observation];
+  if(obs)c.append(node('p','tiny muted',(lang()==='en'?'Last observation: ':'Viimeisin mittausjakso: ')+obs));
+  if(typeof cal.last_saved_sample_utc==='number'){
+    const saved=cal.last_saved_sample_utc>0?day(cal.last_saved_sample_utc):'—';
+    c.append(node('p','tiny muted',(lang()==='en'?'Saved model through: ':'Malli tallennettu jaksoon: ')+saved+
+      (cal.checkpoint_backend&&cal.checkpoint_backend!=='NONE'?' ('+cal.checkpoint_backend+')':'')));
+  }
   if(m.plausible){
     const g2=node('div','mpc-grid');
     g2.append(box(t('tau'),f(m.tau_h,1)+' ± '+f(m.tau_std_h,1)+' '+t('h')));

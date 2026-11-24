@@ -43,6 +43,11 @@ struct MpcRunControls {
     bool permit_off=true;
     double initial_setpoint_c=0;
     double setpoint_change_penalty=0;
+    // Optional paired, suitably aligned workspace allocator for host fault
+    // injection. Default firmware allocations are PSRAM-only, fallible.
+    void* (*workspace_alloc)(size_t,void*)=nullptr;
+    void (*workspace_free)(void*,void*)=nullptr;
+    void* workspace_context=nullptr;
 };
 MpcResult optimize(const Parameters& p, const State& initial,
     const Period* periods, size_t count, size_t memory_budget_bytes=3*1024*1024,

@@ -65,6 +65,26 @@ struct Sim {
 };
 double rel(double a,double b){return std::fabs(a-b)/std::fabs(b);}
 
+void test_last_observation_reason() {
+    BuildingIdentifier id;
+    SlotObservation o{};
+    o.slot_utc=t_start;
+    o.indoor_start_c=12;o.indoor_end_c=11.95;o.outdoor_c=-2;
+    o.indoor_valid=o.outdoor_valid=o.heat_valid=true;
+    CHECK(!id.add(o));
+    CHECK(id.report(o.slot_utc).last_observation==LearningObservation::NeedPrevious);
+    o.slot_utc+=900;CHECK(id.add(o));
+    CHECK(id.report(o.slot_utc).last_observation==LearningObservation::Accepted);
+    o.slot_utc+=900;o.heat_valid=false;CHECK(!id.add(o));
+    CHECK(id.report(o.slot_utc).last_observation==LearningObservation::RequestInvalid);
+    o.slot_utc+=900;o.heat_valid=true;o.indoor_valid=false;CHECK(!id.add(o));
+    CHECK(id.report(o.slot_utc).last_observation==LearningObservation::RoomInvalid);
+    o.slot_utc+=900;o.indoor_valid=true;o.outdoor_valid=false;CHECK(!id.add(o));
+    CHECK(id.report(o.slot_utc).last_observation==LearningObservation::OutdoorInvalid);
+    o.slot_utc+=900;o.outdoor_valid=true;o.in_model_domain=false;CHECK(!id.add(o));
+    CHECK(id.report(o.slot_utc).last_observation==LearningObservation::OutsideDomain);
+}
+
 void test_no_data_is_honest() {
     BuildingIdentifier id;
     const auto r=id.report(t_start);
@@ -128,7 +148,7 @@ void test_standard_gateway_can_calibrate_without_uart_extension_or_meter() {
 // a compressor timestamp. The model is still evaluated in 15-min windows.
 void test_gateway_mid_slot_switches_can_calibrate() {
     Sim sim;
-    BuildingIdentifier id;
+    BuildingIdentifier id,previous_policy;
     CN105GatewayRequestHistory history;
     bool heat=false;
     unsigned mode_age=120;
@@ -142,10 +162,22 @@ void test_gateway_mid_slot_switches_can_calibrate() {
         const double to=sim.outdoor(sim.utc);
         o.outdoor_valid=true;o.outdoor_c=to+0.1*sim.rng.normal();
         const auto begin=history.snapshot(sim.utc,ms,1,1);
+        CN105SlotCommands command{};
         for(unsigned minute=1;minute<=15;++minute) {
             if(mode_age>=30 && minute!=15 &&
                ((!heat && indoor<11.5)||(heat && indoor>12.5))) {
                 heat=!heat;mode_age=0;
+                ++command.sent;++command.confirmed;
+                command.step=heat?ControlStep::SetHeat:ControlStep::SetOff;
+                // The command is dispatched at the start of this minute,
+                // and the gateway acknowledges its new request two seconds
+                // later. The independently advanced plant sees the change
+                // in this minute, not only after the next routine poll.
+                command.sent_utc=sim.utc+(minute-1)*60;
+                command.ack_utc=command.sent_utc+2;
+                command.target_c=16;
+                CHECK(history.note(heat,16,command.ack_utc,
+                    ms+(minute-1)*60000+2000,1,1));
             }
             const double heating=heat && mode_age>=sim.truth.startup_delay_minutes?
                 heat_capacity_kw(sim.truth,to):0.0;
@@ -159,17 +191,26 @@ void test_gateway_mid_slot_switches_can_calibrate() {
         const auto end=history.snapshot(sim.utc+900,ms+900000,1,1);
         o.indoor_end_c=meas=std::round((indoor+0.02*sim.rng.normal())*100.0)/100.0;
         o.heat_requested=heat;o.setpoint_c=16;
-        o.heat_valid=same_cn105_gateway_request(begin,end) && end.request_minutes>=14;
-        double f=0;
-        if(!o.heat_valid && history.single_mode_transition(begin,end,f)) {
-            o.heat_valid=true;o.transition_before_fraction=f;++mixed;
-        }
+        // Reproduce the prior runtime policy, not merely its tracker:
+        // every internally commanded mid-slot transition was discarded.
+        auto old_observation=o;
+        old_observation.heat_valid=command.sent==0 &&
+            same_cn105_gateway_request(begin,end) && end.request_minutes>=14;
+        previous_policy.add(old_observation);
+        const auto input=cn105_learning_request(history,begin,end,command);
+        o.heat_valid=input.valid;
+        o.transition_before_fraction=input.before_fraction;
+        if(input.valid && input.before_fraction>0)++mixed;
         accepted+=o.heat_valid;
         id.add(o);
         sim.utc+=900;ms+=900000;
     }
+    const auto old_report=previous_policy.report(sim.utc);
+    CHECK(old_report.starts==0 && old_report.stops==0);
+    CHECK(old_report.state!=CalibrationState::Calibrated);
+    std::printf("Previous runtime: samples=%u starts=%u stops=%u state=%s\n",old_report.samples,old_report.starts,old_report.stops,calibration_state_name(old_report.state));
     const auto r=id.report(sim.utc);
-    std::printf("Asynchronous gateway: eligible=%u mixed=%u starts=%u stops=%u windows=%u rms=%.3f state=%s block=%s\n",
+    std::printf("Acknowledged automatic gateway: eligible=%u mixed=%u starts=%u stops=%u windows=%u rms=%.3f state=%s block=%s\n",
         accepted,mixed,r.starts,r.stops,r.windows,r.validation_rms_c,
         calibration_state_name(r.state),calibration_block_name(r.block));
     CHECK(mixed>20 && r.starts>10 && r.stops>10);
@@ -771,6 +812,7 @@ void test_transition_continuity() {
 int main() {
     test_transition_continuity();
     test_no_data_is_honest();
+    test_last_observation_reason();
     test_comfort_band();
     test_recovers_truth_and_calibrates();
     test_standard_gateway_can_calibrate_without_uart_extension_or_meter();
