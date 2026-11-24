@@ -4,7 +4,7 @@
 // flushes, GET /api/history. See cottage/history_store.hpp for the rules.
 #include "cottage/history_store.hpp"
 #include "cottage/model_checkpoint.hpp"
-class WebServer;
+class CottageWebServer;
 
 namespace enevina_firmware {
 // Once in setup(): allocates the ring in PSRAM, mounts the history partition
@@ -14,7 +14,7 @@ namespace enevina_firmware {
 void history_initialize();
 // Every ~15 s from one worker task.
 void history_observe(const enevina::cottage::HistoryInputs& inputs);
-void history_http(WebServer& web);
+void history_http(CottageWebServer& web);
 // Newest event of a kind (persisted across reboots): utc and its 32-bit arg.
 bool history_last_event(uint8_t kind,uint32_t& utc,uint32_t& arg);
 // Separate fixed/variable model files on the already mounted LittleFS.

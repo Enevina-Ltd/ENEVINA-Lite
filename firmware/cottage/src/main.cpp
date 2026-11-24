@@ -3,6 +3,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
+#include "cottage_bounded_web.hpp"
 #include <Preferences.h>
 #include <nvs.h>
 #include "cottage/nvs_cache_reclaim_policy.hpp"
@@ -76,7 +77,7 @@
 extern "C" bool verifyRollbackLater() { return true; }
 
 using namespace enevina::cottage;
-static WebServer web(80);
+static CottageWebServer web(80);
 static SemaphoreHandle_t lock_data=nullptr;
 static std::atomic<bool> wifi_ok{false};
 static std::atomic<uint32_t> web_loop_heartbeat_ms{0};
@@ -3035,6 +3036,8 @@ static void status_endpoint() {
     // This handler runs in the Arduino loop task (8 KiB stack): its own
     // high-water mark covers /api/status and /api/mpc serialization.
     cJSON_AddNumberToObject(root,"loop_stack_free",uxTaskGetStackHighWaterMark(nullptr));
+    cJSON_AddNumberToObject(root,"web_response_aborts",web.responseAborts());
+    cJSON_AddNumberToObject(root,"web_longest_write_ms",web.longestWriteMs());
     if(WiFi.status()==WL_CONNECTED)cJSON_AddNumberToObject(root,"wifi_rssi_dbm",WiFi.RSSI());
     else cJSON_AddNullToObject(root,"wifi_rssi_dbm");
     c23_append_status(root);
@@ -3086,7 +3089,7 @@ static void plan_endpoint() {
       "{\"valid\":%s,\"count\":%u,\"energy_valid\":%s,\"cost_eur\":%s,\"minimum_c\":%.5f,\"slots\":[",
       ok?"true":"false",static_cast<unsigned>(ok?n:0),ok&&energy?"true":"false",cost_text,
       minimum_c);
-    web.sendContent(buf);
+    web.streamContent(buf);
     for(size_t i=0;ok&&i<n;i++) {
         const PlanRow& r=rows_mem.get()[i];
         char kwh[24],eur[24];
@@ -3097,10 +3100,10 @@ static void plan_endpoint() {
         snprintf(buf,sizeof(buf),"%s{\"utc\":%lld,\"heat\":%s,\"setpoint_c\":%.2f,\"indoor_c\":%.5f,\"kwh\":%s,\"eur\":%s}",
             i?",":"",static_cast<long long>(r.utc),r.heat?"true":"false",
             r.setpoint_c,r.indoor_c,kwh,eur);
-        web.sendContent(buf);
+        web.streamContent(buf);
     }
-    web.sendContent("]}");
-    web.sendContent("");
+    web.streamContent("]}");
+    web.streamContent("");
 }
 // Full MPC / calibration view for the dashboard. Read-only snapshot.
 static void json_number_or_null(char* out,size_t n,double v,const char* f,bool ok=true) {
@@ -3184,7 +3187,7 @@ static void mpc_endpoint() {
         restored?"true":"false",saves,save_failures,save_skips,
         reset_state==1?"REQUESTED":reset_state==2?"PERSISTED":
         reset_state==3?"PERSIST_FAILED":"NONE",reset_failures);
-    web.sendContent(buf);
+    web.streamContent(buf);
     snprintf(buf,buf_capacity,
         "\"last_observation\":\"%s\",\"defrost_skipped_this_boot\":%u,\"last_saved_sample_utc\":%lld,"
         "\"nvs_free_entries\":%ld,\"nvs_required_entries\":%u,"
@@ -3198,7 +3201,7 @@ static void mpc_endpoint() {
         identifier_checkpoint_backend.load()==1?"NVS":"NONE",
         CalibrationLimits::min_samples,CalibrationLimits::min_heating,CalibrationLimits::min_off,
         CalibrationLimits::min_starts,CalibrationLimits::min_stops);
-    web.sendContent(buf);
+    web.streamContent(buf);
     const bool have_model=cal.samples>0 && m.tau_h>0;
     char a[24],b[24],c[24],d[24],e[24],f[24],g[24],h[24];
     json_number_or_null(a,sizeof(a),cal.validation_rms_c,"%.4f",cal.windows>0);
@@ -3216,7 +3219,7 @@ static void mpc_endpoint() {
         "\"lift_std_k\":%s,\"lift_outdoor_c\":%s,",a,b,c,
         plan_ok?uncertainty:cal.planning_uncertainty_c,static_cast<long long>(cal.last_sample_utc),
         m.plausible?"true":"false",d,e,f,g,h);
-    web.sendContent(buf);
+    web.streamContent(buf);
     json_number_or_null(a,sizeof(a),m.lift_k_per_c,"%.4f",have_model);
     json_number_or_null(b,sizeof(b),m.start_delay_min,"%.2f",have_model);
     json_number_or_null(c,sizeof(c),m.start_delay_std_min,"%.2f",have_model);
@@ -3230,7 +3233,7 @@ static void mpc_endpoint() {
         "\"afterheat_k\":%s,\"one_step_sigma_c\":%s,\"outdoor_min_c\":%s,"
         "\"outdoor_max_c\":%s,\"gain_rise_k\":%s,\"cop_identified\":false,",
         a,b,c,d,e,f,g,h);
-    web.sendContent(buf);
+    web.streamContent(buf);
     json_number_or_null(a,sizeof(a),m.electric_on_kw_at_0c,"%.4f",m.electric_trusted);
     json_number_or_null(b,sizeof(b),m.electric_on_kw_per_c,"%.5f",m.electric_trusted);
     json_number_or_null(c,sizeof(c),m.electric_standby_kw,"%.4f",m.electric_trusted);
@@ -3247,7 +3250,7 @@ static void mpc_endpoint() {
         m.electric_trusted?"true":"false",a,b,c,d,e,f,
         shelly_meter_pump_only()?"HEAT_PUMP_ONLY":"UNCONFIRMED",w,
         shelly_meter_pump_only()&&m.electric_trusted?"true":"false");
-    web.sendContent(buf);
+    web.streamContent(buf);
     json_number_or_null(a,sizeof(a),energy_kwh,"%.4f",energy_ok);
     json_number_or_null(b,sizeof(b),cost,"%.4f",energy_ok);
     snprintf(buf,buf_capacity,
@@ -3265,8 +3268,8 @@ static void mpc_endpoint() {
         static_cast<unsigned>(hs),horizon_limit_name(hl),static_cast<unsigned>(hp),
         static_cast<unsigned>(hw),plan.target_c,plan.band.lower_c,plan.band.upper_c,
         energy_ok?"true":"false",a,b,market.currency,solve_ms,worst,solves,failures);
-    web.sendContent(buf);
-    for(size_t i=0;plan_ok && i<row_count;++i) {
+    web.streamContent(buf);
+    for(size_t i=0;plan_ok && i<row_count && !web.responseAborted();++i) {
         const PlanRow& r=rows[i];
         json_number_or_null(a,sizeof(a),r.energy_kwh,"%.5f",energy_ok);
         json_number_or_null(b,sizeof(b),r.cost,"%.6f",energy_ok);
@@ -3275,22 +3278,22 @@ static void mpc_endpoint() {
             "\"price\":%.6f,\"kwh\":%s,\"cost\":%s}",i?",":"",
             static_cast<long long>(r.utc),r.heat?"true":"false",r.setpoint_c,r.indoor_c,r.outdoor_c,
             r.price,a,b);
-        web.sendContent(buf);
+        web.streamContent(buf);
         if(i%24==23) delay(1);
     }
-    web.sendContent("]},\"trend\":[");
-    for(size_t i=0;i<trend_count;++i) {
+    web.streamContent("]},\"trend\":[");
+    for(size_t i=0;i<trend_count && !web.responseAborted();++i) {
         const TrendPoint& t=trend[i];
         json_number_or_null(a,sizeof(a),t.one_step_c,"%.3f");
         json_number_or_null(b,sizeof(b),t.open_loop_c,"%.3f");
         snprintf(buf,buf_capacity,"%s{\"utc\":%lld,\"measured_c\":%.3f,\"one_step_c\":%s,"
             "\"open_loop_c\":%s}",i?",":"",static_cast<long long>(t.utc),
             static_cast<double>(t.measured_c),a,b);
-        web.sendContent(buf);
+        web.streamContent(buf);
         if(i%24==23) delay(1);
     }
-    web.sendContent("]}");
-    web.sendContent("");
+    web.streamContent("]}");
+    web.streamContent("");
 }
 // Read-only hourly Finnish Meteorological Institute temperature forecast.
 // Uses the same mutex-protected, validated cache as the optimizer; does not
@@ -3325,7 +3328,7 @@ static void weather_forecast_endpoint() {
     snprintf(line,sizeof(line),
         "{\"valid\":%s,\"source\":\"MET Norway Locationforecast 2.0\",\"fetched_utc\":%lld,\"slots\":[",
         available?"true":"false",static_cast<long long>(available?weather.fetched_utc:0));
-    web.sendContent(line);
+    web.streamContent(line);
     size_t emitted=0;
     for(size_t i=0;i<count && emitted<max_emitted_points;++i) {
         const auto& point=points[i];
@@ -3337,11 +3340,11 @@ static void weather_forecast_endpoint() {
              "%s{\"utc\":%lld,\"temperature_c\":%.3f}",
              emitted++?",":"",static_cast<long long>(point.timestamp_utc),
              point.temperature_c);
-        web.sendContent(line);
+        web.streamContent(line);
         if(i%12==11) delay(1);
     }
-    web.sendContent("]}");
-    web.sendContent("");
+    web.streamContent("]}");
+    web.streamContent("");
     heap_caps_free(points);
 }
 // C2.5: Small, read-only 15-minute price feed for the local premium dashboard.
@@ -3487,11 +3490,11 @@ static void freshness_endpoint() {
         control_gate_name(static_cast<ControlBlock>(control_gate.load())),
         [&](const char* part) {
         const size_t len=strlen(part);
-        if(used+len>=sizeof(chunk)) {chunk[used]=0;web.sendContent(chunk);used=0;}
+        if(used+len>=sizeof(chunk)) {chunk[used]=0;web.streamContent(chunk);used=0;}
         memcpy(chunk+used,part,len);used+=len;
     });
-    if(used) {chunk[used]=0;web.sendContent(chunk);}
-    web.sendContent("");
+    if(used) {chunk[used]=0;web.streamContent(chunk);}
+    web.streamContent("");
 }
 static void history_worker(void*) {
     for(;;) {
@@ -3568,12 +3571,12 @@ static void timeline_endpoint() {
     size_t used=0;
     timeline_json(meta,*timeline,[&](const char* part) {
         const size_t len=strlen(part);
-        if(used+len>=sizeof(chunk)) {chunk[used]=0;web.sendContent(chunk);used=0;delay(1);}
-        if(len>=sizeof(chunk)) {web.sendContent(part);return;}
+        if(used+len>=sizeof(chunk)) {chunk[used]=0;web.streamContent(chunk);used=0;delay(1);}
+        if(len>=sizeof(chunk)) {web.streamContent(part);return;}
         memcpy(chunk+used,part,len);used+=len;
     });
-    if(used) {chunk[used]=0;web.sendContent(chunk);}
-    web.sendContent("");
+    if(used) {chunk[used]=0;web.streamContent(chunk);}
+    web.streamContent("");
     release();
 }
 static void prices_endpoint() {
@@ -3597,7 +3600,7 @@ static void prices_endpoint() {
     web.sendHeader("Cache-Control","no-store");
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.send(200,"application/json; charset=utf-8","");
-    web.sendContent(count?"{\"valid\":true,\"slots\":[":"{\"valid\":false,\"slots\":[");
+    web.streamContent(count?"{\"valid\":true,\"slots\":[":"{\"valid\":false,\"slots\":[");
     char line[192];
     size_t emitted=0;
     for(size_t i=0;i<count;++i) {
@@ -3613,11 +3616,11 @@ static void prices_endpoint() {
             "%s{\"utc\":%lld,\"spot\":%.8f,\"total\":%s}",
             emitted++?",":"",static_cast<long long>(price.start_utc),
             price.spot_eur_per_kwh,total_buf);
-        web.sendContent(line);
+        web.streamContent(line);
         if(i%16==15) delay(1);
     }
-    web.sendContent("]}");
-    web.sendContent("");
+    web.streamContent("]}");
+    web.streamContent("");
     heap_caps_free(points);
 }
 static void setup_model() {

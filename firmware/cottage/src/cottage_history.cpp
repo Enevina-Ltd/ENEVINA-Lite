@@ -1,7 +1,7 @@
 #ifndef COTTAGE_BENCH_MODE
 #include <Arduino.h>
 #include <LittleFS.h>
-#include <WebServer.h>
+#include "cottage_bounded_web.hpp"
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_partition.h>
@@ -235,7 +235,7 @@ bool history_model_present(bool variable) {
     xSemaphoreGive(guard);return present;
 }
 
-void history_http(WebServer& web) {
+void history_http(CottageWebServer& web) {
     web.sendHeader("Cache-Control","no-store");
     if(!guard||!store) {
         web.send(200,"application/json","{\"valid\":false,\"points\":[],\"events\":[]}");
@@ -274,13 +274,14 @@ void history_http(WebServer& web) {
     size_t used=0;
     history_json(spec.name,spec.step_slots,pts,n,*summary,*event_copy,
         n?pts[0].t:0,market.currency,shelly_scope_name(site.shelly_scope),saved,[&](const char* part) {
+            if(web.responseAborted())return;
             const size_t len=strlen(part);
-            if(used+len>=sizeof(chunk)) {chunk[used]=0;web.sendContent(chunk);used=0;delay(1);}
-            if(len>=sizeof(chunk)) {web.sendContent(part);return;}
+            if(used+len>=sizeof(chunk)) {chunk[used]=0;web.streamContent(chunk);used=0;delay(1);}
+            if(len>=sizeof(chunk)) {web.streamContent(part);return;}
             memcpy(chunk+used,part,len);used+=len;
         });
-    if(used) {chunk[used]=0;web.sendContent(chunk);}
-    web.sendContent("");
+    if(used) {chunk[used]=0;web.streamContent(chunk);}
+    web.streamContent("");
     heap_caps_free(pts);delete summary;delete event_copy;
 }
 } // namespace enevina_firmware

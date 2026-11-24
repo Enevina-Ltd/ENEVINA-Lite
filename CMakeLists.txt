@@ -568,3 +568,23 @@ else()
   target_compile_options(automatic_command_reconciliation_tests PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
 endif()
 add_test(NAME automatic_command_reconciliation_tests COMMAND automatic_command_reconciliation_tests)
+
+add_executable(bounded_http_write_tests tests/bounded_http_write_tests.cpp)
+target_include_directories(bounded_http_write_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(MSVC)
+  target_compile_options(bounded_http_write_tests PRIVATE /UNDEBUG)
+else()
+  target_compile_options(bounded_http_write_tests PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME bounded_http_write_tests COMMAND bounded_http_write_tests)
+
+if(UNIX)
+  add_executable(bounded_web_transport_tests tests/bounded_web_transport_tests.cpp
+      firmware/cottage/src/cottage_bounded_web.cpp)
+  target_include_directories(bounded_web_transport_tests PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/support/bounded_web
+      ${CMAKE_CURRENT_SOURCE_DIR}/firmware/cottage/include
+      ${CMAKE_CURRENT_SOURCE_DIR})
+  target_compile_options(bounded_web_transport_tests PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+  add_test(NAME bounded_web_transport_tests COMMAND bounded_web_transport_tests)
+endif()
