@@ -45,7 +45,16 @@ class DashboardSignedOTA(unittest.TestCase):
             worker_start.index("ulTaskNotifyTake(pdTRUE,0)"),
             worker_start.index("while(true)"),
         )
-        self.assertEqual(worker_start.count("ulTaskNotifyTake(pdTRUE,0)"),1)
+        # Initial boot notification is drained once before the loop. A
+        # second drain is only permitted after an actual image attempt,
+        # while maintenance still rejects new dashboard requests.
+        self.assertEqual(worker_start.split("while(true)",1)[0].count("ulTaskNotifyTake(pdTRUE,0)"),1)
+        self.assertEqual(worker_start.count("ulTaskNotifyTake(pdTRUE,0)"),2)
+        post_attempt=worker_start.split("last_status.store(applied?6:4)",1)[1]
+        self.assertLess(post_attempt.index("ota_manual_pending.exchange(false)"),
+                        post_attempt.index("ulTaskNotifyTake(pdTRUE,0)"))
+        self.assertLess(post_attempt.index("ulTaskNotifyTake(pdTRUE,0)"),
+                        post_attempt.index("pause_readers.store(false)"))
         # Manual button must also wake the ten-minute post-failure wait.
         self.assertIn("ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(10*60*1000))", OTA)
         self.assertNotIn("vTaskDelay(pdMS_TO_TICKS(10*60*1000))", OTA)

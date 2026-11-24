@@ -39,6 +39,15 @@ static Evidence state(bool old_running,ImageState image,bool selected=false,
     e.target_state=image;return e;
 }
 int main(){
+    assert(image_attempt_allowed(9,0,false));
+    assert(!image_attempt_allowed(9,9,false));
+    assert(!image_attempt_allowed(8,9,false));
+    assert(image_attempt_allowed(10,9,false));
+    assert(image_attempt_allowed(9,9,true));
+    assert(!image_attempt_allowed(0,9,true));
+    // Explicit retry must not override confirmed or quarantined versions.
+    assert(!signed_version_eligible(9,9,0,false));
+    assert(!signed_version_eligible(9,8,9,false));
     // Exact ESP-IDF 4.4 (Arduino 2.0.17) numeric values. A raw cast
     // silently shifts every bootloader state and rejects healthy OTA.
     assert(decode_esp_idf_image_state(0u)==ImageState::New);

@@ -59,6 +59,12 @@ inline bool signed_version_eligible(uint32_t version,uint32_t good,
     return version!=0 && version>good && version>bad &&
            !transaction_pending;
 }
+// A durable high-water mark distinguishes an already attempted release
+// from a new one, even after power loss. Explicit requests may retry a
+// transfer, but must still pass the separate signed-version/rollback gate.
+inline bool image_attempt_allowed(uint32_t version,uint32_t attempted,bool explicit_request) {
+    return version!=0 && (version>attempted || explicit_request);
+}
 struct Evidence {
     bool running_source=false, running_target=false;
     bool selected_target=false, target_hash_matches=false;

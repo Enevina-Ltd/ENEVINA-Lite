@@ -62,6 +62,9 @@ on:
       - 'tests/test_crash_stack_source.py'
       - 'cottage/forecast_bridge.*'
       - 'tests/test_ota_runtime_source.py'
+      - 'cottage/ota_image_staging.hpp'
+      - 'cottage/ota_runtime_policy.hpp'
+      - 'tests/ota_image_staging_tests.cpp'
       - 'tests/test_ota_signing.py'
       - 'tests/test_cottage_install_package.py'
       - 'tools/cottage_ota_*.py'
@@ -97,6 +100,8 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_boot_memory_admission.py' -v
           python3 -m unittest discover -s tests -p 'test_crash_stack_source.py' -v
           python3 -m unittest discover -s tests -p 'test_ota_runtime_source.py' -v
+          g++ -std=c++17 -UNDEBUG -Wall -Wextra -Wpedantic -I. tests/ota_image_staging_tests.cpp -o /tmp/ota_image_staging_tests
+          /tmp/ota_image_staging_tests
           python3 -m unittest discover -s tests -p 'test_ota_signing.py' -v
           python3 -m unittest discover -s tests -p 'test_cottage_install_package.py' -v
           python3 -m unittest discover -s tests -p 'test_wifi_onboarding_source.py' -v
