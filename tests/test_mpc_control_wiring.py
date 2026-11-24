@@ -25,7 +25,7 @@ class MpcControlWiring(unittest.TestCase):
     def test_one_arbitrated_proposal_for_tick_and_post(self):
         self.assertIn("const auto proposal=active_control_proposal(now,sample,&arbitration);", TICK)
         self.assertNotIn("bootstrap_preview(", TICK)
-        self.assertIn("const auto latest=active_control_proposal(after_get_utc,selected_room_sample(after_get_utc));", POST)
+        self.assertIn("const auto latest=active_control_proposal(after_get_utc,selected_room_sample(after_get_utc),&latest_detail);", POST)
         self.assertIn("const auto refreshed=active_control_proposal(", POST)
         self.assertNotIn("bootstrap_preview(", POST)
         # The arbiter falls back to the existing price/thermostat decision.
@@ -131,6 +131,24 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("state.automatic_queued_utc>=in.plan.computed_utc", arb)
         self.assertIn("state.automatic_confirmed_utc<=now", arb)
         self.assertNotIn("bridge_observed", MAIN)
+
+    def test_defrost_gateway_protection_uses_standard_optional_entities(self):
+        self.assertIn('text_sensor/Sub Mode', MAIN)
+        self.assertIn('/text_sensor/Sub%20Mode?detail=all', MAIN)
+        self.assertIn('cn105_action_signal', MAIN)
+        self.assertIn('read_started_ms', MAIN)
+        self.assertIn('cn105_read_optional_submode(link);', POST)
+        self.assertIn('const bool dispatch=!defrost_hold && control_armed.load()', POST)
+        self.assertLess(POST.index('const bool defrost_hold=cn105_defrost_defer_write'),
+                        POST.index('const int code=req.POST("");'))
+        self.assertIn('if(!sent && control_post_stage.load()==-9)return;', TICK)
+        self.assertIn('o.defrost_observed=slot.defrost_at_start', WORKER)
+        self.assertIn('defrost.generation!=slot.defrost_reports', WORKER)
+        self.assertIn('pi.defrost_reports=defrost.generation', WORKER)
+        self.assertIn('in.pump_defrost_hold=cn105_defrost_defer_write', MAIN)
+        self.assertIn('p.defrost_reports!=in.defrost_reports', ARB)
+        self.assertIn('cn105_defrost_uart_verified",false', MAIN)
+        self.assertIn('mitsubishi_min_mode_dwell_ms', POST)
 
     def test_panasonic_requires_explicit_pump_bus_evidence(self):
         source = (ROOT / "firmware/cottage/src/cottage_panasonic_service.cpp").read_text(encoding="utf-8")

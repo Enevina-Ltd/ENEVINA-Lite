@@ -47,7 +47,7 @@ const char* calibration_block_name(CalibrationBlock b);
 // longer-term calibration requirements. Not stored in the model blob.
 enum class LearningObservation : uint8_t {
     None, Accepted, NeedPrevious, RoomInvalid, OutdoorInvalid, RequestInvalid,
-    OutsideDomain, InvalidTransition, NumericalReject
+    OutsideDomain, InvalidTransition, NumericalReject, DefrostObserved
 };
 const char* learning_observation_name(LearningObservation state);
 
@@ -72,6 +72,7 @@ struct SlotObservation {
     // heat_requested is the END mode; setpoint_c is the HEAT segment target.
     // No transition is inferred from a gap or an uncertain command.
     double transition_before_fraction=-1.0;
+    bool defrost_observed=false; // explicit gateway report, including protected recovery
 };
 
 template<size_t N> struct RlsState {
@@ -128,6 +129,7 @@ struct CalibrationReport {
     int64_t last_sample_utc=0, last_window_utc=0;
     uint32_t revision=0;                    // increments on every model update
     LearningObservation last_observation=LearningObservation::None;
+    uint32_t defrost_skipped_this_boot=0;
     ModelEstimate model{};
 };
 
@@ -247,6 +249,7 @@ private:
     int64_t last_sample_utc_=0;
     uint32_t revision_=0;
     LearningObservation last_observation_=LearningObservation::None;
+    uint32_t defrost_skipped_this_boot_=0;
     // Display-only, not persisted.
     std::array<TrendPoint,trend_slots> trend_{};
     uint32_t trend_count_=0, trend_head_=0;

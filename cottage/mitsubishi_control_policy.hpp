@@ -12,7 +12,7 @@ namespace enevina::cottage {
 enum class ControlStep : uint8_t { None, Setpoint, SetHeat, SetOff };
 enum class ControlBlock : uint8_t {
     Disabled, NotInHeatingMode, InputsUnverified, NoProposal,
-    UnsupportedCommand, AlreadyApplied, Ready, ModeDwell
+    UnsupportedCommand, AlreadyApplied, Ready, ModeDwell, DefrostHold
 };
 // Owner decision 18.11.2026: minimum 30 min between HEAT<->OFF mode changes
 // (compressor run/off time; AGENTS.md section 11). Setpoint changes are not
@@ -159,6 +159,7 @@ inline const char* control_gate_name(ControlBlock x) {
     case ControlBlock::AlreadyApplied:return "ALREADY_APPLIED";
     case ControlBlock::Ready:return "READY";
     case ControlBlock::ModeDwell:return "MODE_DWELL";
+    case ControlBlock::DefrostHold:return "DEFROST_HOLD";
     }
     return "UNKNOWN";
 }

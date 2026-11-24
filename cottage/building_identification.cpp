@@ -118,6 +118,7 @@ const char* learning_observation_name(LearningObservation s) {
     case LearningObservation::OutsideDomain:return "OUTSIDE_DOMAIN";
     case LearningObservation::InvalidTransition:return "INVALID_TRANSITION";
     case LearningObservation::NumericalReject:return "NUMERICAL_REJECT";
+    case LearningObservation::DefrostObserved:return "DEFROST_OBSERVED";
     }
     return "NONE";
 }
@@ -288,9 +289,11 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
     const bool domain_ok=o.in_model_domain && known_setpoint &&
         // The pump's own 16 C thermostat throttles above ~15.5 C indoors.
         (variable_setpoints_ || !(contains_heat && o.indoor_start_c>15.3));
-    const bool slot_ok=valid_fraction && o.heat_valid && room_ok && outdoor_ok && domain_ok;
+    const bool slot_ok=!o.defrost_observed && valid_fraction && o.heat_valid && room_ok && outdoor_ok && domain_ok;
     const bool thermal_ok=contiguous && slot_ok && transition_contiguous;
-    last_observation_=!room_ok?LearningObservation::RoomInvalid:
+    if(o.defrost_observed)++defrost_skipped_this_boot_;
+    last_observation_=o.defrost_observed?LearningObservation::DefrostObserved:
+        !room_ok?LearningObservation::RoomInvalid:
         !outdoor_ok?LearningObservation::OutdoorInvalid:
         !o.heat_valid?LearningObservation::RequestInvalid:
         !domain_ok?LearningObservation::OutsideDomain:
@@ -336,7 +339,7 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
             push_trend(o.slot_utc+900,o.indoor_end_c,nan,nan);
     }
     // Electric fit: ONLY an owner-confirmed heat-pump-only meter.
-    if(o.meter_pump_only && o.electric_valid && contiguous && o.heat_valid &&
+    if(!o.defrost_observed && o.meter_pump_only && o.electric_valid && contiguous && o.heat_valid &&
        valid_fraction && transition_contiguous && (!transition || slot_ok) &&
        (!variable_setpoints_ || slot_ok) &&
        o.outdoor_valid && o.in_model_domain && id_finite(o.electric_kwh) &&
@@ -492,6 +495,7 @@ CalibrationReport BuildingIdentifier::report(int64_t now_utc) const {
     r.windows=ring_count_;r.windows_aborted=windows_aborted_;
     r.last_sample_utc=last_sample_utc_;r.revision=revision_;
     r.last_observation=last_observation_;
+    r.defrost_skipped_this_boot=defrost_skipped_this_boot_;
     r.model=estimate();
     const uint32_t k=std::min<uint32_t>(ring_count_,CalibrationLimits::windows_needed);
     if(k) {

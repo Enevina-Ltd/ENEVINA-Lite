@@ -85,6 +85,29 @@ void test_last_observation_reason() {
     CHECK(id.report(o.slot_utc).last_observation==LearningObservation::OutsideDomain);
 }
 
+void test_defrost_slots_not_trained() {
+    BuildingIdentifier id;
+    SlotObservation o{};
+    o.slot_utc=t_start;o.indoor_start_c=12;o.indoor_end_c=12.2;
+    o.outdoor_c=-2;o.indoor_valid=o.outdoor_valid=o.heat_valid=true;
+    o.heat_requested=true;o.setpoint_c=16;o.meter_pump_only=true;
+    o.electric_valid=true;o.electric_kwh=.2;
+    CHECK(!id.add(o));
+    o.slot_utc+=900;CHECK(id.add(o));
+    const auto before=id.report(o.slot_utc);
+    o.slot_utc+=900;o.defrost_observed=true;o.indoor_end_c=11.8;
+    CHECK(!id.add(o));
+    const auto after=id.report(o.slot_utc);
+    CHECK(after.samples==before.samples && after.revision==before.revision);
+    CHECK(after.model.electric_samples==before.model.electric_samples);
+    CHECK(after.last_observation==LearningObservation::DefrostObserved);
+    CHECK(after.defrost_skipped_this_boot==1);
+    o.slot_utc+=900;o.defrost_observed=false;o.heat_requested=false;
+    CHECK(!id.add(o)); // no invented stop across defrost
+    o.slot_utc+=900;CHECK(id.add(o));
+    CHECK(id.report(o.slot_utc).stops==before.stops);
+}
+
 void test_no_data_is_honest() {
     BuildingIdentifier id;
     const auto r=id.report(t_start);
@@ -813,6 +836,7 @@ int main() {
     test_transition_continuity();
     test_no_data_is_honest();
     test_last_observation_reason();
+    test_defrost_slots_not_trained();
     test_comfort_band();
     test_recovers_truth_and_calibrates();
     test_standard_gateway_can_calibrate_without_uart_extension_or_meter();
