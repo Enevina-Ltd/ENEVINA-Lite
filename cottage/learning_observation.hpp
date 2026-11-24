@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "pump/pump_adapter.hpp"
 
 namespace enevina::cottage {
 // Timestamp the independent room readings, not just the optimizer's loop.
@@ -20,6 +21,23 @@ inline bool learning_interval_span(int64_t begin_utc,int64_t end_utc,
     // A wall-clock step during the interval must not masquerade as elapsed
     // physical time. Allow ordinary timestamp rounding / BLE scan jitter.
     return clock_error>=-5000 && clock_error<=5000;
+}
+// Do not learn a quiet 15-minute LAN/bus interval from two coincidentally
+// identical endpoints after a queued or in-flight command, source change,
+// communication discontinuity or uncertain dispatch.
+inline bool quiet_common_learning_request(const PumpRoomState& begin,const PumpRoomState& end) {
+    return begin.source!=PumpStateSource::None && begin.source==end.source &&
+        begin.protocol==end.protocol && begin.endpoint_generation==end.endpoint_generation &&
+        begin.link_generation==end.link_generation &&
+        begin.configuration_generation==end.configuration_generation &&
+        begin.request_generation==end.request_generation &&
+        begin.write_generation==end.write_generation &&
+        !begin.write_in_progress && !end.write_in_progress &&
+        !begin.command_unconfirmed && !end.command_unconfirmed &&
+        begin.mode==end.mode && end.request_minutes>=14 &&
+        (end.mode==PumpRoomMode::Off ||
+         (end.mode==PumpRoomMode::Heat && std::isfinite(begin.setpoint_c) &&
+          std::isfinite(end.setpoint_c) && std::fabs(begin.setpoint_c-end.setpoint_c)<=0.001));
 }
 // At most one checkpoint attempt per hour (four completed slots), except
 // the first meaningful sample on a new model. Failures retain the same

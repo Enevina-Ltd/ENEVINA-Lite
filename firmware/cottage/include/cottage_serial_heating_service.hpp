@@ -77,6 +77,8 @@ class SerialHeatingService {
         Sample active{},staged{};
         Job job{};
         bool busy=false;
+        bool write_active=false;
+        uint32_t write_generation=0;
         uint32_t request_since=0,mode_since=0;
         const char* status="not_tested";
         const char* staged_status="not_tested";
@@ -135,6 +137,7 @@ class SerialHeatingService {
     }
     static void queue(Command command) {
         command.queued_utc=time(nullptr);
+        ++state.write_generation;
         state.job={state.pair.baud,state.active.link,false,command};
         state.requested={command.patch,command.queued_utc};
         state.sent={};
@@ -456,8 +459,7 @@ public:
         xSemaphoreTake(gate,portMAX_DELAY);
         ControlBlock result=ControlBlock::InputsUnverified;
         const bool usable=can_queue();
-        if(!state.reconciliation.allow(authorization,usable,Protocol::heating_mode(state.active.climate),
-              state.active.climate.target_c.value_or(NAN))) {
+        if(state.reconciliation.awaiting(authorization)) {
             xSemaphoreGive(gate);return ControlBlock::AwaitingReadback;
         }
         if(usable && earlier.configuration_generation==revision.load() &&
@@ -511,6 +513,8 @@ public:
         out.configuration_generation=revision.load();
         out.request_generation=state.request_generation;
         out.command_unconfirmed=state.reconciliation.awaiting(cottage_control_authorization_generation());
+        out.write_generation=state.write_generation;
+        out.write_in_progress=state.write_active || state.job.command.has_value();
         out.request_minutes=(millis()-state.request_since)/60000;
         out.mode_minutes=(millis()-state.mode_since)/60000;
         out.automatic_queued_utc=state.automatic_queued_utc;
@@ -544,6 +548,7 @@ public:
         const auto limits=state.limits;
         state.job={};
         state.busy=job.baud!=0;
+        state.write_active=job.command.has_value();
         xSemaphoreGive(gate);
         if(!job.baud) {
             if(cottage_pump_uart.owned_by(Protocol::owner)) {
@@ -557,6 +562,7 @@ public:
         if(job.draft && !is_selected)disconnect();
         xSemaphoreTake(gate,portMAX_DELAY);
         state.busy=false;
+        state.write_active=false;
         if(job.command && job.command->automatic && outcome.attempted &&
            !outcome.confirmed && job.command->revision==revision.load()) {
             const auto& wanted=job.command->patch;
@@ -589,7 +595,16 @@ public:
             } else if(explicit_test && sample.received && state.pair.baud!=job.baud) {
                 if(const auto stored=store_pair(job.baud))activate(*stored,sample);
                 else result="storage";
-            } else if(!explicit_test || !sample.received || job.baud==state.pair.baud)observe(sample);
+            } else if(!explicit_test || !sample.received || job.baud==state.pair.baud) {
+                observe(sample);
+                if(!explicit_test && is_selected && state.reconciliation.observe(
+                        cottage_control_authorization_generation(),can_queue(),
+                        Protocol::heating_mode(state.active.climate),
+                        state.active.climate.target_c.value_or(NAN))) {
+                    ++state.request_generation;state.request_since=millis();
+                    state.automatic_queued_utc=state.automatic_confirmed_utc=0;
+                }
+            }
         }
         xSemaphoreGive(gate);
         last=millis();last_endpoint=job.link.endpoint;last_wifi=job.link.wifi;

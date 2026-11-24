@@ -84,6 +84,8 @@ struct State {
     Job pending{};
     uint32_t draft_id=0,next_id=0;
     bool busy=false;
+    bool write_active=false;
+    uint32_t write_generation=0;
     const char* result="not_tested";
     const char* draft_result="not_tested";
     Approval approval{};
@@ -164,6 +166,7 @@ bool authorization_current(const Job& job) {
 }
 void queue(Command command) {
     command.queued_utc=time(nullptr);
+    ++state.write_generation;
     state.pending={Task::Write,state.active.link,{},false,command};
     state.requested={command.patch,command.queued_utc};
     state.sent={};
@@ -588,8 +591,7 @@ ControlBlock cottage_wf_rac_submit_automatic(const PumpRoomState& earlier,Contro
     xSemaphoreTake(lock,portMAX_DELAY);
     ControlBlock result=ControlBlock::InputsUnverified;
     const bool usable=can_queue();
-    if(!state.reconciliation.allow(authorization,usable,heating_mode(state.active.reading),
-          state.active.reading.target_c.value_or(NAN))) {
+    if(state.reconciliation.awaiting(authorization)) {
         xSemaphoreGive(lock);return ControlBlock::AwaitingReadback;
     }
     if(usable && earlier.configuration_generation==revision.load() &&
@@ -645,6 +647,8 @@ PumpRoomState cottage_wf_rac_room_state() {
     result.configuration_generation=revision.load();
     result.request_generation=state.request_generation;
     result.command_unconfirmed=state.reconciliation.awaiting(cottage_control_authorization_generation());
+    result.write_generation=state.write_generation;
+    result.write_in_progress=state.write_active || state.pending.task==Task::Write;
     result.mode_minutes=(millis()-state.mode_since)/60000;
     result.request_minutes=(millis()-state.request_since)/60000;
     result.automatic_queued_utc=state.automatic_queued_utc;
@@ -678,6 +682,7 @@ void cottage_wf_rac_tick() {
     const auto approval=state.approval;
     state.pending={};
     state.busy=job.task!=Task::None;
+    state.write_active=job.task==Task::Write;
     xSemaphoreGive(lock);
     if(job.task==Task::None)return;
     if(job.task==Task::Identify) {
@@ -698,6 +703,7 @@ void cottage_wf_rac_tick() {
     }
     xSemaphoreTake(lock,portMAX_DELAY);
     state.busy=false;
+    state.write_active=false;
     if(job.task==Task::Write && job.command.automatic && written.attempted &&
        !written.confirmed && job.command.revision==revision.load()) {
         const auto& wanted=job.command.patch;
@@ -731,7 +737,15 @@ void cottage_wf_rac_tick() {
             if(draft) {
                 if(result.sample.received)state.draft=result.sample;
                 else state.draft.received=false;
-            } else observe(result.sample);
+            } else {
+                observe(result.sample);
+                if(!job.draft && selected && state.reconciliation.observe(
+                        cottage_control_authorization_generation(),can_queue(),
+                        heating_mode(state.active.reading),state.active.reading.target_c.value_or(NAN))) {
+                    ++state.request_generation;state.request_since=millis();
+                    state.automatic_queued_utc=state.automatic_confirmed_utc=0;
+                }
+            }
         }
     } else result.status="link_changed";
     (job.draft?state.draft_result:state.result)=result.status;

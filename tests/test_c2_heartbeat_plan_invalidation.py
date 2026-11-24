@@ -51,7 +51,7 @@ class HeartbeatGapTests(TestCase):
         self.assertIn("const bool mode_changed=after.request_generation!=view.request_generation",main)
         self.assertIn("after.link_generation!=view.link_generation",main)
         self.assertIn("cn105_learning_request(cn105_gateway_requests,",main)
-        self.assertIn("slot.gateway_start,view,commands)",main)
+        self.assertIn("slot.pump_start,view,commands)",main)
         assert main.index("if(mode_changed) {") < main.index("last_plan=result;")
         assert main.index("last_plan=result;") < main.index("xSemaphoreGive(lock_data);",main.index("if(mode_changed) {"))
 

@@ -20,9 +20,12 @@ public:
     bool awaiting(uint32_t authorization)const {
         return pending_ && authorization_==authorization;
     }
-    bool allow(uint32_t authorization,bool fresh,PumpRoomMode mode,
-               double target_c=std::numeric_limits<double>::quiet_NaN()) {
-        if(!awaiting(authorization))return true;
+    // A dispatch decision must not consume cached state. Only a completed
+    // independent poll can resolve an uncertain command. Return true ONLY
+    // when that poll actually clears the current authorization's receipt.
+    bool observe(uint32_t authorization,bool fresh,PumpRoomMode mode,
+                 double target_c=std::numeric_limits<double>::quiet_NaN()) {
+        if(!awaiting(authorization))return false;
         if(!fresh || mode_==PumpRoomMode::Unknown || mode_==PumpRoomMode::Other ||
            mode!=mode_ || (target_required_ &&
             (!std::isfinite(target_) || !std::isfinite(target_c) || std::fabs(target_c-target_)>0.001)))
