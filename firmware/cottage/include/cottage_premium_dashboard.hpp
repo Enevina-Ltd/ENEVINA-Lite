@@ -3722,12 +3722,25 @@ $('midea-discover').addEventListener('click',async()=>{
  button.disabled=true;
  text('midea-feedback','Haetaan Midea-laitteita omasta lähiverkosta...');
  try {
-  const r=await fetch('/api/midea/discover',{
-    method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:new URLSearchParams({token})});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok || !Array.isArray(data.devices))
-    throw Error(data.error||'HTTP '+r.status);
+  const request=async(fields)=>{
+    const r=await fetch('/api/midea/discover',{
+      method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams(fields)});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok)throw Error(data.error||'HTTP '+r.status);
+    return data;
+  };
+  let data=await request({token});
+  const scanId=data.scan_id;
+  if(data.state==='pending'){
+    if(!Number.isInteger(scanId)||scanId<=0||scanId>4294967295)throw Error('SCAN_ID');
+    for(let attempt=0;attempt<32&&data.state==='pending';++attempt){
+      await new Promise(resolve=>setTimeout(resolve,300));
+      data=await request({token,scan_id:String(scanId)});
+      if(data.scan_id!==scanId)throw Error('SCAN_ID');
+    }
+  }
+  if(data.state==='pending'||!Array.isArray(data.devices))throw Error(data.error||'SCAN_TIMEOUT');
   const entries=data.devices.filter(d=>d && [2,3].includes(d.protocol) &&
     /^[0-9]+$/.test(String(d.device_id)) &&
     /^(?:\d{1,3}\.){3}\d{1,3}$/.test(String(d.ip)));
