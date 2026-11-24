@@ -34,6 +34,7 @@ class MpcControlWiring(unittest.TestCase):
 
     def test_direct_lan_history_and_freshness_use_the_selected_adapter(self):
         pump = MAIN.split("static enevina::PumpRoomState optimizer_pump_state(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("if(cottage_echonet_selected())return cottage_echonet_room_state();", pump)
         self.assertIn("if(cottage_wf_rac_selected())return cottage_wf_rac_room_state();", pump)
         self.assertIn("if(cottage_daikin_dsiot_selected())return cottage_daikin_dsiot_room_state();", pump)
         self.assertIn("if(cottage_cn105_direct_selected())return cottage_cn105_direct_room_state();", pump)
@@ -55,7 +56,7 @@ class MpcControlWiring(unittest.TestCase):
 
     def test_existing_gates_unchanged_and_before_any_command(self):
         # Other adapters cannot reach the CN105 writer.
-        self.assertLess(TICK.index("if(!midea && !gree && !daikin && !wf_rac && !direct_cn105 && !s21 && !haier && !panasonic && !cn105_selected())"),
+        self.assertLess(TICK.index("if(!midea && !gree && !daikin && !echonet && !wf_rac && !direct_cn105 && !s21 && !haier && !panasonic && !cn105_selected())"),
                         TICK.index("active_control_proposal("))
         self.assertLess(TICK.index("if(!control_armed.load())return;"),
                         TICK.index("active_control_proposal("))
@@ -116,6 +117,7 @@ class MpcControlWiring(unittest.TestCase):
         self.assertLess(TICK.index("cottage_gree_submit_automatic("), TICK.index("cn105_bridge_post("))
         self.assertIn("if(cottage_daikin_selected())return cottage_daikin_room_state();", view)
         self.assertLess(TICK.index("cottage_daikin_submit_automatic("), TICK.index("cn105_bridge_post("))
+        self.assertLess(TICK.index("cottage_echonet_submit_automatic("), TICK.index("cn105_bridge_post("))
         self.assertLess(TICK.index("cottage_wf_rac_submit_automatic("), TICK.index("cn105_bridge_post("))
         self.assertLess(TICK.index("cottage_cn105_direct_submit_automatic("), TICK.index("cn105_bridge_post("))
         self.assertLess(TICK.index("cottage_daikin_s21_submit_automatic("), TICK.index("cn105_bridge_post("))
@@ -141,7 +143,7 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn('const bool dispatch=!defrost_hold && control_armed.load()', POST)
         self.assertLess(POST.index('const bool defrost_hold=cn105_defrost_defer_write'),
                         POST.index('const int code=req.POST("");'))
-        self.assertIn('if(!sent && control_post_stage.load()==-9)return;', TICK)
+        self.assertIn('if(!sent && post_stage!=6 && post_stage!=-6)return;', TICK)
         self.assertIn('o.defrost_observed=slot.defrost_at_start', WORKER)
         self.assertIn('defrost.generation!=slot.defrost_reports', WORKER)
         self.assertIn('pi.defrost_reports=defrost.generation', WORKER)

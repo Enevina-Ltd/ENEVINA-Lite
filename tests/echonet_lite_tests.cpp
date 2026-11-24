@@ -17,8 +17,9 @@ Packet response(const Packet& request,Service service,std::initializer_list<std:
 }
 int main(){
     const auto* entry=enevina::find_adapter("echonet_lite_lan");
-    assert(entry && entry->maturity==enevina::AdapterMaturity::HostTestedOnly);
-    assert(!enevina::adapter_selectable_in_lite_firmware(entry->id));
+    assert(entry && entry->maturity==enevina::AdapterMaturity::FirmwareControlExperimental);
+    assert(enevina::adapter_selectable_in_lite_firmware(entry->id));
+    assert(!enevina::adapter_allowed_cn105_physical_writes(entry->id));
     auto q=discover(0x1234);assert(q && q->size==14);
     const std::array<Byte,14> expected{0x10,0x81,0x12,0x34,5,0xff,1,0x0e,0xf0,1,0x62,1,0xd6,0};
     for(size_t i=0;i<expected.size();++i)assert(q->bytes[i]==expected[i]);

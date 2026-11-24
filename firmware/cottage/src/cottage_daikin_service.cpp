@@ -1,5 +1,6 @@
 #ifndef COTTAGE_BENCH_MODE
 #include "cottage_daikin_service.hpp"
+#include "cottage/automatic_command_reconciliation.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
 #include "cottage_local_http.hpp"
@@ -82,6 +83,7 @@ struct State {
     uint32_t approval_revision=0,request_generation=0,request_since_ms=0,mode_since_ms=0;
     int64_t automatic_queued_utc=0,automatic_confirmed_utc=0;
     MitsubishiModeHistory dwell{};
+    AutomaticCommandReconciliation reconciliation{};
     Receipt requested{},sent{},confirmed{};
 };
 SemaphoreHandle_t gate=nullptr;
@@ -236,7 +238,7 @@ Poll poll(const Config& config,const Link& link) {
 struct WriteResult {
     const char* status="write_cancelled";
     Snapshot sample{};
-    bool observed=false,confirmed=false;
+    bool observed=false,confirmed=false,attempted=false;
 };
 WriteResult write_command(const Work& work,const Config& config,const Device& device,
                            const PumpHeatingLimits& limits) {
@@ -268,6 +270,7 @@ WriteResult write_command(const Work& work,const Config& config,const Device& de
     if(!command_current(work))return result;
     bool dispatched=false;
     const auto ack=get(config.host,*path,work.link,&work,changes_mode(before,cmd.patch),&dispatched);
+    result.attempted=dispatched;
     if(!dispatched)return result;
     result.status=ack && accepted(*ack)?"unconfirmed":"send_failed";
     result.sample={};
@@ -275,7 +278,7 @@ WriteResult write_command(const Work& work,const Config& config,const Device& de
     for(unsigned attempt=0;attempt<3 && work.link.current();++attempt) {
         vTaskDelay(pdMS_TO_TICKS(350));
         auto after=poll(config,work.link);
-        if(!after.sample.received)continue;
+        if(!after.sample.received){result.sample={};continue;}
         result.sample=std::move(after.sample);
         if(!same_device(result.sample.device,device)) {result.status="device_changed";break;}
         if(readback_matches(before,result.sample.reading,cmd.patch) && command_current(work)) {
@@ -514,7 +517,12 @@ ControlBlock cottage_daikin_submit_automatic(const PumpRoomState& earlier,Contro
     if(!gate || !cottage_daikin_automatic_enabled())return ControlBlock::Disabled;
     xSemaphoreTake(gate,portMAX_DELAY);
     ControlBlock result=ControlBlock::InputsUnverified;
-    if(available() && earlier.configuration_generation==configuration_revision.load() &&
+    const bool usable=available();
+    if(!state.reconciliation.allow(authorization,usable,room_mode(state.active.reading),
+          state.active.reading.target_c.value_or(NAN))) {
+        xSemaphoreGive(gate);return ControlBlock::AwaitingReadback;
+    }
+    if(usable && earlier.configuration_generation==configuration_revision.load() &&
        earlier.endpoint_generation==state.active.link.endpoint &&
        earlier.link_generation==state.active.link.wifi &&
        earlier.request_generation==state.request_generation) {
@@ -561,6 +569,7 @@ enevina::PumpRoomState cottage_daikin_room_state() {
     result.configuration_generation=configuration_revision.load();
     if(approved())result.heating=state.limits;
     result.request_generation=state.request_generation;
+    result.command_unconfirmed=state.reconciliation.awaiting(cottage_control_authorization_generation());
     result.request_minutes=(millis()-state.request_since_ms)/60000;
     result.mode_minutes=(millis()-state.mode_since_ms)/60000;
     result.automatic_queued_utc=state.automatic_queued_utc;
@@ -617,6 +626,15 @@ void cottage_daikin_tick() {
     }
     xSemaphoreTake(gate,portMAX_DELAY);
     state.busy=false;
+    if(job.task==Task::Write && job.command.automatic && command.attempted &&
+       !command.confirmed && job.command.revision==configuration_revision.load()) {
+        const auto& wanted=job.command.patch;
+        state.automatic_queued_utc=state.automatic_confirmed_utc=0;
+        ++state.request_generation;state.request_since_ms=millis();
+        state.reconciliation.unresolved(job.command.authorization,
+            wanted.power==false?PumpRoomMode::Off:PumpRoomMode::Heat,
+            wanted.heat_target_c.has_value(),wanted.heat_target_c.value_or(0));
+    }
     if(job.link.current()) {
         if(job.task==Task::Write) {
             result.status=command.status;

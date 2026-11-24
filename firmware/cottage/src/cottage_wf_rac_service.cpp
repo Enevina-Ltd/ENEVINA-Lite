@@ -1,5 +1,6 @@
 #ifndef COTTAGE_BENCH_MODE
 #include "cottage_wf_rac_service.hpp"
+#include "cottage/automatic_command_reconciliation.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_local_http.hpp"
 #include "cottage_network_budget.hpp"
@@ -87,6 +88,7 @@ struct State {
     const char* draft_result="not_tested";
     Approval approval{};
     MitsubishiModeHistory dwell{};
+    AutomaticCommandReconciliation reconciliation{};
     uint32_t request_generation=0,mode_since=0,request_since=0;
     int64_t automatic_queued_utc=0,automatic_confirmed_utc=0;
     Receipt requested{},sent{},confirmed{};
@@ -306,7 +308,7 @@ Poll poll(const Config& config,const Link& link) {
 struct WriteResult {
     const char* status="write_cancelled";
     Sample sample{};
-    bool observed=false,confirmed=false;
+    bool observed=false,confirmed=false,attempted=false;
 };
 WriteResult perform_write(const Job& job,const Config& target,const Approval& approval) {
     WriteResult result;
@@ -341,6 +343,7 @@ WriteResult perform_write(const Job& job,const Config& target,const Approval& ap
     bool attempted=false;
     const auto ack=invoke(target.address,write_command,target.device,job.link,
         reinterpret_cast<const char*>(encoded.data()),&approval,&job,mode_changed,&attempted);
+    result.attempted=attempted;
     if(!attempted)return result;
     result.status=ack?"unconfirmed":"send_failed";
     result.sample={};
@@ -348,7 +351,7 @@ WriteResult perform_write(const Job& job,const Config& target,const Approval& ap
     for(unsigned attempt=0;attempt<3 && job.link.current();++attempt) {
         vTaskDelay(pdMS_TO_TICKS(500));
         auto after=poll(target,job.link);
-        if(!after.sample.received)continue;
+        if(!after.sample.received){result.sample={};continue;}
         result.sample=after.sample;
         if(!same_pump(result.sample,approval.pump)) {result.status="device_changed";break;}
         if(readback_matches(reading,result.sample.reading,cmd.patch) && authorization_current(job)) {
@@ -584,7 +587,12 @@ ControlBlock cottage_wf_rac_submit_automatic(const PumpRoomState& earlier,Contro
     if(!lock || !cottage_wf_rac_automatic_enabled())return ControlBlock::Disabled;
     xSemaphoreTake(lock,portMAX_DELAY);
     ControlBlock result=ControlBlock::InputsUnverified;
-    if(can_queue() && earlier.configuration_generation==revision.load() &&
+    const bool usable=can_queue();
+    if(!state.reconciliation.allow(authorization,usable,heating_mode(state.active.reading),
+          state.active.reading.target_c.value_or(NAN))) {
+        xSemaphoreGive(lock);return ControlBlock::AwaitingReadback;
+    }
+    if(usable && earlier.configuration_generation==revision.load() &&
        earlier.request_generation==state.request_generation &&
        earlier.endpoint_generation==state.active.link.endpoint &&
        earlier.link_generation==state.active.link.wifi) {
@@ -636,6 +644,7 @@ PumpRoomState cottage_wf_rac_room_state() {
     const auto sample=state.active;
     result.configuration_generation=revision.load();
     result.request_generation=state.request_generation;
+    result.command_unconfirmed=state.reconciliation.awaiting(cottage_control_authorization_generation());
     result.mode_minutes=(millis()-state.mode_since)/60000;
     result.request_minutes=(millis()-state.request_since)/60000;
     result.automatic_queued_utc=state.automatic_queued_utc;
@@ -689,6 +698,15 @@ void cottage_wf_rac_tick() {
     }
     xSemaphoreTake(lock,portMAX_DELAY);
     state.busy=false;
+    if(job.task==Task::Write && job.command.automatic && written.attempted &&
+       !written.confirmed && job.command.revision==revision.load()) {
+        const auto& wanted=job.command.patch;
+        state.automatic_queued_utc=state.automatic_confirmed_utc=0;
+        ++state.request_generation;state.request_since=millis();
+        state.reconciliation.unresolved(job.command.authorization,
+            wanted.power==false?PumpRoomMode::Off:PumpRoomMode::Heat,
+            wanted.target_c.has_value(),wanted.target_c.value_or(0));
+    }
     if(job.link.current()) {
         if(job.task==Task::Write) {
             result.status=written.status;

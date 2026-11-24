@@ -31,6 +31,8 @@
 #include "cottage_midea_service.hpp"
 #include "cottage_gree_service.hpp"
 #include "cottage_daikin_service.hpp"
+#include "cottage_echonet_service.hpp"
+#include "cottage/automatic_command_reconciliation.hpp"
 #include "cottage_daikin_dsiot_service.hpp"
 #include "cottage_cn105_direct_service.hpp"
 #include "cottage_daikin_s21_service.hpp"
@@ -202,9 +204,11 @@ static std::atomic<bool> control_armed{false};
 // Pump identity (CN105 URL/adapter) the current arming was given for.
 static std::atomic<uint32_t> control_armed_endpoint{0};
 static std::atomic<uint32_t> control_permission_generation{0};
+uint32_t cottage_control_authorization_generation(){return control_permission_generation.load();}
 static std::atomic<uint32_t> control_armed_midea_revision{0};
 static std::atomic<uint32_t> control_armed_gree_revision{0};
 static std::atomic<uint32_t> control_armed_daikin_revision{0},control_armed_daikin_wifi{0};
+static std::atomic<uint32_t> control_armed_echonet_revision{0},control_armed_echonet_wifi{0};
 static std::atomic<uint32_t> control_armed_wf_rac_revision{0},control_armed_wf_rac_wifi{0};
 static std::atomic<uint32_t> control_armed_cn105_direct_revision{0},control_armed_cn105_bus{0};
 static std::atomic<uint32_t> control_armed_s21_revision{0},control_armed_s21_bus{0};
@@ -214,6 +218,7 @@ static std::atomic<uint32_t> control_armed_panasonic_revision{0},control_armed_p
 // change pump mode. Track bridge observations even while disarmed.
 // Owned by the optimizer task after setup restores the saved authorization.
 static MitsubishiModeHistory control_mode_history{};
+static AutomaticCommandReconciliation cn105_reconciliation{}; // optimizer task only
 static uint32_t control_mode_history_endpoint=0;
 static void control_note_observed_mode(bool heating,Cn105LinkIdentity link) {
     if(!link.current())return;
@@ -881,6 +886,7 @@ static enevina::PumpRoomState optimizer_pump_state(int64_t now,bool midea) {
     if(midea)return cottage_midea_room_state();
     if(cottage_gree_selected())return cottage_gree_room_state();
     if(cottage_daikin_selected())return cottage_daikin_room_state();
+    if(cottage_echonet_selected())return cottage_echonet_room_state();
     if(cottage_daikin_dsiot_selected())return cottage_daikin_dsiot_room_state();
     if(cottage_wf_rac_selected())return cottage_wf_rac_room_state();
     if(cottage_cn105_direct_selected())return cottage_cn105_direct_room_state();
@@ -908,8 +914,8 @@ static bool uses_common_pump_state() {
     return direct_lan_pump_selected() || cottage_cn105_direct_selected() || cottage_daikin_s21_selected() || cottage_haier_selected() || cottage_panasonic_selected();
 }
 static bool known_heating_mode(const enevina::PumpRoomState& state) {
-    return state.mode==enevina::PumpRoomMode::Off ||
-        (state.mode==enevina::PumpRoomMode::Heat && std::isfinite(state.setpoint_c));
+    return !state.command_unconfirmed && (state.mode==enevina::PumpRoomMode::Off ||
+        (state.mode==enevina::PumpRoomMode::Heat && std::isfinite(state.setpoint_c)));
 }
 // ONE proposal for the physical control path: a calibrated, current MPC
 // plan's first decision, otherwise the price controller, which itself falls
@@ -987,6 +993,8 @@ static TemperatureSample selected_room_sample(int64_t now,const RoomTemperatureC
         state=cottage_midea_room_state();
     } else if(cottage_gree_selected()) {
         state=cottage_gree_room_state();
+    } else if(cottage_echonet_selected()) {
+        state=cottage_echonet_room_state();
     } else if(cottage_daikin_selected()) {
         state=cottage_daikin_room_state();
     } else if(cottage_daikin_dsiot_selected()) {
@@ -1225,6 +1233,15 @@ bool cottage_daikin_automatic_enabled() {
         control_armed_daikin_wifi.load()==cottage_wifi_link_generation() &&
         control_armed_daikin_revision.load()==cottage_daikin_configuration_generation();
 }
+void cottage_echonet_automatic_cancel() {
+    if(cottage_echonet_selected())cottage_midea_automatic_cancel();
+}
+bool cottage_echonet_automatic_enabled() {
+    return control_armed.load() && cottage_echonet_selected() &&
+        control_armed_endpoint.load()==site_settings_endpoint_generation() &&
+        control_armed_echonet_wifi.load()==cottage_wifi_link_generation() &&
+        control_armed_echonet_revision.load()==cottage_echonet_configuration_generation();
+}
 void cottage_wf_rac_automatic_cancel() {
     if(cottage_wf_rac_selected())cottage_midea_automatic_cancel();
 }
@@ -1274,6 +1291,7 @@ static bool active_control_armed(bool midea) {
     if(midea)return cottage_midea_automatic_enabled();
     if(cottage_gree_selected())return cottage_gree_automatic_enabled();
     if(cottage_daikin_selected())return cottage_daikin_automatic_enabled();
+    if(cottage_echonet_selected())return cottage_echonet_automatic_enabled();
     if(cottage_wf_rac_selected())return cottage_wf_rac_automatic_enabled();
     if(cottage_cn105_direct_selected())return cottage_cn105_direct_automatic_enabled();
     if(cottage_daikin_s21_selected())return cottage_daikin_s21_automatic_enabled();
@@ -1285,6 +1303,7 @@ static uint32_t pump_configuration_revision(bool midea) {
     if(midea)return cottage_midea_configuration_generation();
     if(cottage_gree_selected())return cottage_gree_configuration_generation();
     if(cottage_daikin_selected())return cottage_daikin_configuration_generation();
+    if(cottage_echonet_selected())return cottage_echonet_configuration_generation();
     if(cottage_daikin_dsiot_selected())return cottage_daikin_dsiot_configuration_generation();
     if(cottage_cn105_direct_selected())return cottage_cn105_direct_configuration_generation();
     if(cottage_daikin_s21_selected())return cottage_daikin_s21_configuration_generation();
@@ -1327,6 +1346,11 @@ bool cottage_daikin_automatic_write_current(uint32_t authorization,uint32_t conf
                                        cottage_daikin_automatic_enabled());
 }
 
+bool cottage_echonet_automatic_write_current(uint32_t authorization,uint32_t config,
+        uint32_t settings,const BootstrapDecision& proposal) {
+    return queued_proposal_current(authorization,config,settings,proposal,
+                                       cottage_echonet_automatic_enabled());
+}
 bool cottage_wf_rac_automatic_write_current(uint32_t authorization,uint32_t config,
         uint32_t settings,const BootstrapDecision& proposal) {
     return queued_proposal_current(authorization,config,settings,proposal,
@@ -1463,6 +1487,10 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     if(dispatch) {
         const int64_t sent_utc=time(nullptr);
         cn105_command_readback.sent={step,required_target,sent_utc};
+        cn105_reconciliation.unresolved(authorization_generation,
+            step==ControlStep::SetOff?enevina::PumpRoomMode::Off:
+            step==ControlStep::SetHeat || bridge_heat?enevina::PumpRoomMode::Heat:enevina::PumpRoomMode::Off,
+            step!=ControlStep::SetOff,required_target);
         control_last_step.store(static_cast<int>(step));
         control_last_command_utc.store(sent_utc);
         control_commands_sent.fetch_add(1);
@@ -1567,19 +1595,20 @@ static void cottage_control_tick(const enevina::PumpRoomState& bridge) {
     const bool midea=cottage_midea_selected();
     const bool gree=cottage_gree_selected();
     const bool daikin=cottage_daikin_selected();
+    const bool echonet=cottage_echonet_selected();
     const bool wf_rac=cottage_wf_rac_selected();
     const bool direct_cn105=cottage_cn105_direct_selected();
     const bool s21=cottage_daikin_s21_selected();
     const bool haier=cottage_haier_selected();
     const bool panasonic=cottage_panasonic_selected();
-    if(!midea && !gree && !daikin && !wf_rac && !direct_cn105 && !s21 && !haier && !panasonic && !cn105_selected()) {
+    if(!midea && !gree && !daikin && !echonet && !wf_rac && !direct_cn105 && !s21 && !haier && !panasonic && !cn105_selected()) {
         if(control_armed.load())cottage_control_disarm();
         return;
     }
     if(!control_armed.load())return;
     const uint32_t authorization_generation=control_permission_generation.load();
     const uint32_t site_generation=site_settings_generation();
-    if((midea || gree || daikin || wf_rac || direct_cn105 || s21 || haier || panasonic) && !active_control_armed(midea))return;
+    if((midea || gree || daikin || echonet || wf_rac || direct_cn105 || s21 || haier || panasonic) && !active_control_armed(midea))return;
     // Arming is bound to the configured pump. A changed CN105 endpoint or
     // adapter revokes it; a reboot restores only the same pump identity.
     if(control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
@@ -1639,6 +1668,13 @@ static void cottage_control_tick(const enevina::PumpRoomState& bridge) {
     if(daikin) {
         const auto reading=cottage_daikin_room_state();
         const auto gate=cottage_daikin_submit_automatic(reading,candidate,
+            authorization_generation,config_generation,site_generation);
+        control_gate.store(static_cast<int>(gate));
+        return;
+    }
+    if(echonet) {
+        const auto current=cottage_echonet_room_state();
+        const auto gate=cottage_echonet_submit_automatic(current,candidate,
             authorization_generation,config_generation,site_generation);
         control_gate.store(static_cast<int>(gate));
         return;
@@ -1705,6 +1741,9 @@ static void cottage_control_tick(const enevina::PumpRoomState& bridge) {
     const bool current_heat=bridge.mode==enevina::PumpRoomMode::Heat;
     candidate.current_heat=current_heat;
     candidate.current_setpoint_c=bridge.setpoint_c;
+    if(!cn105_reconciliation.allow(authorization_generation,true,bridge.mode,bridge.setpoint_c)) {
+        control_gate.store(static_cast<int>(ControlBlock::AwaitingReadback));return;
+    }
     candidate.ms_since_mode_change=control_ms_since_mode_change();
     const auto decision=choose_mitsubishi_control(candidate);
     control_gate.store(static_cast<int>(decision.gate));
@@ -1735,7 +1774,9 @@ static void cottage_control_tick(const enevina::PumpRoomState& bridge) {
     const bool sent=cn105_bridge_post(request,authorization_generation,config_generation,
         site_generation,link,decision.step,decision.target_c,current_heat,bridge.setpoint_c);
     // A protective deferral is not a failed physical command: nothing was sent.
-    if(!sent && control_post_stage.load()==-9)return;
+    // A cancelled/preflight-failed request was not a physical write.
+    const int post_stage=control_post_stage.load();
+    if(!sent && post_stage!=6 && post_stage!=-6)return;
     // ESPHome may acknowledge the POST before updating its REST state.
     // Confirm only what the bridge GET reports, never claim UART proof.
     bool confirmed=false;
@@ -1747,11 +1788,12 @@ static void cottage_control_tick(const enevina::PumpRoomState& bridge) {
             bool read_heating=false;
             double read_setpoint=0;
             if(!cn105_bridge_get(read_heating,read_setpoint))continue;
-            if(site_settings_generation()!=site_generation || !link.current())break;
+            if(site_settings_generation()!=site_generation || !link.current() ||
+               control_permission_generation.load()!=authorization_generation)break;
             control_note_observed_mode(read_heating,link);
             last_heating=read_heating;last_setpoint=read_setpoint;
             confirmed=decision.step==ControlStep::Setpoint ?
-                std::fabs(read_setpoint-decision.target_c)<=0.001 :
+                read_heating==current_heat && std::fabs(read_setpoint-decision.target_c)<=0.001 :
                 decision.step==ControlStep::SetHeat ?
                 read_heating && std::fabs(read_setpoint-decision.target_c)<=0.001 :
                 !read_heating;
@@ -1759,6 +1801,7 @@ static void cottage_control_tick(const enevina::PumpRoomState& bridge) {
         }
     }
     if(confirmed) {
+        cn105_reconciliation.clear();
         control_post_stage.store(8);
         const int64_t ack_utc=time(nullptr);
         xSemaphoreTake(lock_data,portMAX_DELAY);
@@ -1853,12 +1896,13 @@ static void cottage_control_registration() {
         }
         const bool gree=cottage_gree_selected();
         const bool daikin=cottage_daikin_selected();
+        const bool echonet=cottage_echonet_selected();
         const bool wf_rac=cottage_wf_rac_selected();
         const bool direct_cn105=cottage_cn105_direct_selected();
         const bool s21=cottage_daikin_s21_selected();
         const bool haier=cottage_haier_selected();
         const bool panasonic=cottage_panasonic_selected();
-        if(requested && !midea && !gree && !daikin && !wf_rac && !direct_cn105 && !s21 && !haier && !panasonic && !cn105_selected()) {
+        if(requested && !midea && !gree && !daikin && !echonet && !wf_rac && !direct_cn105 && !s21 && !haier && !panasonic && !cn105_selected()) {
             web.send(409,"application/json",
                 "{\"saved\":false,\"error\":\"ADAPTER_READ_ONLY\"}");
             return;
@@ -1874,12 +1918,13 @@ static void cottage_control_registration() {
         const bool allowed=requested ?
             control_current_image_sha256(digest) &&
             !pending_ota && !cottage_ota_confirmation_pending() : true;
-        if(midea || gree || daikin || wf_rac || direct_cn105 || s21 || haier || panasonic) {
+        if(midea || gree || daikin || echonet || wf_rac || direct_cn105 || s21 || haier || panasonic) {
             bool ready=true;
             if(requested && allowed) {
                 if(midea)ready=cottage_midea_automatic_ready();
                 else if(gree)ready=cottage_gree_automatic_ready();
                 else if(daikin)ready=cottage_daikin_automatic_ready();
+                else if(echonet)ready=cottage_echonet_automatic_ready();
                 else if(wf_rac)ready=cottage_wf_rac_automatic_ready();
                 else if(direct_cn105)ready=cottage_cn105_direct_automatic_ready();
                 else if(s21)ready=cottage_daikin_s21_automatic_ready();
@@ -1891,6 +1936,7 @@ static void cottage_control_registration() {
                     "{\"saved\":false,\"error\":\"MIDEA_NOT_READY\"}":gree?
                     "{\"saved\":false,\"error\":\"GREE_NOT_READY\"}":
                     daikin?"{\"saved\":false,\"error\":\"DAIKIN_NOT_READY\"}":
+                    echonet?"{\"saved\":false,\"error\":\"ECHONET_NOT_READY\"}":
                         wf_rac?"{\"saved\":false,\"error\":\"WF_RAC_NOT_READY\"}":
                             direct_cn105?"{\"saved\":false,\"error\":\"CN105_DIRECT_NOT_READY\"}":
                                 s21?"{\"saved\":false,\"error\":\"DAIKIN_S21_NOT_READY\"}":
@@ -1906,6 +1952,9 @@ static void cottage_control_registration() {
             else if(daikin) {
                 control_armed_daikin_revision.store(cottage_daikin_configuration_generation());
                 control_armed_daikin_wifi.store(cottage_wifi_link_generation());
+            } else if(echonet) {
+                control_armed_echonet_revision.store(cottage_echonet_configuration_generation());
+                control_armed_echonet_wifi.store(cottage_wifi_link_generation());
             } else if(wf_rac) {
                 control_armed_wf_rac_revision.store(cottage_wf_rac_configuration_generation());
                 control_armed_wf_rac_wifi.store(cottage_wifi_link_generation());
@@ -1992,6 +2041,7 @@ static uint32_t identifier_identity() {
         if(cottage_midea_selected())pump_id=cottage_midea_calibration_identity();
         else if(cottage_gree_selected())pump_id=cottage_gree_calibration_identity();
         else if(cottage_daikin_selected())pump_id=cottage_daikin_calibration_identity();
+        else if(cottage_echonet_selected())pump_id=cottage_echonet_calibration_identity();
         else if(cottage_daikin_dsiot_selected())pump_id=cottage_daikin_dsiot_calibration_identity();
         else if(cottage_wf_rac_selected())pump_id=cottage_wf_rac_calibration_identity();
         else if(cottage_cn105_direct_selected())pump_id=cottage_cn105_direct_calibration_identity();
@@ -2171,6 +2221,7 @@ struct LearningSlot {
     enevina::PumpRoomState gateway_start{};
     uint32_t defrost_reports=0;
     bool defrost_at_start=false;
+    bool command_unconfirmed_at_start=false;
 };
 static void optimizer_worker(void*) {
     // N16R8 physical CN105/Shelly benchmark: the old ordinary new[] for
@@ -2354,7 +2405,8 @@ static void optimizer_worker(void*) {
                 // or one continuously bracketed mode transition; reject
                 // unknown intervals. Independent room response validates it.
                 const bool no_command=control_commands_sent.load()==slot.commands_sent;
-                o.heat_valid=known_heating_mode(view) && view.request_minutes>=14 && no_command;
+                o.heat_valid=known_heating_mode(view) && view.request_minutes>=14 && no_command &&
+                    !slot.command_unconfirmed_at_start;
                 o.heat_requested=view_heat;
                 o.setpoint_c=view.setpoint_c;
                 if(view.protocol==enevina::PumpRoomProtocol::Cn105EspHome) {
@@ -2562,6 +2614,8 @@ static void optimizer_worker(void*) {
             if(slot.site_generation!=site_settings_generation() ||
                slot.config_generation!=c23_config_generation() ||
                (id && identifier_identity()!=identity))slot.indoor_ok=false;
+            if(uses_common_pump_state())
+                slot.command_unconfirmed_at_start=optimizer_pump_state(time(nullptr),midea).command_unconfirmed;
             if(cn105_selected()) {
                 slot.gateway_start=optimizer_pump_state(time(nullptr),false);
                 const auto defrost=cn105_defrost_view();
@@ -2632,7 +2686,7 @@ static void status_endpoint() {
     cJSON_AddStringToObject(root,"mode",armed?
         (midea?"MIDEA_AUTOMAATIO_KAYTOSSA":cottage_gree_selected()?
             "GREE_AUTOMAATIO_KAYTOSSA":cottage_daikin_selected()?"DAIKIN_AUTOMAATIO_KAYTOSSA":
-            cottage_wf_rac_selected()?"WF_RAC_AUTOMAATIO_KAYTOSSA":cottage_cn105_direct_selected()?
+            cottage_echonet_selected()?"ECHONET_AUTOMAATIO_KAYTOSSA":cottage_wf_rac_selected()?"WF_RAC_AUTOMAATIO_KAYTOSSA":cottage_cn105_direct_selected()?
             "SUORA_CN105_AUTOMAATIO_KAYTOSSA":cottage_daikin_s21_selected()?"DAIKIN_S21_AUTOMAATIO_KAYTOSSA":
                 cottage_haier_selected()?"HAIER_AUTOMAATIO_KAYTOSSA":
                 cottage_panasonic_selected()?"PANASONIC_AUTOMAATIO_KAYTOSSA":
@@ -3062,7 +3116,10 @@ static void mpc_endpoint() {
         sizeof(PlanRow)*max_horizon_slots,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)));
     std::unique_ptr<TrendPoint,PsramFree> trend_mem(static_cast<TrendPoint*>(heap_caps_malloc(
         sizeof(TrendPoint)*BuildingIdentifier::trend_slots,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)));
-    if(!rows_mem || !trend_mem) {
+    constexpr size_t buf_capacity=704;
+    std::unique_ptr<char,PsramFree> json_mem(static_cast<char*>(heap_caps_malloc(
+        buf_capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)));
+    if(!rows_mem || !trend_mem || !json_mem) {
         web.send(503,"application/json; charset=utf-8","{\"valid\":false}");
         return;
     }
@@ -3106,8 +3163,8 @@ static void mpc_endpoint() {
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.sendHeader("Cache-Control","no-store");
     web.send(200,"application/json; charset=utf-8","");
-    char buf[704];
-    snprintf(buf,sizeof(buf),
+    char* buf=json_mem.get();
+    snprintf(buf,buf_capacity,
         "{\"evidence\":\"MODEL_FROM_LOCAL_MEASUREMENTS\",\"now_utc\":%lld,\"state\":\"%s\","
         "\"fallback\":\"%s\",\"source\":\"%s\",\"armed\":%s,\"decision_confirmed\":%s,"
         "\"pump_source_verified\":%s,\"pump_connection_ready\":%s,\"gateway_request\":%s,"
@@ -3128,7 +3185,7 @@ static void mpc_endpoint() {
         reset_state==1?"REQUESTED":reset_state==2?"PERSISTED":
         reset_state==3?"PERSIST_FAILED":"NONE",reset_failures);
     web.sendContent(buf);
-    snprintf(buf,sizeof(buf),
+    snprintf(buf,buf_capacity,
         "\"last_observation\":\"%s\",\"defrost_skipped_this_boot\":%u,\"last_saved_sample_utc\":%lld,"
         "\"nvs_free_entries\":%ld,\"nvs_required_entries\":%u,"
         "\"file_saves\":%u,\"file_failures\":%u,\"checkpoint_backend\":\"%s\","
@@ -3152,7 +3209,7 @@ static void mpc_endpoint() {
     json_number_or_null(f,sizeof(f),m.lift_k_ref,"%.3f",have_model);
     json_number_or_null(g,sizeof(g),m.lift_std_k,"%.3f",have_model);
     json_number_or_null(h,sizeof(h),m.lift_ref_outdoor_c,"%.2f",have_model);
-    snprintf(buf,sizeof(buf),
+    snprintf(buf,buf_capacity,
         "\"validation_rms_c\":%s,\"validation_bias_c\":%s,\"validation_max_abs_c\":%s,"
         "\"planning_uncertainty_c\":%.3f,\"last_sample_utc\":%lld,"
         "\"model\":{\"plausible\":%s,\"tau_h\":%s,\"tau_std_h\":%s,\"lift_k\":%s,"
@@ -3168,7 +3225,7 @@ static void mpc_endpoint() {
     json_number_or_null(f,sizeof(f),m.outdoor_min_c,"%.2f",have_model);
     json_number_or_null(g,sizeof(g),m.outdoor_max_c,"%.2f",have_model);
     json_number_or_null(h,sizeof(h),m.gain_rise_k,"%.3f",have_model);
-    snprintf(buf,sizeof(buf),
+    snprintf(buf,buf_capacity,
         "\"lift_k_per_c\":%s,\"start_delay_min\":%s,\"start_delay_std_min\":%s,"
         "\"afterheat_k\":%s,\"one_step_sigma_c\":%s,\"outdoor_min_c\":%s,"
         "\"outdoor_max_c\":%s,\"gain_rise_k\":%s,\"cop_identified\":false,",
@@ -3182,7 +3239,7 @@ static void mpc_endpoint() {
     json_number_or_null(f,sizeof(f),m.capacity_lower_kwh_per_c,"%.3f",m.absolute_bounds);
     char w[24];
     json_number_or_null(w,sizeof(w),meter.watts,"%.1f",valid_shelly(meter,now));
-    snprintf(buf,sizeof(buf),
+    snprintf(buf,buf_capacity,
         "\"electric_trusted\":%s,\"electric_on_kw_at_0c\":%s,\"electric_on_kw_per_c\":%s,"
         "\"electric_standby_kw\":%s,\"electric_start_kwh\":%s,\"ua_lower_kw_per_c\":%s,"
         "\"capacity_lower_kwh_per_c\":%s}},"
@@ -3193,7 +3250,7 @@ static void mpc_endpoint() {
     web.sendContent(buf);
     json_number_or_null(a,sizeof(a),energy_kwh,"%.4f",energy_ok);
     json_number_or_null(b,sizeof(b),cost,"%.4f",energy_ok);
-    snprintf(buf,sizeof(buf),
+    snprintf(buf,buf_capacity,
         "\"plan\":{\"valid\":%s,\"had_plan\":%s,\"computed_utc\":%lld,\"first_utc\":%lld,\"first_heat\":%s,"
         "\"planning_fallback\":\"%s\",\"plan_block\":\"%s\",\"bridge_status\":\"%s\",\"horizon_slots\":%u,"
         "\"horizon_limit\":\"%s\",\"price_slots\":%u,\"weather_slots\":%u,"
@@ -3213,7 +3270,7 @@ static void mpc_endpoint() {
         const PlanRow& r=rows[i];
         json_number_or_null(a,sizeof(a),r.energy_kwh,"%.5f",energy_ok);
         json_number_or_null(b,sizeof(b),r.cost,"%.6f",energy_ok);
-        snprintf(buf,sizeof(buf),
+        snprintf(buf,buf_capacity,
             "%s{\"utc\":%lld,\"heat\":%s,\"setpoint_c\":%.2f,\"indoor_c\":%.3f,\"outdoor_c\":%.2f,"
             "\"price\":%.6f,\"kwh\":%s,\"cost\":%s}",i?",":"",
             static_cast<long long>(r.utc),r.heat?"true":"false",r.setpoint_c,r.indoor_c,r.outdoor_c,
@@ -3226,7 +3283,7 @@ static void mpc_endpoint() {
         const TrendPoint& t=trend[i];
         json_number_or_null(a,sizeof(a),t.one_step_c,"%.3f");
         json_number_or_null(b,sizeof(b),t.open_loop_c,"%.3f");
-        snprintf(buf,sizeof(buf),"%s{\"utc\":%lld,\"measured_c\":%.3f,\"one_step_c\":%s,"
+        snprintf(buf,buf_capacity,"%s{\"utc\":%lld,\"measured_c\":%.3f,\"one_step_c\":%s,"
             "\"open_loop_c\":%s}",i?",":"",static_cast<long long>(t.utc),
             static_cast<double>(t.measured_c),a,b);
         web.sendContent(buf);
@@ -3695,6 +3752,7 @@ void setup() {
     cottage_midea_service_register_routes(web);
     cottage_gree_register_routes(web);
     cottage_daikin_register_routes(web);
+    cottage_echonet_register_routes(web);
     cottage_daikin_dsiot_register_routes(web);
     cottage_cn105_direct_register_routes(web);
     cottage_daikin_s21_register_routes(web);
@@ -3745,6 +3803,7 @@ static void cottage_local_lan_worker(void*) {
     for(;;) {
         if(cottage_gree_needs_worker())cottage_gree_tick();
         if(cottage_daikin_needs_worker())cottage_daikin_tick();
+        if(cottage_echonet_needs_worker())cottage_echonet_tick();
         if(cottage_daikin_dsiot_needs_worker())cottage_daikin_dsiot_tick();
         if(cottage_wf_rac_needs_worker())cottage_wf_rac_tick();
         if(cottage_cn105_direct_needs_worker())cottage_cn105_direct_tick();
@@ -3780,7 +3839,7 @@ void loop() {
            xTaskCreatePinnedToCore(cottage_midea_service_worker,"cottage_midea",
                                    8192,nullptr,1,&task_midea,0)!=pdPASS)
             Serial.println("MIDEA_WORKER: insufficient memory");
-        if(!task_local_lan && (cottage_gree_needs_worker() || cottage_daikin_needs_worker() ||
+        if(!task_local_lan && (cottage_gree_needs_worker() || cottage_daikin_needs_worker() || cottage_echonet_needs_worker() ||
            cottage_daikin_dsiot_needs_worker() || cottage_wf_rac_needs_worker() ||
            cottage_cn105_direct_needs_worker() || cottage_daikin_s21_needs_worker() ||
            cottage_haier_needs_worker() || cottage_panasonic_needs_worker()) &&

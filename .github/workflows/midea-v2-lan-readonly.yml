@@ -50,9 +50,11 @@ jobs:
           python tools/check_release_hygiene.py
           node tests/test_c25_dashboard_ui.js
           node tests/test_midea_capability_ui.js
+      - name: Install native protocol test dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libcjson-dev
       - name: Native unit tests and protocol vectors
         run: |
-          cmake -S . -B build-midea-v2-ci -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build-midea-v2-ci -DCMAKE_BUILD_TYPE=Release -DENEVINA_REQUIRE_NATIVE_PROTOCOL_TESTS=ON
           cmake --build build-midea-v2-ci -j2
           ctest --test-dir build-midea-v2-ci --output-on-failure
       - name: ESP32-S3 firmware build/link (no flash)

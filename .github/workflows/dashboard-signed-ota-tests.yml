@@ -9,6 +9,11 @@ on:
       - '.github/workflows/dashboard-signed-ota-tests.yml'
       - 'firmware/cottage/**'
       - 'cottage/mitsubishi_control_policy.hpp'
+      - 'cottage/automatic_command_reconciliation.hpp'
+      - 'tests/automatic_command_reconciliation_tests.cpp'
+      - 'tests/test_automatic_command_reconciliation_source.py'
+      - 'pump/gree_lan_protocol.*'
+      - 'tests/gree_lan_protocol_tests.cpp'
       - 'tests/cottage_mitsubishi_control_tests.cpp'
       - 'tests/test_cn105_maintenance_runtime_source.py'
       - 'tests/test_control_rearm_nvs_source.py'
@@ -63,13 +68,16 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_control_rearm_nvs_source.py' -v
           python3 -m unittest discover -s tests -p 'test_mode_dwell_wiring.py' -v
           python3 -m unittest discover -s tests -p 'test_mpc_control_wiring.py' -v
+          python3 -m unittest discover -s tests -p 'test_automatic_command_reconciliation_source.py' -v
           node tests/test_mpc_dashboard.js
           node tests/test_c25_dashboard_ui.js
           node tests/test_wifi_setup_ui.js
           node tests/test_setup_wizard.js
+      - name: Install native protocol test dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libcjson-dev
       - name: Native CMake suite
         run: |
-          cmake -S . -B build-dashboard-ota-ci -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build-dashboard-ota-ci -DCMAKE_BUILD_TYPE=Release -DENEVINA_REQUIRE_NATIVE_PROTOCOL_TESTS=ON
           cmake --build build-dashboard-ota-ci -j 2
           ctest --test-dir build-dashboard-ota-ci --output-on-failure
       - name: Firmware build and link (no flash)

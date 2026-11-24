@@ -1,5 +1,6 @@
 #ifndef COTTAGE_BENCH_MODE
 #include "cottage_gree_service.hpp"
+#include "cottage/automatic_command_reconciliation.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
 #include "cottage_secure_ota.hpp"
@@ -17,6 +18,8 @@
 #include <cstring>
 #include <cmath>
 #include <ctime>
+#include <memory>
+#include <new>
 
 namespace {
 using namespace enevina;
@@ -96,6 +99,7 @@ struct State {
     char pilot_model[48]{};
     PumpHeatingLimits limits{};
     MitsubishiModeHistory dwell{};
+    AutomaticCommandReconciliation reconciliation{};
     uint32_t mode_since_ms=0,request_since_ms=0,request_generation=0;
     int64_t automatic_confirmed_utc=0,automatic_queued_utc=0;
     Receipt requested{},sent{},confirmed{};
@@ -123,6 +127,7 @@ void publish_reading(const std::optional<Reading>& reading,const Link& link) {
     if(!reading || !continuous || !same_request(*reading,*state.sample.reading)) {
         ++state.request_generation;
         state.request_since_ms=now;
+        state.automatic_confirmed_utc=state.automatic_queued_utc=0;
     }
     if(!reading || !continuous || reading->power!=state.sample.reading->power ||
        (reading->power && reading->mode!=state.sample.reading->mode))
@@ -205,11 +210,13 @@ bool send(WiFiUDP& udp,const IPAddress& ip,std::string_view packet) {
         udp.endPacket();
 }
 template<typename Decoder>
-auto exchange(const IPAddress& ip,std::string_view packet,const Link& link,Decoder decode)
+__attribute__((noinline)) auto exchange(const IPAddress& ip,std::string_view packet,const Link& link,Decoder decode)
     -> decltype(decode(std::string_view{})) {
     WiFiUDP udp;
     if(!link.current() || !local_peer(ip) || !send(udp,ip,packet))return {};
-    std::array<char,max_packet> bytes{};
+    auto bytes_mem=std::unique_ptr<std::array<char,max_packet>>(new(std::nothrow) std::array<char,max_packet>{});
+    if(!bytes_mem)return {};
+    auto& bytes=*bytes_mem;
     const uint32_t start=millis();
     while(link.current() && millis()-start<response_ms) {
         const int size=udp.parsePacket();
@@ -229,14 +236,14 @@ auto exchange(const IPAddress& ip,std::string_view packet,const Link& link,Decod
     return {};
 }
 
-std::optional<Reading> read(const Config& c,const Link& link) {
+__attribute__((noinline)) std::optional<Reading> read(const Config& c,const Link& link) {
     IPAddress ip;
     if(!target_ip(c.host,ip))return {};
     return exchange(ip,status_request(c.cipher,c.key,c.device),link,[&](std::string_view reply){
         return parse_status(c.cipher,c.key,c.device,reply);
     });
 }
-std::optional<Key> bind(Config& c,const Link& link) {
+__attribute__((noinline)) std::optional<Key> bind(Config& c,const Link& link) {
     IPAddress ip;
     if(!target_ip(c.host,ip))return {};
     // Some modules accept bind only immediately after discovery. Repeat a
@@ -254,14 +261,16 @@ std::optional<Key> bind(Config& c,const Link& link) {
     return key;
 }
 
-size_t scan(const Link& link,std::array<Candidate,max_candidates>& out) {
+__attribute__((noinline)) size_t scan(const Link& link,std::array<Candidate,max_candidates>& out) {
     WiFiUDP udp;
     const auto local=static_cast<uint32_t>(WiFi.localIP());
     const auto mask=static_cast<uint32_t>(WiFi.subnetMask());
     if(!local || !mask || !link.current() || !send(udp,IPAddress(local|~mask),scan_packet))
         return 0;
     size_t count=0;
-    std::array<char,max_packet> bytes{};
+    auto bytes_mem=std::unique_ptr<std::array<char,max_packet>>(new(std::nothrow) std::array<char,max_packet>{});
+    if(!bytes_mem)return {};
+    auto& bytes=*bytes_mem;
     const uint32_t start=millis();
     while(link.current() && millis()-start<response_ms && count<out.size()) {
         const int size=udp.parsePacket();
@@ -402,12 +411,13 @@ struct WriteOutcome {
     const char* result="write_cancelled";
     std::optional<Reading> reading;
     int64_t sent_utc=0,confirmed_utc=0;
-    bool sent=false,confirmed=false;
+    bool sent=false,confirmed=false,observed=false;
 };
-WriteOutcome write_command(const Job& job,const Config& config,const PumpHeatingLimits& limits) {
+__attribute__((noinline)) WriteOutcome write_command(const Job& job,const Config& config,const PumpHeatingLimits& limits) {
     WriteOutcome outcome;
     const auto& request=job.request;
     if(!command_current(job))return outcome;
+    outcome.observed=true;
     outcome.reading=read(config,job.link);
     if(!outcome.reading) {outcome.result="read_failed";return outcome;}
     // Let a fresh preflight inform the same room source and next plan, including
@@ -419,11 +429,12 @@ WriteOutcome write_command(const Job& job,const Config& config,const PumpHeating
                                         mitsubishi_min_mode_dwell_ms);
     xSemaphoreGive(guard);
     const auto before=*outcome.reading;
-    if(request.automatic && !same_request(before,request.previous)) {
+    if((request.automatic || (!request.patch.power && !request.patch.mode)) &&
+       !same_request(before,request.previous)) {
         outcome.result="external_change";return outcome;
     }
     if(!permits_heating_patch(request.patch,before,limits)) {outcome.result="unsupported";return outcome;}
-    if(confirmed(request.patch,before)) {outcome.result="already_applied";return outcome;}
+    if(readback_matches(request.patch,before,before)) {outcome.result="already_applied";return outcome;}
     if(!mode_allowed) {outcome.result="mode_dwell";return outcome;}
     IPAddress target;
     const auto packet=command_request(config.cipher,config.key,config.device,request.patch);
@@ -446,9 +457,10 @@ WriteOutcome write_command(const Job& job,const Config& config,const PumpHeating
     outcome.reading.reset();
     for(unsigned i=0;i<3 && job.link.current();++i) {
         vTaskDelay(pdMS_TO_TICKS(350));
-        if(const auto after=read(config,job.link)) {
-            outcome.reading=after;
-            if(confirmed(request.patch,*after)) {
+        const auto after=read(config,job.link);
+        outcome.reading=after; // a later failed read withdraws earlier evidence
+        if(after) {
+            if(readback_matches(request.patch,before,*after) && command_current(job)) {
                 outcome.confirmed=true;
                 outcome.confirmed_utc=time(nullptr);
                 break;
@@ -524,6 +536,7 @@ void cottage_gree_register_routes(WebServer& web) {
             state.limits=requested?PumpHeatingLimits{static_cast<double>(minimum),
                 static_cast<double>(maximum),1,true,true}:PumpHeatingLimits{};
             state.dwell.reset(millis());
+            state.automatic_confirmed_utc=state.automatic_queued_utc=0;
         }
         xSemaphoreGive(guard);
         web.send(allowed?200:409,"application/json",allowed?"{\"saved\":true}":"{\"error\":\"pilot_required\"}");
@@ -550,6 +563,7 @@ void cottage_gree_register_routes(WebServer& web) {
         if(allowed) {
             Request request{};
             request.patch=patch;
+            request.previous=*state.sample.reading;
             request.revision=state.revision;
             queue_command(request,active_link());
         }
@@ -604,7 +618,13 @@ ControlBlock cottage_gree_submit_automatic(const PumpRoomState& earlier,ControlS
     if(!guard || !cottage_gree_automatic_enabled())return ControlBlock::Disabled;
     xSemaphoreTake(guard,portMAX_DELAY);
     ControlBlock result=ControlBlock::InputsUnverified;
-    if(can_queue() && earlier.configuration_generation==state.revision &&
+    const bool usable=can_queue();
+    if(!state.reconciliation.allow(authorization,usable,
+          usable?heating_room_mode(*state.sample.reading):PumpRoomMode::Unknown,
+          usable && state.sample.reading->setpoint_c?double(*state.sample.reading->setpoint_c):NAN)) {
+        xSemaphoreGive(guard);return ControlBlock::AwaitingReadback;
+    }
+    if(usable && earlier.configuration_generation==state.revision &&
        earlier.request_generation==state.request_generation &&
        earlier.endpoint_generation==state.sample.link.endpoint &&
        earlier.link_generation==state.sample.link.wifi) {
@@ -651,8 +671,10 @@ enevina::PumpRoomState cottage_gree_room_state() {
     const auto s=state.sample;
     const auto revision=state.revision;
     const auto cipher=state.saved.cipher;
-    out.heating=state.limits;
+    if(state.pilot_revision==state.revision && state.pilot_endpoint==site_settings_endpoint_generation())
+        out.heating=state.limits;
     out.request_generation=state.request_generation;
+    out.command_unconfirmed=state.reconciliation.awaiting(cottage_control_authorization_generation());
     const auto now=millis();
     out.mode_minutes=static_cast<uint32_t>(now-state.mode_since_ms)/60000;
     out.request_minutes=static_cast<uint32_t>(now-state.request_since_ms)/60000;
@@ -730,6 +752,15 @@ void cottage_gree_tick() {
     }
     xSemaphoreTake(guard,portMAX_DELAY);
     state.busy=false;
+    if(job.work==Work::Write && job.request.automatic && command.sent &&
+       !command.confirmed && job.request.revision==state.revision) {
+        const auto& wanted=job.request.patch;
+        state.automatic_queued_utc=state.automatic_confirmed_utc=0;
+        ++state.request_generation;state.request_since_ms=millis();
+        state.reconciliation.unresolved(job.request.authorization,
+            wanted.power==false?PumpRoomMode::Off:PumpRoomMode::Heat,
+            wanted.setpoint_c.has_value(),wanted.setpoint_c.value_or(0));
+    }
     if(job.link.current()) {
         if(job.work==Work::Scan) {
             state.candidates=found;
@@ -745,7 +776,7 @@ void cottage_gree_tick() {
                 state.draft={};
             } else result="store_failed";
         } else if(job.work==Work::Write && job.request.revision==state.revision) {
-            if(command.reading || command.sent)publish_reading(command.reading,job.link);
+            if(command.observed)publish_reading(command.reading,job.link);
             if(command.confirmed) {
                 state.confirmed={job.request.patch,command.confirmed_utc};
                 if(job.request.automatic) {

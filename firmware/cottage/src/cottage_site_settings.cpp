@@ -745,9 +745,20 @@ void site_settings_register_routes(WebServer& web) {
             // Copy the form once; region keys are applied first (see
             // apply_site_settings_batch) so field order never matters.
             constexpr int kMaxFields=40;
-            String names[kMaxFields],vals[kMaxFields];
-            const char* keys[kMaxFields];
-            const char* values[kMaxFields];
+            struct FormFields {
+                String names[kMaxFields],vals[kMaxFields];
+                const char* keys[kMaxFields]{};
+                const char* values[kMaxFields]{};
+            };
+            auto fields=std::unique_ptr<FormFields>(new(std::nothrow) FormFields{});
+            if(!fields) {
+                web.send(503,"application/json","{\"saved\":false,\"error\":\"RESOURCE_BUSY\"}");
+                return;
+            }
+            auto& names=fields->names;
+            auto& vals=fields->vals;
+            auto& keys=fields->keys;
+            auto& values=fields->values;
             size_t n=0;
             if(web.args()>kMaxFields+2) {   // never silently drop fields
                 web.send(400,"application/json","{\"saved\":false,\"error\":\"TOO_MANY_FIELDS\"}");

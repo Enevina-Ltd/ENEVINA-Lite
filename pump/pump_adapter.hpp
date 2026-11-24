@@ -35,7 +35,7 @@ struct PumpHeatingLimits {
 
 enum class PumpRoomMode : uint8_t { Unknown, Off, Heat, Other };
 enum class PumpStateSource : uint8_t { None, Gateway, VerifiedBus, DirectLan };
-enum class PumpRoomProtocol : uint8_t { Unknown, Cn105EspHome, MideaV2Ac, MideaV3Ac, GreeEcb, GreeGcm, DaikinLegacy, MhiWfRac, DaikinDsiot, Cn105Direct, DaikinS21, HaierHon, HaierSmartAir2, PanasonicCnt, PanasonicWlan };
+enum class PumpRoomProtocol : uint8_t { Unknown, Cn105EspHome, MideaV2Ac, MideaV3Ac, GreeEcb, GreeGcm, DaikinLegacy, MhiWfRac, DaikinDsiot, Cn105Direct, DaikinS21, HaierHon, HaierSmartAir2, PanasonicCnt, PanasonicWlan, EchonetLite };
 
 struct PumpRoomState {
     PumpRoomProtocol protocol=PumpRoomProtocol::Unknown;
@@ -51,6 +51,7 @@ struct PumpRoomState {
     PumpHeatingLimits heating{};
     PumpStateSource source=PumpStateSource::None;
     MeasurementEvidence evidence{};
+    bool command_unconfirmed=false; // valid LAN/bus state is not a confirmed control transition
 };
 
 struct PumpDescriptor {
