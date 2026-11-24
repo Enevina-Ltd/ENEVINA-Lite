@@ -36,6 +36,7 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     rec.computed_utc=in.now_utc;
     rec.first_utc=(in.now_utc/900)*900;
     rec.mode_generation=in.mode_generation;
+    rec.defrost_reports=in.defrost_reports;
     rec.config_generation=in.config_generation;
     rec.settings_generation=in.settings_generation;
     rec.target_c=in.target_c;
@@ -43,6 +44,7 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     rec.profile=in.profile;
     rec.initial_heat=in.pump_heat;
     const auto no_plan=[&](MpcFallback why) {rec.has_plan=false;rec.planning_fallback=why;return out;};
+    if(in.pump_defrost_hold && in.pump_heat)return no_plan(MpcFallback::DefrostHold);
     if(!in.identifier) return no_plan(MpcFallback::ModelLearning);
     rec.variable_setpoints=in.identifier->variable_setpoints();
     if(rec.variable_setpoints)rec.initial_setpoint_c=in.pump_setpoint_c;

@@ -28,6 +28,8 @@ class MideaDiscoverySource(unittest.TestCase):
 #include <deque>
 #include <functional>
 #include <iostream>
+#include <memory>
+#include <new>
 #include <string>
 #include "tests/support/midea_transport/IPAddress.h"
 #include "pump/midea_discovery_info.hpp"

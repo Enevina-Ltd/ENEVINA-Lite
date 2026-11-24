@@ -97,6 +97,14 @@ int main() {
         assert(permits_heating_patch(setpoint,off,pilot));
         const auto changed=read(R"({"t":"dat","cols":["Pow","Mod","TemUn","SetTem"],"dat":[1,4,0,22]})");
         assert(changed && confirmed(setpoint,*changed));
+        auto matching=*reading;matching.setpoint_c=22;
+        assert(readback_matches(setpoint,*reading,matching));
+        matching.mode=Mode::Cool;assert(!readback_matches(setpoint,*reading,matching));
+        matching=*reading;matching.setpoint_c=22;matching.power=false;
+        assert(!readback_matches(setpoint,*reading,matching));
+        assert(readback_matches({false,{},{}},*reading,matching));
+        matching=*reading;matching.setpoint_c=22;matching.frost.reset();
+        assert(!readback_matches(setpoint,*reading,matching));
         assert(command_request(variant,*key,*unit,{false,Mode::Heat,30}).empty());
         assert(command_request(variant,*key,*unit,{std::nullopt,std::nullopt,31}).empty());
     }

@@ -15,8 +15,11 @@
 #include <cstdlib>
 #include <cerrno>
 #include <cmath>
+#include <memory>
+#include <new>
 #include <cJSON.h>
 #include "cottage_midea_service.hpp"
+#include "cottage/automatic_command_reconciliation.hpp"
 #include "cottage/mode_timing.hpp"
 #include <esp_timer.h>
 #include "cottage_midea.hpp"
@@ -88,6 +91,7 @@ enevina::midea::ControlPatch pending_patch{}; // guarded by mutex
 AutomaticWriteContext pending_automatic{};
 bool pending_is_automatic=false;
 MitsubishiModeHistory midea_mode_history{};
+enevina::cottage::AutomaticCommandReconciliation reconciliation{};
 enevina::cottage::ObservedHeatingRequest observed_request{};
 uint32_t automatic_confirmation_generation=0;
 int64_t automatic_confirmed_utc=0,automatic_queued_utc=0;
@@ -400,6 +404,7 @@ enevina::PumpRoomState room_state_locked(int64_t now) {
         observed.mode==4?PumpRoomMode::Heat:PumpRoomMode::Other;
     out.setpoint_c=observed.setpoint_c;
     out.request_generation=observed_request.generation();
+    out.command_unconfirmed=reconciliation.awaiting(cottage_control_authorization_generation());
     const uint64_t monotonic_ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
     out.mode_minutes=observed_request.mode_minutes(monotonic_ms);
     out.request_minutes=observed_request.request_minutes(monotonic_ms);
@@ -658,6 +663,10 @@ enevina::cottage::ControlBlock cottage_midea_submit_automatic(
     const auto current=room_state_locked(now);
     const auto task=poll_task.load();
     const auto offer=[&]() {
+        const bool usable=current.source==PumpStateSource::DirectLan && !control_busy &&
+            !control_pending.load() && pilot_current_locked(current.endpoint_generation);
+        if(!reconciliation.allow(authorization_generation,usable,current.mode,current.setpoint_c))
+            return ControlBlock::AwaitingReadback;
         if(!task || control_busy || control_pending.load() ||
            current.source!=PumpStateSource::DirectLan ||
            current.protocol!=expected.protocol ||
@@ -853,12 +862,17 @@ void cottage_midea_service_register_routes(WebServer& web) {
         udp.stop();
         // Bounded and escaped-by-construction response; no Wi-Fi credential,
         // V3 token/key, MAC address, SSID, or sensor data is returned.
-        char json[2048]{};
+        constexpr size_t json_capacity=2048;
+        auto json=std::unique_ptr<char[]>(new(std::nothrow) char[json_capacity]{});
+        if(!json) {
+            web.send(503,"application/json","{\"error\":\"RESOURCE_BUSY\"}");
+            return;
+        }
         size_t used=0;
         auto add=[&](const char* format,auto... args)->bool{
-            if(used>=sizeof(json))return false;
-            const int n=std::snprintf(json+used,sizeof(json)-used,format,args...);
-            if(n<0 || static_cast<size_t>(n)>=sizeof(json)-used)return false;
+            if(used>=json_capacity)return false;
+            const int n=std::snprintf(json.get()+used,json_capacity-used,format,args...);
+            if(n<0 || static_cast<size_t>(n)>=json_capacity-used)return false;
             used+=static_cast<size_t>(n);
             return true;
         };
@@ -879,7 +893,7 @@ void cottage_midea_service_register_routes(WebServer& web) {
         if(ok)ok=add("],\"count\":%u,\"truncated\":%s}",
                       static_cast<unsigned>(count),truncated?"true":"false");
         web.sendHeader("Cache-Control","no-store");
-        web.send(ok?200:500,"application/json",ok?json:"{\"error\":\"BUFFER\"}");
+        web.send(ok?200:500,"application/json",ok?json.get():"{\"error\":\"BUFFER\"}");
     });
     web.on("/api/midea/config",HTTP_POST,[&web](){
         // This is a development-only LAN enrollment endpoint. Reject open
@@ -1297,6 +1311,14 @@ void cottage_midea_service_worker(void*) {
             (action?expected_link:read_link)==cottage_wifi_link_generation() &&
             (action?expected_endpoint:read_endpoint)==site_settings_endpoint_generation();
         if(action) {
+            if(automatic && receipt.attempted && (!same_identity || result!=enevina::midea::ReadStatus::Ok) &&
+               before==revision.load()) {
+                const bool off=(patch.changed&enevina::midea::ControlPower) && !patch.power;
+                automatic_queued_utc=automatic_confirmed_utc=0;
+                reconciliation.unresolved(automatic_context.authorization_generation,
+                    off?enevina::PumpRoomMode::Off:enevina::PumpRoomMode::Heat,
+                    (patch.changed&enevina::midea::ControlTemperature)!=0,patch.setpoint_c);
+            }
             if(same_identity && receipt.sent)control_sent_utc.store(time(nullptr));
             if(same_identity && receipt.attempted && (patch.changed&enevina::midea::ControlPower))
                 midea_mode_history.command_dispatched(millis());

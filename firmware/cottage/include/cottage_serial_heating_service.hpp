@@ -1,4 +1,5 @@
 #pragma once
+#include "cottage/automatic_command_reconciliation.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_pump_uart.hpp"
 #include "cottage_secure_ota.hpp"
@@ -84,6 +85,7 @@ class SerialHeatingService {
         Link approved_link{};
         char approved_model[48]{};
         MitsubishiModeHistory dwell{};
+        AutomaticCommandReconciliation reconciliation{};
         Receipt requested{},sent{},confirmed{};
         int64_t automatic_queued_utc=0,automatic_confirmed_utc=0;
     };
@@ -198,7 +200,7 @@ class SerialHeatingService {
     struct WriteResult {
         const char* status="write_cancelled";
         Sample reading{};
-        bool observed=false,confirmed=false;
+        bool observed=false,confirmed=false,attempted=false;
     };
     static WriteResult perform_write(const Job& job,const PumpHeatingLimits& limits) {
         WriteResult result;
@@ -225,7 +227,10 @@ class SerialHeatingService {
         const auto frame=Protocol::command(before.climate,command.patch,limits);
         if(!frame || !permit) {result.status="unsupported_command";return result;}
         if(!Protocol::prepare_to_write(job.link) || !authorized(job))return result;
-        if(!cottage_pump_uart.send(frame->bytes.data(),frame->size)) {result.status="send_failed";return result;}
+        result.attempted=true; // UART short write can still have changed the pump
+        if(!cottage_pump_uart.send(frame->bytes.data(),frame->size)) {
+            result.reading={};result.status="send_failed";return result;
+        }
         Protocol::write_dispatched(before.climate);
         xSemaphoreTake(gate,portMAX_DELAY);
         if(job.link.current() && command.bus==cottage_pump_uart.generation()) {
@@ -240,7 +245,7 @@ class SerialHeatingService {
         for(unsigned attempt=0;attempt<3 && job.link.current();++attempt) {
             vTaskDelay(pdMS_TO_TICKS(350));
             const auto after=poll(job.baud,job.link);
-            if(!after.received)continue;
+            if(!after.received){result.reading={};continue;}
             result.reading=after;
             if(after.bus_generation==command.bus &&
                Protocol::readback_matches(before.climate,after.climate,command.patch) && authorized(job)) {
@@ -450,7 +455,12 @@ public:
         if(!gate || !Protocol::automatic_enabled())return ControlBlock::Disabled;
         xSemaphoreTake(gate,portMAX_DELAY);
         ControlBlock result=ControlBlock::InputsUnverified;
-        if(can_queue() && earlier.configuration_generation==revision.load() &&
+        const bool usable=can_queue();
+        if(!state.reconciliation.allow(authorization,usable,Protocol::heating_mode(state.active.climate),
+              state.active.climate.target_c.value_or(NAN))) {
+            xSemaphoreGive(gate);return ControlBlock::AwaitingReadback;
+        }
+        if(usable && earlier.configuration_generation==revision.load() &&
            earlier.request_generation==state.request_generation &&
            earlier.link_generation==state.active.bus_generation &&
            earlier.endpoint_generation==state.active.link.endpoint) {
@@ -500,6 +510,7 @@ public:
         const auto sample=state.active;
         out.configuration_generation=revision.load();
         out.request_generation=state.request_generation;
+        out.command_unconfirmed=state.reconciliation.awaiting(cottage_control_authorization_generation());
         out.request_minutes=(millis()-state.request_since)/60000;
         out.mode_minutes=(millis()-state.mode_since)/60000;
         out.automatic_queued_utc=state.automatic_queued_utc;
@@ -546,6 +557,15 @@ public:
         if(job.draft && !is_selected)disconnect();
         xSemaphoreTake(gate,portMAX_DELAY);
         state.busy=false;
+        if(job.command && job.command->automatic && outcome.attempted &&
+           !outcome.confirmed && job.command->revision==revision.load()) {
+            const auto& wanted=job.command->patch;
+            state.automatic_queued_utc=state.automatic_confirmed_utc=0;
+            ++state.request_generation;state.request_since=millis();
+            state.reconciliation.unresolved(job.command->authorization,
+                wanted.power==false?PumpRoomMode::Off:PumpRoomMode::Heat,
+                wanted.target_c.has_value(),wanted.target_c.value_or(0));
+        }
         if(job.link.current()) {
             auto& result=job.draft?state.staged_status:state.status;
             result=sample.received?"ok":"connection_failed";

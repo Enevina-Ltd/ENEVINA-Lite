@@ -1,10 +1,70 @@
 #include "cottage/cn105_gateway_request.hpp"
+#include "cottage/cn105_defrost.hpp"
 #include <cstdio>
 #include <cstdlib>
 using namespace enevina;
 using namespace enevina::cottage;
 #define CHECK(x) do{if(!(x)){std::fprintf(stderr,"%d: %s\n",__LINE__,#x);std::abort();}}while(false)
+static void test_defrost_guard() {
+    using Signal=CN105DefrostSignal;
+    using Source=CN105DefrostSource;
+    using State=CN105DefrostState;
+    CHECK(cn105_submode_report("DEFROST","DEFROST")==Signal::Defrost);
+    CHECK(cn105_submode_report("DEFROST","NORMAL")==Signal::Defrost);
+    CHECK(cn105_submode_report("NORMAL","")==Signal::Unknown);
+    CHECK(cn105_submode_report(nullptr,"NORMAL")==Signal::Other);
+    CHECK(cn105_submode_report("","")==Signal::Unknown);
+    CHECK(cn105_submode_report("IDLE","IDLE")==Signal::Unknown);
+    CHECK(cn105_action_signal("defrosting")==Signal::Defrost);
+    CHECK(cn105_action_signal("HEATING")==Signal::Other);
+    CHECK(cn105_action_signal("0")==Signal::Unknown);
+    CN105DefrostHistory h;
+    constexpr uint64_t t=10000;
+    CHECK(h.view(t,1).state==State::Unknown);
+    h.note(Source::ClimateAction,Signal::Other,t,1);
+    CHECK(h.view(t,1).state==State::Unknown); // ordinary action isn't support
+    h.note(Source::SubMode,Signal::Other,t,1);
+    CHECK(h.view(t,1).state==State::ReportedOther);
+    h.note(Source::SubMode,Signal::Unknown,t+1,1);
+    CHECK(h.view(t+1,1).state==State::Unknown);
+    h.note(Source::SubMode,Signal::Defrost,t+100,1);
+    const auto active=h.view(t+100,1);
+    CHECK(active.state==State::ReportedDefrost && active.ever_reported_defrost);
+    CHECK(cn105_defrost_defer_write(active,true));
+    CHECK(!cn105_defrost_defer_write(active,false));
+    h.note(Source::ClimateAction,Signal::Other,t+101,1);
+    h.note(Source::SubMode,Signal::Other,t+99,1); // old in-flight GET
+    h.note(Source::SubMode,Signal::Unknown,t+102,1);
+    CHECK(h.view(t+102,1).defer_write);
+    CHECK(h.view(t+100+180001,1).state==State::SignalLost);
+    CHECK(h.view(t+100+720001,1).state==State::Overdue);
+    CHECK(!h.view(t+100+720001,1).defer_write);
+    h.note(Source::SubMode,Signal::Defrost,t+725000,1);
+    CHECK(h.view(t+725000,1).state==State::Overdue); // cached repeat cannot prolong
+    CHECK(h.view(t+725000,1).generation==1);
+    h.note(Source::SubMode,Signal::Other,t+726000,1);
+    CHECK(h.view(t+726000,1).submode_ends==0); // overdue not validated completion
+    h.note(Source::SubMode,Signal::Defrost,t+730000,1);
+    CHECK(h.view(t+730000,1).reports==3);
+    CHECK(h.view(t+730000,1).generation==2);
+    CHECK(!h.view(t+730000,2).defer_write); // unrelated pump
+    h.note(Source::ClimateAction,Signal::Defrost,t+731000,1);
+    h.note(Source::SubMode,Signal::Other,t+732000,1);
+    CHECK(h.view(t+732000,1).state==State::ReportedDefrost);
+    h.note(Source::ClimateAction,Signal::Other,t+733000,1);
+    CHECK(h.view(t+733000,1).state==State::Recovery);
+    h.note(Source::ClimateAction,Signal::Other,t+734000,1);
+    CHECK(!h.view(t+793000,1).defer_write); // repeat doesn't extend recovery
+    const auto completed=h.view(t+793000,1);
+    CHECK(completed.reports==4);
+    CHECK(completed.submode_starts==2 && completed.submode_ends==1);
+    CHECK(completed.action_starts==1 && completed.action_ends==1);
+    CHECK(completed.submode_last_duration_s==2 && completed.action_last_duration_s==2);
+    h.note(Source::SubMode,Signal::Unknown,t+794000,2);
+    CHECK(!h.view(t+794000,2).ever_reported_defrost);
+}
 int main(){
+    test_defrost_guard();
     CN105GatewayRequestHistory h;
     constexpr int64_t t=1800000000;
     constexpr uint64_t ms=100000;

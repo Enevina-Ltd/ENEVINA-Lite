@@ -1,5 +1,6 @@
 #ifndef COTTAGE_BENCH_MODE
 #include "cottage_echonet_service.hpp"
+#include "cottage/automatic_command_reconciliation.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_local_http.hpp"
 #include "cottage_network_budget.hpp"
@@ -92,6 +93,7 @@ struct State {
     uint32_t stage_id=0,next_id=0,revision=0,request_generation=0,request_since_ms=0,mode_since_ms=0;
     int64_t automatic_queued_utc=0,automatic_confirmed_utc=0;
     MitsubishiModeHistory dwell{};
+    AutomaticCommandReconciliation reconciliation{};
     Work pending{};
     Receipt requested{},sent{},confirmed{};
     const char* status="not_tested";
@@ -351,7 +353,7 @@ bool command_current(const Work& job) {
 struct WriteResult {
     Snapshot sample{};
     const char* status="write_cancelled";
-    bool observed=false,confirmed=false;
+    bool observed=false,confirmed=false,attempted=false;
 };
 __attribute__((noinline)) WriteResult write_command(Session& session,const Work& job,const Config& config) {
     WriteResult result;
@@ -392,6 +394,7 @@ __attribute__((noinline)) WriteResult write_command(Session& session,const Work&
         return result;
     }
     const bool dispatched=session.send(config.peer.ipv4);
+    result.attempted=dispatched;
     if(!dispatched){result.status="send_failed";return result;}
     const auto ack=session.reply(config.peer.ipv4,700);
     result.status=ack?"unconfirmed":"send_failed";
@@ -642,6 +645,10 @@ ControlBlock cottage_echonet_submit_automatic(const PumpRoomState& earlier,Contr
     xSemaphoreTake(gate,portMAX_DELAY);
     ControlBlock result=ControlBlock::InputsUnverified;
     const auto mode=el::room_mode(state.active.reading);
+    if(!state.reconciliation.allow(authorization,available(),mode,
+          state.active.reading.setpoint_c?double(*state.active.reading.setpoint_c):NAN)) {
+        xSemaphoreGive(gate);return ControlBlock::AwaitingReadback;
+    }
     if(available() && state.approval.modes.heat.valid() &&
        earlier.configuration_generation==revision.load() && earlier.endpoint_generation==state.active.link.endpoint &&
        earlier.link_generation==state.active.link.wifi && earlier.request_generation==state.request_generation &&
@@ -679,6 +686,7 @@ PumpRoomState cottage_echonet_room_state() {
     out.configuration_generation=revision.load();
     if(approved())out.heating=state.approval.modes.heating();
     out.request_generation=state.request_generation;
+    out.command_unconfirmed=state.reconciliation.awaiting(cottage_control_authorization_generation());
     out.request_minutes=(millis()-state.request_since_ms)/60000;
     out.mode_minutes=(millis()-state.mode_since_ms)/60000;
     out.automatic_queued_utc=state.automatic_queued_utc;out.automatic_confirmed_utc=state.automatic_confirmed_utc;
@@ -730,6 +738,15 @@ void cottage_echonet_tick() {
         } else {result.status="network_busy";command.status="network_busy";}
     }
     xSemaphoreTake(gate,portMAX_DELAY);state.busy=false;
+    if(job.task==Task::Write && job.command.automatic && command.attempted &&
+       !command.confirmed && job.command.revision==revision.load()) {
+        const auto& wanted=job.command.desired;
+        state.automatic_queued_utc=state.automatic_confirmed_utc=0;
+        ++state.request_generation;state.request_since_ms=millis();
+        state.reconciliation.unresolved(job.command.authorization,
+            wanted.power==false?PumpRoomMode::Off:PumpRoomMode::Heat,
+            wanted.setpoint_c.has_value(),wanted.setpoint_c.value_or(0));
+    }
     if(job.link.current() && (job.draft || cottage_echonet_selected())) {
         if(job.task==Task::Scan) {
             if(scanned){state.candidates=candidates;state.scan_link=job.link;state.scan_ms=millis();state.scan_received=true;}

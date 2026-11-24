@@ -172,6 +172,29 @@ ArbiterInput base_input() {
     return in;
 }
 
+void test_defrost_overrides_price_and_mpc_and_revokes_old_plan() {
+    for(bool calibrated:{false,true}) {
+        auto in=base_input();in.calibrated=calibrated;in.pump_heat=true;
+        in.pump_defrost_hold=true;
+        in.plan=good_plan(false);
+        const auto held=arbitrate(in);
+        CHECK(held.fallback==MpcFallback::DefrostHold);
+        CHECK(held.proposal.action==BootstrapAction::Hold && held.source==ProposalSource::None);
+        CHECK(!held.proposal.executable);
+        CHECK(plan_validity(in)==MpcFallback::DefrostHold);
+    }
+    auto in=base_input();
+    in.plan.defrost_reports=1;in.defrost_reports=2;
+    CHECK(plan_validity(in)==MpcFallback::PlanInputsChanged);
+    in.plan.defrost_reports=2;
+    CHECK(plan_validity(in)==MpcFallback::None);
+    // An unobserved defrost never grants permission to bypass the 30-min dwell.
+    auto ctrl=ControlSnapshot{};ctrl.armed=true;ctrl.heating_mode=true;
+    ctrl.temperature_fresh=ctrl.market_fresh=ctrl.cn105_link_fresh=ctrl.bridge_get_ok=true;
+    ctrl.proposal=price_decision(BootstrapAction::Off,true);
+    ctrl.current_heat=true;ctrl.current_setpoint_c=16;ctrl.ms_since_mode_change=600000;
+    CHECK(choose_mitsubishi_control(ctrl).gate==ControlBlock::ModeDwell);
+}
 void test_arbiter_order_and_fallbacks() {
     {   auto in=base_input();
         const auto o=arbitrate(in);
@@ -379,6 +402,11 @@ void test_planner() {
     {   auto hz=fresh();auto pi=planner_input(id,hz,now0);
         hz.bridge.periods[31].outdoor_c=-40;
         CHECK(plan_mpc(pi,nullptr).record.planning_fallback==MpcFallback::OutdoorOutsideLearned); }
+    {   auto hz=fresh();auto pi=planner_input(id,hz,now0);
+        pi.pump_heat=true;pi.pump_defrost_hold=true;pi.defrost_reports=7;
+        const auto o=plan_mpc(pi,nullptr);
+        CHECK(!o.record.has_plan && o.record.planning_fallback==MpcFallback::DefrostHold);
+        CHECK(o.record.defrost_reports==7); }
     {   auto hz=fresh();auto pi=planner_input(id,hz,now0);pi.controls.runtime_budget_ms=0;
         CHECK(plan_mpc(pi,nullptr).record.planning_fallback==MpcFallback::SolverTimeout); }
     {   auto hz=fresh();auto pi=planner_input(id,hz,now0);pi.memory_budget_bytes=1024;
@@ -663,6 +691,7 @@ int main() {
     test_horizon_in_place_reuse();
     test_horizon_stale_and_clock();
     test_horizon_negative_and_dst();
+    test_defrost_overrides_price_and_mpc_and_revokes_old_plan();
     test_arbiter_order_and_fallbacks();
     test_arbiter_feeds_existing_policy();
     test_planner();

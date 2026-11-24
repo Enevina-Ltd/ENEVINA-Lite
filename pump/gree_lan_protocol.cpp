@@ -364,4 +364,12 @@ bool confirmed(const Patch& patch,const Reading& reading) {
         (!patch.mode || reading.mode==*patch.mode) &&
         (!patch.setpoint_c || reading.setpoint_c==patch.setpoint_c);
 }
+bool readback_matches(const Patch& patch,const Reading& before,const Reading& after) {
+    if(!confirmed(patch,after))return false;
+    // A target-only change is not confirmation if a remote control changed
+    // mode or power during the write. OFF is allowed to reset stored mode.
+    if(!patch.power && !patch.mode)
+        return before.power==after.power && before.mode==after.mode && before.frost==after.frost;
+    return true;
+}
 }

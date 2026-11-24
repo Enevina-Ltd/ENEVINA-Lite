@@ -103,6 +103,15 @@ const active={...learning,state:'ACTIVE',fallback:'NONE',source:'MPC',armed:true
     r=await run(horizon,language);
     assert.ok(r.card.textContent.includes(language==='fi'?'opitun ulkolämpötila-alueen raja':'learned outdoor-temperature range'));
   }
+  for(const language of ['fi','en']){
+    const defrost={...learning,state:'FALLBACK',fallback:'DEFROST_HOLD',source:'NONE',
+      calibration:{...learning.calibration,last_observation:'DEFROST_OBSERVED',defrost_skipped_this_boot:3}};
+    r=await run(defrost,language);
+    assert.ok(r.card.textContent.includes(language==='fi'?'ohjaus odottaa ilmoitetun sulatuksen päättymistä':'waiting for reported defrost to finish'));
+    assert.ok(r.card.textContent.includes(language==='fi'?'Sulatuksen/jälkivaiheen vuoksi ohitetut jaksot':'Defrost/recovery slots excluded since boot'));
+    assert.ok(r.card.textContent.includes(language==='fi'?'ei normaalia oppimisnäytettä':'excluded from ordinary learning'));
+    assert.ok(!r.card.textContent.includes('kWh ·'));
+  }
   // Learning, English.
   r=await run(learning,'en');
   text=r.card.textContent;

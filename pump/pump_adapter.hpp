@@ -51,6 +51,7 @@ struct PumpRoomState {
     PumpHeatingLimits heating{};
     PumpStateSource source=PumpStateSource::None;
     MeasurementEvidence evidence{};
+    bool command_unconfirmed=false; // valid LAN/bus state is not a confirmed control transition
 };
 
 struct PumpDescriptor {
