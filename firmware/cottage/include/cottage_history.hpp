@@ -16,7 +16,9 @@ void history_initialize();
 void history_observe(const enevina::cottage::HistoryInputs& inputs);
 void history_http(CottageWebServer& web);
 // Newest event of a kind (persisted across reboots): utc and its 32-bit arg.
+// Nonblocking optional lookup: false also means the history store is busy.
 bool history_last_event(uint8_t kind,uint32_t& utc,uint32_t& arg);
+uint32_t history_read_busy_count();
 // Separate fixed/variable model files on the already mounted LittleFS.
 // A failed mount/lock/read is not evidence that a checkpoint is absent.
 enevina::cottage::CheckpointRead history_model_read(bool variable,uint8_t* data,size_t cap,size_t& used);

@@ -133,3 +133,23 @@ for(const t of t30)assert(hour(t)<=hour(t-10800)&&hour(t)<3);
 const t7=A.hsAxisTicks(T0,T0+7*86400,3600,hour);assert(t7.length>=6&&t7.length<=7);for(const t of t7)assert.equal(hour(t),0);
 assert.deepEqual([...A.HS_RANGES.map(r=>r.id)],['24h','7d','30d']);
 console.log('test_history_view OK ('+literals.length+' literals checked)');
+
+// A busy backend is not evidence of empty history, and a late response for
+// a previous range must never overwrite the user's current selection.
+(async()=>{
+  const source=header.split('async function reloadHistoryView(){')[1].split('function showHistoryView(){')[0];
+  const pending=[],state={histRange:'24h'};
+  let renders=0;
+  const env={state,fetchJSON:path=>new Promise((resolve,reject)=>pending.push({path,resolve,reject})),
+    showHistoryView:()=>{++renders;}};
+  vm.createContext(env);vm.runInContext('async function reloadHistoryView(){'+source,env);
+  const first=env.reloadHistoryView();state.histRange='7d';const second=env.reloadHistoryView();
+  pending[1].resolve({range:'7d'});await second;
+  pending[0].resolve({range:'24h'});await first;
+  assert.equal(state.hist.range,'7d');assert.equal(renders,1);
+  const third=env.reloadHistoryView();pending[2].reject(Error('HTTP 503'));await third;
+  assert.equal(state.hist,null);assert.equal(state.histReadFailed,true);
+  const fourth=env.reloadHistoryView();pending[3].resolve({range:'7d'});await fourth;
+  assert.equal(state.histReadFailed,false);assert.equal(state.hist.range,'7d');assert.equal(renders,3);
+  console.log('PASS history busy state, recovery and out-of-order range responses');
+})().catch(error=>{console.error(error);process.exitCode=1;});

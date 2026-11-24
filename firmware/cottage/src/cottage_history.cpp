@@ -8,6 +8,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <cstring>
+#include <atomic>
+#include <memory>
+#include <new>
 #include "cottage_history.hpp"
 #include "cottage_site_settings.hpp"
 #include "cottage_secure_ota.hpp"
@@ -97,6 +100,7 @@ uint32_t last_attempt_ms=0;
 constexpr uint32_t kRetryIntervalMs=10UL*60*1000;
 uint64_t events_total_at_flush=0;
 size_t last_load_records=0;
+std::atomic<uint32_t> history_busy_reads{0};
 } // namespace
 
 void history_initialize() {
@@ -196,7 +200,11 @@ void history_observe(const HistoryInputs& inputs) {
 bool history_last_event(uint8_t kind,uint32_t& utc,uint32_t& arg) {
     if(!guard||!store) return false;
     bool found=false;
-    xSemaphoreTake(guard,portMAX_DELAY);
+    // Optional dashboard/OTA evidence must not wait behind LittleFS
+    // compaction or a model checkpoint. A busy lookup is unknown, not absent.
+    if(xSemaphoreTake(guard,0)!=pdTRUE) {
+        history_busy_reads.fetch_add(1);return false;
+    }
     for(size_t i=0;i<events.count();++i) {
         const HistoryEvent& e=events.newest(i);
         if(e.kind==kind) {utc=e.utc;arg=e.arg;found=true;break;}
@@ -204,6 +212,8 @@ bool history_last_event(uint8_t kind,uint32_t& utc,uint32_t& arg) {
     xSemaphoreGive(guard);
     return found;
 }
+
+uint32_t history_read_busy_count(){return history_busy_reads.load();}
 
 CheckpointRead history_model_read(bool variable,uint8_t* data,size_t cap,size_t& used) {
     used=0;
@@ -251,17 +261,35 @@ void history_http(CottageWebServer& web) {
         web.send(200,"application/json","{\"valid\":false,\"points\":[],\"events\":[]}");
         return;
     }
-    auto* pts=static_cast<HistoryPoint*>(heap_caps_malloc(sizeof(HistoryPoint)*kMaxHistoryPoints,
-        MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
-    auto* summary=new(std::nothrow) HistorySummary;
-    auto* event_copy=new(std::nothrow) EventLog;
-    if(!pts||!summary||!event_copy) {
-        heap_caps_free(pts);delete summary;delete event_copy;
+    // Points, event copy, summary and JSON chunk all belong to this
+    // response. Do not consume scarce internal heap or loop-task stack.
+    struct Scratch {
+        HistoryPoint points[kMaxHistoryPoints];
+        HistorySummary summary;
+        EventLog events;
+        char chunk[768];
+    };
+    auto* mem=heap_caps_malloc(sizeof(Scratch),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!mem) {
         web.send(503,"application/json","{\"valid\":false,\"points\":[],\"events\":[]}");
         return;
     }
+    struct ReleaseScratch {
+        void operator()(Scratch* p)const {p->~Scratch();heap_caps_free(p);}
+    };
+    std::unique_ptr<Scratch,ReleaseScratch> scratch(new(mem) Scratch{});
+    auto* pts=scratch->points;
+    auto* summary=&scratch->summary;
+    auto* event_copy=&scratch->events;
     size_t n=0;
-    xSemaphoreTake(guard,portMAX_DELAY);
+    // The same guard serializes LittleFS flush/compaction and model
+    // checkpoint I/O. Never block the Arduino loop on that work.
+    if(xSemaphoreTake(guard,0)!=pdTRUE) {
+        history_busy_reads.fetch_add(1);
+        web.sendHeader("Retry-After","1");
+        web.send(503,"application/json","{\"valid\":false,\"error\":\"HISTORY_BUSY\",\"points\":[],\"events\":[]}");
+        return;
+    }
     n=build_history_series(*store,now,spec.range_slots,spec.step_slots,pts,kMaxHistoryPoints,*summary);
     *event_copy=events;
     const bool saved=persistent&&persistence&&persistence_healthy;
@@ -270,7 +298,7 @@ void history_http(CottageWebServer& web) {
     const SiteSettings site=site_settings_snapshot();
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.send(200,"application/json; charset=utf-8","");
-    char chunk[768];
+    auto& chunk=scratch->chunk;
     size_t used=0;
     history_json(spec.name,spec.step_slots,pts,n,*summary,*event_copy,
         n?pts[0].t:0,market.currency,shelly_scope_name(site.shelly_scope),saved,[&](const char* part) {
@@ -282,7 +310,6 @@ void history_http(CottageWebServer& web) {
         });
     if(used) {chunk[used]=0;web.streamContent(chunk);}
     web.streamContent("");
-    heap_caps_free(pts);delete summary;delete event_copy;
 }
 } // namespace enevina_firmware
 #endif // COTTAGE_BENCH_MODE
