@@ -79,23 +79,29 @@ BridgeResult join_forecast_priced(int64_t now,int64_t price_fetch,int64_t weathe
     result.first_utc=start;
     return result;
 }
-HorizonResult join_forecast_horizon(int64_t now,int64_t price_fetch,int64_t weather_fetch,
+void join_forecast_horizon_into(HorizonResult& out,int64_t now,int64_t price_fetch,int64_t weather_fetch,
     const Spot15* prices,size_t n,const enevina::OutdoorPoint* weather,size_t m,
     SlotPricer pricer,void* context,size_t max_slots,size_t min_slots) {
-    HorizonResult out;
+    // Reset the metadata and periods directly; no 6 KiB aggregate temporary.
+    auto clear_bridge=[](BridgeResult& r) {
+        r.status=BridgeStatus::Invalid;r.count=0;r.first_utc=0;
+        for(auto& period:r.periods)period=Period{};
+    };
     BridgeResult& result=out.bridge;
-    if(now<1700000000) {result.status=BridgeStatus::BadClock;return out;}
+    clear_bridge(result);
+    out.price_slots=0;out.weather_slots=0;out.limit=HorizonLimit::None;
+    if(now<1700000000) {result.status=BridgeStatus::BadClock;return;}
     if(!prices||!weather||!pricer||!n||n>210||m<2||m>64||
        max_slots<1||max_slots>192||min_slots<1||min_slots>max_slots)
-        return out;
+        return;
     if(price_fetch>now || price_fetch<now-36*3600) {
-        result.status=BridgeStatus::StalePrices;return out;
+        result.status=BridgeStatus::StalePrices;return;
     }
     if(weather_fetch>now||weather_fetch<now-6*3600) {
-        result.status=BridgeStatus::StaleWeather;return out;
+        result.status=BridgeStatus::StaleWeather;return;
     }
     const int64_t start=(now/900)*900;
-    if(now-start>60) {result.status=BridgeStatus::UnalignedStart;return out;}
+    if(now-start>60) {result.status=BridgeStatus::UnalignedStart;return;}
     // Prices: contiguous prefix only.
     size_t priced=0;
     out.limit=HorizonLimit::MaxSlots;
@@ -137,20 +143,20 @@ HorizonResult join_forecast_horizon(int64_t now,int64_t price_fetch,int64_t weat
         out.limit=(last+1<m)?HorizonLimit::WeatherGap:HorizonLimit::WeatherEnd;
     count=std::min(count,max_slots);
     if(count<min_slots) {
-        result=BridgeResult{};
+        clear_bridge(result);
         result.status=covered<priced?
             (first<m?BridgeStatus::BadWeather:BridgeStatus::StaleWeather):
             (out.limit==HorizonLimit::BadPrice?BridgeStatus::BadPrice:BridgeStatus::Gap);
-        return out;
+        return;
     }
     std::array<double,192> outdoor{};
     if(!enevina::interpolate_fmi_temperature(weather+first,last-first+1,start,
         outdoor.data(),count)) {
-        result=BridgeResult{};result.status=BridgeStatus::BadWeather;return out;
+        clear_bridge(result);result.status=BridgeStatus::BadWeather;return;
     }
     for(size_t i=0;i<count;++i) {
         if(!std::isfinite(outdoor[i]) || outdoor[i]<-55 || outdoor[i]>45) {
-            result=BridgeResult{};result.status=BridgeStatus::BadWeather;return out;
+            clear_bridge(result);result.status=BridgeStatus::BadWeather;return;
         }
         result.periods[i].outdoor_c=outdoor[i];
     }
@@ -159,6 +165,14 @@ HorizonResult join_forecast_horizon(int64_t now,int64_t price_fetch,int64_t weat
     result.count=count;
     result.first_utc=start;
     if(count==max_slots) out.limit=HorizonLimit::MaxSlots;
+    return;
+}
+HorizonResult join_forecast_horizon(int64_t now,int64_t price_fetch,int64_t weather_fetch,
+    const Spot15* prices,size_t n,const enevina::OutdoorPoint* weather,size_t m,
+    SlotPricer pricer,void* context,size_t max_slots,size_t min_slots) {
+    HorizonResult out;
+    join_forecast_horizon_into(out,now,price_fetch,weather_fetch,prices,n,weather,m,
+        pricer,context,max_slots,min_slots);
     return out;
 }
 const char* bridge_status_name(BridgeStatus s) {

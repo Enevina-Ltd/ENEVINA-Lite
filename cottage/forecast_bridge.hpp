@@ -60,6 +60,12 @@ struct HorizonResult {
     size_t weather_slots=0;  // slots covered by contiguous hourly weather
     HorizonLimit limit=HorizonLimit::None;
 };
+// In-place variant: the caller can keep the large period array in PSRAM.
+// Reinitializes the complete output, including on failure and reuse.
+void join_forecast_horizon_into(HorizonResult& out,int64_t now_utc,int64_t price_fetch_utc,
+    int64_t weather_fetch_utc,const Spot15* spot,size_t spot_count,
+    const enevina::OutdoorPoint* weather,size_t weather_count,
+    SlotPricer pricer,void* context,size_t max_slots,size_t min_slots);
 HorizonResult join_forecast_horizon(int64_t now_utc,int64_t price_fetch_utc,
     int64_t weather_fetch_utc,const Spot15* spot,size_t spot_count,
     const enevina::OutdoorPoint* weather,size_t weather_count,

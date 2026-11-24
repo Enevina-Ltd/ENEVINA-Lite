@@ -85,6 +85,36 @@ void test_horizon_full_and_partial() {
         CHECK(h.bridge.status!=BridgeStatus::Ready); }
 }
 
+void test_horizon_in_place_reuse() {
+    auto d=make(now0,192,64);
+    HorizonResult reused{};
+    auto into=[&](int64_t now,int64_t pf,int64_t wf) {
+        join_forecast_horizon_into(reused,now,pf,wf,d.prices.data(),d.prices.size(),
+            d.weather.data(),d.weather.size(),closed_loop::sim_pricer,nullptr,192,32);
+        const auto reference=join(d,now,pf,wf);
+        CHECK(reused.bridge.status==reference.bridge.status);
+        CHECK(reused.bridge.count==reference.bridge.count);
+        CHECK(reused.bridge.first_utc==reference.bridge.first_utc);
+        CHECK(reused.price_slots==reference.price_slots && reused.weather_slots==reference.weather_slots);
+        CHECK(reused.limit==reference.limit);
+        for(size_t i=0;i<192;++i) {
+            const auto& a=reused.bridge.periods[i];const auto& b=reference.bridge.periods[i];
+            CHECK(a.outdoor_c==b.outdoor_c && a.total_price_eur_per_kwh==b.total_price_eur_per_kwh);
+            CHECK(a.internal_gain_kw==b.internal_gain_kw && a.defrost_capacity_factor==b.defrost_capacity_factor);
+        }
+    };
+    into(now0,now0,now0);
+    CHECK(reused.bridge.count==192);
+    into(now0,now0-37*3600,now0);
+    CHECK(reused.bridge.count==0 && reused.bridge.status==BridgeStatus::StalePrices);
+    CHECK(reused.bridge.periods[0].total_price_eur_per_kwh==0);
+    d.prices.resize(48);into(now0,now0,now0);
+    CHECK(reused.bridge.count==48 && reused.bridge.periods[48].outdoor_c==0);
+    d.prices.resize(8);into(now0,now0,now0);
+    CHECK(reused.bridge.count==0 && reused.bridge.status==BridgeStatus::Gap);
+    CHECK(reused.bridge.periods[0].total_price_eur_per_kwh==0);
+}
+
 void test_horizon_stale_and_clock() {
     const auto d=make(now0,192,64);
     CHECK(join(d,now0,now0-37*3600,now0).bridge.status==BridgeStatus::StalePrices);
@@ -599,6 +629,7 @@ int main() {
     test_dashboard_validity_equals_controller_decision();
     test_user_comfort_limits_are_hard();
     test_horizon_full_and_partial();
+    test_horizon_in_place_reuse();
     test_horizon_stale_and_clock();
     test_horizon_negative_and_dst();
     test_arbiter_order_and_fallbacks();

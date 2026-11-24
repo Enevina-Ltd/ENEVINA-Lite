@@ -11,6 +11,7 @@
 #include <esp_heap_caps.h>
 #include <esp_ota_ops.h>
 #include <esp_system.h>
+#include <esp_core_dump.h>
 #include <cJSON.h>
 #include <array>
 #include <algorithm>
@@ -109,6 +110,68 @@ static uint32_t free_heap=0,free_psram=0,stack_watermark=0;
 static uint32_t boot_validation_started_ms=0;
 // Captured once at boot for diagnosing uptime drops (no watchdog/reset).
 static int boot_reset_reason_code=-1;
+// Read the SDK's existing flash coredump exactly once on boot, including
+// a previous firmware's dump after OTA. No new reset/watchdog or flash write.
+// Only code addresses, task name and ELF identity are exposed; never expose
+// raw stack, memory, registers or credentials.
+struct BootCrashEvidence {
+    int integrity=ESP_ERR_NOT_SUPPORTED;
+    int summary=ESP_ERR_NOT_SUPPORTED;
+    uint32_t pc=0,depth=0,cause=0;
+    bool corrupted=false;
+    char task[17]{},elf_sha[APP_ELF_SHA256_SZ+1]{};
+    uint32_t backtrace[16]{};
+};
+static BootCrashEvidence boot_crash{};
+static void capture_boot_crash() {
+#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH && CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF
+    boot_crash.integrity=esp_core_dump_image_check();
+    if(boot_crash.integrity!=ESP_OK)return;
+    esp_core_dump_summary_t dump{};
+    boot_crash.summary=esp_core_dump_get_summary(&dump);
+    if(boot_crash.summary!=ESP_OK)return;
+    boot_crash.pc=dump.exc_pc;
+    boot_crash.cause=dump.ex_info.exc_cause;
+    boot_crash.corrupted=dump.exc_bt_info.corrupted;
+    boot_crash.depth=std::min<uint32_t>(dump.exc_bt_info.depth,16u);
+    for(uint32_t i=0;i<boot_crash.depth;++i)boot_crash.backtrace[i]=dump.exc_bt_info.bt[i];
+    for(size_t i=0;i<sizeof(dump.exc_task) && dump.exc_task[i];++i) {
+        const unsigned char c=dump.exc_task[i];
+        boot_crash.task[i]=(c>=32 && c<=126)?static_cast<char>(c):'?';
+    }
+    for(size_t i=0;i<sizeof(dump.app_elf_sha256) && dump.app_elf_sha256[i];++i) {
+        const unsigned char c=dump.app_elf_sha256[i];
+        if(!((c>='0' && c<='9') || (c>='a' && c<='f') || (c>='A' && c<='F'))) {
+            boot_crash.elf_sha[0]=0;break;
+        }
+        boot_crash.elf_sha[i]=static_cast<char>(c);
+    }
+#endif
+}
+static void crash_evidence_endpoint() {
+    cJSON* root=cJSON_CreateObject();
+    if(!root) {web.send(503,"application/json","{}");return;}
+    cJSON_AddNumberToObject(root,"current_boot_reset_reason",boot_reset_reason_code);
+    cJSON_AddNumberToObject(root,"integrity_result",boot_crash.integrity);
+    cJSON_AddNumberToObject(root,"summary_result",boot_crash.summary);
+    const bool valid=boot_crash.integrity==ESP_OK && boot_crash.summary==ESP_OK;
+    cJSON_AddBoolToObject(root,"valid",valid);
+    // The dump can predate the running app. Decode PC values only against
+    // the matching crashed ELF, not against the diagnostic firmware.
+    if(valid) {
+        cJSON_AddStringToObject(root,"task",boot_crash.task);
+        cJSON_AddStringToObject(root,"crashed_elf_sha",boot_crash.elf_sha);
+        cJSON_AddNumberToObject(root,"exception_pc",boot_crash.pc);
+        cJSON_AddNumberToObject(root,"exception_cause",boot_crash.cause);
+        cJSON_AddBoolToObject(root,"backtrace_corrupted",boot_crash.corrupted);
+        if(auto* bt=cJSON_AddArrayToObject(root,"backtrace_pc"))
+            for(uint32_t i=0;i<boot_crash.depth;++i)cJSON_AddItemToArray(bt,cJSON_CreateNumber(boot_crash.backtrace[i]));
+    }
+    char* body=cJSON_PrintUnformatted(root);
+    web.sendHeader("Cache-Control","no-store");
+    web.send(body?200:503,"application/json",body?body:"{}");
+    cJSON_free(body);cJSON_Delete(root);
+}
 static bool boot_ui_started=false;
 static bool ota_boot_confirmed=false;
 static std::atomic<uint32_t> failed_reads{0};
@@ -2153,12 +2216,15 @@ static void optimizer_worker(void*) {
             }
             // (3) Verified receding horizon: longest priced + forecast run.
             for(size_t i=0;i<pc;i++) aligned[i]={prices[i].start_utc,prices[i].spot_eur_per_kwh};
-            *hz=HorizonResult{};
             if(pc && wc)
-                *hz=join_forecast_horizon(now,ms.last_fetch_utc,ws.fetched_utc,aligned,pc,
+                join_forecast_horizon_into(*hz,now,ms.last_fetch_utc,ws.fetched_utc,aligned,pc,
                     weather,wc,bridge_slot_price,nullptr,max_horizon_slots,
                     mpc_min_horizon_slots);
-            else hz->bridge.status=pc?BridgeStatus::StaleWeather:BridgeStatus::StalePrices;
+            else {
+                // Reconstruct directly in PSRAM even for an empty forecast.
+                new(hz) HorizonResult{};
+                hz->bridge.status=pc?BridgeStatus::StaleWeather:BridgeStatus::StalePrices;
+            }
             // (4) Plan with the identified model; only slot 0 is ever used.
             bool heating_allowed=false;double target_c=0;
             mpc_mode_target(heating_allowed,target_c);
@@ -3280,6 +3346,7 @@ void setup() {
         Serial.println("C24_FATAL: memory guard allocation failed");
         while(true) delay(1000);
     }
+    capture_boot_crash(); // preserve the previous crash evidence before network readers start
     cJSON_Hooks hooks{};
     hooks.malloc_fn=json_alloc_psram;
     hooks.free_fn=json_free_psram;
@@ -3331,6 +3398,9 @@ void setup() {
         }
         web.sendHeader("Cache-Control","no-store");
         web.send(202,"application/json","{\"queued\":true}");
+    });
+    web.on("/api/diagnostics/crash",HTTP_GET,[](){
+        if(cottage_wifi_require_home_lan(web))crash_evidence_endpoint();
     });
     web.on("/api/plan",HTTP_GET,[](){
         if(cottage_wifi_require_home_lan(web))plan_endpoint();

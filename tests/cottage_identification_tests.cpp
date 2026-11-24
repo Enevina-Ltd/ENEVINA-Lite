@@ -628,7 +628,20 @@ void test_persistence() {
     corrupt[used/2]^=0x40;
     CHECK(!other.load(0x1234u,corrupt.data(),used));   // CRC
     CHECK(!other.load(0x1234u,blob.data(),used-1));    // size/format
+    // Invalid load cannot modify an already learned object.
+    const auto before=copy.report(sim.utc);
+    CHECK(!copy.load(0x1234u,corrupt.data(),used));
+    CHECK(copy.report(sim.utc).samples==before.samples);
+    CHECK(copy.report(sim.utc).revision==before.revision);
+    CHECK(copy.report(sim.utc).model.tau_h==before.model.tau_h);
     CHECK(!other.save(1,blob.data(),16,used));         // too small buffer
+    copy.reset();
+    CHECK(copy.report(sim.utc).state==CalibrationState::NoData);
+    CHECK(copy.report(sim.utc).samples==0);
+    TrendPoint t[1]{};CHECK(copy.trend(t,1)==0);
+    BuildingIdentifier residential(true);residential.reset();
+    CHECK(residential.variable_setpoints());
+    CHECK(residential.report(sim.utc).state==CalibrationState::NoData);
 }
 
 void test_trend_ring() {
