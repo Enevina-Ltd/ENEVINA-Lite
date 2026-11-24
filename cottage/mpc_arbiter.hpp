@@ -21,7 +21,8 @@ enum class MpcFallback : uint8_t {
     TargetOutsideModel, OutdoorOutsideLearned, ForecastUnavailable,
     HorizonTooShort, PumpStateUnknown, TemperatureStale, SolverFailed,
     SolverTimeout, PlanStale, PlanInputsChanged, BelowComfortFloor,
-    AboveComfortCeiling, ResourceLimit, SyntheticModelOnly, ComfortLimitsInvalid, DefrostHold
+    AboveComfortCeiling, ResourceLimit, SyntheticModelOnly, ComfortLimitsInvalid, DefrostHold,
+    LowTargetReached, LowTemperatureBand
 };
 
 // Everything the planner fixed when it computed the plan. A plan is only
@@ -38,6 +39,7 @@ struct MpcPlanRecord {
     bool initial_heat=false;  // pump state the plan started from
     bool first_heat=false;    // plan decision for first_utc
     bool variable_setpoints=false;
+    bool low_temperature_cycle=false;
     OptimizationProfile profile=OptimizationProfile::Balanced;
     double initial_setpoint_c=16;
     double first_setpoint_c=16;
@@ -138,6 +140,19 @@ inline MpcFallback plan_validity(const ArbiterInput& in) {
        p.defrost_reports!=in.defrost_reports)
         return MpcFallback::PlanInputsChanged;
     if(!in.pump_state_known) return MpcFallback::PumpStateUnknown;
+    if(p.low_temperature_cycle!=
+       (in.pump_gateway_request && low_temperature_cycle(in.bootstrap)))
+        return MpcFallback::PlanInputsChanged;
+    // The full-slot model cannot insist on a heating request beyond a
+    // below-device-minimum room ceiling. The same plan_validity predicate
+    // is used for dispatch and every published plan. Defrost wins above.
+    if((p.first_heat || in.pump_heat) && in.pump_gateway_request && low_temperature_stop(in.bootstrap))
+        return MpcFallback::LowTargetReached;
+    // Do not start a brief, inefficient 16 C pulse merely because the
+    // electricity price changed within the independent room deadband.
+    if(p.low_temperature_cycle && p.first_heat && !in.pump_heat &&
+       in.bootstrap.action!=BootstrapAction::HeatSetpoint)
+        return MpcFallback::LowTemperatureBand;
     // The pump-mode generation advances on every source gap, mode change and
     // re-verification. The ONLY change a plan survives is the single
     // transition its own first decision causes: exactly one increment, the
@@ -209,6 +224,7 @@ inline ArbiterOutput arbitrate(const ArbiterInput& in) {
     const MpcPlanRecord& p=in.plan;
     BootstrapDecision d{};
     d.requested_room_c=p.target_c;
+    d.low_temperature_cycle=p.low_temperature_cycle;
     d.price_data_valid=true;
     d.executable=false;
     if(p.first_heat) {
@@ -266,6 +282,8 @@ inline const char* mpc_fallback_name(MpcFallback f) {
     case MpcFallback::SyntheticModelOnly:return "SYNTHETIC_MODEL_ONLY";
     case MpcFallback::ComfortLimitsInvalid:return "COMFORT_LIMITS_INVALID";
     case MpcFallback::DefrostHold:return "DEFROST_HOLD";
+    case MpcFallback::LowTargetReached:return "LOW_TARGET_REACHED";
+    case MpcFallback::LowTemperatureBand:return "LOW_TEMPERATURE_BAND";
     }
     return "UNKNOWN";
 }

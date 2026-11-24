@@ -140,7 +140,10 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn('cn105_action_signal', MAIN)
         self.assertIn('read_started_ms', MAIN)
         self.assertIn('cn105_read_optional_submode(link);', POST)
-        self.assertIn('const bool dispatch=!defrost_hold && control_armed.load()', POST)
+        dispatch = POST.split('const bool dispatch=',1)[1].split('if(dispatch)',1)[0]
+        self.assertTrue(dispatch.strip().startswith('!defrost_hold &&'))
+        self.assertIn('control_armed.load() &&', dispatch)
+        self.assertIn('mode_change_allowed(step,control_ms_since_mode_change(),mitsubishi_min_mode_dwell_ms,refreshed,true) &&', dispatch)
         self.assertLess(POST.index('const bool defrost_hold=cn105_defrost_defer_write'),
                         POST.index('const int code=req.POST("");'))
         self.assertIn('if(!sent && post_stage!=6 && post_stage!=-6)return;', TICK)

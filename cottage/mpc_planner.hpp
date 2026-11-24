@@ -23,6 +23,7 @@ struct PlannerInput {
     bool meter_pump_only=false;      // CURRENT owner confirmation
     double currency_scale=1.0;
     bool heating_allowed=false;      // user mode permits heat
+    bool low_temperature_cycle=false; // scoped below-minimum CN105 maintenance
     bool target_valid=false;
     double target_c=0;
     ComfortLimits limits{};          // owner's hard comfort limits (0 = unset)

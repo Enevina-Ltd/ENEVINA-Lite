@@ -15,8 +15,9 @@ enum class ControlBlock : uint8_t {
     UnsupportedCommand, AlreadyApplied, Ready, ModeDwell, DefrostHold, AwaitingReadback
 };
 // Owner decision 18.11.2026: minimum 30 min between HEAT<->OFF mode changes
-// (compressor run/off time; AGENTS.md section 11). Setpoint changes are not
-// mode changes and are never delayed.
+// Default for all adapters. A CN105 below-minimum room-maintenance
+// request may stop at its measured ceiling and uses its own 15-min dwell.
+// Setpoint changes are not mode changes and are never delayed.
 constexpr uint32_t mitsubishi_min_mode_dwell_ms=30u*60u*1000u;
 // HEAT<->OFF history feeding ControlSnapshot::ms_since_mode_change.
 // Pure and host-tested; the firmware serializes access. millis()-style
@@ -98,9 +99,29 @@ struct MitsubishiCommandReadback {
     }
 };
 enum class HeatTransition : uint8_t { SeparateSetpoint, Combined };
+// A temperature stop is NOT a new permission to start or a bypass of the
+// pump's own compressor/defrost protections. Only the scoped CN105 path
+// passes allow_low_temperature_cycle=true; other adapters keep both dwells.
+inline bool mode_change_allowed(ControlStep step,uint32_t since_ms,
+                                uint32_t dwell_ms,const BootstrapDecision& proposal,
+                                bool allow_low_temperature_cycle=false) {
+    if(step!=ControlStep::SetHeat && step!=ControlStep::SetOff)return true;
+    if(allow_low_temperature_cycle && low_temperature_cycle(proposal)) {
+        if(step==ControlStep::SetOff && low_temperature_stop(proposal))return true;
+        // A shorter restart is allowed ONLY at the native minimum HEAT
+        // setpoint, after a full observed OFF dwell; no price-only rapid
+        // cycling or higher-temperature request can inherit this profile.
+        if(step==ControlStep::SetOff ||
+           (proposal.action==BootstrapAction::HeatSetpoint &&
+            std::fabs(proposal.heat_setpoint_c-cn105_minimum_heat_setpoint_c)<=0.001))
+            return since_ms>=cn105_low_temperature_dwell_minutes*60000u;
+    }
+    return since_ms>=dwell_ms;
+}
 inline ControlProposal choose_pump_control(const ControlSnapshot& s,
                                           const PumpHeatingLimits& limits,
-                                          HeatTransition start) {
+                                          HeatTransition start,
+                                          bool allow_low_temperature_cycle=false) {
     ControlProposal out{};
     if(!s.armed)return out;
     if(!s.heating_mode) {out.gate=ControlBlock::NotInHeatingMode;return out;}
@@ -134,8 +155,8 @@ inline ControlProposal choose_pump_control(const ControlSnapshot& s,
         if(!limits.off) {out.gate=ControlBlock::UnsupportedCommand;return out;}
         out.step=ControlStep::SetOff;
     }
-    if((out.step==ControlStep::SetHeat || out.step==ControlStep::SetOff) &&
-       s.ms_since_mode_change<s.min_mode_dwell_ms) {
+    if(!mode_change_allowed(out.step,s.ms_since_mode_change,s.min_mode_dwell_ms,
+                            s.proposal,allow_low_temperature_cycle)) {
         out.step=ControlStep::None;
         out.gate=ControlBlock::ModeDwell;
         return out;
@@ -143,10 +164,10 @@ inline ControlProposal choose_pump_control(const ControlSnapshot& s,
     if(out.step!=ControlStep::None)out.gate=ControlBlock::Ready;
     return out;
 }
-inline constexpr PumpHeatingLimits mitsubishi_heating_limits{16.0,26.0,0.5,true,true};
+inline constexpr PumpHeatingLimits mitsubishi_heating_limits{cn105_minimum_heat_setpoint_c,26.0,0.5,true,true};
 
 inline ControlProposal choose_mitsubishi_control(const ControlSnapshot& s) {
-    return choose_pump_control(s,mitsubishi_heating_limits,HeatTransition::SeparateSetpoint);
+    return choose_pump_control(s,mitsubishi_heating_limits,HeatTransition::SeparateSetpoint,true);
 }
 
 inline const char* control_gate_name(ControlBlock x) {

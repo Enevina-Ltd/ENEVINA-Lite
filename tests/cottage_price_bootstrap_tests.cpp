@@ -8,6 +8,57 @@ static bool near(double a,double b){return std::fabs(a-b)<1e-8;}
 int main() {
     const double cheap[]={0.10,0.20,0.30,0.40,0.50,0.60,0.70,0.80};
     const double expensive[]={0.80,0.10,0.20,0.30,0.40,0.50,0.60,0.70};
+    {
+        // Below-minimum CN105 room thermostat: do not start on a tiny
+        // price-induced temperature fluctuation, and end at the room target.
+        BootstrapInput low{};
+        low.indoor_fresh=true;low.desired_room_c=12;
+        low.low_temperature_cycle=true;
+        const double neutral[]={.2,.2,.2,.2,.2,.2,.2,.2};
+        for(const double* prices:{static_cast<const double*>(nullptr),neutral,cheap,expensive}) {
+            low.next_total_prices=prices;low.price_count=prices?8:0;
+            low.prices_contiguous_and_fresh=prices!=nullptr;
+            low.indoor_c=11.51;
+            assert(bootstrap_price_decision(low).action==BootstrapAction::Hold);
+            low.indoor_c=11.50;
+            const auto heat=bootstrap_price_decision(low);
+            assert(heat.action==BootstrapAction::HeatSetpoint && near(heat.heat_setpoint_c,16));
+            low.indoor_c=11.99;
+            assert(bootstrap_price_decision(low).action==BootstrapAction::Hold);
+            low.indoor_c=12.0;
+            assert(low_temperature_stop(bootstrap_price_decision(low)));
+            low.indoor_c=16.0;
+            assert(low_temperature_stop(bootstrap_price_decision(low)));
+        }
+        // Price flexibility only inside configured room limits. Cheap
+        // preheat does not silently create a 16 C or 30-minute room target.
+        low.comfort_lower_c=11;low.comfort_upper_c=13;
+        low.preheat_c=0.4;low.coast_c=0.4;
+        low.next_total_prices=cheap;low.indoor_c=11.49;
+        assert(bootstrap_price_decision(low).action==BootstrapAction::HeatSetpoint);
+        low.indoor_c=11.89;assert(bootstrap_price_decision(low).action==BootstrapAction::Hold);
+        low.indoor_c=12.39;assert(bootstrap_price_decision(low).action==BootstrapAction::Hold);
+        low.indoor_c=12.41;assert(low_temperature_stop(bootstrap_price_decision(low)));
+        low.next_total_prices=expensive;low.indoor_c=11.11;
+        assert(bootstrap_price_decision(low).action==BootstrapAction::Hold);
+        low.indoor_c=11.09;assert(bootstrap_price_decision(low).action==BootstrapAction::HeatSetpoint);
+        low.indoor_c=11.61;
+        const auto price_stop=bootstrap_price_decision(low);
+        assert(price_stop.action==BootstrapAction::Off);
+        assert(!low_temperature_stop(price_stop));
+        low.indoor_c=12;assert(low_temperature_stop(bootstrap_price_decision(low)));
+        // Wrong mode/target or stale/malformed measurements cannot issue an
+        // exceptional stop. Normal thermostat behavior remains unchanged.
+        low.indoor_fresh=false;
+        assert(!low_temperature_stop(bootstrap_price_decision(low)));
+        low.indoor_fresh=true;low.indoor_c=std::numeric_limits<double>::quiet_NaN();
+        assert(!low_temperature_stop(bootstrap_price_decision(low)));
+        low.indoor_c=16.5;low.desired_room_c=16;
+        assert(!low_temperature_stop(bootstrap_price_decision(low)));
+        low.desired_room_c=12;low.indoor_c=12.5;low.low_temperature_cycle=false;
+        assert(!low_temperature_stop(bootstrap_price_decision(low)));
+    }
+
     BootstrapInput in{};
     assert(bootstrap_price_decision(in).reason==BootstrapReason::MissingTemperature);
     in.indoor_fresh=true;in.indoor_c=15.0;

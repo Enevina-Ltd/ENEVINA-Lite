@@ -9,6 +9,13 @@ on:
       - '.github/workflows/dashboard-signed-ota-tests.yml'
       - 'firmware/cottage/**'
       - 'cottage/mitsubishi_control_policy.hpp'
+      - 'cottage/price_bootstrap.hpp'
+      - 'cottage/mpc_arbiter.hpp'
+      - 'cottage/mpc_planner.*'
+      - 'cottage/plan_timeline.hpp'
+      - 'tests/cottage_price_bootstrap_tests.cpp'
+      - 'tests/cottage_mpc_control_tests.cpp'
+      - 'tests/test_plan_timeline.js'
       - 'cottage/automatic_command_reconciliation.hpp'
       - 'cottage/learning_observation.hpp'
       - 'pump/pump_adapter.hpp'
@@ -100,6 +107,7 @@ jobs:
           node tests/test_history_view.js
           node tests/test_dashboard_clarity.js
           node tests/test_mpc_dashboard.js
+          node tests/test_plan_timeline.js
           node tests/test_c25_dashboard_ui.js
           node tests/test_wifi_setup_ui.js
           node tests/test_setup_wizard.js

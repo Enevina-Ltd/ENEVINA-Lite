@@ -43,6 +43,7 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     rec.limits=in.limits;
     rec.profile=in.profile;
     rec.initial_heat=in.pump_heat;
+    rec.low_temperature_cycle=in.low_temperature_cycle && low_temperature_room_target(in.target_c);
     const auto no_plan=[&](MpcFallback why) {rec.has_plan=false;rec.planning_fallback=why;return out;};
     if(in.pump_defrost_hold && in.pump_heat)return no_plan(MpcFallback::DefrostHold);
     if(!in.identifier) return no_plan(MpcFallback::ModelLearning);
@@ -90,6 +91,13 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     case ModelBuildError::Implausible:
     case ModelBuildError::NumericalFailure:return no_plan(MpcFallback::SolverFailed);
     }
+    if(rec.low_temperature_cycle) {
+        // The full-slot solver can express 15-min pulses, but the live
+        // independent thermostat may stop one earlier at the room ceiling.
+        // A rejected full-slot plan falls back; it is never forced through.
+        p.min_heat_minutes=cn105_low_temperature_dwell_minutes;
+        p.min_off_minutes=cn105_low_temperature_dwell_minutes;
+    }
     out.params=p;
     out.energy_in_kwh=kwh;
     // The model may not extrapolate far beyond the outdoor range it learned.
@@ -118,6 +126,12 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
             controls.setpoint_change_penalty=p.switching_penalty_eur/2;
         if(!choose_setpoints(in.pump_limits,band,p.thermostat_band_c,controls))
             return no_plan(MpcFallback::PumpStateUnknown);
+        if(rec.low_temperature_cycle) {
+            if(!in.pump_limits.accepts(cn105_minimum_heat_setpoint_c))
+                return no_plan(MpcFallback::PumpStateUnknown);
+            controls.heat_setpoint_count=1;
+            controls.heat_setpoints_c[0]=cn105_minimum_heat_setpoint_c;
+        }
     }
     // Receding horizon: end at the room target (inside the band), never
     // "at least as warm as now" (see MpcRunControls::terminal_min_c).

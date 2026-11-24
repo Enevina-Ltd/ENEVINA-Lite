@@ -250,6 +250,41 @@ void test_arbiter_order_and_fallbacks() {
         // arbitrate() and plan_validity() agree whenever the plan is the reason.
         CHECK(arbitrate(rebound).fallback==plan_validity(rebound));
         CHECK(arbitrate(st).fallback==plan_validity(st)); }
+    // A calibrated full-slot plan must not hide a live room-target stop.
+    // Both a HEAT plan and an OFF plan while the pump is still heating
+    // retain the exact early-stop proposal for the physical gate.
+    for(bool first_heat:{false,true}) {
+        auto in=base_input();
+        in.plan=good_plan(first_heat);
+        in.plan.low_temperature_cycle=true;
+        in.pump_gateway_request=true;in.pump_heat=true;
+        in.bootstrap.action=BootstrapAction::Off;
+        in.bootstrap.reason=BootstrapReason::LowTargetReached;
+        in.bootstrap.low_temperature_cycle=true;
+        in.bootstrap.requested_room_c=12;
+        CHECK(plan_validity(in)==MpcFallback::LowTargetReached);
+        CHECK(arbitrate(in).proposal.reason==BootstrapReason::LowTargetReached);
+        CHECK(arbitrate(in).proposal.action==BootstrapAction::Off);
+        auto changed=in;changed.plan.low_temperature_cycle=false;
+        CHECK(plan_validity(changed)==MpcFallback::PlanInputsChanged);
+        in.pump_defrost_hold=true;
+        CHECK(arbitrate(in).fallback==MpcFallback::DefrostHold);
+        CHECK(arbitrate(in).proposal.action==BootstrapAction::Hold);
+    }
+    {
+        auto in=base_input();in.pump_gateway_request=true;in.pump_heat=false;
+        in.plan.low_temperature_cycle=true;
+        in.bootstrap.low_temperature_cycle=true;
+        in.bootstrap.action=BootstrapAction::Hold;
+        in.bootstrap.reason=BootstrapReason::DeadbandHold;
+        CHECK(plan_validity(in)==MpcFallback::LowTemperatureBand);
+        CHECK(arbitrate(in).proposal.action==BootstrapAction::Hold);
+        in.bootstrap.action=BootstrapAction::HeatSetpoint;
+        in.bootstrap.heat_setpoint_c=16;
+        in.bootstrap.reason=BootstrapReason::TemperatureLow;
+        CHECK(plan_validity(in)==MpcFallback::None);
+        CHECK(arbitrate(in).proposal.low_temperature_cycle);
+    }
     // Codex P1 (PR #63): no verified pump-origin state -> no MPC decision.
     {   auto in=base_input();in.pump_state_known=false;
         CHECK(arbitrate(in).fallback==MpcFallback::PumpStateUnknown);
@@ -367,6 +402,16 @@ void test_planner() {
         CHECK(lowest>=o.params.planning_min_c+o.params.planning_uncertainty_c-1e-6);
         CHECK(std::fabs(o.params.planning_min_c+o.params.planning_uncertainty_c-o.record.band.lower_c)<1e-9);
         CHECK(o.record.first_utc==now0 && o.record.computed_utc==now0); }
+    {   auto hz=fresh();auto pi=planner_input(id,hz,now0);
+        pi.low_temperature_cycle=true;
+        std::vector<PlanRow> rows(max_horizon_slots);
+        const auto o=plan_mpc(pi,rows.data());
+        CHECK(o.record.low_temperature_cycle);
+        CHECK(o.params.min_heat_minutes==15 && o.params.min_off_minutes==15);
+        CHECK(o.record.has_plan && o.record.status==MpcStatus::Ok);
+        for(size_t i=0;i<o.rows;++i)
+            CHECK(!rows[i].heat || std::fabs(rows[i].setpoint_c-16.0)<1e-9);
+    }
     {   auto hz=fresh();auto pi=planner_input(id,hz,now0);pi.target_c=21.0;
         CHECK(plan_mpc(pi,nullptr).record.planning_fallback==MpcFallback::TargetOutsideModel); }
     {   auto hz=fresh();auto pi=planner_input(id,hz,now0);pi.heating_allowed=false;

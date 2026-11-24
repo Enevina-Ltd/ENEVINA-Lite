@@ -36,6 +36,50 @@ static void shared_gate_respects_driver_limits_and_dwell() {
 int main() {
     shared_gate_respects_driver_limits_and_dwell();
     {
+        // Regression for a small room that reaches its maintenance target
+        // before the default 30-minute HEAT request is over.
+        constexpr uint32_t minute=60000;
+        BootstrapInput low{};low.indoor_fresh=true;low.desired_room_c=12;
+        low.low_temperature_cycle=true;
+        auto s=base();s.current_setpoint_c=16;s.current_heat=true;
+        s.ms_since_mode_change=8*minute;
+        low.indoor_c=11.9;s.proposal=bootstrap_price_decision(low);
+        assert(choose_mitsubishi_control(s).step==ControlStep::None);
+        low.indoor_c=12.1;s.proposal=bootstrap_price_decision(low);
+        assert(choose_mitsubishi_control(s).step==ControlStep::SetOff);
+        assert(mode_change_allowed(ControlStep::SetOff,8*minute,
+            mitsubishi_min_mode_dwell_ms,s.proposal,true));
+        // Other adapters retain 30 min; ordinary scoped price-only OFF retains 15 min.
+        assert(choose_pump_control(s,mitsubishi_heating_limits,HeatTransition::Combined).gate==ControlBlock::ModeDwell);
+        auto ordinary=s;ordinary.proposal.reason=BootstrapReason::ExpensiveWindow;
+        assert(choose_mitsubishi_control(ordinary).gate==ControlBlock::ModeDwell);
+        // Permission, fresh measurements, connection and valid readback
+        // remain mandatory for a shortened HEAT request.
+        auto bad=s;bad.armed=false;
+        assert(choose_mitsubishi_control(bad).gate==ControlBlock::Disabled);
+        bad=s;bad.temperature_fresh=false;
+        assert(choose_mitsubishi_control(bad).gate==ControlBlock::InputsUnverified);
+        bad=s;bad.bridge_get_ok=false;
+        assert(choose_mitsubishi_control(bad).gate==ControlBlock::InputsUnverified);
+        bad=s;bad.proposal.requested_room_c=16;
+        assert(choose_mitsubishi_control(bad).gate==ControlBlock::ModeDwell);
+        // Scoped 15-min restart dwell remains even on a cold/cheap signal.
+        s.current_heat=false;low.indoor_c=11.0;s.proposal=bootstrap_price_decision(low);
+        s.ms_since_mode_change=15*minute-1;
+        assert(choose_mitsubishi_control(s).gate==ControlBlock::ModeDwell);
+        s.ms_since_mode_change=15*minute;
+        assert(choose_mitsubishi_control(s).step==ControlStep::SetHeat);
+        assert(choose_pump_control(s,mitsubishi_heating_limits,HeatTransition::Combined).gate==ControlBlock::ModeDwell);
+        auto high=s;high.proposal.heat_setpoint_c=17;high.current_setpoint_c=17;
+        assert(choose_mitsubishi_control(high).gate==ControlBlock::ModeDwell);
+        // Unchanged high-temperature normal thermostat does not bypass.
+        low.low_temperature_cycle=false;low.indoor_c=12.7;
+        s.proposal=bootstrap_price_decision(low);s.current_heat=true;
+        s.ms_since_mode_change=8*minute;
+        assert(choose_mitsubishi_control(s).gate==ControlBlock::ModeDwell);
+    }
+
+    {
         constexpr uint32_t minute=60u*1000u;
         auto start=base();
         BootstrapInput room{};
