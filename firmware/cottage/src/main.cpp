@@ -233,7 +233,7 @@ static std::atomic<uint32_t> control_armed_cn105_direct_revision{0},control_arme
 static std::atomic<uint32_t> control_armed_s21_revision{0},control_armed_s21_bus{0};
 static std::atomic<uint32_t> control_armed_haier_revision{0},control_armed_haier_bus{0};
 static std::atomic<uint32_t> control_armed_panasonic_revision{0},control_armed_panasonic_bus{0};
-// 30 min between HEAT/OFF commands and observed changes. Arming does not
+// Track time between HEAT/OFF requests (default 30 min). Arming does not
 // change pump mode. Track bridge observations even while disarmed.
 // Owned by the optimizer task after setup restores the saved authorization.
 static MitsubishiModeHistory control_mode_history{};
@@ -812,6 +812,13 @@ static bool bridge_slot_price(void*,int64_t utc,double spot,double& total) {
 // Model-free price-aware heating proposal, used only until calibrated MPC
 // exists. A 2-hour window must contain 8 contiguous verified 15-minute
 // TOTAL marginal-cost slots. This function never emits an actuator command.
+static bool cn105_low_temperature_cycle_selected(const SiteSettings& site,
+        CottageMode mode,double target_c) {
+    return mode==CottageMode::Hold &&
+        enevina::adapter_allowed_cn105_physical_writes(site.pump_adapter) &&
+        site_room_temperature_config().source==RoomTemperatureSource::Ruuvi &&
+        low_temperature_room_target(target_c);
+}
 static BootstrapDecision bootstrap_preview(int64_t now,
                                             const TemperatureSample& t) {
     BootstrapInput input{};
@@ -882,6 +889,10 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     // The minimum *absolute* advantage is in the selected market currency;
     // keep approximately the same tariff-relative significance as EUR.
     input.min_price_advantage_eur_per_kwh=0.005*input.price_limit_scale;
+    // A small room held below the pump's minimum setpoint must be able to
+    // end its HEAT request at the independent room target. No NVS schema,
+    // adapter protocol, pump firmware or other mode is changed.
+    input.low_temperature_cycle=cn105_low_temperature_cycle_selected(site,mode.mode,input.desired_room_c);
     return bootstrap_price_decision(input);
 }
 // The room target and whether heat is permitted, from the SAME mode logic as
@@ -1454,8 +1465,7 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
         }
     }
     const bool changes_mode=step==ControlStep::SetHeat || step==ControlStep::SetOff;
-    if(changes_mode && control_ms_since_mode_change()<mitsubishi_min_mode_dwell_ms)
-        return false;
+
     const int64_t after_get_utc=time(nullptr);
     ArbiterOutput latest_detail{};
     const auto latest=active_control_proposal(after_get_utc,selected_room_sample(after_get_utc),&latest_detail);
@@ -1467,6 +1477,9 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
        (latest.action!=BootstrapAction::HeatSetpoint ||
         std::fabs(latest.heat_setpoint_c-required_target)>0.001))return false;
     if(step==ControlStep::SetOff && latest.action!=BootstrapAction::Off)
+        return false;
+    if(!mode_change_allowed(step,control_ms_since_mode_change(),
+                            mitsubishi_min_mode_dwell_ms,latest,true))
         return false;
     enevina_firmware::NetworkBudgetLease lease(1000,72*1024,16*1024);
     if(!lease.held()) {control_post_stage.store(-4);return false;}
@@ -1492,6 +1505,9 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
         return false;
     if(step==ControlStep::SetOff &&
        refreshed.action!=BootstrapAction::Off)return false;
+    if(!mode_change_allowed(step,control_ms_since_mode_change(),
+                            mitsubishi_min_mode_dwell_ms,refreshed,true))
+        return false;
     WiFiClient client;
     HTTPClient req;
     req.setConnectTimeout(1500);req.setTimeout(1800);
@@ -1509,7 +1525,9 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     // authorization check uses that same tracker under the existing lock.
     const bool defrost_hold=cn105_defrost_defer_write(cn105_defrost.view(
         static_cast<uint64_t>(esp_timer_get_time()/1000),link.endpoint),bridge_heat);
-    const bool dispatch=!defrost_hold && control_armed.load() && c23_config_storage_verified() &&
+    const bool dispatch=!defrost_hold &&
+        mode_change_allowed(step,control_ms_since_mode_change(),mitsubishi_min_mode_dwell_ms,refreshed,true) &&
+        control_armed.load() && c23_config_storage_verified() &&
         control_permission_generation.load()==authorization_generation &&
         wifi_ok.load() && clock_ok() && !cottage_ota_network_maintenance() &&
         c23_config_generation()==config_generation &&
@@ -2519,6 +2537,8 @@ static void optimizer_worker(void*) {
             pi.currency_scale=currency_limit_scale(ms.currency);
             pi.heating_allowed=heating_allowed;pi.target_valid=heating_allowed;
             pi.target_c=target_c;
+            pi.low_temperature_cycle=heating_allowed &&
+                cn105_low_temperature_cycle_selected(site_settings_snapshot(),c23_mode_config().mode,target_c);
             pi.temperature_fresh=valid_temperature(ts,now);pi.indoor_c=ts.indoor_c;
             pi.pump_state_known=known_heating_mode(view);pi.pump_heat=view_heat;
             if(view.protocol==enevina::PumpRoomProtocol::Cn105EspHome) {
@@ -2769,6 +2789,10 @@ static void status_endpoint() {
                              bootstrap_action_name(bootstrap.action));
     cJSON_AddStringToObject(root,"bootstrap_reason",
                              bootstrap_reason_name(bootstrap.reason));
+    cJSON_AddBoolToObject(root,"bootstrap_low_temperature_cycle",low_temperature_cycle(bootstrap));
+    cJSON_AddNumberToObject(root,"bootstrap_mode_dwell_minutes",
+        low_temperature_cycle(bootstrap)?cn105_low_temperature_dwell_minutes:
+            mitsubishi_min_mode_dwell_ms/60000u);
     cJSON_AddBoolToObject(root,"bootstrap_executable",false);
     if(bootstrap.requested_room_c>0)
         cJSON_AddNumberToObject(root,"bootstrap_room_target_c",
@@ -3610,6 +3634,8 @@ static void timeline_endpoint() {
     // The timeline is advice, not a bypass around the live controller's
     // independent room-sensor freshness and Drying humidity gates.
     meta.indoor_fresh=valid_temperature(indoor,now);
+    meta.low_temperature_cycle=has_target &&
+        cn105_low_temperature_cycle_selected(site,mode.mode,plan.target_c);
     meta.heating_permitted=has_target && meta.indoor_fresh &&
         !(mode.mode==CottageMode::Drying && drying_blocks_heat(plan));
     meta.currency=market.currency;meta.area=market.area;

@@ -43,8 +43,19 @@ enum class BootstrapAction : uint8_t { Unavailable, HeatSetpoint, Off, Hold };
 enum class BootstrapReason : uint8_t {
     MissingTemperature, MissingPrices, NoHeatingRequested, TemperatureLow, TemperatureHigh,
     CheapWindow, ExpensiveWindow, ThermostatWithoutPrices, NeutralPriceWindow,
-    DeadbandHold
+    DeadbandHold, LowTargetReached
 };
+// CN105 HEAT cannot request a setpoint below 16 C. A lower room target
+// requires an external room thermostat, not a continuous HEAT request.
+inline constexpr double cn105_minimum_heat_setpoint_c=16.0;
+// Initial, scoped low-temperature cycle candidate. The FD25 protects
+// its own compressor with a 3-minute restart delay. Fifteen minutes is
+// deliberately more conservative and aligns with the MPC slot. It is not
+// a manufacturer-specified optimum and must be verified on the installation.
+inline constexpr unsigned cn105_low_temperature_dwell_minutes=15;
+inline bool low_temperature_room_target(double target_c) {
+    return std::isfinite(target_c) && target_c>=5.0 && target_c<cn105_minimum_heat_setpoint_c;
+}
 struct BootstrapInput {
     double indoor_c=0;
     bool indoor_fresh=false;
@@ -76,6 +87,9 @@ struct BootstrapInput {
     double coast_c=0;
     // Scale accepted monetary values to the configured currency (EUR=1).
     double price_limit_scale=1.0;
+    // Opt in ONLY for the verified CN105 room-maintenance path, using
+    // an independently selected room sensor and a below-device-minimum target.
+    bool low_temperature_cycle=false;
 };
 struct BootstrapDecision {
     BootstrapAction action=BootstrapAction::Unavailable;
@@ -87,6 +101,7 @@ struct BootstrapDecision {
     double heat_setpoint_c=0; // only valid for HeatSetpoint, 16..26 in 0.5C steps
     // Physical commands NEVER originate in this model-free module.
     bool executable=false;
+    bool low_temperature_cycle=false; // scoped live room-maintenance policy
 };
 inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     BootstrapDecision d{};
@@ -138,6 +153,41 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     // Price room stays strictly inside the limits so the hard rules still fire.
     const double preheat=std::min(in.preheat_c,std::max(0.0,hard_hi-in.desired_room_c-0.1));
     const double coast=std::min(in.coast_c,std::max(0.0,in.desired_room_c-hard_lo-0.1));
+    if(in.low_temperature_cycle && low_temperature_room_target(in.desired_room_c)) {
+        d.low_temperature_cycle=true;
+        // A low target cannot be enforced by the pump's own 16 C thermostat.
+        // Stop at the requested room target (with explicitly allowed price
+        // headroom), not after a forced 30-minute heat pulse. Leave the
+        // narrow upper edge as headroom for transport delay and residual heat.
+        // Keep at least a half-degree start/stop separation within a given
+        // price class. The scoped restart dwell also covers price changes.
+        double ceiling=in.desired_room_c;
+        if(price_valid && cheap)ceiling+=preheat;
+        if(price_valid && expensive)ceiling-=coast;
+        const double ceiling_min=hard_lo+0.5;
+        const double ceiling_max=std::min(hard_hi,cn105_minimum_heat_setpoint_c);
+        if(ceiling_min>ceiling_max)return BootstrapDecision{};
+        ceiling=std::clamp(ceiling,ceiling_min,ceiling_max);
+        const double floor=std::max(hard_lo,
+            std::min(ceiling-0.5,narrow_lo));
+        if(in.indoor_c>=ceiling) {
+            d.action=BootstrapAction::Off;
+            // A price-only change below the actual room target is not
+            // permission to bypass the ordinary scoped HEAT dwell.
+            d.reason=in.indoor_c>=in.desired_room_c?
+                BootstrapReason::LowTargetReached:BootstrapReason::ExpensiveWindow;
+        } else if(in.indoor_c<=floor) {
+            d.action=BootstrapAction::HeatSetpoint;
+            d.heat_setpoint_c=cn105_minimum_heat_setpoint_c;
+            d.reason=!price_valid?BootstrapReason::ThermostatWithoutPrices:
+                cheap?BootstrapReason::CheapWindow:
+                expensive?BootstrapReason::ExpensiveWindow:BootstrapReason::TemperatureLow;
+        } else {
+            d.action=BootstrapAction::Hold;
+            d.reason=BootstrapReason::DeadbandHold;
+        }
+        return d;
+    }
     const bool below=in.indoor_c<=narrow_lo;       // narrow thermostat band
     const bool above=in.indoor_c>=narrow_hi;
     const bool hard_below=in.indoor_c<=hard_lo;
@@ -221,8 +271,16 @@ inline const char* bootstrap_reason_name(BootstrapReason reason) {
     case BootstrapReason::ThermostatWithoutPrices:return "THERMOSTAT_NO_PRICES";
     case BootstrapReason::NeutralPriceWindow:return "NEUTRAL_COST_WINDOW";
     case BootstrapReason::DeadbandHold:return "HOLD_IN_DEADBAND";
+    case BootstrapReason::LowTargetReached:return "LOW_TARGET_REACHED";
     }
     return "UNKNOWN";
+}
+inline bool low_temperature_cycle(const BootstrapDecision& d) {
+    return d.low_temperature_cycle && low_temperature_room_target(d.requested_room_c);
+}
+inline bool low_temperature_stop(const BootstrapDecision& d) {
+    return low_temperature_cycle(d) && d.action==BootstrapAction::Off &&
+        d.reason==BootstrapReason::LowTargetReached;
 }
 inline const char* bootstrap_action_name(BootstrapAction action) {
     switch(action) {

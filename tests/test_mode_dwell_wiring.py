@@ -21,6 +21,22 @@ class ModeDwellWiring(unittest.TestCase):
         self.assertLess(worker.index("cn105_room_state()"),worker.index("cottage_control_tick(bridge);"))
         self.assertIn("choose_mitsubishi_control(candidate)",TICK)
 
+    def test_early_stop_is_scoped_and_revalidated(self):
+        preview=MAIN.split("static bool cn105_low_temperature_cycle_selected(",1)[1].split("static void mpc_mode_target",1)[0]
+        self.assertIn("return mode==CottageMode::Hold",preview)
+        self.assertIn("input.low_temperature_cycle=cn105_low_temperature_cycle_selected",preview)
+        self.assertIn("enevina::adapter_allowed_cn105_physical_writes(site.pump_adapter)",preview)
+        self.assertIn("site_room_temperature_config().source==RoomTemperatureSource::Ruuvi",preview)
+        self.assertIn("low_temperature_room_target(target_c)",preview)
+        self.assertIn("pi.low_temperature_cycle=heating_allowed",MAIN)
+        self.assertIn("meta.low_temperature_cycle=has_target",MAIN)
+        self.assertIn("mitsubishi_min_mode_dwell_ms,latest,true",POST)
+        self.assertGreater(POST.index("mitsubishi_min_mode_dwell_ms,latest,true"),POST.index("const auto latest=active_control_proposal"))
+        self.assertIn("mitsubishi_min_mode_dwell_ms,refreshed,true",POST)
+        self.assertIn("mode_change_allowed(step,control_ms_since_mode_change(),mitsubishi_min_mode_dwell_ms,refreshed,true)",POST)
+        self.assertIn("const bool dispatch=!defrost_hold",POST)
+        self.assertIn("cn105_reconciliation.unresolved",POST)
+
     def test_dwell_starts_at_actual_dispatch(self):
         # Codex P2 (post-merge #28): only after all preconditions, right
         # before the POST; never in the tick before preparation can fail.
