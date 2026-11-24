@@ -21,7 +21,7 @@ enum class MpcFallback : uint8_t {
     TargetOutsideModel, OutdoorOutsideLearned, ForecastUnavailable,
     HorizonTooShort, PumpStateUnknown, TemperatureStale, SolverFailed,
     SolverTimeout, PlanStale, PlanInputsChanged, BelowComfortFloor,
-    AboveComfortCeiling, ResourceLimit, SyntheticModelOnly, ComfortLimitsInvalid
+    AboveComfortCeiling, ResourceLimit, SyntheticModelOnly, ComfortLimitsInvalid, DefrostHold
 };
 
 // Everything the planner fixed when it computed the plan. A plan is only
@@ -34,6 +34,7 @@ struct MpcPlanRecord {
     int64_t computed_utc=0;
     uint32_t mode_generation=0, config_generation=0, settings_generation=0;
     uint32_t model_revision=0;
+    uint32_t defrost_reports=0;
     bool initial_heat=false;  // pump state the plan started from
     bool first_heat=false;    // plan decision for first_utc
     bool variable_setpoints=false;
@@ -62,6 +63,8 @@ struct ArbiterInput {
     bool pump_state_known=false;
     bool pump_gateway_request=false;
     bool pump_heat=false;
+    bool pump_defrost_hold=false;
+    uint32_t defrost_reports=0;
     double pump_setpoint_c=0;
     // The pump readback confirmed THIS plan's first decision in its own slot
     // (set by the control path only after a matching readback).
@@ -109,6 +112,7 @@ inline void apply_mpc_profile(ComfortBand& band,OptimizationProfile profile) {
 // sensor freshness, the plan's own structure/age/inputs, the owner's hard
 // limits and finally the measured room against the band the plan protects.
 inline MpcFallback plan_validity(const ArbiterInput& in) {
+    if(in.pump_defrost_hold && in.pump_heat)return MpcFallback::DefrostHold;
     if(!in.calibrated) {
         if(in.calibration==CalibrationState::Degraded) return MpcFallback::ModelDegraded;
         return in.calibration==CalibrationState::Validating?
@@ -130,7 +134,8 @@ inline MpcFallback plan_validity(const ArbiterInput& in) {
        p.computed_utc>in.now_utc || p.computed_utc<p.first_utc)
         return MpcFallback::PlanStale;
     if(p.config_generation!=in.config_generation ||
-       p.settings_generation!=in.settings_generation)
+       p.settings_generation!=in.settings_generation ||
+       p.defrost_reports!=in.defrost_reports)
         return MpcFallback::PlanInputsChanged;
     if(!in.pump_state_known) return MpcFallback::PumpStateUnknown;
     // The pump-mode generation advances on every source gap, mode change and
@@ -185,6 +190,15 @@ inline ArbiterOutput arbitrate(const ArbiterInput& in) {
     out.proposal=in.bootstrap;
     out.source=bootstrap_source(in.bootstrap);
     const MpcFallback invalid=plan_validity(in);
+    if(invalid==MpcFallback::DefrostHold) {
+        out.proposal.action=BootstrapAction::Hold;
+        out.proposal.heat_setpoint_c=0;
+        out.proposal.executable=false;
+        out.source=ProposalSource::None;
+        out.mpc_state=MpcRunState::Fallback;
+        out.fallback=invalid;
+        return out;
+    }
     if(invalid!=MpcFallback::None) {
         out.fallback=invalid;
         out.mpc_state=(invalid==MpcFallback::ModelLearning ||
@@ -251,6 +265,7 @@ inline const char* mpc_fallback_name(MpcFallback f) {
     case MpcFallback::ResourceLimit:return "RESOURCE_LIMIT";
     case MpcFallback::SyntheticModelOnly:return "SYNTHETIC_MODEL_ONLY";
     case MpcFallback::ComfortLimitsInvalid:return "COMFORT_LIMITS_INVALID";
+    case MpcFallback::DefrostHold:return "DEFROST_HOLD";
     }
     return "UNKNOWN";
 }

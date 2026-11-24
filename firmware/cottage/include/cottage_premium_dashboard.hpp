@@ -560,7 +560,7 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
         <p class="tiny muted">Tarkistus ja asennus ovat yksi toiminto: kelvollinen allekirjoitettu julkaisu asennetaan heti, kun se löytyy. Julkaisutietoja ei kuljeteta allekirjoitetussa päivitysmanifestissa; ne löytyvät julkaisusivulta: <a href="https://github.com/Enevina-Ltd/ENEVINA-Lite/releases" target="_blank" rel="noopener noreferrer">Enevina Lite -julkaisut GitHubissa</a>.</p>
       </article>
       <article class="card span5"><h2>Laitteen tila</h2><div class="statusgrid"><span>Ohjelmistoversio</span><span id="device-version">—</span><span>Wi-Fi RSSI</span><span id="device-wifi">—</span><span id="device-cn105-label" hidden>CN105-telemetria</span><span id="device-cn105" hidden>—</span><span>Shelly-mittaus</span><span id="device-shelly">—</span><span>Sisäinen vapaa RAM</span><span id="device-ram">—</span><span>PSRAM vapaana</span><span id="device-psram">—</span><span>OTA-lataus käytössä</span><span id="device-ota">—</span></div><p class="foot"><a href="/#settings" style="text-decoration:underline">Avaa laiteasetukset</a></p></article>
-      <article class="card span12" id="mitsubishi-read-card" hidden><h2>Mitsubishi CN105 · vastaanotettu data</h2><div class="statusgrid"><span>Viimeisin SSE-tilaviesti</span><span id="mitsubishi-read-status">—</span><span>Pumpun tila (SSE)</span><span id="mitsubishi-read-mode">—</span><span>Pumpun sisälämpötila (SSE)</span><span id="mitsubishi-read-temp">—</span><span>Asetuslämpötila (SSE)</span><span id="mitsubishi-read-setpoint">—</span><span>Kompressori (SSE)</span><span id="mitsubishi-read-hz">—</span><span>Kompressoriviestin ikä</span><span id="mitsubishi-compressor-age">—</span></div><p class="foot">ESPHome /events -rajapinnasta vastaanotettu viimeisin tilatieto. Viestin vastaanottoaika ei todista uutta CN105-UART-lukua, eikä näitä arvoja käytetä optimoinnin turvallisuushyväksyntään.</p></article>
+      <article class="card span12" id="mitsubishi-read-card" hidden><h2>Mitsubishi CN105 · vastaanotettu data</h2><div class="statusgrid"><span>Viimeisin SSE-tilaviesti</span><span id="mitsubishi-read-status">—</span><span>Pumpun tila (SSE)</span><span id="mitsubishi-read-mode">—</span><span>Pumpun sisälämpötila (SSE)</span><span id="mitsubishi-read-temp">—</span><span>Asetuslämpötila (SSE)</span><span id="mitsubishi-read-setpoint">—</span><span>Kompressori (SSE)</span><span id="mitsubishi-read-hz">—</span><span>Kompressoriviestin ikä</span><span id="mitsubishi-compressor-age">—</span><span id="mitsubishi-defrost-label">Sulatustieto (silta)</span><span id="mitsubishi-defrost-state">—</span></div><p class="foot">ESPHome /events -rajapinnasta vastaanotettu viimeisin tilatieto. Viestin vastaanottoaika ei todista uutta CN105-UART-lukua, eikä näitä arvoja käytetä optimoinnin turvallisuushyväksyntään.</p></article>
       <article class="card span12" id="room-temperature-settings"></article>
       <article class="card span12"><h2>RuuviTag · anturit ja kosteusvaroitukset</h2>
       <p class="tiny muted">Anturin MAC-tunniste on sidottava tarkoituksella. Kirjoita tunniste tai <code>none</code> irrottaaksesi sidonnan. Asetukset ovat vain paikallisia.</p>
@@ -2313,6 +2313,7 @@ function frOverall(f,fmt){
     const why=!f.control_armed?FT('Automaattiohjaus on pois käytöstä.'):
       !f.wifi_ok?FT('Wi-Fi-yhteys puuttuu.'):
       gate==='MODE_DWELL'?FT('Ohjaus odottaa lämmitystilan vähimmäiskestoa, eikä lähetä uutta komentoa.') :
+      gate==='DEFROST_HOLD'?(uiLanguage==='en'?'Automatic changes deferred during reported defrost.':'Automaattiset muutokset odottavat ilmoitetun sulatuksen päättymistä.') :
       FT('Ohjausportti ei tällä hetkellä salli komentoja.');
     return {kind:'warn',headline:FT('Vain lämmitysehdotus – pumppua ei ohjata'),
       detail:[why,FT('Lämpöpumppu toimii omilla asetuksillaan; Lite ei lähetä komentoja.'),...out].join(' ')};
@@ -2742,6 +2743,23 @@ function showStatus(){
   text('mitsubishi-read-hz',(s.cn105_source_verified===true?number(s.compressor_hz):number(s.cn105_sse_compressor_hz))===null?'—':
     fmt(s.cn105_source_verified===true?s.compressor_hz:s.cn105_sse_compressor_hz,0)+' Hz');
   text('mitsubishi-compressor-age',compressorAge===null?'Ei vastaanottoa':fmt(compressorAge,0)+' s sitten (vain SSE)');
+  const dfLabels=uiLanguage==='en'?{
+    REPORTED_DEFROST:'Gateway reports defrost — automatic changes deferred',
+    DEFROST_SIGNAL_LOST:'Defrost report aged — temporary hold',
+    RECOVERY:'Waiting after reported defrost end',
+    DEFROST_REPORT_OVERDUE:'Same defrost report beyond 12 minutes; state unknown, standard dwell unchanged',
+    REPORTED_OTHER:'Other state reported; UART freshness unverified',
+    UNKNOWN:'No reliable defrost status; standard dwell unchanged'
+  }:{
+    REPORTED_DEFROST:'Silta ilmoittaa sulatuksesta — automaattiset muutokset odottavat',
+    DEFROST_SIGNAL_LOST:'Sulatusviesti vanhentui — tilapäinen odotus',
+    RECOVERY:'Odota ilmoitetun sulatuksen päättymisen jälkeen',
+    DEFROST_REPORT_OVERDUE:'Sama sulatusilmoitus yli 12 min; tila tuntematon, käyntiraja ennallaan',
+    REPORTED_OTHER:'Muu tila ilmoitettu; UART-tuoreutta ei varmennettu',
+    UNKNOWN:'Sulatustietoa ei ole varmennettu; tavallinen käyntiraja ennallaan'
+  };
+  text('mitsubishi-defrost-label',uiLanguage==='en'?'Defrost status (gateway)':'Sulatustieto (silta)');
+  text('mitsubishi-defrost-state',dfLabels[s.cn105_defrost_state]||dfLabels.UNKNOWN);
   }
   text('device-shelly',number(s.shelly_w)!==null?'Käytössä':'Ei lukemaa');
   text('device-ram',number(s.free_internal_heap)!==null?fmt(s.free_internal_heap/1024,0)+' KiB':'—');
@@ -2953,6 +2971,7 @@ async function reloadStatus(){
     'mitsubishi-read-status':'Ei yhteyttä','mitsubishi-read-mode':'—',
     'mitsubishi-read-temp':'—','mitsubishi-read-setpoint':'—',
     'mitsubishi-read-hz':'—','mitsubishi-compressor-age':'Ei yhteyttä',
+    'mitsubishi-defrost-state':'—',
     'device-shelly':'Ei yhteyttä','device-ram':'—','device-psram':'—',
     'device-ota':'Ei yhteyttä','control-state':'Yhteys poikki',
     'control-last':'Ei tuoretta tilaa'
@@ -4554,7 +4573,7 @@ fi:{NONE:'',MODEL_LEARNING:'malli oppii vielä mittauksista',MODEL_VALIDATING:'m
  SOLVER_FAILED:'suunnitelmaa ei löytynyt rajoissa',SOLVER_TIMEOUT:'laskenta-aika ylittyi',PLAN_STALE:'suunnitelma on vanhentunut',
  PLAN_INPUTS_CHANGED:'tila tai asetukset muuttuivat',BELOW_COMFORT_FLOOR:'huone on mukavuusalueen alapuolella',
  ABOVE_COMFORT_CEILING:'huone on mukavuusalueen yläpuolella',RESOURCE_LIMIT:'muistiraja',SYNTHETIC_MODEL_ONLY:'vain testimalli',
- COMFORT_LIMITS_INVALID:'omat lämpötilarajat ovat ristiriitaiset tai liian lähellä tavoitetta'},
+ COMFORT_LIMITS_INVALID:'omat lämpötilarajat ovat ristiriitaiset tai liian lähellä tavoitetta',DEFROST_HOLD:'ohjaus odottaa ilmoitetun sulatuksen päättymistä'},
 en:{NONE:'',MODEL_LEARNING:'the model is still learning from measurements',MODEL_VALIDATING:'the model’s predictions are being tested',
  MODEL_DEGRADED:'the model no longer predicts accurately enough',NO_HEATING_MODE:'the selected mode does not heat',
  TARGET_OUTSIDE_MODEL:'the target is outside the thermal model range',OUTDOOR_OUTSIDE_LEARNED_RANGE:'forecast outdoor temperature is outside the learned range',
@@ -4563,15 +4582,15 @@ en:{NONE:'',MODEL_LEARNING:'the model is still learning from measurements',MODEL
  SOLVER_FAILED:'no plan within the limits',SOLVER_TIMEOUT:'computation time exceeded',PLAN_STALE:'plan is stale',
  PLAN_INPUTS_CHANGED:'mode or settings changed',BELOW_COMFORT_FLOOR:'room is below the comfort band',
  ABOVE_COMFORT_CEILING:'room is above the comfort band',RESOURCE_LIMIT:'memory limit',SYNTHETIC_MODEL_ONLY:'test model only',
- COMFORT_LIMITS_INVALID:'your temperature limits are contradictory or too close to the target'}};
+ COMFORT_LIMITS_INVALID:'your temperature limits are contradictory or too close to the target',DEFROST_HOLD:'waiting for reported defrost to finish'}};
 const STATE={fi:{NO_DATA:'ei mittauksia',LEARNING:'oppii',VALIDATING:'testataan',CALIBRATED:'kalibroitu',DEGRADED:'heikentynyt'},
  en:{NO_DATA:'no measurements',LEARNING:'learning',VALIDATING:'testing',CALIBRATED:'calibrated',DEGRADED:'degraded'}};
 const LEARNING_BLOCK={
  fi:{TOO_FEW_SAMPLES:'lisää mittausjaksoja tarvitaan',NEED_HEATING_SLOTS:'tarvitaan lämmitysjaksoja',NEED_OFF_SLOTS:'tarvitaan jäähtymisjaksoja',NEED_SWITCHES:'tarvitaan lisää tilanvaihtoja',PARAMETERS_IMPLAUSIBLE:'lämpömallin parametrit eivät vielä kelpaa',PARAMETERS_UNCERTAIN:'mallin epävarmuus on liian suuri',NEED_VALIDATION_WINDOWS:'ennustetestit kesken',VALIDATION_ERROR_HIGH:'ennustevirhe liian suuri',VALIDATION_BIAS_HIGH:'ennusteessa liikaa harhaa',RECENT_VALIDATION_FAILED:'viimeisimmät ennustetestit epäonnistuivat',VALIDATION_STALE:'ennustetestit vanhentuneet'},
  en:{TOO_FEW_SAMPLES:'more measured slots needed',NEED_HEATING_SLOTS:'heating slots needed',NEED_OFF_SLOTS:'cooling slots needed',NEED_SWITCHES:'more mode switches needed',PARAMETERS_IMPLAUSIBLE:'thermal model parameters not yet plausible',PARAMETERS_UNCERTAIN:'model uncertainty too high',NEED_VALIDATION_WINDOWS:'prediction tests incomplete',VALIDATION_ERROR_HIGH:'prediction error too high',VALIDATION_BIAS_HIGH:'prediction bias too high',RECENT_VALIDATION_FAILED:'recent prediction tests failed',VALIDATION_STALE:'prediction tests stale'}};
 const LEARNING_OBS={
- fi:{ACCEPTED:'hyväksytty',NEED_PREVIOUS:'odottaa peräkkäistä jaksoa',ROOM_INVALID:'sisälämpötila tai mittausväli ei kelpaa',OUTDOOR_INVALID:'ulkolämpötila ei kelpaa',REQUEST_INVALID:'lämmityspyyntöä ei voitu todentaa',OUTSIDE_DOMAIN:'mittaus mallin alueen ulkopuolella',INVALID_TRANSITION:'tilanvaihtoa ei voitu todentaa',NUMERICAL_REJECT:'mallin päivitys hylättiin'},
- en:{ACCEPTED:'accepted',NEED_PREVIOUS:'waiting for consecutive slots',ROOM_INVALID:'room measurement or interval invalid',OUTDOOR_INVALID:'outdoor temperature invalid',REQUEST_INVALID:'heating request could not be verified',OUTSIDE_DOMAIN:'measurement outside model domain',INVALID_TRANSITION:'mode transition unverified',NUMERICAL_REJECT:'model update rejected'}};
+ fi:{ACCEPTED:'hyväksytty',NEED_PREVIOUS:'odottaa peräkkäistä jaksoa',ROOM_INVALID:'sisälämpötila tai mittausväli ei kelpaa',OUTDOOR_INVALID:'ulkolämpötila ei kelpaa',REQUEST_INVALID:'lämmityspyyntöä ei voitu todentaa',OUTSIDE_DOMAIN:'mittaus mallin alueen ulkopuolella',INVALID_TRANSITION:'tilanvaihtoa ei voitu todentaa',NUMERICAL_REJECT:'mallin päivitys hylättiin',DEFROST_OBSERVED:'sulatus tai sen jälkivaihe ilmoitettu; ei normaalia oppimisnäytettä'},
+ en:{ACCEPTED:'accepted',NEED_PREVIOUS:'waiting for consecutive slots',ROOM_INVALID:'room measurement or interval invalid',OUTDOOR_INVALID:'outdoor temperature invalid',REQUEST_INVALID:'heating request could not be verified',OUTSIDE_DOMAIN:'measurement outside model domain',INVALID_TRANSITION:'mode transition unverified',NUMERICAL_REJECT:'model update rejected',DEFROST_OBSERVED:'reported defrost or recovery; excluded from ordinary learning'}};
 const lang=()=>uiLanguage==='en'?'en':'fi';
 const t=k=>MT[lang()][k]??MT.fi[k]??k;
 const num=v=>typeof v==='number'&&Number.isFinite(v)?v:null;
@@ -4687,6 +4706,8 @@ function render(){
   }
   const obs=LEARNING_OBS[lang()][cal.last_observation];
   if(obs)c.append(node('p','tiny muted',(lang()==='en'?'Last observation: ':'Viimeisin mittausjakso: ')+obs));
+  if(typeof cal.defrost_skipped_this_boot==='number' && cal.defrost_skipped_this_boot>0)
+    c.append(node('p','tiny muted',(lang()==='en'?'Defrost/recovery slots excluded since boot: ':'Sulatuksen/jälkivaiheen vuoksi ohitetut jaksot käynnistyksestä: ')+cal.defrost_skipped_this_boot));
   if(typeof cal.last_saved_sample_utc==='number'){
     const saved=cal.last_saved_sample_utc>0?day(cal.last_saved_sample_utc):'—';
     c.append(node('p','tiny muted',(lang()==='en'?'Saved model through: ':'Malli tallennettu jaksoon: ')+saved+

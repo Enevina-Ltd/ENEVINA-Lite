@@ -31,6 +31,8 @@ struct PlannerInput {
     double indoor_c=0;
     bool pump_state_known=false;
     bool pump_heat=false;
+    bool pump_defrost_hold=false;
+    uint32_t defrost_reports=0;
     double pump_setpoint_c=0;
     PumpHeatingLimits pump_limits{};
     unsigned minutes_in_mode=0;      // conservative (0 when unknown)
