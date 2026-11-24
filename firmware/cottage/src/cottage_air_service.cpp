@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <Preferences.h>
-#include <WebServer.h>
+#include "cottage_bounded_web.hpp"
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
 #include <cJSON.h>
@@ -794,15 +794,15 @@ void c23_append_status(cJSON* root) {
     unlock();
     cJSON_AddItemToObject(root,"air",air);
 }
-void c23_history_http(WebServer& web) {
+void c23_history_http(CottageWebServer& web) {
     if(!guard) {web.send(503,"application/json","{}");return;}
     // 168 records * compact JSON, streamed instead of large allocations.
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.sendHeader("Cache-Control","no-store");
-    web.send(200,"application/json","");web.sendContent("{\"hours\":[");
+    web.send(200,"application/json","");web.streamContent("{\"hours\":[");
     size_t n=0;
     lock();n=history.count();unlock();
-    for(size_t i=0;i<n;i++) {
+    for(size_t i=0;i<n && !web.responseAborted();i++) {
         AirHistoryPoint p{};
         lock();p=history.newest(n-1-i);unlock();
         char line[180];
@@ -812,12 +812,12 @@ void c23_history_http(WebServer& web) {
            (p.hour_utc<0x80000000u)?"true":"false",
            p.temperature_centi/100.0,p.rh_centi/100.0,
            p.dewpoint_centi/100.0,p.absolute_humidity_centi/100.0);
-        web.sendContent(line);
+        web.streamContent(line);
         if(i%16==0)delay(1);
     }
-    web.sendContent("]}");web.sendContent("");
+    web.streamContent("]}");web.streamContent("");
 }
-void c23_register_routes(WebServer& web) {
+void c23_register_routes(CottageWebServer& web) {
     // Only local settings are mutable; NO CN105, Shelly or physical writes.
     web.on("/api/air/history",HTTP_GET,[&web](){
         if(cottage_wifi_require_home_lan(web))c23_history_http(web);

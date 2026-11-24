@@ -3,7 +3,7 @@
 #include "cottage/telemetry.hpp"
 #include "cottage/air_humidity.hpp"
 #include "cJSON.h"
-class WebServer;
+class CottageWebServer;
 namespace enevina::cottage {
 void c23_initialize();
 void c23_ble_worker(void*);
@@ -28,6 +28,6 @@ bool c23_authorize_local_setting(const char* submitted_token);
 // Existing per-boot local CSRF token (also published in /api/status).
 const char* c23_config_token();
 void c23_append_status(cJSON* root);
-void c23_history_http(WebServer& server);
-void c23_register_routes(WebServer& server);
+void c23_history_http(CottageWebServer& server);
+void c23_register_routes(CottageWebServer& server);
 } // namespace enevina::cottage
