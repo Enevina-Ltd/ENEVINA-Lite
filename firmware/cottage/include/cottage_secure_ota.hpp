@@ -38,5 +38,6 @@ uint32_t cottage_ota_inflight_memory_waits();
 // Never persists user settings and never changes an automation authorization.
 bool cottage_ota_network_maintenance();
 uint32_t cottage_ota_downloaded_bytes();
+uint32_t cottage_ota_programmed_bytes();
 uint32_t cottage_ota_chunk_count();
 uint32_t cottage_ota_idle_yields();

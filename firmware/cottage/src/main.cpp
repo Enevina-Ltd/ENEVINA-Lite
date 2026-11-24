@@ -3046,6 +3046,8 @@ static void status_endpoint() {
                            cottage_ota_network_maintenance());
     cJSON_AddNumberToObject(root,"ota_downloaded_bytes",
                             cottage_ota_downloaded_bytes());
+    cJSON_AddNumberToObject(root,"ota_programmed_bytes",
+                            cottage_ota_programmed_bytes());
     cJSON_AddNumberToObject(root,"ota_chunk_count",
                             cottage_ota_chunk_count());
     cJSON_AddNumberToObject(root,"ota_idle_yields",
