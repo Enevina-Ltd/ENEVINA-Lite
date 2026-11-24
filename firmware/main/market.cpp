@@ -8,6 +8,7 @@
 #include "market.hpp"
 #include "market_cache.hpp"
 #include "market_cache_compact.hpp"
+#include "forecast_memory.hpp"
 #include "forecast/sources.hpp"
 #include "forecast/eu_time.hpp"
 #include "forecast/market_zones.hpp"
@@ -40,7 +41,7 @@ namespace {
 constexpr char tag[]="enevina_market";
 constexpr size_t max_slots=price_cache_max_slots;
 constexpr uint32_t cache_version=price_cache_version;
-PriceCache cache;
+ForecastBuffer<PriceCache> cache;
 SemaphoreHandle_t mutex=nullptr;
 TaskHandle_t reader_task=nullptr; // notify on live region change, no new watchdog
 
@@ -48,15 +49,8 @@ TaskHandle_t reader_task=nullptr; // notify on live region change, no new watchd
 // or upgraded device behaves exactly as before. Guarded by `mutex`.
 char region_area[8]="FI";
 char region_currency[4]="EUR";
-char cache_area[8]="FI";      // region the RAM cache was fetched for
-char cache_currency[4]="EUR";
 uint32_t region_generation=0;
-// The first market_set_region() call after boot only ADOPTS the saved region:
-// the persisted price cache has not been loaded yet and carries its own
-// region stamp, which load_cache() checks. Erasing on that call (the old code
-// compared against the FI/EUR start-up defaults) wiped valid prices on every
-// reboot of a device configured for any other zone.
-bool region_adopted=false;
+uint32_t cache_revision=0;
 uint8_t last_error=0;          // enevina::DayAheadError of the last attempt
 int last_http_status=0;
 int64_t last_attempt_utc=0;
@@ -66,15 +60,20 @@ constexpr char region_key[]="price_region";
 constexpr char regional_cache_key[]="price_reg_v2";
 
 bool valid_prices(const PriceCache& candidate) {
+    // Same normalization predicate, without allocating a second full price array.
     if(candidate.version!=cache_version || candidate.count==0 || candidate.count>max_slots)
         return false;
-    auto* normalized=new(std::nothrow) enevina::PriceSlot[max_slots];
-    if(!normalized) return false;
-    const enevina::Tariff raw_spot{};
-    const bool ok=enevina::normalize_nordpool_fi(candidate.prices.data(),candidate.count,
-        raw_spot,normalized,max_slots);
-    delete[] normalized;
-    return ok;
+    for(size_t i=0;i<candidate.count;++i) {
+        enevina::PriceSlot normalized{};
+        const auto& point=candidate.prices[i];
+        if(point.start_utc<=0 || point.start_utc>INT64_MAX-900 ||
+           point.end_utc!=point.start_utc+900)return false;
+        if(!enevina::normalize_nordpool_fi(candidate.prices.data()+i,1,
+                enevina::Tariff{},&normalized,1) ||
+           (i && candidate.prices[i-1].end_utc!=candidate.prices[i].start_utc))
+            return false;
+    }
+    return true;
 }
 
 bool same_prices(const PriceCache& a, const PriceCache& b) {
@@ -87,119 +86,114 @@ bool same_prices(const PriceCache& a, const PriceCache& b) {
     return true;
 }
 
-void save_cache(const PriceCache& value,const char* stamp);
-void load_cache() {
-    nvs_handle_t handle;
-    if(nvs_open("enevina_market",NVS_READONLY,&handle)!=ESP_OK) return;
-    // A cache without a stamp predates regional pricing and is Finland/EUR.
-    char stamp[16]="FI/EUR";
-    size_t stamp_size=sizeof(stamp);
-    if(nvs_get_str(handle,region_key,stamp,&stamp_size)!=ESP_OK)
-        std::snprintf(stamp,sizeof(stamp),"FI/EUR");
-    char wanted[16];
+struct MarketIdentity {
+    char area[8]{},currency[4]{};
+    uint32_t generation=0;
+};
+MarketIdentity current_identity() {
+    MarketIdentity id{};
     xSemaphoreTake(mutex,portMAX_DELAY);
-    std::snprintf(wanted,sizeof(wanted),"%s/%s",region_area,region_currency);
+    std::snprintf(id.area,sizeof(id.area),"%s",region_area);
+    std::snprintf(id.currency,sizeof(id.currency),"%s",region_currency);
+    id.generation=region_generation;
     xSemaphoreGive(mutex);
-    if(!region_area[0] || std::strcmp(stamp,wanted)!=0) {
-        // Prices of another bidding zone or currency must never be reused.
-        nvs_close(handle);
-        return;
-    }
-    auto* saved=new(std::nothrow) PriceCache;
-    bool migrate_legacy=false, migrate_early_region=false;
-    const bool legacy_fi=std::strcmp(stamp,"FI/EUR")==0;
-    if(saved) {
-        auto compact=std::unique_ptr<CompactPriceCache>(
-            new(std::nothrow) CompactPriceCache);
-        size_t size=sizeof(CompactPriceCache);
-        const char* cache_blob_key=legacy_fi?"price_v2":regional_cache_key;
-        bool ok=compact &&
-            nvs_get_blob(handle,cache_blob_key,compact.get(),&size)==ESP_OK &&
-            size==sizeof(*compact) &&
-            unpack_price_cache(*compact,*saved) && valid_prices(*saved);
-        if(!ok && !legacy_fi && compact) {
-            // Migrate an early unshipped regional build that used price_v2;
-            // stamp must match this selected area and currency (checked above).
-            size=sizeof(*compact);
-            ok=nvs_get_blob(handle,"price_v2",compact.get(),&size)==ESP_OK &&
-                size==sizeof(*compact) &&
-                unpack_price_cache(*compact,*saved) && valid_prices(*saved);
-            migrate_early_region=ok;
-        }
-        if(!ok && legacy_fi) {
-            size=sizeof(*saved);
-            ok=nvs_get_blob(handle,"price_v1",saved,&size)==ESP_OK &&
-                size==sizeof(*saved) && valid_prices(*saved);
-            migrate_legacy=ok;
-        }
-        if(ok) {
-            xSemaphoreTake(mutex,portMAX_DELAY);
-            cache=*saved;
-            std::snprintf(cache_area,sizeof(cache_area),"%s",region_area);
-            std::snprintf(cache_currency,sizeof(cache_currency),"%s",region_currency);
-            xSemaphoreGive(mutex);
-        }
-        delete saved;
-    }
-    nvs_close(handle);
-    // Move the verified in-memory legacy price cache without discarding other
-    // NVS namespaces (Wi-Fi, OTA, sensors and user settings).
-    if(migrate_legacy) save_cache(cache,"FI/EUR");
-    if(migrate_early_region) save_cache(cache,stamp);
+    return id;
 }
-
-void save_cache(const PriceCache& value,const char* stamp) {
-    // Market reader has a small RTOS stack. The 1.6-KiB packed buffer must
-    // live on heap, not the stack (physical ESP32 stack-canary regression).
-    auto compact=std::unique_ptr<CompactPriceCache>(
-        new(std::nothrow) CompactPriceCache);
-    if(!compact || !pack_price_cache(value,*compact)) {
-        ESP_LOGW(tag,"Skipping noncontiguous price cache NVS write");
-        return;
-    }
+bool identity_current_locked(const MarketIdentity& id) {
+    return id.area[0] && id.generation==region_generation &&
+        std::strcmp(id.area,region_area)==0 && std::strcmp(id.currency,region_currency)==0;
+}
+bool erase_price_key(nvs_handle_t handle,const char* key) {
+    const auto err=nvs_erase_key(handle,key);
+    return err==ESP_OK||err==ESP_ERR_NVS_NOT_FOUND;
+}
+bool legacy_finland(const char* area,const char* currency) {
+    return std::strcmp(area,"FI")==0 && std::strcmp(currency,"EUR")==0;
+}
+bool save_cache(const PriceCache& value,const MarketIdentity& id) {
+    auto packed=forecast_buffer<RegionalCompactPriceCache>();
+    if(!packed || !pack_regional_price_cache(value,id.area,id.currency,*packed))return false;
+    xSemaphoreTake(mutex,portMAX_DELAY);
+    const bool current=identity_current_locked(id);
+    xSemaphoreGive(mutex);
+    if(!current)return false;
     nvs_handle_t handle;
-    if(nvs_open("enevina_market",NVS_READWRITE,&handle)!=ESP_OK) return;
-    // The old 200 x MarketPrice blob occupies most of the 20-KiB NVS area.
-    // Erase only THIS replaceable, already-validated price-cache key before
-    // creating compact v2. Price RAM remains available if flash is full.
-    const esp_err_t previous=nvs_erase_key(handle,"price_v1");
-    if(previous!=ESP_ERR_NVS_NOT_FOUND && previous!=ESP_OK) {
-        ESP_LOGW(tag,"NVS old-price removal failed: %d",previous);
-        nvs_close(handle);
-        return;
+    if(nvs_open("enevina_market",NVS_READWRITE,&handle)!=ESP_OK)return false;
+    // Only this reader writes price blobs. A region switch no longer erases
+    // keys asynchronously. A late write may lose a cache on next boot,
+    // but the embedded identity cannot label it as another market.
+    const bool fi=legacy_finland(id.area,id.currency);
+    // If an older pre-regional-migration build left a foreign/invalid
+    // stamp, remove its ambiguous price_v2 BEFORE clearing the stamp.
+    // A power cut must not turn those bytes into a Finnish cache.
+    char previous_stamp[16]{};size_t previous_size=sizeof(previous_stamp);
+    const auto previous_err=nvs_get_str(handle,region_key,previous_stamp,&previous_size);
+    const bool prior_fi=previous_err==ESP_ERR_NVS_NOT_FOUND ||
+        (previous_err==ESP_OK && std::strcmp(previous_stamp,"FI/EUR")==0);
+    if(fi && !prior_fi && (!erase_price_key(handle,"price_v2") || nvs_commit(handle)!=ESP_OK)) {
+        nvs_close(handle);return false;
     }
-    if(previous==ESP_OK && nvs_commit(handle)!=ESP_OK) {
-        ESP_LOGW(tag,"NVS old-price deletion commit failed");
-        nvs_close(handle);
-        return;
-    }
-    const bool legacy_fi=std::strcmp(stamp,"FI/EUR")==0;
-    const char* cache_blob_key=legacy_fi?"price_v2":regional_cache_key;
-    // Reclaim the incompatible legacy key BEFORE storing foreign prices:
-    // power-loss during migration may lose a replaceable cache, but cannot
-    // leave a rollback firmware reading foreign prices as FI/EUR.
-    const char* obsolete_key=legacy_fi?regional_cache_key:"price_v2";
-    const esp_err_t obsolete=nvs_erase_key(handle,obsolete_key);
-    if(obsolete!=ESP_OK && obsolete!=ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(tag,"NVS obsolete price removal failed: %d",obsolete);
-        nvs_close(handle);return;
-    }
-    if(obsolete==ESP_OK && nvs_commit(handle)!=ESP_OK) {
-        ESP_LOGW(tag,"NVS obsolete price removal commit failed");
-        nvs_close(handle);return;
-    }
-    if(nvs_set_blob(handle,cache_blob_key,compact.get(),sizeof(*compact))==ESP_OK) {
-        // Region stamp AFTER the blob: a power loss between the two leaves a
-        // blob whose stamp is missing/old, which load_cache() rejects unless
-        // it is the legacy Finland/EUR cache.
-        if(nvs_commit(handle)!=ESP_OK ||
-           nvs_set_str(handle,region_key,stamp)!=ESP_OK ||
-           nvs_commit(handle)!=ESP_OK)
-            ESP_LOGW(tag,"NVS compact-price commit failed");
+    const bool cleared=erase_price_key(handle,"price_v1") &&
+        erase_price_key(handle,fi?regional_cache_key:"price_v2") &&
+        erase_price_key(handle,region_key) && nvs_commit(handle)==ESP_OK;
+    // Finland-only legacy key is NEVER used for other regions. The regional
+    // key holds a self-identifying v3 envelope, not a separate region stamp.
+    const bool ok=cleared && (fi?
+        nvs_set_blob(handle,"price_v2",&packed->data,sizeof(packed->data)):
+        nvs_set_blob(handle,regional_cache_key,packed.get(),sizeof(*packed)))==ESP_OK &&
+        nvs_commit(handle)==ESP_OK;
+    nvs_close(handle);
+    if(!ok)ESP_LOGW(tag,"Price cache persistence failed; retaining RAM");
+    return ok;
+}
+void load_cache() {
+    const auto wanted=current_identity();
+    if(!wanted.area[0])return;
+    auto saved=forecast_buffer<PriceCache>();
+    auto packed=forecast_buffer<RegionalCompactPriceCache>();
+    if(!saved||!packed)return;
+    nvs_handle_t handle;
+    if(nvs_open("enevina_market",NVS_READONLY,&handle)!=ESP_OK)return;
+    bool migrate_legacy=false,ok=false;
+    const bool fi=legacy_finland(wanted.area,wanted.currency);
+    if(fi) {
+        // A genuinely absent stamp predates regional pricing. Other errors
+        // and non-FI stamps cannot authorize the Finland legacy key.
+        char stamp[16]{};size_t stamp_size=sizeof(stamp);
+        const auto err=nvs_get_str(handle,region_key,stamp,&stamp_size);
+        const bool fi_stamp=err==ESP_ERR_NVS_NOT_FOUND ||
+            (err==ESP_OK && std::strcmp(stamp,"FI/EUR")==0);
+        if(fi_stamp) {
+            size_t size=sizeof(packed->data);
+            ok=nvs_get_blob(handle,"price_v2",&packed->data,&size)==ESP_OK &&
+                size==sizeof(packed->data) && unpack_price_cache(packed->data,*saved) &&
+                valid_prices(*saved);
+            if(!ok) {
+                size=sizeof(*saved);
+                ok=nvs_get_blob(handle,"price_v1",saved.get(),&size)==ESP_OK &&
+                    size==sizeof(*saved) && valid_prices(*saved);
+                migrate_legacy=ok;
+            }
+        }
     } else {
-        ESP_LOGW(tag,"NVS compact-price write failed");
+        size_t size=sizeof(*packed);
+        // Old regional v2 had a separate stamp which could survive a torn
+        // write. Its provenance cannot be recovered: fetch once instead.
+        // Never fall back to the Finland legacy blob for a foreign region.
+        ok=nvs_get_blob(handle,regional_cache_key,packed.get(),&size)==ESP_OK &&
+            size==sizeof(*packed) &&
+            unpack_regional_price_cache(*packed,wanted.area,wanted.currency,*saved) &&
+            valid_prices(*saved);
     }
     nvs_close(handle);
+    if(!ok)return;
+    xSemaphoreTake(mutex,portMAX_DELAY);
+    const bool accepted=identity_current_locked(wanted);
+    if(accepted) {
+        *cache=*saved;++cache_revision;
+    }
+    xSemaphoreGive(mutex);
+    if(accepted&&migrate_legacy)save_cache(*saved,wanted);
 }
 
 // Fetches and strictly parses ONE Nord Pool market day for the given area and
@@ -295,7 +289,7 @@ void poll_prices(void*) {
         if(now>1700000000) {
             // Snapshot the region this attempt belongs to. A region change
             // while the request is in flight makes the whole result void.
-            char area[8],currency[4],stamp[16];
+            char area[8],currency[4];
             uint32_t generation=0;
             xSemaphoreTake(mutex,portMAX_DELAY);
             std::snprintf(area,sizeof(area),"%s",region_area);
@@ -306,8 +300,7 @@ void poll_prices(void*) {
                 ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(5000));
                 continue;
             }
-            std::snprintf(stamp,sizeof(stamp),"%s/%s",area,currency);
-            auto* fresh=new(std::nothrow) PriceCache;
+            auto fresh=forecast_buffer<PriceCache>();
             if(fresh) {
                 fresh->fetched_utc=now;
                 bool today_ok=false;
@@ -323,9 +316,11 @@ void poll_prices(void*) {
                     if(day==0) {
                         today_ok=ok;
                         xSemaphoreTake(mutex,portMAX_DELAY);
-                        last_error=ok?0:code;
-                        last_http_status=http;
-                        last_attempt_utc=now;
+                        if(generation==region_generation) {
+                            last_error=ok?0:code;
+                            last_http_status=http;
+                            last_attempt_utc=now;
+                        }
                         xSemaphoreGive(mutex);
                     }
                     if(!ok) break; // Tomorrow may not be published yet.
@@ -338,25 +333,29 @@ void poll_prices(void*) {
                         // A successful today fetch is not proof that yesterday's
                         // validated tomorrow prices have disappeared. Keep any
                         // contiguous future tail if tomorrow is unavailable.
-                        preserve_future_price_tail(cache,*fresh);
+                        preserve_future_price_tail(*cache,*fresh);
                         accepted=valid_prices(*fresh);
-                        changed=accepted && !same_prices(cache,*fresh);
+                        changed=accepted && !same_prices(*cache,*fresh);
                         if(accepted) {
-                            cache=*fresh;
-                            std::snprintf(cache_area,sizeof(cache_area),"%s",area);
-                            std::snprintf(cache_currency,sizeof(cache_currency),"%s",currency);
+                            *cache=*fresh;++cache_revision;
                         }
                     }
                     xSemaphoreGive(mutex);
                     // Do not erase valid future prices from NVS on a partial fetch.
-                    if(accepted && changed) save_cache(*fresh,stamp);
+                    if(accepted && changed) {
+                        MarketIdentity saved_id{};
+                        std::snprintf(saved_id.area,sizeof(saved_id.area),"%s",area);
+                        std::snprintf(saved_id.currency,sizeof(saved_id.currency),"%s",currency);
+                        saved_id.generation=generation;
+                        save_cache(*fresh,saved_id);
+                    }
                     updated=accepted;
                     if(accepted) ESP_LOGI(tag,"validated %lu %s price slots (%s)",
                         static_cast<unsigned long>(fresh->count),area,currency);
                     else ESP_LOGW(tag,"price refresh discarded (region changed or invalid)");
                 } else ESP_LOGW(tag,"price fetch incomplete (code %u http %d); retaining validated cache",
                     static_cast<unsigned>(code),http);
-                delete fresh;
+
             }
         }
         const int next_ms=updated ? 30*60*1000 :
@@ -372,7 +371,8 @@ uint32_t market_reader_stack_free() {
 void start_market_reader() {
     if(reader_task)return;
     if(!mutex) mutex=xSemaphoreCreateMutex();
-    if(!mutex) { ESP_LOGE(tag,"market mutex allocation failed"); return; }
+    if(!cache)cache=forecast_buffer<PriceCache>();
+    if(!mutex||!cache) { ESP_LOGE(tag,"market state allocation failed"); return; }
     if(xTaskCreate(poll_prices,"market_read",8192,nullptr,3,&reader_task)!=pdPASS) {
         reader_task=nullptr;
         ESP_LOGE(tag,"market task creation failed");
@@ -395,44 +395,22 @@ bool market_set_region(const char* area,const char* currency) {
        std::strlen(area)>=sizeof(region_area))) return false;
     if(disabled) {area="";currency="";}
     if(!mutex) mutex=xSemaphoreCreateMutex();
-    if(!mutex) return false;
+    if(!cache)cache=forecast_buffer<PriceCache>();
+    if(!mutex||!cache)return false;
     xSemaphoreTake(mutex,portMAX_DELAY);
-    if(!region_adopted) {
-        region_adopted=true;
-        std::snprintf(region_area,sizeof(region_area),"%s",area);
-        std::snprintf(region_currency,sizeof(region_currency),"%s",currency);
-        xSemaphoreGive(mutex);
-        return true;                    // boot-time adoption: nothing cached yet, nothing erased
-    }
     const bool changed=std::strcmp(region_area,area)!=0 ||
         std::strcmp(region_currency,currency)!=0;
+    // First adoption also fences an in-flight default-region load.
     if(changed) {
         std::snprintf(region_area,sizeof(region_area),"%s",area);
         std::snprintf(region_currency,sizeof(region_currency),"%s",currency);
-        ++region_generation;
-        // Prices of the previous zone/currency are never shown or reused.
-        cache=PriceCache{};
-        last_error=0;
-        last_http_status=0;
-        last_attempt_utc=0;
+        ++region_generation;++cache_revision;
+        // Clear only RAM metadata. The reader is the sole cache writer.
+        cache->count=0;cache->fetched_utc=0;
+        last_error=0;last_http_status=0;last_attempt_utc=0;
     }
     xSemaphoreGive(mutex);
-    if(changed) {
-        // Drop only the replaceable price cache and its stamp; never touch
-        // other NVS namespaces or keys (Wi-Fi, OTA, sensors, settings).
-        nvs_handle_t handle;
-        if(nvs_open("enevina_market",NVS_READWRITE,&handle)==ESP_OK) {
-            nvs_erase_key(handle,"price_v2");
-            nvs_erase_key(handle,regional_cache_key);
-            nvs_erase_key(handle,"price_v1");
-            nvs_erase_key(handle,region_key);
-            nvs_commit(handle);
-            nvs_close(handle);
-        }
-        // Clear cache only for a genuine runtime region change, then wake the
-        // existing reader even if its previous successful fetch scheduled 30m.
-        if(reader_task) xTaskNotifyGive(reader_task);
-    }
+    if(changed && reader_task)xTaskNotifyGive(reader_task);
     return true;
 }
 
@@ -440,21 +418,23 @@ MarketStatus market_status() {
     MarketStatus status;
     const time_t now=time(nullptr);
     status.clock_trusted=now>1700000000;
-    if(!mutex || !status.clock_trusted) return status;
+    if(!mutex || !cache || !status.clock_trusted) return status;
     xSemaphoreTake(mutex,portMAX_DELAY);
-    status.slots=cache.count;
-    status.last_fetch_utc=cache.fetched_utc;
+    status.region_generation=region_generation;
+    status.cache_revision=cache_revision;
+    status.slots=cache->count;
+    status.last_fetch_utc=cache->fetched_utc;
     std::snprintf(status.area,sizeof(status.area),"%s",region_area);
     std::snprintf(status.currency,sizeof(status.currency),"%s",region_currency);
     status.last_error=last_error;
     status.last_http_status=last_http_status;
     status.last_attempt_utc=last_attempt_utc;
-    for(size_t i=0;i<cache.count;++i) {
-        const auto& p=cache.prices[i];
+    for(size_t i=0;i<cache->count;++i) {
+        const auto& p=cache->prices[i];
         if(p.start_utc<=now && now<p.end_utc) {
             status.current_price_valid=true;
             status.current_spot_eur_per_kwh=p.eur_per_mwh/1000.0;
-            status.valid_until_utc=cache.prices[cache.count-1].end_utc;
+            status.valid_until_utc=cache->prices[cache->count-1].end_utc;
             break;
         }
     }
@@ -462,13 +442,17 @@ MarketStatus market_status() {
     return status;
 }
 
-size_t future_prices(PricePoint* output, size_t capacity) {
+size_t future_prices(PricePoint* output, size_t capacity,const MarketStatus* expected) {
     const time_t now=time(nullptr);
-    if(!output || !mutex || now<=1700000000) return 0;
+    if(!output || !mutex || !cache || now<=1700000000) return 0;
     size_t count=0;
     xSemaphoreTake(mutex,portMAX_DELAY);
-    for(size_t i=0;i<cache.count && count<capacity;++i) {
-        const auto& p=cache.prices[i];
+    if(expected && (expected->region_generation!=region_generation ||
+       expected->cache_revision!=cache_revision)) {
+        xSemaphoreGive(mutex);return 0;
+    }
+    for(size_t i=0;i<cache->count && count<capacity;++i) {
+        const auto& p=cache->prices[i];
         if(p.end_utc>now) output[count++]={p.start_utc,p.eur_per_mwh/1000.0};
     }
     xSemaphoreGive(mutex);

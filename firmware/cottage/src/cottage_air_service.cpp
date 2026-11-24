@@ -387,7 +387,7 @@ void send_sensors(WebServer& web) {
     cJSON_Delete(root);
     if(!body) {web.send(503,"application/json","{}");return;}
     web.sendHeader("Cache-Control","no-store");
-    web.send(200,"application/json; charset=utf-8",body);
+    web.send_P(200,"application/json; charset=utf-8",body);
     cJSON_free(body);
 }
 bool check_token(WebServer& web) {

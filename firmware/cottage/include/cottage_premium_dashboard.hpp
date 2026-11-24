@@ -3047,6 +3047,7 @@ function switchView(name){
   $('technical-notice').hidden=name==='home';
   if(name==='history'&&typeof reloadHistoryView==='function')reloadHistoryView();
   if(name==='home'&&state.homeHistoryStarted)clReloadHomeHistory();
+  if(name==='plan'&&typeof window.reloadMpcCard==='function')window.reloadMpcCard();
 }
 document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>switchView(b.dataset.view)));
 window.addEventListener('hashchange',()=>switchView(location.hash.slice(1)));
@@ -5091,7 +5092,22 @@ for(const [id,enabled] of [['panasonic-approve',true],['panasonic-revoke',false]
 for(const [id,action] of [['panasonic-setpoint','target'],['panasonic-heat','heat'],['panasonic-off','off']])
   $(id).addEventListener('click',()=>panasonicJob('control',{action,
     revision:String(panasonicStatus?.revision??''),target:$('panasonic-command-target').value}));
-async function initialRefresh(){await reloadStatus();await reloadPrices();await reloadWeather();await reloadPlan();await reloadHistory();await reloadSite();await reloadMidea();await reloadGree();await reloadDaikin();await reloadEchonet();await reloadWfRac();await reloadDsiot();await reloadDirectCn105();await reloadDaikinS21();await reloadHaier();await reloadPanasonic();await reloadTimeline();await reloadFreshness();
+async function reloadSelectedPump(){
+  // All other adapters already check saved/draft identity themselves.
+  // The Midea endpoint previously ran regardless of the selected brand.
+  // While the wizard's Midea poller is active, do not duplicate its reads.
+  if(state.site?.pump_adapter==='midea_lan'&&!wzMideaTimer)await reloadMidea();
+  if(!greeBusy)await reloadGree();
+  if(!daikinBusy)await reloadDaikin();
+  if(!echonetBusy)await reloadEchonet();
+  if(!wfRacBusy)await reloadWfRac();
+  if(!dsiotBusy)await reloadDsiot();
+  if(!cn105DirectBusy)await reloadDirectCn105();
+  if(!daikinS21Busy)await reloadDaikinS21();
+  if(!haierBusy)await reloadHaier();
+  if(!panasonicBusy)await reloadPanasonic();
+}
+async function initialRefresh(){await reloadStatus();await reloadSite();if(!state.priceRequestSequence)await reloadPrices();await reloadWeather();await reloadPlan();await reloadHistory();await reloadSelectedPump();if(!timelineRequestSequence)await reloadTimeline();await reloadFreshness();
   state.homeHistoryStarted=true;
   if(document.getElementById('view-home').classList.contains('active'))await clReloadHomeHistory();
   const roomSettings=$('room-temperature-settings');
@@ -5103,7 +5119,34 @@ async function initialRefresh(){await reloadStatus();await reloadPrices();await 
     if(state.status)showStatus();
     translateDashboard();
   }
-  if(typeof wizardMaybeOpen==='function')wizardMaybeOpen();}
+  state.initialReady=true;
+  state.lastSlowPoll=state.lastHistoryPoll=Date.now();
+  if(typeof wizardMaybeOpen==='function')wizardMaybeOpen();
+}
+// All regular refreshes use one non-overlapping sequence. A slow request
+// cannot cause a new timer to launch another group of sockets.
+async function periodicRefresh(){
+  if(!state.initialReady||state.periodicBusy||document.hidden===true)return;
+  state.periodicBusy=true;
+  try {
+    await reloadStatus();
+    await reloadSelectedPump();
+    const now=Date.now();
+    if(now-state.lastSlowPoll>=60000) {
+      state.lastSlowPoll=now;
+      await reloadPrices();await reloadWeather();await reloadPlan();
+      await reloadTimeline();await reloadFreshness();
+      if($('view-history').classList.contains('active'))await reloadHistoryView();
+      if($('view-plan').classList.contains('active')&&typeof window.reloadMpcCard==='function')
+        await window.reloadMpcCard();
+    }
+    if(now-state.lastHistoryPoll>=180000){
+      state.lastHistoryPoll=now;
+      if($('view-home').classList.contains('active'))await clReloadHomeHistory();
+      else if($('view-settings').classList.contains('active')||$('view-details').classList.contains('active'))await reloadHistory();
+    }
+  }finally{state.periodicBusy=false;}
+}
 document.getElementById('wz-reopen').addEventListener('click',()=>{WZ.dismissed=false;wzOpen(true);});
 document.getElementById('wz-next').addEventListener('click',()=>wzNext(false));
 document.getElementById('wz-skip').addEventListener('click',()=>wzNext(true));
@@ -5112,12 +5155,7 @@ document.getElementById('wz-close').addEventListener('click',()=>{WZ.dismissed=t
 window.addEventListener('keydown',e=>{if(e.key==='Escape'&&WZ.open){WZ.dismissed=true;wzClose();}});
 translateDashboard();
 initialRefresh();
-setInterval(reloadStatus,15000);
-setInterval(reloadMidea,30000);
-setInterval(()=>{if(!greeBusy)reloadGree();if(!daikinBusy)reloadDaikin();if(!echonetBusy)reloadEchonet();if(!wfRacBusy)reloadWfRac();if(!dsiotBusy)reloadDsiot();if(!cn105DirectBusy)reloadDirectCn105();if(!daikinS21Busy)reloadDaikinS21();if(!haierBusy)reloadHaier();if(!panasonicBusy)reloadPanasonic();},10000);
-setInterval(async()=>{await reloadPrices();await reloadWeather();await reloadPlan();await reloadTimeline();await reloadFreshness();
-  if(document.getElementById('view-history').classList.contains('active'))await reloadHistoryView();},60000);
-setInterval(()=>{if(document.getElementById('view-home').classList.contains('active'))clReloadHomeHistory();else reloadHistory();},180000);
+setInterval(periodicRefresh,15000);
 </script>
 <script data-part="mpc">
 'use strict';
@@ -5355,14 +5393,19 @@ function render(){
   g3.append(box(t('meter'),num(meter.watts)===null?'—':f(meter.watts,0)+' W',meter.scope==='HEAT_PUMP_ONLY'?t('scopeP'):t('scopeU')));
   c.append(g3,node('p','tiny muted',t('sim')));
 }
+let mpcLoading=false;
 async function load(){
+  if(mpcLoading)return;mpcLoading=true;
   try{const r=await fetch('/api/mpc',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);data=await r.json();}
   catch(_){data={error:true};}
+  finally{mpcLoading=false;}
   render();
 }
 document.querySelectorAll('[data-lang]').forEach(b=>b.addEventListener('click',()=>setTimeout(render,0)));
-load();
-setInterval(load,60000);
+if(typeof window!=='undefined'){
+  window.reloadMpcCard=load;
+  if(document.getElementById('view-plan')?.classList.contains('active'))load();
+}else load();
 })();
 </script>
 </body>

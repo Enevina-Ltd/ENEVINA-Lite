@@ -306,7 +306,7 @@ void send_settings(WebServer& web) {
     cJSON_Delete(root);
     if(!body) {web.send(503,"application/json","{}");return;}
     web.sendHeader("Cache-Control","no-store");
-    web.send(200,"application/json; charset=utf-8",body);
+    web.send_P(200,"application/json; charset=utf-8",body);
     cJSON_free(body);
 }
 void apply_market_region(const SiteSettings& s) {
@@ -574,7 +574,7 @@ static void send_regions(WebServer& web) {
     cJSON_Delete(root);
     if(!body) {web.send(503,"application/json","{}");return;}
     web.sendHeader("Cache-Control","public, max-age=3600");
-    web.send(200,"application/json; charset=utf-8",body);
+    web.send_P(200,"application/json; charset=utf-8",body);
     cJSON_free(body);
 }
 // City search. The worker task does the HTTPS request; this handler only
@@ -615,7 +615,7 @@ static void send_geocode(WebServer& web) {
     cJSON_Delete(root);
     if(!body) {web.send(503,"application/json","{}");return;}
     web.sendHeader("Cache-Control","no-store");
-    web.send(st==GeocodeState::Pending?202:200,"application/json; charset=utf-8",body);
+    web.send_P(st==GeocodeState::Pending?202:200,"application/json; charset=utf-8",body);
     cJSON_free(body);
 }
 // Shelly discovery: the worker task scans; this handler starts/polls only.
@@ -650,7 +650,7 @@ static void send_shelly_scan(WebServer& web) {
     cJSON_Delete(root);
     if(!body) {web.send(503,"application/json","{}");return;}
     web.sendHeader("Cache-Control","no-store");
-    web.send(st==ShellyScanState::Pending?202:200,"application/json; charset=utf-8",body);
+    web.send_P(st==ShellyScanState::Pending?202:200,"application/json; charset=utf-8",body);
     cJSON_free(body);
 }
 void site_settings_register_routes(WebServer& web) {

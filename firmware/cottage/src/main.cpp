@@ -25,6 +25,7 @@
 #include <string>
 #include "cottage_config.hpp"
 #include "cottage_premium_dashboard.hpp"
+#include "cottage_dashboard_gzip.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
 #include "cottage_secure_ota.hpp"
@@ -175,7 +176,7 @@ static void crash_evidence_endpoint() {
     }
     char* body=cJSON_PrintUnformatted(root);
     web.sendHeader("Cache-Control","no-store");
-    web.send(body?200:503,"application/json",body?body:"{}");
+    web.send_P(body?200:503,"application/json",body?body:"{}");
     cJSON_free(body);cJSON_Delete(root);
 }
 static bool boot_ui_started=false;
@@ -281,14 +282,6 @@ static std::atomic<uint32_t> cn105_get_last_largest_internal{0};
 
 
 static char reason_text[80]="Käynnistys";
-struct Row {
-    int64_t utc=0;
-    double indoor=0;
-    double electric=0;
-    double price=0;
-    bool heat16=false;
-};
-static std::array<Row,max_horizon_slots> plan_rows{};
 static Parameters model{};
 // ---- Live MPC chain (identification -> receding-horizon plan -> arbiter) --
 // The identifier and plan rows live in PSRAM and are written ONLY by the
@@ -806,6 +799,12 @@ static void shelly_worker(void*) {
 // ONE price rule for the MPC bridge, bootstrap, /api/status and /api/prices:
 // browser-configured site tariff evaluated at the slot START in Finnish
 // civil time (DST-safe, independent of the TZ variable).
+static bool market_matches_site(const enevina_firmware::MarketStatus& market,
+                                const SiteSettings& site) {
+    const char* area=nullptr;const char* currency=nullptr;int offset=0;
+    return site_market_region(site,area,currency,offset) &&
+        std::strcmp(area,market.area)==0 && std::strcmp(currency,market.currency)==0;
+}
 static bool bridge_slot_price(void*,int64_t utc,double spot,double& total) {
     return site_slot_total_price(utc,spot,total);
 }
@@ -867,12 +866,12 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     std::array<enevina_firmware::PricePoint,kMaxSlots> points{};
     std::array<double,kMaxSlots> prices{};
     const int64_t start=(now/900)*900;
-    const bool eligible=now>=1700000000 && market.clock_trusted &&
+    const bool eligible=market_matches_site(market,site) && now>=1700000000 && market.clock_trusted &&
         market.current_price_valid && market.last_fetch_utc<=now &&
         market.last_fetch_utc>=now-36*3600 &&
         market.valid_until_utc>=start+static_cast<int64_t>(kMinSlots)*900;
     const size_t have=eligible ? enevina_firmware::future_prices(
-        points.data(),points.size()) : 0;
+        points.data(),points.size(),&market) : 0;
     // Use as much of the profile's price window as is available and strictly
     // contiguous from the current slot, but never fewer than 8 slots.
     size_t n=0;
@@ -2290,8 +2289,6 @@ static void optimizer_worker(void*) {
         MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     auto* rows=static_cast<PlanRow*>(heap_caps_malloc(sizeof(PlanRow)*max_horizon_slots,
         MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
-    auto* legacy=static_cast<Row*>(heap_caps_malloc(
-        sizeof(Row)*max_horizon_slots,scratch_caps));
     auto* trend=static_cast<TrendPoint*>(heap_caps_malloc(
         sizeof(TrendPoint)*BuildingIdentifier::trend_slots,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     void* id_mem=heap_caps_malloc(sizeof(BuildingIdentifier),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -2302,8 +2299,7 @@ static void optimizer_worker(void*) {
     if(aligned) for(size_t i=0;i<200;++i) new(aligned+i) Spot15();
     if(hz) new(hz) HorizonResult();
     if(rows) for(size_t i=0;i<max_horizon_slots;++i) new(rows+i) PlanRow();
-    if(legacy) for(size_t i=0;i<max_horizon_slots;++i) new(legacy+i) Row();
-    if(!prices || !weather || !aligned || !legacy)
+    if(!prices || !weather || !aligned || !hz || !rows || !trend || !id)
         Serial.println("OPTIMIZER_WARN: PSRAM scratch unavailable; planning disabled");
     uint32_t identity=identifier_identity();
     // The stored model is bound to site identity AND the persistent reset
@@ -2412,7 +2408,7 @@ static void optimizer_worker(void*) {
         const uint32_t meter_id=shelly_meter_identity();
         if(id)id->select_electric_meter(meter_id);
         if(wifi_ok.load() && clock_ok() && prices && weather && aligned && hz && rows &&
-           legacy && trend && id && id->variable_setpoints()==variable_setpoint_model_selected()) {
+           trend && id && id->variable_setpoints()==variable_setpoint_model_selected()) {
             // A fresh indoor measurement is not a forecast for an entire
             // unfinished quarter-hour: learn and plan only at the boundary.
             boundary=(now-slot_start)<=60 && slot_start!=last_boundary;
@@ -2432,7 +2428,8 @@ static void optimizer_worker(void*) {
            (id && identifier_identity()!=identity))ts={};
         const auto ms=enevina_firmware::market_status();
         const auto ws=enevina_firmware::weather_status();
-        const size_t pc=boundary?enevina_firmware::future_prices(prices,200):0;
+        const size_t pc=boundary&&market_matches_site(ms,site_settings_snapshot())?
+            enevina_firmware::future_prices(prices,200,&ms):0;
         const size_t wc=boundary?enevina_firmware::future_weather(weather,64):0;
         if(boundary) {
             last_boundary=slot_start;
@@ -2562,10 +2559,6 @@ static void optimizer_worker(void*) {
             const uint32_t begun=millis();
             const PlannerOutput po=plan_mpc(pi,rows);
             const uint32_t elapsed=millis()-begun;
-            // Legacy /api/plan rows mirror the MPC plan.
-            std::fill(legacy,legacy+max_horizon_slots,Row{});
-            for(size_t i=0;i<po.rows;++i)
-                legacy[i]={rows[i].utc,rows[i].indoor_c,rows[i].energy_kwh,rows[i].cost,rows[i].heat};
             const MpcResult result=po.result;
             const auto after=optimizer_pump_state(time(nullptr),midea);
             xSemaphoreTake(lock_data,portMAX_DELAY);
@@ -2609,7 +2602,6 @@ static void optimizer_worker(void*) {
                 last_plan.status=MpcStatus::InvalidInput;
             } else if(record.has_plan) {
                 last_plan=result;
-                std::copy(legacy,legacy+max_horizon_slots,plan_rows.begin());
                 plan_count=po.rows;
             } else {
                 last_plan=result;
@@ -2728,7 +2720,7 @@ static void status_endpoint() {
     const auto price=enevina_firmware::market_status();
     const auto weather=enevina_firmware::weather_status();
     double total=0;
-    const bool valid_total=price.current_price_valid &&
+    const bool valid_total=price.current_price_valid && market_matches_site(price,site_settings_snapshot()) &&
         site_slot_total_price((now/900)*900,price.current_spot_eur_per_kwh,total);
     const BootstrapDecision bootstrap=bootstrap_preview(now,selected);
     cJSON* root=cJSON_CreateObject();
@@ -3121,7 +3113,7 @@ static void status_endpoint() {
     c23_append_status(root);
     char* serialized=cJSON_PrintUnformatted(root);
     web.sendHeader("Cache-Control","no-store");
-    web.send(200,"application/json; charset=utf-8",serialized?serialized:"{}");
+    web.send_P(serialized?200:503,"application/json; charset=utf-8",serialized?serialized:"{}");
     cJSON_free(serialized);cJSON_Delete(root);
 }
 static void plan_endpoint() {
@@ -3488,9 +3480,9 @@ static enevina::cottage::HistoryInputs history_collect() {
         scope=ShellyScope::Unknown;
     in.power_scope=static_cast<uint8_t>(scope);
     const auto market=enevina_firmware::market_status();
-    in.prices_ok=market.current_price_valid;
+    in.prices_ok=market.current_price_valid && market_matches_site(market,meter_settings);
     double total=0;
-    if(market.current_price_valid && site_slot_total_price((now/900)*900,market.current_spot_eur_per_kwh,total)) {
+    if(in.prices_ok && site_slot_total_price((now/900)*900,market.current_spot_eur_per_kwh,total)) {
         in.price_valid=true;in.price_per_kwh=total;
         in.price_currency=enevina::cottage::history_currency_id(market.currency);
     }
@@ -3520,7 +3512,7 @@ static void freshness_endpoint() {
     const SiteSettings site=site_settings_snapshot();
     const char* area=nullptr;const char* currency=nullptr;int offset=0;
     in.price_zone_configured=site_market_region(site,area,currency,offset);
-    in.price_current_valid=market.current_price_valid;
+    in.price_current_valid=market.current_price_valid && market_matches_site(market,site);
     // Reuse the live controller's validated total-price path, not spot-only
     // metadata. This checks the confirmed tariff, contiguous 8 slots and
     // actual proposal mode; never claim price control if bootstrap falls back.
@@ -3602,7 +3594,7 @@ static void timeline_endpoint() {
         web.send(503,"application/json; charset=utf-8","{\"valid\":false,\"slots\":[],\"segments\":[]}");
         return;
     }
-    const size_t have=enevina_firmware::future_prices(points,kMax);
+    const size_t have=enevina_firmware::future_prices(points,kMax,&market);
     size_t n=0;
     for(size_t i=0;i<have;++i) {
         double t=0;
@@ -3677,11 +3669,12 @@ static void prices_endpoint() {
                  "{\"valid\":false,\"slots\":[]}");
         return;
     }
-    const size_t count=enevina_firmware::future_prices(points,kMaxPriceSlots);
+    const size_t count=enevina_firmware::future_prices(points,kMaxPriceSlots,&market);
     const auto after=enevina_firmware::market_status();
     if(!after.clock_trusted || !after.current_price_valid ||
        strcmp(after.area,market.area)!=0 || strcmp(after.currency,market.currency)!=0 ||
-       after.last_fetch_utc!=market.last_fetch_utc) {
+       after.region_generation!=market.region_generation ||
+       after.cache_revision!=market.cache_revision) {
         heap_caps_free(points);
         web.sendHeader("Cache-Control","no-store");
         web.send(200,"application/json; charset=utf-8","{\"valid\":false,\"slots\":[]}");
@@ -3822,7 +3815,16 @@ void setup() {
             "default-src 'self'; connect-src 'self'; img-src 'self' data:; "
             "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
             "frame-ancestors 'none'; base-uri 'none'");
+        // Compression happens at build time. Same HTML and bounded writer,
+        // no runtime compressor, allocation or additional route.
+        web.sendHeader("Vary","Accept-Encoding");
+        if(web.acceptsGzip()) {
+            web.sendHeader("Content-Encoding","gzip");
+            web.send_P(200,"text/html; charset=utf-8",
+                reinterpret_cast<PGM_P>(premium_dashboard_gzip),sizeof(premium_dashboard_gzip));
+        } else {
         web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html);
+        }
     });
     web.on("/api/status",HTTP_GET,[](){
         if(cottage_wifi_require_home_lan(web))status_endpoint();

@@ -369,7 +369,7 @@ void status(WebServer& web) {
             cJSON_AddNumberToObject(root,"compressor_hz",*sample.temperatures.compressor_hz);
     }
     char* data=cJSON_PrintUnformatted(root);
-    web.send(data?200:503,"application/json",data?data:"{}");
+    web.send_P(data?200:503,"application/json",data?data:"{}");
     cJSON_free(data);
     cJSON_Delete(root);
 }

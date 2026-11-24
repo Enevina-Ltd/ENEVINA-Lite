@@ -44,4 +44,22 @@ int main() {
     packed.count=192;
     packed.prices_eur_per_mwh[9]=std::numeric_limits<double>::infinity();
     assert(!unpack_price_cache(packed,result));
+    // A regional blob carries its own identity. Neither a different
+    // area's current settings nor an external stamp can relabel it.
+    RegionalCompactPriceCache regional{};
+    assert(pack_regional_price_cache(source,"SE3","SEK",regional));
+    assert(unpack_regional_price_cache(regional,"SE3","SEK",result));
+    assert(result.prices[9].eur_per_mwh==source.prices[9].eur_per_mwh);
+    const auto previous=result.prices[9].eur_per_mwh;
+    assert(!unpack_regional_price_cache(regional,"SE4","SEK",result));
+    assert(!unpack_regional_price_cache(regional,"SE3","EUR",result));
+    assert(!unpack_regional_price_cache(regional,"FI","EUR",result));
+    assert(result.prices[9].eur_per_mwh==previous);
+    regional.version=2;
+    assert(!unpack_regional_price_cache(regional,"SE3","SEK",result));
+    regional.version=3;
+    std::memset(regional.area,'X',sizeof(regional.area));
+    assert(!unpack_regional_price_cache(regional,"SE3","SEK",result));
+    assert(!pack_regional_price_cache(source,"TOO_LONG_REGION","SEK",regional));
+    assert(!pack_regional_price_cache(source,"FI","EU",regional));
 }

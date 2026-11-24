@@ -46,7 +46,7 @@ class PremiumDashboardSourceTests(unittest.TestCase):
         self.assertIn("if(cottage_wifi_require_home_lan(web))prices_endpoint();",MAIN)
         self.assertNotIn('web.on("/api/prices",HTTP_POST',MAIN)
         self.assertIn("market.clock_trusted || !market.current_price_valid", MAIN)
-        self.assertIn("enevina_firmware::future_prices(points,kMaxPriceSlots)", MAIN)
+        self.assertIn("enevina_firmware::future_prices(points,kMaxPriceSlots,&market)", MAIN)
         self.assertIn("MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT", MAIN)
         # One DST-safe price rule (audit 18.11.2026): /api/prices, /api/status,
         # bootstrap and MPC bridge all use site_slot_total_price; no TZ-based
