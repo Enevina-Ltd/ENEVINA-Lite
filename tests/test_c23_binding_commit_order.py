@@ -10,7 +10,7 @@ SRC=(pathlib.Path(__file__).resolve().parents[1] /
 class BindingCommitTests(unittest.TestCase):
     def test_purge_precedes_binding_and_fail_returns_without_commit(self):
         route=SRC.split('web.on("/api/air/bind",HTTP_POST',1)[1].split('web.on("/api/air/ack",HTTP_POST',1)[0]
-        purge=route.index('p.remove("hourly_v1")')
+        purge=route.index('purge_hourly_history()')
         failure=route.index('if(!purged)')
         new_binding=route.index('indoor_binding.bind(mac)')
         save=route.index('const bool saved=save_config()')
@@ -33,10 +33,13 @@ class BindingCommitTests(unittest.TestCase):
         self.assertLess(bind,persist)
         self.assertIn("if(saved)",save)
         self.assertIn("indoor_binding_persisted=true;",save)
-        self.assertIn("if(!history_origin_clean || !indoor_binding_persisted ||",checkpoint)
-        self.assertLess(checkpoint.index("if(!history_origin_clean"),checkpoint.index('prefs.putBytes("hourly_v1"'))
-        self.assertLess(checkpoint.index("lock();"),checkpoint.index('prefs.putBytes("hourly_v1"'))
-        self.assertGreater(checkpoint.index("unlock();",checkpoint.index('prefs.putBytes("hourly_v1"')),checkpoint.index('prefs.putBytes("hourly_v1"'))
+        self.assertIn("!history_origin_clean || !indoor_binding_persisted ||",checkpoint)
+        self.assertLess(checkpoint.index("!history_origin_clean"),checkpoint.index('prefs.putBytes("hourly_v1"'))
+        self.assertLess(checkpoint.index("xSemaphoreTake(guard,0)"),checkpoint.index('prefs.putBytes("hourly_v1"'))
+        self.assertLess(checkpoint.index("history_checkpoint_active=true;"),checkpoint.index('prefs.putBytes("hourly_v1"'))
+        self.assertLess(checkpoint.index("unlock();",checkpoint.index("history_checkpoint_active=true;")),checkpoint.index('prefs.putBytes("hourly_v1"'))
+        self.assertGreater(checkpoint.index("history_checkpoint_active=false;"),checkpoint.index('prefs.putBytes("hourly_v1"'))
+        self.assertLess(route.index("if(history_checkpoint_active)"),route.index("purge_hourly_history()"))
         self.assertIn('history_changed=false;',checkpoint)
         self.assertIn('// NVS failure keeps history_changed set',checkpoint)
 
@@ -47,14 +50,14 @@ class BindingCommitTests(unittest.TestCase):
         self.assertIn("verified_history_origin(",init)
         self.assertIn("if(origin_verified) {",init)
         self.assertIn("history.restore(*stored);",init)
-        self.assertIn('hp.remove("hourly_v1")',init)
+        self.assertIn('purge_hourly_history()',init)
         self.assertIn("if(!old_history_cleared || !save_config())",init)
         self.assertIn("indoor_binding_persisted=false;",init)
         # A was compiled/persisted in an older firmware; reflash with B
         # without a saved MAC must discard unowned legacy history before
         # first persisting B. Never restore or checkpoint through a purge
         # or config-write failure.
-        self.assertLess(init.index('hp.remove("hourly_v1")'),
+        self.assertLess(init.index('purge_hourly_history()'),
                         init.index("!save_config()"))
         self.assertLess(init.index("if(origin_verified) {"),
                         init.index("history.restore(*stored);"))
@@ -67,7 +70,7 @@ class BindingCommitTests(unittest.TestCase):
         checkpoint=SRC.split("void checkpoint() {",1)[1].split("bool parse_float(",1)[0]
         self.assertIn("history_origin_clean=origin_verified || old_history_cleared;",init)
         self.assertIn("if(!history_origin_clean)",save)
-        self.assertIn('purged=!hp.isKey("hourly_v1")||hp.remove("hourly_v1");',save)
+        self.assertIn('purged=!history_checkpoint_active && purge_hourly_history();',save)
         self.assertIn("if(!purged)",save)
         self.assertIn("indoor_binding_persisted=false;",save)
         self.assertIn("history_origin_clean=true;",save)
@@ -78,7 +81,7 @@ class BindingCommitTests(unittest.TestCase):
         self.assertLess(save.index("if(!purged)"),
                         save.index('p.putString("indoor",indoor_id)'))
         self.assertIn("history_origin_clean=true;",route)
-        self.assertIn("if(!history_origin_clean || !indoor_binding_persisted ||",checkpoint)
+        self.assertIn("!history_origin_clean || !indoor_binding_persisted ||",checkpoint)
         self.assertIn("const bool saved=save_config()",route)
         for initial_purge,retry_purge in ((False,False),(False,True),(True,True)):
             can_save = initial_purge or retry_purge

@@ -18,6 +18,10 @@ on:
       - 'tests/support/bounded_web/**'
       - 'tests/test_bounded_web_source.py'
       - 'tests/test_history_busy_source.py'
+      - 'tests/test_air_history_background.py'
+      - 'tests/test_c23_binding_commit_order.py'
+      - 'tests/test_cottage_c23_source.py'
+      - 'tests/test_air_history_ui.js'
       - 'tests/test_history_view.js'
       - 'tests/automatic_command_reconciliation_tests.cpp'
       - 'tests/test_automatic_command_reconciliation_source.py'
@@ -84,6 +88,10 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_automatic_command_reconciliation_source.py' -v
           python3 -m unittest discover -s tests -p 'test_bounded_web_source.py' -v
           python3 -m unittest discover -s tests -p 'test_history_busy_source.py' -v
+          python3 -m unittest discover -s tests -p 'test_air_history_background.py' -v
+          python3 -m unittest discover -s tests -p 'test_c23_binding_commit_order.py' -v
+          python3 -m unittest discover -s tests -p 'test_cottage_c23_source.py' -v
+          node tests/test_air_history_ui.js
           node tests/test_history_view.js
           node tests/test_mpc_dashboard.js
           node tests/test_c25_dashboard_ui.js

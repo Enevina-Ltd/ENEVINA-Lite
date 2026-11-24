@@ -43,7 +43,7 @@ class C23SourceTests(unittest.TestCase):
 
     def test_sensor_rebinding_does_not_mix_history(self):
         self.assertIn("history.clear()",SERVICE)
-        self.assertIn('p.remove("hourly_v1")',SERVICE)
+        self.assertIn('nvs_erase_key(handle,"hourly_v1")',SERVICE)
         self.assertIn("binding_changed",SERVICE)
 
     def test_ui_settings_only(self):

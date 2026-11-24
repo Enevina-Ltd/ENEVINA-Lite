@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <Preferences.h>
+#include <nvs.h>
 #include "cottage_bounded_web.hpp"
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
@@ -11,6 +12,7 @@
 #include <cstdio>
 #include <string>
 #include <new>
+#include <memory>
 #include "cottage_config.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_site_settings.hpp"
@@ -41,9 +43,14 @@ RuuviRegistry sensor_registry;
 SensorNames sensor_names;
 int64_t indoor_utc=0,outdoor_utc=0;
 uint64_t indoor_mono_ms=0,outdoor_mono_ms=0;
-uint64_t last_store_ms=0,last_tick_ms=0;
+uint64_t last_store_ms=0,last_tick_ms=0,checkpoint_retry_after_ms=0;
 bool has_indoor=false,has_outdoor=false,have_discovered=false;
 bool history_changed=false;
+// Protected by the existing sensor guard. A captured snapshot owns its
+// original binding until the background NVS write returns. A rebind must
+// not purge that key while the older checkpoint can still write it.
+bool history_checkpoint_active=false;
+uint32_t history_checkpoint_failures=0;
 // Fail closed: a newly bound sensor's hourly history is not persisted
 // until its MAC has been successfully saved to configuration NVS.
 bool indoor_binding_persisted=true;
@@ -71,6 +78,7 @@ std::array<AirEvent,48> events{};
 size_t events_next=0,events_count=0;
 bool last_alert_active[moisture_alert_count]{};
 constexpr uint64_t checkpoint_ms=6ULL*3600*1000;
+constexpr uint64_t checkpoint_retry_ms=60000;
 
 uint64_t uptime_ms() {
     return static_cast<uint64_t>(esp_timer_get_time()/1000);
@@ -109,7 +117,10 @@ void accept_indoor(const RuuviV5& r,uint64_t ms) {
         alarm_engine.observe(r,ms);
         refresh_alert_events();
         if(indoor_utc) {
-            if(history.add(indoor_air,indoor_utc))history_changed=true;
+            const bool added=history.add(indoor_air,indoor_utc);
+            if(added || (indoor_utc>=1700000000 && indoor_utc<=4102444800LL &&
+               history.count() && history.newest(0).hour_utc==uint32_t(indoor_utc/3600)))
+                history_changed=true;
         } else {
             // An offline boot has no trusted civil UTC; retain RAM history
             // separately indexed by elapsed local hours until NTP appears.
@@ -166,20 +177,24 @@ String mac_string(const std::array<uint8_t,6>& mac) {
              mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
     return String(b);
 }
+bool purge_hourly_history() {
+    nvs_handle_t handle;
+    const auto opened=nvs_open("cottage_hist",NVS_READWRITE,&handle);
+    if(opened!=ESP_OK)return false;
+    const auto erased=nvs_erase_key(handle,"hourly_v1");
+    const bool purged=erased==ESP_ERR_NVS_NOT_FOUND ||
+        (erased==ESP_OK && nvs_commit(handle)==ESP_OK);
+    nvs_close(handle);
+    return purged;
+}
 bool save_config() {
     CottageModeConfig cfg{};
     String indoor_id,outdoor_id;
     lock();
     if(!history_origin_clean) {
-        // A failed boot purge must not be bypassed by /air/config,
-        // /air/thresholds or a same-MAC /air/bind. Retry the purge
-        // under the same mutex used by the hourly checkpoint.
-        Preferences hp;
-        bool purged=false;
-        if(hp.begin("cottage_hist",false)) {
-            purged=!hp.isKey("hourly_v1")||hp.remove("hourly_v1");
-            hp.end();
-        }
+        // A failed boot purge must not be bypassed by a later settings
+        // save. Never race a previously captured history checkpoint.
+        const bool purged=!history_checkpoint_active && purge_hourly_history();
         if(!purged) {
             indoor_binding_persisted=false;
             unlock();
@@ -233,33 +248,49 @@ bool persisted_mode_matches(const CottageModeConfig& cfg) {
 }
 
 void checkpoint() {
+    if(!guard || xSemaphoreTake(guard,0)!=pdTRUE)return;
     const uint64_t ms=uptime_ms();
-    if(ms-last_store_ms<checkpoint_ms)return;
-    last_store_ms=ms;
-    lock();
-    // Bind and checkpoint must serialize the full NVS write with the
-    // same guard. Taking a snapshot and unlocking before putBytes()
-    // allows an old sensor's checkpoint to race behind a MAC change.
-    if(!history_origin_clean || !indoor_binding_persisted ||
+    if(ms-last_store_ms<checkpoint_ms || ms<checkpoint_retry_after_ms ||
+       history_checkpoint_active ||
+       !history_origin_clean || !indoor_binding_persisted ||
        !history_changed ||
        !history.count() ||
        history.newest(0).hour_utc>=0x80000000u) {
         unlock();return;
     }
     auto* mem=heap_caps_malloc(sizeof(AirHistoryDump),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    if(!mem) {unlock();return;}
+    if(!mem) {
+        ++history_checkpoint_failures;
+        checkpoint_retry_after_ms=ms+checkpoint_retry_ms;
+        unlock();return;
+    }
     auto* dump=new(mem) AirHistoryDump{};
     history.dump_into(*dump);
+    // Publish the in-flight state before dropping the guard. All indoor
+    // binding changes must reject while this snapshot can still reach NVS.
+    // New samples continue to set history_changed during the write.
+    history_checkpoint_active=true;
+    history_changed=false;
+    unlock();
+    bool saved=false;
     Preferences prefs;
     if(prefs.begin("cottage_hist",false)) {
-        if(prefs.putBytes("hourly_v1",dump,sizeof(*dump))==sizeof(*dump)) {
-            history_changed=false;
-            stores++;
-        }
+        saved=prefs.putBytes("hourly_v1",dump,sizeof(*dump))==sizeof(*dump);
         prefs.end();
     }
     dump->~AirHistoryDump();heap_caps_free(dump);
-    // NVS failure keeps history_changed set for the next checkpoint.
+    lock();
+    if(saved) {
+        last_store_ms=ms;
+        checkpoint_retry_after_ms=0;
+        ++stores;
+    } else {
+        // NVS failure keeps history_changed set, including any new samples.
+        history_changed=true;
+        ++history_checkpoint_failures;
+        checkpoint_retry_after_ms=uptime_ms()+checkpoint_retry_ms;
+    }
+    history_checkpoint_active=false;
     unlock();
 }
 bool parse_float(const String& input,double& result) {
@@ -432,9 +463,9 @@ void c23_initialize() {
     // fallback is not allowed to relabel another RuuviTag's history.
     indoor_binding_persisted=origin_verified || !indoor_binding.bound();
     bool old_history_cleared=false;
-    Preferences hp;
-    if(hp.begin("cottage_hist",origin_verified)) {
-        if(origin_verified) {
+    if(origin_verified) {
+        Preferences hp;
+        if(hp.begin("cottage_hist",true)) {
             if(hp.getBytesLength("hourly_v1")==sizeof(AirHistoryDump)) {
                 auto* mem=heap_caps_malloc(sizeof(AirHistoryDump),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
                 if(mem) {
@@ -444,14 +475,11 @@ void c23_initialize() {
                     stored->~AirHistoryDump();heap_caps_free(stored);
                 }
             }
-        } else {
-            // Purge unknown-origin history BEFORE persisting a new
-            // compile-time fallback binding. A crash between these steps
-            // cannot make A's old history appear to belong to B.
-            old_history_cleared=hp.getBytesLength("hourly_v1")==0 ||
-                                hp.remove("hourly_v1");
+            hp.end();
         }
-        hp.end();
+    } else {
+        // Purge unknown-origin history BEFORE persisting a new binding.
+        old_history_cleared=purge_hourly_history();
     }
     history_origin_clean=origin_verified || old_history_cleared;
     if(!origin_verified && indoor_binding.bound()) {
@@ -555,8 +583,9 @@ void c23_tick() {
     alarm_engine.tick(ms,indoor_binding.bound());
     refresh_alert_events();
     unlock();
-    checkpoint();
 }
+// Called only by the existing history worker, never by web.handleClient().
+void c23_checkpoint_tick(){checkpoint();}
 TemperatureSample c23_temperature_sample() {
     TemperatureSample out{};
     if(!guard)return out;
@@ -715,6 +744,8 @@ void c23_append_status(cJSON* root) {
     json_number_or_null(air,"rh_6h_change_pct",trend_ready,rh_trend);
     json_number_or_null(air,"absolute_6h_change_gm3",trend_ready,abs_trend);
     cJSON_AddNumberToObject(air,"nvs_checkpoints",stores);
+    cJSON_AddBoolToObject(air,"history_checkpoint_active",history_checkpoint_active);
+    cJSON_AddNumberToObject(air,"history_checkpoint_failures",history_checkpoint_failures);
     cJSON_AddNumberToObject(air,"low_heap_scan_skips",low_heap_skips);
     cJSON_AddNumberToObject(air,"ble_scan_attempts",ble_scan_attempts.load());
     cJSON_AddNumberToObject(air,"ble_scan_completed",ble_scan_completed.load());
@@ -796,16 +827,29 @@ void c23_append_status(cJSON* root) {
 }
 void c23_history_http(CottageWebServer& web) {
     if(!guard) {web.send(503,"application/json","{}");return;}
-    // 168 records * compact JSON, streamed instead of large allocations.
+    // One coherent snapshot, including boot-relative hours when offline.
+    // The history ring can roll forward during network transmission.
+    struct Scratch {
+        AirHistoryDump dump;
+        char line[180];
+    };
+    auto* mem=heap_caps_malloc(sizeof(Scratch),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!mem){web.send(503,"application/json","{}");return;}
+    struct ScratchFree {void operator()(Scratch* p)const{p->~Scratch();heap_caps_free(p);}};
+    std::unique_ptr<Scratch,ScratchFree> scratch(new(mem) Scratch{});
+    if(xSemaphoreTake(guard,0)!=pdTRUE) {
+        web.sendHeader("Retry-After","1");
+        web.send(503,"application/json","{\"error\":\"HISTORY_BUSY\"}");
+        return;
+    }
+    history.dump_into(scratch->dump);
+    unlock();
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.sendHeader("Cache-Control","no-store");
     web.send(200,"application/json","");web.streamContent("{\"hours\":[");
-    size_t n=0;
-    lock();n=history.count();unlock();
-    for(size_t i=0;i<n && !web.responseAborted();i++) {
-        AirHistoryPoint p{};
-        lock();p=history.newest(n-1-i);unlock();
-        char line[180];
+    for(size_t i=0;i<scratch->dump.count && !web.responseAborted();i++) {
+        const auto& p=scratch->dump.values[i];
+        auto& line=scratch->line;
         snprintf(line,sizeof(line),
            "%s{\"hour\":%lu,\"clock_valid\":%s,\"temp\":%.2f,\"rh\":%.2f,\"dew\":%.2f,\"abs\":%.2f}",
            i?",":"",static_cast<unsigned long>(p.hour_utc),
@@ -939,7 +983,7 @@ void c23_register_routes(CottageWebServer& web) {
             site_comfort_transaction_finish(desired) :
             old_durable && site_comfort_transaction_abort_verified(previous);
         if(desired_durable && finished) {
-            log_event(3,static_cast<uint8_t>(desired.mode));
+            lock();log_event(3,static_cast<uint8_t>(desired.mode));unlock();
         }
         web.send(desired_durable?(finished?200:503):old_durable?500:503,
                  "application/json",
@@ -1016,18 +1060,16 @@ void c23_register_routes(CottageWebServer& web) {
             const bool binding_changed=unbind?indoor_binding.bound():
                 (!indoor_binding.bound()||indoor_binding.mac()!=mac);
             if(binding_changed) {
-                // Commit order matters: a failed NVS purge must not switch
-                // the active sensor in RAM. A subsequent save_config() must
-                // never persist a new MAC alongside the old sensor history.
-                // Hold the sensor mutex across purge + bind so BLE callbacks
-                // cannot refill the old series during the transition.
-                Preferences p;
-                bool purged=false;
-                if(p.begin("cottage_hist",false)) {
-                    purged=p.getBytesLength("hourly_v1")==0 ||
-                           p.remove("hourly_v1");
-                    p.end();
+                if(history_checkpoint_active) {
+                    unlock();
+                    web.sendHeader("Retry-After","1");
+                    web.send(503,"application/json",
+                        "{\"saved\":false,\"error\":\"HISTORY_BUSY\"}");
+                    return;
                 }
+                // The previous snapshot is no longer in flight. Purge
+                // durably before changing either RAM or the stored MAC.
+                const bool purged=purge_hourly_history();
                 if(!purged) {
                     unlock();
                     web.send(500,"text/plain","History NVS purge failed");
@@ -1047,6 +1089,7 @@ void c23_register_routes(CottageWebServer& web) {
                 history.clear(); // never mix two sensors in one series
                 history_changed=false;
                 last_store_ms=uptime_ms();
+                checkpoint_retry_after_ms=0;
             }
         } else {
             if(unbind)outdoor_binding.unbind();

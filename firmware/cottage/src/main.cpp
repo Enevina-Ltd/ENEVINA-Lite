@@ -3536,6 +3536,7 @@ static void freshness_endpoint() {
 static void history_worker(void*) {
     for(;;) {
         enevina_firmware::history_observe(history_collect());
+        c23_checkpoint_tick(); // NVS checkpoint off the dashboard loop
         vTaskDelay(pdMS_TO_TICKS(15000));
     }
 }
