@@ -63,7 +63,8 @@ const timer=setTimeout(()=>{console.error('Browser smoke test exceeded 90 second
   assert.equal(await evalJS("document.getElementById('home-temp').textContent"),'11,8 °C');
   assert.match(await evalJS("document.getElementById('cl-next').textContent"),/ei vielä tiedetä/);
   assert.equal(await evalJS("document.getElementById('cl-heat-hours').textContent"),'—');
-  assert.equal(await evalJS("document.getElementById('cl-pump').textContent"),'Pois päältä');
+  assert.equal(await evalJS("document.getElementById('cl-pump').textContent"),'Pois pyydetty');
+  assert.match(await evalJS("document.getElementById('cl-pump-detail').textContent"),/Sillalta luettu tilapyyntö/);
   assert.equal(await evalJS("document.getElementById('cl-kwh').textContent"),'3,20 kWh');
   assert.equal(await evalJS("document.getElementById('cl-cost').textContent"),'0,43 EUR');
   assert.equal(await evalJS("document.getElementById('technical-notice').hidden"),true);
@@ -75,7 +76,7 @@ const timer=setTimeout(()=>{console.error('Browser smoke test exceeded 90 second
   if(out){const shot=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});fs.writeFileSync(path.join(out,'mobile.png'),Buffer.from(shot.data,'base64'));}
   const inspect=await evalJS("(()=>{let i=document.querySelector('#home-chart input[type=range]');i.value='4';i.dispatchEvent(new Event('input'));return i.getAttribute('aria-valuetext')})()");assert(inspect.includes('snt/kWh'));
   await evalJS("setDashboardLanguage('en')");
-  assert.equal(await evalJS("document.querySelector('#view-home h1').textContent"),'Home energy');assert.equal(await evalJS("document.getElementById('cl-pump').textContent"),'Off');
+  assert.equal(await evalJS("document.querySelector('#view-home h1').textContent"),'Home energy');assert.equal(await evalJS("document.getElementById('cl-pump').textContent"),'Off requested');
   await evalJS("setDashboardLanguage('fi')");assert.equal(await evalJS("document.querySelector('#view-home h1').textContent"),'Kodin energia');
   await evalJS("setDashboardLanguage('en')");
   mode='active';await evalJS('reloadStatus().then(reloadPlan)');

@@ -28,8 +28,11 @@ the former combined technical plot is in an expandable section.
   scope is not relabelled or summed. Only verified pump-meter/price coverage
   produces a pump cost estimate.
 - Pump mode is a fresh observed request from the common backend adapter.
-  Optional gateway compressor readings and defrost reports retain their
-  gateway provenance. No controller decisions or permissions change.
+  HEAT and OFF both explicitly describe requested mode, not confirmed
+  compressor operation. Gateway request, compressor and defrost reports
+  retain gateway provenance. Same-zone tariff/profile changes invalidate
+  cached and in-flight price/timeline snapshots. No controller decisions
+  or permissions change.
 - No CDN, new web endpoint, external dependency at runtime, new credentials,
   new task or lock. Existing status, prices and plan endpoints gain small
   additive presentation metadata. Home polls its 24-hour history once per

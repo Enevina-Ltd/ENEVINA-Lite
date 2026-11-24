@@ -16,7 +16,7 @@ const elements=new Map(),get=id=>{if(!elements.has(id))elements.set(id,new Eleme
 const state={},ctx={document:{createElement:t=>new Element(t),createElementNS:(_n,t)=>new Element(t)},state,uiLanguage:'fi',uiLocale:()=>ctx.uiLanguage==='en'?'en-GB':'fi-FI',regionTimeZone:()=>'Europe/Helsinki',
   fmt:(v,d=1)=>Number.isFinite(v)?v.toFixed(d):'—',text:(id,v)=>get(id).textContent=v,$:get,priceFmt:v=>v.toFixed(2),priceDisplayMinorUnit:()=>'snt',console};
 vm.createContext(ctx);
-vm.runInContext(tl+'\n'+hs+'\n'+code+';this.A={clAxis,clSeries,clRuns,clBars,clLine,clPlanRows,clLivePlan,clNextHeat,clEnergy,clExplain,clCurrentTimeline,clPriceData,clRenderStatus,clRenderHistory,clRenderPlan,clReloadHomeHistory};',ctx);
+vm.runInContext(tl+'\n'+hs+'\n'+code+';this.A={clAxis,clSeries,clRuns,clBars,clLine,clPlanRows,clLivePlan,clNextHeat,clEnergy,clExplain,clCurrentTimeline,clSitePriceKey,clPriceData,clRenderStatus,clRenderHistory,clRenderPlan,clReloadHomeHistory};',ctx);
 const A=ctx.A,now=Math.floor(Date.now()/1000),T=Math.floor(now/900)*900;
 for(const values of [[.1,.2],[-.1,.2],[-.2,-.1],[0,0],[.0001,.0002]]){
  const a=A.clAxis(values,true,.01);
@@ -70,12 +70,21 @@ const region={price_region_resolved:true,nordpool_area:'FI',currency:'EUR'};
 state.site={region,pump_adapter:'mitsubishi_cn105_esphome'};
 state.status={spot:.02,total_price:.08,price_area:'FI',price_currency:'EUR',pump_requested_mode:null,cn105_sse_climate_recent:true,cn105_sse_mode:'HEAT'};
 state.timeline={valid:true,area:'FI',currency:'EUR',segments:[],slots:[{utc:T,total:.08,class:'cheap'},{utc:T+900,total:.1,class:'neutral'}]};
-state.prices={valid:true,area:'FI',currency:'EUR',slots:[{utc:T,spot:.02,total:.08}]};state.priceMarketKey='FI|EUR';
+state.prices={valid:true,area:'FI',currency:'EUR',slots:[{utc:T,spot:.02,total:.08}]};state.priceMarketKey='FI|EUR';state.priceSiteKey=state.timelineSiteKey=A.clSitePriceKey(state.site);
+assert.equal(A.clPriceData(now,24).classified,true);
+state.status.total_price=.09;assert.equal(A.clPriceData(now,24).classified,false);
+state.status.total_price=.08;
+state.site.tariff={vat_percent:25.5};assert.equal(A.clPriceData(now,24).rows.length,0,'same-zone tariff change invalidates both snapshots');
+state.priceSiteKey=state.timelineSiteKey=A.clSitePriceKey(state.site);
 assert.equal(A.clPriceData(now,24).classified,true);
 state.timeline.currency='SEK';assert.equal(A.clPriceData(now,24).classified,false);assert.equal(A.clPriceData(now,24).rows.length,1);
 state.prices.area='SE3';assert.equal(A.clPriceData(now,24).rows.length,0);
 state.status.spot=null;state.timeline.currency='EUR';state.status.total_price=null;assert.equal(A.clPriceData(now,24).rows.length,0);
 A.clRenderStatus();assert.equal(get('cl-pump').textContent,'—','a null new-API mode may not be replaced with stale SSE');
+state.status.pump_requested_mode='OFF';state.status.mpc_gateway_request=true;A.clRenderStatus();
+assert.equal(get('cl-pump').textContent,'Off requested');assert.match(get('cl-pump-detail').textContent,/Gateway-reported request, not verified pump operation/);
+state.status.pump_requested_mode='HEAT';A.clRenderStatus();assert.equal(get('cl-pump').textContent,'Heat requested');assert.match(get('cl-pump-detail').textContent,/Gateway-reported request/);
+ctx.uiLanguage='fi';state.status.pump_requested_mode='OFF';A.clRenderStatus();assert.equal(get('cl-pump').textContent,'Pois pyydetty');assert.match(get('cl-pump-detail').textContent,/Sillalta luettu tilapyyntö/);
 state.status=null;A.clRenderStatus();assert.equal(get('cl-pump').textContent,'—');
 const ids=[...header.matchAll(/\bid="([^"]+)"/g)].map(m=>m[1]).filter(x=>!x.includes('$')&&!x.includes("'"));
 for(const id of ['cl-temperature-chart','cl-plan-chart','cl-power-chart','cl-cost','cl-target','home-temp','view-details','technical-notice'])assert.equal(ids.filter(x=>x===id).length,1,id);

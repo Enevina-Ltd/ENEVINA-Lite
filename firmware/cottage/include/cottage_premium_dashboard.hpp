@@ -2490,16 +2490,21 @@ function clLine(host,rows,{step=900,label,forecast=false,target=null,band=null})
   clInspector(host,values,p=>fmt(p.v,1)+' °C',-1,svg,L);
   return true;
 }
+function clSitePriceKey(site){
+  const r=site&&site.region,key=tlMarketKey(r);
+  if(key===null)return null;
+  return JSON.stringify([key,r.timezone||'',site.tariff||null,site.optimization||null,site.min_price_advantage_percent??null]);
+}
 function clCurrentTimeline(now){
   const d=tlMatchesMarket(state.timeline,state.site&&state.site.region)?tlValidate(state.timeline):null;
-  if(!state.status||!d||d.area!==state.status.price_area||d.currency!==state.status.price_currency||clNum(state.status.total_price)===null)return null;
-  return d.slots[0].utc<=now&&now<d.slots[0].utc+900?d:null;
+  if(!state.status||!d||state.timelineSiteKey!==clSitePriceKey(state.site)||d.area!==state.status.price_area||d.currency!==state.status.price_currency||clNum(state.status.total_price)===null)return null;
+  return d.slots[0].utc<=now&&now<d.slots[0].utc+900&&Math.abs(d.slots[0].total-state.status.total_price)<=1e-5?d:null;
 }
 function clPriceData(now,horizon){
   const d=clCurrentTimeline(now);
   if(d)return {rows:clSeries(d.slots,900,'total').filter(p=>p.t+900>now&&p.t<Math.floor(now/900)*900+horizon*3600),total:true,classified:true};
   const r=state.site&&state.site.region,s=state.status,p=state.prices;
-  if(!s||!p||p.valid!==true||!r||clNum(s.spot)===null||s.price_area!==r.nordpool_area||s.price_currency!==r.currency||p.area!==r.nordpool_area||p.currency!==r.currency||state.priceMarketKey!==tlMarketKey(r))return {rows:[],total:false,classified:false};
+  if(!s||!p||p.valid!==true||!r||clNum(s.spot)===null||s.price_area!==r.nordpool_area||s.price_currency!==r.currency||p.area!==r.nordpool_area||p.currency!==r.currency||state.priceMarketKey!==tlMarketKey(r)||state.priceSiteKey!==clSitePriceKey(state.site))return {rows:[],total:false,classified:false};
   return {rows:clSeries(p.slots,900,'spot').filter(x=>x.t+900>now&&x.t<Math.floor(now/900)*900+horizon*3600),total:false,classified:false};
 }
 function clPriceDecimals(rows){
@@ -2592,9 +2597,13 @@ function clRenderStatus(){
   const defrost=s&&state.site?.pump_adapter==='mitsubishi_cn105_esphome'&&s.cn105_defrost_state==='REPORTED_DEFROST'&&s.cn105_defrost_hold===true;
   const heat=mode==='HEAT',off=mode==='OFF';
   if(card)card.dataset.tone=defrost?'defrost':heat?'heat':off?'off':'unknown';
-  text('cl-pump',defrost?clT('Sulatus','Defrost'):heat?clT('Lämmityspyyntö','Heat requested'):off?clT('Pois päältä','Off'):'—');
+  text('cl-pump',defrost?clT('Sulatus ilmoitettu','Defrost reported'):heat?clT('Lämmityspyyntö','Heat requested'):off?clT('Pois pyydetty','Off requested'):'—');
   const hz=state.site?.pump_adapter==='mitsubishi_cn105_esphome'&&s?.cn105_sse_compressor_recent===true?clNum(s.cn105_sse_compressor_hz):null;
-  const detail=defrost?clT('Sillan ilmoittama sulatus','Defrost reported by gateway'):heat?clT('Pyydetty tila, ei kompressorin käyntitieto.','Requested mode, not compressor activity.'):off?clT('Pumpulta luettu tila','State read from the pump'):clT('Tuoretta tilalukua ei ole.','No fresh pump reading.');
+  const gateway=s?.mpc_gateway_request===true||state.site?.pump_adapter==='mitsubishi_cn105_esphome';
+  const detail=defrost?clT('Sillan ilmoittama sulatus','Defrost reported by gateway'):
+    heat||off?(gateway?clT('Sillalta luettu tilapyyntö, ei varmennettu pumpun käyntitieto.','Gateway-reported request, not verified pump operation.'):
+    clT('Luettu tilapyyntö, ei kompressorin käyntitieto.','Observed request, not compressor activity.')):
+    clT('Tuoretta tilalukua ei ole.','No fresh pump reading.');
   text('cl-pump-detail',detail+(hz!==null?' · '+clT('Sillan kompressoritieto: ','Gateway compressor reading: ')+fmt(hz,0)+' Hz':''));
   text('cl-armed',s?.control_armed===true?clT('Automaattiohjaus sallittu','Automatic control authorised'):s?clT('Automaattiohjaus pois','Automatic control off'):'—');
   text('cl-reason',clExplain(s,clCurrentTimeline(now)));
@@ -3219,7 +3228,7 @@ function showStatus(){
 }
 function showPrices(){
   const p=state.prices||{},r=state.site?.region,live=state.status;
-  const sameMarket=r&&live&&p.area===r.nordpool_area&&p.currency===r.currency&&live.price_area===p.area&&live.price_currency===p.currency;
+  const sameMarket=r&&live&&state.priceSiteKey===clSitePriceKey(state.site)&&p.area===r.nordpool_area&&p.currency===r.currency&&live.price_area===p.area&&live.price_currency===p.currency;
   const now=Math.floor(Date.now()/1000);
   const rows=sameMarket&&p.valid===true&&clNum(live.spot)!==null&&Array.isArray(p.slots)?p.slots.filter(x=>clValidTime(x.utc)&&x.utc+900>now&&Number.isFinite(x.spot)): [];
   text('price-count',rows.length+' jaksoa');
@@ -3369,10 +3378,10 @@ async function reloadStatus(){
   document.querySelectorAll('[data-mode]').forEach(b=>b.disabled=true);
 }}
 async function reloadPrices(){
-  const seq=state.priceRequestSequence=(state.priceRequestSequence||0)+1,key=tlMarketKey(state.site&&state.site.region);
+  const seq=state.priceRequestSequence=(state.priceRequestSequence||0)+1,key=tlMarketKey(state.site&&state.site.region),siteKey=clSitePriceKey(state.site);
   let next=null;try{next=await fetchJSON('/api/prices');}catch(_){}
-  if(seq!==state.priceRequestSequence||key!==tlMarketKey(state.site&&state.site.region))return;
-  state.priceMarketKey=key;state.prices=key&&next?next:{valid:false,slots:[]};showPrices();
+  if(seq!==state.priceRequestSequence||key!==tlMarketKey(state.site&&state.site.region)||siteKey!==clSitePriceKey(state.site))return;
+  state.priceMarketKey=key;state.priceSiteKey=siteKey;state.prices=key&&next?next:{valid:false,slots:[]};showPrices();
 }
 
 let tlFormatters={};
@@ -3387,13 +3396,13 @@ let timelineRequestSequence=0;
 async function reloadTimeline(){
   const requestId=++timelineRequestSequence;
   const region=state.site&&state.site.region;
-  const expectedMarket=tlMarketKey(region);
+  const expectedMarket=tlMarketKey(region),siteKey=clSitePriceKey(state.site);
   let response=null;
   try{response=await fetchJSON('/api/timeline');}catch(e){}
   // An earlier request may complete after a country/price-zone change.
   if(requestId!==timelineRequestSequence||
-     expectedMarket!==tlMarketKey(state.site&&state.site.region))return;
-  state.timeline=tlMatchesMarket(response,state.site&&state.site.region)?response:null;
+     expectedMarket!==tlMarketKey(state.site&&state.site.region)||siteKey!==clSitePriceKey(state.site))return;
+  state.timelineSiteKey=siteKey;state.timeline=tlMatchesMarket(response,state.site&&state.site.region)?response:null;
   showTimeline();clRenderPrices();clRenderStatus();
 }
 function showTimeline(){
@@ -3460,7 +3469,7 @@ function showHistoryView(){
   const tz=uiTimeZone(),tf=new Intl.DateTimeFormat(uiLocale(),{timeZone:tz,hour:'2-digit',minute:'2-digit'}),
     df=new Intl.DateTimeFormat(uiLocale(),{timeZone:tz,weekday:'short',day:'numeric',month:'numeric'}),
     dtf=new Intl.DateTimeFormat(uiLocale(),{timeZone:tz,day:'numeric',month:'numeric',hour:'2-digit',minute:'2-digit'});
-  const narrow=($('hs-temps').clientWidth||700)<520;
+  const narrow=($('hs-indoor-simple').clientWidth||700)<520;
   const base={W:narrow?420:720,H:narrow?250:240,fmtTime:u=>tf.format(new Date(u*1000)),dayLabel:u=>df.format(new Date(u*1000)),tzHour:tlHourOf};
   text('hs-coverage',hsCoverageText(d)+' · '+hsT(HT('Tehon mittauskattavuus {n} / {total} min'),
     {n:d.power_coverage_minutes??0,total:(d.slots_total||0)*15}));
@@ -3733,18 +3742,19 @@ async function reloadSite(){try{
  const previousMarket=tlMarketKey(state.site&&state.site.region);
  const nextMarket=tlMarketKey(s.region);
  const marketChanged=previousMarket!==nextMarket;
+ const pricingChanged=marketChanged||clSitePriceKey(state.site)!==clSitePriceKey(s);
  const previousPump=state.site?.pump_adapter||'';
  state.site=s;const t=s.tariff;
  updatePumpPanels(s.pump_adapter);
  if(previousPump!==(s.pump_adapter||''))text('control-last','Odotetaan valitun pumpun tilatietoja.');
- if(marketChanged){
+ if(pricingChanged){
    ++timelineRequestSequence; // invalidate any in-flight old-market response
-   state.priceRequestSequence=(state.priceRequestSequence||0)+1;state.priceMarketKey=null;
+   state.priceRequestSequence=(state.priceRequestSequence||0)+1;state.priceMarketKey=null;state.priceSiteKey=null;state.timelineSiteKey=null;
    state.timeline=null;state.prices={valid:false,slots:[]};
    showTimeline();showPrices();
  }
  if(s.region)setRegionDisplay(s.region.timezone,s.region.currency);
- if(marketChanged){await reloadPrices();await reloadTimeline();}
+ if(pricingChanged){await reloadPrices();await reloadTimeline();}
  if(state.status)showStatus();if(state.prices)showPrices();if(state.weather)showWeather();
  const put=(id,v)=>{if(document.activeElement!==$(id))$(id).value=v};
  const c=v=>(Math.round(v*1000)/1000).toString().replace('.',',');
