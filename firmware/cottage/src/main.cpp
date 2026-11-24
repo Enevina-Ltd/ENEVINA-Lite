@@ -199,6 +199,24 @@ static TaskHandle_t task_sse=nullptr,task_shelly=nullptr;
 static TaskHandle_t task_ruuvi=nullptr,task_optimizer=nullptr;
 static TaskHandle_t task_ota=nullptr;
 static TaskHandle_t task_history=nullptr,task_midea=nullptr,task_local_lan=nullptr;
+// Small, loop-owned boot trace. SDK minima aggregate region low-water marks;
+// the stage's current free bytes are a separate instantaneous measurement.
+struct BootMemorySample {
+    const char* stage;
+    uint32_t ms,free,minimum,largest;
+};
+static std::array<BootMemorySample,16> boot_memory{};
+static size_t boot_memory_count=0;
+static uint32_t worker_start_deferrals=0,worker_start_failures=0;
+static void boot_memory_sample(const char* stage) {
+    if(boot_memory_count>=boot_memory.size())return;
+    constexpr auto caps=MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT;
+    boot_memory[boot_memory_count++]={stage,millis(),
+        static_cast<uint32_t>(heap_caps_get_free_size(caps)),
+        static_cast<uint32_t>(heap_caps_get_minimum_free_size(caps)),
+        static_cast<uint32_t>(heap_caps_get_largest_free_block(caps))};
+}
+
 static bool shelly_relay_on=false;
 // Production control is explicitly ARMED via local setting, never by OTA.
 static std::atomic<bool> control_armed{false};
@@ -3010,8 +3028,24 @@ static void status_endpoint() {
                             heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
     cJSON_AddNumberToObject(root,"largest_free_internal_heap",
                             heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(root,"worker_start_deferrals",worker_start_deferrals);
+    cJSON_AddNumberToObject(root,"worker_start_failures",worker_start_failures);
+    if(auto* trace=cJSON_AddArrayToObject(root,"boot_memory")) {
+        for(size_t i=0;i<boot_memory_count;++i) {
+            const auto& sample=boot_memory[i];
+            if(auto* row=cJSON_CreateObject()) {
+                cJSON_AddStringToObject(row,"stage",sample.stage);
+                cJSON_AddNumberToObject(row,"ms",sample.ms);
+                cJSON_AddNumberToObject(row,"free",sample.free);
+                cJSON_AddNumberToObject(row,"minimum",sample.minimum);
+                cJSON_AddNumberToObject(row,"largest",sample.largest);
+                cJSON_AddItemToArray(trace,row);
+            }
+        }
+    }
     cJSON_AddNumberToObject(root,"network_budget_denials",
                             enevina_firmware::network_budget_denials());
+    cJSON_AddNumberToObject(root,"network_sampled_min_internal",enevina_firmware::network_budget_min_sampled_free());
     cJSON_AddBoolToObject(root,"ble_initialized",c23_ble_initialized());
     cJSON_AddNumberToObject(root,"observed_min_largest_internal",
                             enevina_firmware::network_budget_min_largest_internal());
@@ -3647,8 +3681,47 @@ static void setup_model() {
     model.min_off_minutes=60;
     model.switching_penalty_eur=0.03;
 }
+
+static void cottage_local_lan_worker(void*);
+static void start_optional_workers(bool boot_lease_held=false) {
+    const auto selected_site=site_settings_snapshot();
+    const bool start_sse=!task_sse && cn105_reader_needed(selected_site);
+    const bool start_shelly=!task_shelly && shelly_reader_needed(selected_site);
+    const bool start_midea=!task_midea && cottage_midea_service_needs_worker();
+    const bool start_lan=!task_local_lan && (cottage_gree_needs_worker() || cottage_daikin_needs_worker() || cottage_echonet_needs_worker() ||
+        cottage_daikin_dsiot_needs_worker() || cottage_wf_rac_needs_worker() ||
+        cottage_cn105_direct_needs_worker() || cottage_daikin_s21_needs_worker() ||
+        cottage_haier_needs_worker() || cottage_panasonic_needs_worker());
+    if(!start_sse&&!start_shelly&&!start_midea&&!start_lan)return;
+    // No extra lock. A newly selected reader's internal stack allocation
+    // must not overlap a guarded TLS handshake or BLE scan.
+    if(!boot_lease_held && !enevina_firmware::network_budget_acquire(0,0,0)) {
+        ++worker_start_deferrals;return;
+    }
+    if(start_sse &&
+           xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",
+                                   8192,nullptr,2,&task_sse,0)!=pdPASS)
+            {task_sse=nullptr;++worker_start_failures;Serial.println("CN105_READER: insufficient memory");}
+    if(start_shelly &&
+           xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",
+                                   5120,nullptr,2,&task_shelly,0)!=pdPASS)
+            {task_shelly=nullptr;++worker_start_failures;Serial.println("SHELLY_READER: insufficient memory");}
+    if(start_midea &&
+           // Pilot high-water free: 5744 / 10240 bytes, after actual
+           // Midea V3 polling. 8192 preserves >3 KiB measured headroom
+           // and returns 2 KiB internal RAM to signed OTA TLS.
+           xTaskCreatePinnedToCore(cottage_midea_service_worker,"cottage_midea",
+                                   8192,nullptr,1,&task_midea,0)!=pdPASS)
+            {task_midea=nullptr;++worker_start_failures;Serial.println("MIDEA_WORKER: insufficient memory");}
+    if(start_lan &&
+           xTaskCreatePinnedToCore(cottage_local_lan_worker,"cottage_local_lan",8192,nullptr,1,&task_local_lan,0)!=pdPASS)
+            {task_local_lan=nullptr;++worker_start_failures;Serial.println("LOCAL_LAN_WORKER: insufficient memory");}
+    if(!boot_lease_held)enevina_firmware::network_budget_release();
+}
+
 void setup() {
     Serial.begin(115200);
+    boot_memory_sample("setup_entry");
     boot_reset_reason_code=static_cast<int>(esp_reset_reason());
     Serial.printf("ENEVINA_LITE_BOOT reset_reason_code=%d\n",boot_reset_reason_code);
     lock_data=xSemaphoreCreateMutex();
@@ -3669,13 +3742,16 @@ void setup() {
     hooks.free_fn=json_free_psram;
     cJSON_InitHooks(&hooks); // Once, before any reader/task starts.
     setup_model();
+    boot_memory_sample("before_settings");
     site_settings_initialize(); // NVS site settings before any reader starts
     cottage_midea_service_initialize(); // separate Midea V3 NVS, no CN105 changes
     c23_initialize(); // NVS mode + persistent explicit Ruuvi bonding
     cottage_ota_initialize(); // Persist successful signed release + reject failed candidate
+    boot_memory_sample("after_settings");
     // Phase 1 commissioning: stored home Wi-Fi (NVS, else the compile-time
     // default) or the per-device setup AP. No pump/device contact here.
     cottage_wifi_begin(web);
+    boot_memory_sample("wifi_begin");
     setenv("TZ","EET-2EEST,M3.5.0/3,M10.5.0/4",1);
     tzset();
     configTime(0,0,"pool.ntp.org","time.google.com");
@@ -3777,32 +3853,59 @@ void setup() {
         web.send(404,"text/plain","Ei löydy");
     });
     web.begin();
+    boot_memory_sample("web_begin");
     boot_ui_started=true;
     boot_validation_started_ms=millis();
-    enableLoopWDT(); // Arduino ESP32 loop-task hardware watchdog.
-    // Initialize BLE before starting memory-heavy HTTPS workers.
-    // N16R8 field minimum free stack was 4376 / 6144 bytes with active
-    // scanning. Reserve 5120 bytes, retaining >2 KiB of measured headroom
-    // while reclaiming 1 KiB internal RAM for signed TLS OTA.
-    xTaskCreatePinnedToCore(c23_ble_worker,"cottage_ruuvi",5120,nullptr,1,&task_ruuvi,0);
-    for(int i=0;i<150 && !c23_ble_initialized();++i)
-        delay(20);
-    if(!c23_ble_initialized())
-        Serial.println("C24_WARN: BLE initialization not confirmed");
-    enevina_firmware::history_initialize();   // PSRAM ring + dedicated history partition
-    enevina_firmware::start_market_reader();
-    enevina_firmware::start_weather_reader(site_settings_snapshot().fmi_latlon);
-    // CN105 and Shelly workers start on demand (like Midea/LAN drivers).
-    // A Midea-only device without a meter must not reserve their stacks.
-    xTaskCreatePinnedToCore(history_worker,"cottage_hist",6144,nullptr,1,&task_history,0);
-    // BLE already running. CN105 writes are gated by explicit local arming.
-    xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1);
-    if(cottage_ota_configured() &&
-        xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota",
-                                10240,nullptr,1,&task_ota,1)!=pdPASS) {
-        task_ota=nullptr;
-        Serial.println("C24_OTA_ERROR: signed OTA task creation failed");
+    // No heavy guarded network operation may begin while creating the
+    // permanent boot task stacks. BLE initialization itself still runs
+    // first; its first scan can defer to the existing scan cadence.
+    {
+        enevina_firmware::NetworkBudgetLease boot_allocation(0,0,0);
+        if(!boot_allocation.held()) {
+            // No worker exists yet that could legitimately own this gate.
+            Serial.println("C24_FATAL: startup memory reservation unavailable");
+            control_armed.store(false);
+            boot_ui_started=false;
+            while(true)delay(1000);
+        }
+        enableLoopWDT(); // Arduino ESP32 loop-task hardware watchdog.
+        boot_memory_sample("before_ble");
+        if(xTaskCreatePinnedToCore(c23_ble_worker,"cottage_ruuvi",5120,nullptr,1,&task_ruuvi,0)!=pdPASS) {
+            task_ruuvi=nullptr;++worker_start_failures;
+            Serial.println("BLE_WORKER: insufficient memory");
+        }
+        for(int i=0;task_ruuvi && i<150 && !c23_ble_initialized();++i)
+            delay(20);
+        if(!c23_ble_initialized())
+            Serial.println("C24_WARN: BLE initialization not confirmed");
+        boot_memory_sample("after_ble");
+        enevina_firmware::history_initialize();
+        boot_memory_sample("after_history_load");
+        // Initialize both forecast services before core workers may read
+        // them. Their TLS operations are still excluded by boot_allocation.
+        enevina_firmware::start_market_reader();
+        enevina_firmware::start_weather_reader(site_settings_snapshot().fmi_latlon);
+        boot_memory_sample("after_forecast_tasks");
+        if(xTaskCreatePinnedToCore(history_worker,"cottage_hist",6144,nullptr,1,&task_history,0)!=pdPASS) {
+            task_history=nullptr;++worker_start_failures;
+            Serial.println("HISTORY_WORKER: insufficient memory");
+        }
+        if(xTaskCreatePinnedToCore(optimizer_worker,"cottage_optimizer",16384,nullptr,1,&task_optimizer,1)!=pdPASS) {
+            task_optimizer=nullptr;++worker_start_failures;
+            Serial.println("OPTIMIZER_WORKER: insufficient memory");
+        }
+        boot_memory_sample("after_core_tasks");
+        if(cottage_ota_configured() &&
+            xTaskCreatePinnedToCore(cottage_ota_worker,"cottage_ota",
+                                    10240,nullptr,1,&task_ota,1)!=pdPASS) {
+            task_ota=nullptr;++worker_start_failures;
+            Serial.println("C24_OTA_ERROR: signed OTA task creation failed");
+        }
+        boot_memory_sample("after_ota_task");
+        start_optional_workers(true);
+        boot_memory_sample("after_optional_tasks");
     }
+    boot_memory_sample("startup_released");
     Serial.println("ENEVINA LITE: CN105 controller, persisted local choice");
 }
 static void cottage_local_lan_worker(void*) {
@@ -3830,28 +3933,9 @@ void loop() {
     static uint32_t last_midea_check_ms=0;
     if(static_cast<uint32_t>(millis()-last_midea_check_ms)>=2000) {
         last_midea_check_ms=millis();
-        const auto selected_site=site_settings_snapshot();
-        if(!task_sse && cn105_reader_needed(selected_site) &&
-           xTaskCreatePinnedToCore(sse_worker,"cottage_cn105",
-                                   8192,nullptr,2,&task_sse,0)!=pdPASS)
-            Serial.println("CN105_READER: insufficient memory");
-        if(!task_shelly && shelly_reader_needed(selected_site) &&
-           xTaskCreatePinnedToCore(shelly_worker,"cottage_shelly",
-                                   5120,nullptr,2,&task_shelly,0)!=pdPASS)
-            Serial.println("SHELLY_READER: insufficient memory");
-        if(!task_midea && cottage_midea_service_needs_worker() &&
-           // Pilot high-water free: 5744 / 10240 bytes, after actual
-           // Midea V3 polling. 8192 preserves >3 KiB measured headroom
-           // and returns 2 KiB internal RAM to signed OTA TLS.
-           xTaskCreatePinnedToCore(cottage_midea_service_worker,"cottage_midea",
-                                   8192,nullptr,1,&task_midea,0)!=pdPASS)
-            Serial.println("MIDEA_WORKER: insufficient memory");
-        if(!task_local_lan && (cottage_gree_needs_worker() || cottage_daikin_needs_worker() || cottage_echonet_needs_worker() ||
-           cottage_daikin_dsiot_needs_worker() || cottage_wf_rac_needs_worker() ||
-           cottage_cn105_direct_needs_worker() || cottage_daikin_s21_needs_worker() ||
-           cottage_haier_needs_worker() || cottage_panasonic_needs_worker()) &&
-           xTaskCreatePinnedToCore(cottage_local_lan_worker,"cottage_local_lan",8192,nullptr,1,&task_local_lan,0)!=pdPASS)
-            Serial.println("LOCAL_LAN_WORKER: insufficient memory");
+        start_optional_workers();
+        enevina_firmware::weather_retry_reader_start();
+        enevina_firmware::market_retry_reader_start();
     }
     verify_new_ota_boot();
     c23_tick(); // local BLE/mode/alarm history works with wifi=0

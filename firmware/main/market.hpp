@@ -27,6 +27,9 @@ struct PricePoint {
     double spot_eur_per_kwh=0;
 };
 void start_market_reader();
+#ifdef COTTAGE_SHARED_MEMORY_GUARD
+void market_retry_reader_start();
+#endif
 uint32_t market_reader_stack_free();
 // Select the bidding zone and currency prices are fetched for (Nord Pool
 // deliveryArea such as "SE3", ISO 4217 such as "SEK"). nullptr/nullptr means

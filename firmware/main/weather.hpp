@@ -17,6 +17,9 @@ struct WeatherStatus {
 // nullptr keeps compatibility with standalone firmware build defaults.
 void start_weather_reader(const char* configured_latlon=nullptr);
 uint32_t weather_reader_stack_free();
+#ifdef COTTAGE_SHARED_MEMORY_GUARD
+void weather_retry_reader_start();
+#endif
 // A validated settings change is applied without restarting ESP32. The
 // previous forecast is immediately invalidated and the worker is awakened.
 bool weather_update_location(const char* configured_latlon);

@@ -30,7 +30,7 @@ class TestInternalRam(unittest.TestCase):
         self.assertIn("cottage_midea_service_needs_worker()",MAIN)
         self.assertIn("!is_midea_selected() || !mutex",MIDEA)
         self.assertIn("const bool ready=configured;",MIDEA)
-        self.assertIn("if(!task_midea &&",MAIN)
+        self.assertIn("const bool start_midea=!task_midea &&",MAIN)
         self.assertIn("&task_midea,0)",MAIN)
         self.assertNotIn('nullptr,1,nullptr,0)',MAIN.split("cottage_midea_service_worker",1)[1].split("verify_new_ota_boot",1)[0])
 
