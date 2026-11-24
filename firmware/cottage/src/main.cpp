@@ -31,6 +31,7 @@
 #include "cottage_midea_service.hpp"
 #include "cottage_gree_service.hpp"
 #include "cottage_daikin_service.hpp"
+#include "cottage_echonet_service.hpp"
 #include "cottage_daikin_dsiot_service.hpp"
 #include "cottage_cn105_direct_service.hpp"
 #include "cottage_daikin_s21_service.hpp"
@@ -203,6 +204,7 @@ static std::atomic<uint32_t> control_permission_generation{0};
 static std::atomic<uint32_t> control_armed_midea_revision{0};
 static std::atomic<uint32_t> control_armed_gree_revision{0};
 static std::atomic<uint32_t> control_armed_daikin_revision{0},control_armed_daikin_wifi{0};
+static std::atomic<uint32_t> control_armed_echonet_revision{0},control_armed_echonet_wifi{0};
 static std::atomic<uint32_t> control_armed_wf_rac_revision{0},control_armed_wf_rac_wifi{0};
 static std::atomic<uint32_t> control_armed_cn105_direct_revision{0},control_armed_cn105_bus{0};
 static std::atomic<uint32_t> control_armed_s21_revision{0},control_armed_s21_bus{0};
@@ -850,6 +852,7 @@ static enevina::PumpRoomState optimizer_pump_state(int64_t now,bool midea) {
     if(midea)return cottage_midea_room_state();
     if(cottage_gree_selected())return cottage_gree_room_state();
     if(cottage_daikin_selected())return cottage_daikin_room_state();
+    if(cottage_echonet_selected())return cottage_echonet_room_state();
     if(cottage_daikin_dsiot_selected())return cottage_daikin_dsiot_room_state();
     if(cottage_wf_rac_selected())return cottage_wf_rac_room_state();
     if(cottage_cn105_direct_selected())return cottage_cn105_direct_room_state();
@@ -951,6 +954,8 @@ static TemperatureSample selected_room_sample(int64_t now,const RoomTemperatureC
         state=cottage_midea_room_state();
     } else if(cottage_gree_selected()) {
         state=cottage_gree_room_state();
+    } else if(cottage_echonet_selected()) {
+        state=cottage_echonet_room_state();
     } else if(cottage_daikin_selected()) {
         state=cottage_daikin_room_state();
     } else if(cottage_daikin_dsiot_selected()) {
@@ -1146,6 +1151,15 @@ bool cottage_daikin_automatic_enabled() {
         control_armed_daikin_wifi.load()==cottage_wifi_link_generation() &&
         control_armed_daikin_revision.load()==cottage_daikin_configuration_generation();
 }
+void cottage_echonet_automatic_cancel() {
+    if(cottage_echonet_selected())cottage_midea_automatic_cancel();
+}
+bool cottage_echonet_automatic_enabled() {
+    return control_armed.load() && cottage_echonet_selected() &&
+        control_armed_endpoint.load()==site_settings_endpoint_generation() &&
+        control_armed_echonet_wifi.load()==cottage_wifi_link_generation() &&
+        control_armed_echonet_revision.load()==cottage_echonet_configuration_generation();
+}
 void cottage_wf_rac_automatic_cancel() {
     if(cottage_wf_rac_selected())cottage_midea_automatic_cancel();
 }
@@ -1195,6 +1209,7 @@ static bool active_control_armed(bool midea) {
     if(midea)return cottage_midea_automatic_enabled();
     if(cottage_gree_selected())return cottage_gree_automatic_enabled();
     if(cottage_daikin_selected())return cottage_daikin_automatic_enabled();
+    if(cottage_echonet_selected())return cottage_echonet_automatic_enabled();
     if(cottage_wf_rac_selected())return cottage_wf_rac_automatic_enabled();
     if(cottage_cn105_direct_selected())return cottage_cn105_direct_automatic_enabled();
     if(cottage_daikin_s21_selected())return cottage_daikin_s21_automatic_enabled();
@@ -1206,6 +1221,7 @@ static uint32_t pump_configuration_revision(bool midea) {
     if(midea)return cottage_midea_configuration_generation();
     if(cottage_gree_selected())return cottage_gree_configuration_generation();
     if(cottage_daikin_selected())return cottage_daikin_configuration_generation();
+    if(cottage_echonet_selected())return cottage_echonet_configuration_generation();
     if(cottage_daikin_dsiot_selected())return cottage_daikin_dsiot_configuration_generation();
     if(cottage_cn105_direct_selected())return cottage_cn105_direct_configuration_generation();
     if(cottage_daikin_s21_selected())return cottage_daikin_s21_configuration_generation();
@@ -1248,6 +1264,11 @@ bool cottage_daikin_automatic_write_current(uint32_t authorization,uint32_t conf
                                        cottage_daikin_automatic_enabled());
 }
 
+bool cottage_echonet_automatic_write_current(uint32_t authorization,uint32_t config,
+        uint32_t settings,const BootstrapDecision& proposal) {
+    return queued_proposal_current(authorization,config,settings,proposal,
+                                       cottage_echonet_automatic_enabled());
+}
 bool cottage_wf_rac_automatic_write_current(uint32_t authorization,uint32_t config,
         uint32_t settings,const BootstrapDecision& proposal) {
     return queued_proposal_current(authorization,config,settings,proposal,
@@ -1461,19 +1482,20 @@ static void cottage_control_tick(const enevina::PumpRoomState& bridge) {
     const bool midea=cottage_midea_selected();
     const bool gree=cottage_gree_selected();
     const bool daikin=cottage_daikin_selected();
+    const bool echonet=cottage_echonet_selected();
     const bool wf_rac=cottage_wf_rac_selected();
     const bool direct_cn105=cottage_cn105_direct_selected();
     const bool s21=cottage_daikin_s21_selected();
     const bool haier=cottage_haier_selected();
     const bool panasonic=cottage_panasonic_selected();
-    if(!midea && !gree && !daikin && !wf_rac && !direct_cn105 && !s21 && !haier && !panasonic && !cn105_selected()) {
+    if(!midea && !gree && !daikin && !echonet && !wf_rac && !direct_cn105 && !s21 && !haier && !panasonic && !cn105_selected()) {
         if(control_armed.load())cottage_control_disarm();
         return;
     }
     if(!control_armed.load())return;
     const uint32_t authorization_generation=control_permission_generation.load();
     const uint32_t site_generation=site_settings_generation();
-    if((midea || gree || daikin || wf_rac || direct_cn105 || s21 || haier || panasonic) && !active_control_armed(midea))return;
+    if((midea || gree || daikin || echonet || wf_rac || direct_cn105 || s21 || haier || panasonic) && !active_control_armed(midea))return;
     // Arming is bound to the configured pump. A changed CN105 endpoint or
     // adapter revokes it; a reboot restores only the same pump identity.
     if(control_armed_endpoint.load()!=site_settings_endpoint_generation()) {
@@ -1530,6 +1552,13 @@ static void cottage_control_tick(const enevina::PumpRoomState& bridge) {
     if(daikin) {
         const auto reading=cottage_daikin_room_state();
         const auto gate=cottage_daikin_submit_automatic(reading,candidate,
+            authorization_generation,config_generation,site_generation);
+        control_gate.store(static_cast<int>(gate));
+        return;
+    }
+    if(echonet) {
+        const auto current=cottage_echonet_room_state();
+        const auto gate=cottage_echonet_submit_automatic(current,candidate,
             authorization_generation,config_generation,site_generation);
         control_gate.store(static_cast<int>(gate));
         return;
@@ -1738,12 +1767,13 @@ static void cottage_control_registration() {
         }
         const bool gree=cottage_gree_selected();
         const bool daikin=cottage_daikin_selected();
+        const bool echonet=cottage_echonet_selected();
         const bool wf_rac=cottage_wf_rac_selected();
         const bool direct_cn105=cottage_cn105_direct_selected();
         const bool s21=cottage_daikin_s21_selected();
         const bool haier=cottage_haier_selected();
         const bool panasonic=cottage_panasonic_selected();
-        if(requested && !midea && !gree && !daikin && !wf_rac && !direct_cn105 && !s21 && !haier && !panasonic && !cn105_selected()) {
+        if(requested && !midea && !gree && !daikin && !echonet && !wf_rac && !direct_cn105 && !s21 && !haier && !panasonic && !cn105_selected()) {
             web.send(409,"application/json",
                 "{\"saved\":false,\"error\":\"ADAPTER_READ_ONLY\"}");
             return;
@@ -1759,12 +1789,13 @@ static void cottage_control_registration() {
         const bool allowed=requested ?
             control_current_image_sha256(digest) &&
             !pending_ota && !cottage_ota_confirmation_pending() : true;
-        if(midea || gree || daikin || wf_rac || direct_cn105 || s21 || haier || panasonic) {
+        if(midea || gree || daikin || echonet || wf_rac || direct_cn105 || s21 || haier || panasonic) {
             bool ready=true;
             if(requested && allowed) {
                 if(midea)ready=cottage_midea_automatic_ready();
                 else if(gree)ready=cottage_gree_automatic_ready();
                 else if(daikin)ready=cottage_daikin_automatic_ready();
+                else if(echonet)ready=cottage_echonet_automatic_ready();
                 else if(wf_rac)ready=cottage_wf_rac_automatic_ready();
                 else if(direct_cn105)ready=cottage_cn105_direct_automatic_ready();
                 else if(s21)ready=cottage_daikin_s21_automatic_ready();
@@ -1776,6 +1807,7 @@ static void cottage_control_registration() {
                     "{\"saved\":false,\"error\":\"MIDEA_NOT_READY\"}":gree?
                     "{\"saved\":false,\"error\":\"GREE_NOT_READY\"}":
                     daikin?"{\"saved\":false,\"error\":\"DAIKIN_NOT_READY\"}":
+                    echonet?"{\"saved\":false,\"error\":\"ECHONET_NOT_READY\"}":
                         wf_rac?"{\"saved\":false,\"error\":\"WF_RAC_NOT_READY\"}":
                             direct_cn105?"{\"saved\":false,\"error\":\"CN105_DIRECT_NOT_READY\"}":
                                 s21?"{\"saved\":false,\"error\":\"DAIKIN_S21_NOT_READY\"}":
@@ -1791,6 +1823,9 @@ static void cottage_control_registration() {
             else if(daikin) {
                 control_armed_daikin_revision.store(cottage_daikin_configuration_generation());
                 control_armed_daikin_wifi.store(cottage_wifi_link_generation());
+            } else if(echonet) {
+                control_armed_echonet_revision.store(cottage_echonet_configuration_generation());
+                control_armed_echonet_wifi.store(cottage_wifi_link_generation());
             } else if(wf_rac) {
                 control_armed_wf_rac_revision.store(cottage_wf_rac_configuration_generation());
                 control_armed_wf_rac_wifi.store(cottage_wifi_link_generation());
@@ -1877,6 +1912,7 @@ static uint32_t identifier_identity() {
         if(cottage_midea_selected())pump_id=cottage_midea_calibration_identity();
         else if(cottage_gree_selected())pump_id=cottage_gree_calibration_identity();
         else if(cottage_daikin_selected())pump_id=cottage_daikin_calibration_identity();
+        else if(cottage_echonet_selected())pump_id=cottage_echonet_calibration_identity();
         else if(cottage_daikin_dsiot_selected())pump_id=cottage_daikin_dsiot_calibration_identity();
         else if(cottage_wf_rac_selected())pump_id=cottage_wf_rac_calibration_identity();
         else if(cottage_cn105_direct_selected())pump_id=cottage_cn105_direct_calibration_identity();
@@ -2500,7 +2536,7 @@ static void status_endpoint() {
     cJSON_AddStringToObject(root,"mode",armed?
         (midea?"MIDEA_AUTOMAATIO_KAYTOSSA":cottage_gree_selected()?
             "GREE_AUTOMAATIO_KAYTOSSA":cottage_daikin_selected()?"DAIKIN_AUTOMAATIO_KAYTOSSA":
-            cottage_wf_rac_selected()?"WF_RAC_AUTOMAATIO_KAYTOSSA":cottage_cn105_direct_selected()?
+            cottage_echonet_selected()?"ECHONET_AUTOMAATIO_KAYTOSSA":cottage_wf_rac_selected()?"WF_RAC_AUTOMAATIO_KAYTOSSA":cottage_cn105_direct_selected()?
             "SUORA_CN105_AUTOMAATIO_KAYTOSSA":cottage_daikin_s21_selected()?"DAIKIN_S21_AUTOMAATIO_KAYTOSSA":
                 cottage_haier_selected()?"HAIER_AUTOMAATIO_KAYTOSSA":
                 cottage_panasonic_selected()?"PANASONIC_AUTOMAATIO_KAYTOSSA":
@@ -3550,6 +3586,7 @@ void setup() {
     cottage_midea_service_register_routes(web);
     cottage_gree_register_routes(web);
     cottage_daikin_register_routes(web);
+    cottage_echonet_register_routes(web);
     cottage_daikin_dsiot_register_routes(web);
     cottage_cn105_direct_register_routes(web);
     cottage_daikin_s21_register_routes(web);
@@ -3600,6 +3637,7 @@ static void cottage_local_lan_worker(void*) {
     for(;;) {
         if(cottage_gree_needs_worker())cottage_gree_tick();
         if(cottage_daikin_needs_worker())cottage_daikin_tick();
+        if(cottage_echonet_needs_worker())cottage_echonet_tick();
         if(cottage_daikin_dsiot_needs_worker())cottage_daikin_dsiot_tick();
         if(cottage_wf_rac_needs_worker())cottage_wf_rac_tick();
         if(cottage_cn105_direct_needs_worker())cottage_cn105_direct_tick();
@@ -3635,7 +3673,7 @@ void loop() {
            xTaskCreatePinnedToCore(cottage_midea_service_worker,"cottage_midea",
                                    8192,nullptr,1,&task_midea,0)!=pdPASS)
             Serial.println("MIDEA_WORKER: insufficient memory");
-        if(!task_local_lan && (cottage_gree_needs_worker() || cottage_daikin_needs_worker() ||
+        if(!task_local_lan && (cottage_gree_needs_worker() || cottage_daikin_needs_worker() || cottage_echonet_needs_worker() ||
            cottage_daikin_dsiot_needs_worker() || cottage_wf_rac_needs_worker() ||
            cottage_cn105_direct_needs_worker() || cottage_daikin_s21_needs_worker() ||
            cottage_haier_needs_worker() || cottage_panasonic_needs_worker()) &&

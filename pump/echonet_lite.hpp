@@ -38,58 +38,75 @@ struct Frame {
         return nullptr;
     }
 };
-inline std::optional<Frame> parse(const Byte* p,size_t n) {
+inline bool parse_into(Frame& f,const Byte* p,size_t n) {
+    f.count=0;
     if(!p || n<14 || n>max_packet || p[0]!=0x10 || p[1]!=0x81 ||
-       !p[11] || p[11]>max_properties) return {};
-    Frame f{};
+       !p[11] || p[11]>max_properties) return false;
     f.tid=uint16_t((uint16_t(p[2])<<8)|p[3]);
     f.source={p[4],p[5],p[6]};
     f.destination={p[7],p[8],p[9]};
     switch(p[10]) {
     case 0x61: case 0x62: case 0x71: case 0x72: f.service=static_cast<Service>(p[10]);break;
-    default:return {}; // SNA and other formats are not success responses
+    default:return false;
     }
     size_t off=12;
     for(size_t i=0;i<p[11];++i) {
-        if(n-off<2)return {};
+        if(n-off<2){f.count=0;return false;}
         const Byte epc=p[off++],len=p[off++];
-        if(epc<0x80 || n-off<len || f.find(epc))return {};
-        if((f.service==Service::Get || f.service==Service::SetRes)?len!=0:len==0)return {};
-        f.properties[f.count++]={epc,p+off,len};
-        off+=len;
+        if(epc<0x80 || n-off<len || f.find(epc) ||
+           ((f.service==Service::Get || f.service==Service::SetRes)?len!=0:len==0)){
+            f.count=0;return false;
+        }
+        f.properties[f.count++]={epc,p+off,len};off+=len;
     }
-    if(off!=n)return {};
-    return f;
+    if(off!=n){f.count=0;return false;}
+    return true;
+}
+inline std::optional<Frame> parse(const Byte* p,size_t n) {
+    Frame f{};return parse_into(f,p,n)?std::optional<Frame>{f}:std::nullopt;
 }
 inline std::optional<Frame> parse(const Packet& p){return parse(p.bytes.data(),p.size);}
 inline std::optional<Frame> parse(Packet&&)=delete; // property views must not outlive packet
 
-// Build only explicit Get/SetC requests. Caller owns transport and TID lifecycle.
-inline std::optional<Packet> request(uint16_t tid,Object target,Service service,
-                                     const Property* props,size_t count) {
+// In-place builders avoid returning 1 KiB temporaries on embedded task stacks.
+inline bool request_into(Packet& p,uint16_t tid,Object target,Service service,
+                         const Property* props,size_t count) {
+    p.size=0;
     if((!hvac(target) && target!=node_profile) || !props || !count ||
        count>max_properties || (service!=Service::Get && service!=Service::SetC) ||
-       (target==node_profile && service!=Service::Get))return {};
-    Packet p{};
+       (target==node_profile && service!=Service::Get))return false;
+    size_t required=12;
+    for(size_t i=0;i<count;++i) {
+        const auto& e=props[i];
+        if(e.epc<0x80 || e.size>255 || (e.size && !e.data) ||
+           (service==Service::Get?e.size!=0:e.size==0) ||
+           max_packet-required<2+e.size)return false;
+        for(size_t j=0;j<i;++j)if(props[j].epc==e.epc)return false;
+        required+=2+e.size;
+    }
     const Byte header[]{0x10,0x81,Byte(tid>>8),Byte(tid),controller[0],controller[1],controller[2],
         target[0],target[1],target[2],Byte(service),Byte(count)};
     for(Byte v:header)p.bytes[p.size++]=v;
     for(size_t i=0;i<count;++i) {
         const auto& e=props[i];
-        if(e.epc<0x80 || e.size>255 || (e.size && !e.data) ||
-           (service==Service::Get?e.size!=0:e.size==0) ||
-           max_packet-p.size<2+e.size)return {};
-        for(size_t j=0;j<i;++j)if(props[j].epc==e.epc)return {};
         p.bytes[p.size++]=e.epc;p.bytes[p.size++]=Byte(e.size);
         for(size_t j=0;j<e.size;++j)p.bytes[p.size++]=e.data[j];
     }
-    return p;
+    return true;
 }
-inline std::optional<Packet> get(uint16_t tid,Object target,const Byte* codes,size_t count) {
-    if(!codes || !count || count>max_properties)return {};
+inline std::optional<Packet> request(uint16_t tid,Object target,Service service,
+                                     const Property* props,size_t count) {
+    Packet p{};return request_into(p,tid,target,service,props,count)?std::optional<Packet>{p}:std::nullopt;
+}
+inline bool get_into(Packet& p,uint16_t tid,Object target,const Byte* codes,size_t count) {
+    p.size=0;
+    if(!codes || !count || count>max_properties)return false;
     std::array<Property,max_properties> props{};
     for(size_t i=0;i<count;++i)props[i].epc=codes[i];
-    return request(tid,target,Service::Get,props.data(),count);
+    return request_into(p,tid,target,Service::Get,props.data(),count);
+}
+inline std::optional<Packet> get(uint16_t tid,Object target,const Byte* codes,size_t count) {
+    Packet p{};return get_into(p,tid,target,codes,count)?std::optional<Packet>{p}:std::nullopt;
 }
 inline std::optional<Packet> discover(uint16_t tid) {
     const Byte code=0xd6;return get(tid,node_profile,&code,1);
@@ -160,12 +177,16 @@ inline std::optional<Packet> read_capabilities(uint16_t tid,Object target) {
     if(!hvac(target))return {};
     const Byte codes[]{0x9e,0x9f};return get(tid,target,codes,2);
 }
-inline std::optional<Packet> read_state(uint16_t tid,Object target,const Capabilities& cap) {
-    if(!hvac(target) || !cap.readable.has(0x80) || !cap.readable.has(0xb0))return {};
+inline bool read_state_into(Packet& p,uint16_t tid,Object target,const Capabilities& cap) {
+    p.size=0;
+    if(!hvac(target) || !cap.readable.has(0x80) || !cap.readable.has(0xb0))return false;
     Byte codes[9];size_t count=0;
     for(Byte code:std::array<Byte,9>{0x80,0xb0,0xb3,0xbb,0xbe,0xba,0xa0,0x88,0xaa})
         if(cap.readable.has(code))codes[count++]=code;
-    return get(tid,target,codes,count);
+    return get_into(p,tid,target,codes,count);
+}
+inline std::optional<Packet> read_state(uint16_t tid,Object target,const Capabilities& cap) {
+    Packet p{};return read_state_into(p,tid,target,cap)?std::optional<Packet>{p}:std::nullopt;
 }
 struct State {
     bool power=false;
@@ -180,20 +201,26 @@ inline std::optional<int> temperature(const Property* p) {
     if(v< -127 || v>125)return {};
     return v;
 }
-inline std::optional<State> state(const Frame& req,const Frame& res) {
-    if(!hvac(req.destination) || req.service!=Service::Get || !matches(req,res))return {};
-    const auto* power=res.find(0x80);const auto* mode=res.find(0xb0);
+inline std::optional<State> operation_state(const Property* power,const Property* mode) {
     if(!power || power->size!=1 || (power->data[0]!=0x30 && power->data[0]!=0x31) ||
        !mode || mode->size!=1 || !mode_valid(mode->data[0]))return {};
-    State s{};s.power=power->data[0]==0x30;s.mode=static_cast<Mode>(mode->data[0]);
+    State s{};s.power=power->data[0]==0x30;s.mode=static_cast<Mode>(mode->data[0]);return s;
+}
+inline void optional_state(State& s,const Frame& res) {
     if(auto p=res.find(0xb3);p && p->size==1 && p->data[0]<=50)s.setpoint_c=p->data[0];
-    s.indoor_c=temperature(res.find(0xbb));s.outdoor_c=temperature(res.find(0xbe));
+    if(auto p=res.find(0xbb))s.indoor_c=temperature(p);
+    if(auto p=res.find(0xbe))s.outdoor_c=temperature(p);
     if(auto p=res.find(0xba);p && p->size==1 && p->data[0]<=100)s.humidity_pct=p->data[0];
     if(auto p=res.find(0xa0);p && p->size==1 &&
        (p->data[0]==0x41 || (p->data[0]>=0x31 && p->data[0]<=0x38)))s.fan=p->data[0];
     if(auto p=res.find(0x88);p && p->size==1 && (p->data[0]==0x41 || p->data[0]==0x42))
         s.fault=p->data[0]==0x41;
     if(auto p=res.find(0xaa);p && p->size==1)s.special_state=p->data[0];
+}
+inline std::optional<State> state(const Frame& req,const Frame& res) {
+    if(!hvac(req.destination) || req.service!=Service::Get || !matches(req,res))return {};
+    auto s=operation_state(res.find(0x80),res.find(0xb0));
+    if(s)optional_state(*s,res);
     return s;
 }
 // Property maps do not prove which values a given model accepts.
@@ -210,19 +237,24 @@ struct ModelLimits {
 struct Desired {std::optional<bool> power;std::optional<Mode> mode;std::optional<int> setpoint_c;};
 // Produces wire bytes only; not authorization to send. SetRes means accepted,
 // not applied. The firmware must read back every requested field before ACK.
-inline std::optional<Packet> command(uint16_t tid,Object target,const Capabilities& cap,
-                                     const ModelLimits& limits,const Desired& d) {
-    if(!hvac(target))return {};
+inline bool command_into(Packet& packet,uint16_t tid,Object target,const Capabilities& cap,
+                         const ModelLimits& limits,const Desired& d) {
+    packet.size=0;
+    if(!hvac(target))return false;
     std::array<Property,3> props{};std::array<Byte,3> values{};size_t count=0;
     const auto append=[&](Byte epc,Byte value){
         if(!cap.writable.has(epc) || !cap.readable.has(epc))return false;
         values[count]=value;props[count]={epc,&values[count],1};++count;return true;
     };
-    if(d.mode && (!limits.permits(*d.mode) || !append(0xb0,Byte(*d.mode))))return {};
+    if(d.mode && (!limits.permits(*d.mode) || !append(0xb0,Byte(*d.mode))))return false;
     if(d.setpoint_c && (!limits.valid() || *d.setpoint_c<limits.min_c ||
-       *d.setpoint_c>limits.max_c || !append(0xb3,Byte(*d.setpoint_c))))return {};
-    if(d.power && (!limits.power || !append(0x80,*d.power?0x30:0x31)))return {};
-    return request(tid,target,Service::SetC,props.data(),count);
+       *d.setpoint_c>limits.max_c || !append(0xb3,Byte(*d.setpoint_c))))return false;
+    if(d.power && (!limits.power || !append(0x80,*d.power?0x30:0x31)))return false;
+    return request_into(packet,tid,target,Service::SetC,props.data(),count);
+}
+inline std::optional<Packet> command(uint16_t tid,Object target,const Capabilities& cap,
+                                     const ModelLimits& limits,const Desired& d) {
+    Packet p{};return command_into(p,tid,target,cap,limits,d)?std::optional<Packet>{p}:std::nullopt;
 }
 inline bool confirmed(const Desired& d,const State& s) {
     return (d.power || d.mode || d.setpoint_c) &&
