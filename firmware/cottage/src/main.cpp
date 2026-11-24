@@ -2940,6 +2940,11 @@ static void status_endpoint() {
         cJSON_AddStringToObject(root,"calibration_state",calibration_state_name(cal.state));
         cJSON_AddStringToObject(root,"calibration_block",calibration_block_name(cal.block));
         cJSON_AddStringToObject(root,"control_source",proposal_source_name(arb.source));
+        // Presentation only: this is a fresh observed request, NOT proof
+        // that the compressor is running. Covers all common adapters.
+        if(inputs.pump_state_known)
+            cJSON_AddStringToObject(root,"pump_requested_mode",inputs.pump_heat?"HEAT":"OFF");
+        else cJSON_AddNullToObject(root,"pump_requested_mode");
         cJSON_AddStringToObject(root,"mpc_state",mpc_run_state_name(arb.mpc_state));
         cJSON_AddStringToObject(root,"mpc_fallback",mpc_fallback_name(arb.fallback));
         if(mp.has_plan) cJSON_AddNumberToObject(root,"mpc_plan_computed_utc",
@@ -3119,7 +3124,7 @@ static void plan_endpoint() {
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.sendHeader("Cache-Control","no-store");
     web.send(200,"application/json; charset=utf-8","");
-    char buf[220];
+    char buf[256];
     // Only the CURRENT slot's plan from a calibrated model is ever shown:
     // a plan from an earlier slot is stale and never displayed as valid.
     const bool ok=rows_mem && calibrated && record.has_plan && record.status==MpcStatus::Ok &&
@@ -3135,9 +3140,9 @@ static void plan_endpoint() {
     if(ok && energy && std::isfinite(cost)) snprintf(cost_text,sizeof(cost_text),"%.8f",cost);
     else strlcpy(cost_text,"null",sizeof(cost_text));
     snprintf(buf,sizeof(buf),
-      "{\"valid\":%s,\"count\":%u,\"energy_valid\":%s,\"cost_eur\":%s,\"minimum_c\":%.5f,\"slots\":[",
+      "{\"valid\":%s,\"count\":%u,\"energy_valid\":%s,\"cost_eur\":%s,\"minimum_c\":%.5f,\"computed_utc\":%lld,\"slots\":[",
       ok?"true":"false",static_cast<unsigned>(ok?n:0),ok&&energy?"true":"false",cost_text,
-      minimum_c);
+      minimum_c,static_cast<long long>(ok?record.computed_utc:0));
     web.streamContent(buf);
     for(size_t i=0;ok&&i<n;i++) {
         const PlanRow& r=rows_mem.get()[i];
@@ -3647,11 +3652,22 @@ static void prices_endpoint() {
         return;
     }
     const size_t count=enevina_firmware::future_prices(points,kMaxPriceSlots);
+    const auto after=enevina_firmware::market_status();
+    if(!after.clock_trusted || !after.current_price_valid ||
+       strcmp(after.area,market.area)!=0 || strcmp(after.currency,market.currency)!=0 ||
+       after.last_fetch_utc!=market.last_fetch_utc) {
+        heap_caps_free(points);
+        web.sendHeader("Cache-Control","no-store");
+        web.send(200,"application/json; charset=utf-8","{\"valid\":false,\"slots\":[]}");
+        return;
+    }
     web.sendHeader("Cache-Control","no-store");
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.send(200,"application/json; charset=utf-8","");
-    web.streamContent(count?"{\"valid\":true,\"slots\":[":"{\"valid\":false,\"slots\":[");
     char line[192];
+    snprintf(line,sizeof(line),"{\"valid\":%s,\"area\":\"%s\",\"currency\":\"%s\",\"slots\":[",
+        count?"true":"false",market.area,market.currency);
+    web.streamContent(line);
     size_t emitted=0;
     for(size_t i=0;i<count;++i) {
         const auto& price=points[i];

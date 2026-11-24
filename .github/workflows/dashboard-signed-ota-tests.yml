@@ -26,6 +26,7 @@ on:
       - 'tests/test_cottage_c23_source.py'
       - 'tests/test_air_history_ui.js'
       - 'tests/test_history_view.js'
+      - 'tests/test_dashboard_clarity.js'
       - 'tests/automatic_command_reconciliation_tests.cpp'
       - 'tests/test_automatic_command_reconciliation_source.py'
       - 'pump/gree_lan_protocol.*'
@@ -97,6 +98,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_cottage_c23_source.py' -v
           node tests/test_air_history_ui.js
           node tests/test_history_view.js
+          node tests/test_dashboard_clarity.js
           node tests/test_mpc_dashboard.js
           node tests/test_c25_dashboard_ui.js
           node tests/test_wifi_setup_ui.js

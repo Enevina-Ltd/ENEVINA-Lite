@@ -159,7 +159,7 @@ assert(refresh.includes('expectedMarket!==tlMarketKey(state.site&&state.site.reg
 assert(refresh.includes('tlMatchesMarket(response,state.site&&state.site.region)'));
 assert(site.includes('++timelineRequestSequence'));
 assert(site.includes('state.timeline=null;state.prices={valid:false,slots:[]}'));
-assert(site.includes('if(marketChanged){await reloadPrices();await reloadTimeline();}'));
+assert(site.includes('if(pricingChanged){await reloadPrices();await reloadTimeline();}'));
 assert(header.includes('d=tlMatchesMarket(state.timeline,state.site&&state.site.region)?'));
 
 console.log('test_plan_timeline OK ('+literals.length+' literals checked)');
