@@ -36,6 +36,9 @@ on:
       - 'tests/test_dashboard_signed_ota.py'
       - 'tests/test_dashboard_translations.py'
       - 'tests/test_network_budget_diagnostic_source.py'
+      - 'tests/test_boot_memory_admission.py'
+      - 'firmware/main/market.*'
+      - 'firmware/main/weather.*'
       - 'tests/test_crash_stack_source.py'
       - 'cottage/forecast_bridge.*'
       - 'tests/test_ota_runtime_source.py'
@@ -68,6 +71,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_dashboard_signed_ota.py' -v
           python3 -m unittest discover -s tests -p 'test_dashboard_translations.py' -v
           python3 -m unittest discover -s tests -p 'test_network_budget_diagnostic_source.py' -v
+          python3 -m unittest discover -s tests -p 'test_boot_memory_admission.py' -v
           python3 -m unittest discover -s tests -p 'test_crash_stack_source.py' -v
           python3 -m unittest discover -s tests -p 'test_ota_runtime_source.py' -v
           python3 -m unittest discover -s tests -p 'test_ota_signing.py' -v

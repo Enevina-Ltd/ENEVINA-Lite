@@ -24,6 +24,7 @@ void network_budget_release();
 uint32_t network_budget_denials();
 void network_budget_sample();
 uint32_t network_budget_min_largest_internal();
+uint32_t network_budget_min_sampled_free();
 
 class NetworkBudgetLease final {
 public:

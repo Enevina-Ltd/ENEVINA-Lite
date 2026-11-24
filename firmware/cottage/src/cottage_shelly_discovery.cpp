@@ -8,6 +8,7 @@
 #include <freertos/task.h>
 #include <cstring>
 #include "cottage_shelly_discovery.hpp"
+#include "cottage_network_budget.hpp"
 
 namespace enevina_firmware {
 namespace {
@@ -121,12 +122,17 @@ ShellyScanState shelly_scan(ShellyScanSnapshot& out) {
     out.age_ms=shared.state==ShellyScanState::Done?now-finished_ms:0;
     xSemaphoreGive(guard);
     if(start) {
-        if(!worker && xTaskCreate(worker_main,"shelly_scan",7168,nullptr,2,&worker)!=pdPASS) {
-            xSemaphoreTake(guard,portMAX_DELAY);
-            shared.state=ShellyScanState::Failed;
-            out=shared;
-            xSemaphoreGive(guard);
-            return out.state;
+        if(!worker) {
+            NetworkBudgetLease allocation(0,0,0);
+            if(!allocation.held() ||
+               xTaskCreate(worker_main,"shelly_scan",7168,nullptr,2,&worker)!=pdPASS) {
+                worker=nullptr;
+                xSemaphoreTake(guard,portMAX_DELAY);
+                shared.state=ShellyScanState::Failed;
+                out=shared;
+                xSemaphoreGive(guard);
+                return out.state;
+            }
         }
         xTaskNotifyGive(worker);
     }

@@ -236,6 +236,9 @@ bool fetch_day(const char* date,const char* area,const char* currency,
     code=103; // transport failure until proven otherwise
     char* body=nullptr;
     if(esp_http_client_open(client,0)==ESP_OK) {
+#ifdef COTTAGE_SHARED_MEMORY_GUARD
+        network_budget_sample();
+#endif
         esp_http_client_fetch_headers(client);
         http_status=esp_http_client_get_status_code(client);
         // 204 = the market has not published this day for this area (yet).
@@ -367,6 +370,7 @@ uint32_t market_reader_stack_free() {
     return reader_task?uxTaskGetStackHighWaterMark(reader_task):0;
 }
 void start_market_reader() {
+    if(reader_task)return;
     if(!mutex) mutex=xSemaphoreCreateMutex();
     if(!mutex) { ESP_LOGE(tag,"market mutex allocation failed"); return; }
     if(xTaskCreate(poll_prices,"market_read",8192,nullptr,3,&reader_task)!=pdPASS) {
@@ -375,6 +379,13 @@ void start_market_reader() {
     }
 }
 
+#ifdef COTTAGE_SHARED_MEMORY_GUARD
+void market_retry_reader_start() {
+    if(reader_task)return;
+    NetworkBudgetLease lease(0,0,0);
+    if(lease.held())start_market_reader();
+}
+#endif
 bool market_set_region(const char* area,const char* currency) {
     // nullptr/nullptr = no zone chosen yet: prices are not fetched and the
     // cache is empty, never silently defaulted to another country's market.

@@ -10,6 +10,7 @@ SemaphoreHandle_t gate=nullptr;
 // Count refusals rather than hiding failed allocations or heap minima.
 std::atomic<uint32_t> refusals{0};
 std::atomic<uint32_t> min_largest{std::numeric_limits<uint32_t>::max()};
+std::atomic<uint32_t> min_sampled_free{std::numeric_limits<uint32_t>::max()};
 }
 bool network_budget_init() {
     if(!gate) gate=xSemaphoreCreateMutex();
@@ -46,6 +47,11 @@ void network_budget_release() {
     if(gate) xSemaphoreGive(gate);
 }
 void network_budget_sample() {
+    const auto free_now=static_cast<uint32_t>(
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+    auto free_seen=min_sampled_free.load();
+    while(free_now<free_seen &&
+          !min_sampled_free.compare_exchange_weak(free_seen,free_now)) {}
     const auto current=static_cast<uint32_t>(
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
     auto observed=min_largest.load();
@@ -54,6 +60,10 @@ void network_budget_sample() {
 }
 uint32_t network_budget_min_largest_internal() {
     const uint32_t v=min_largest.load();
+    return v==std::numeric_limits<uint32_t>::max()?0:v;
+}
+uint32_t network_budget_min_sampled_free() {
+    const auto v=min_sampled_free.load();
     return v==std::numeric_limits<uint32_t>::max()?0:v;
 }
 uint32_t network_budget_denials() {return refusals.load();}

@@ -175,8 +175,12 @@ GeocodeState geocode_search(const char* query,const char* country,
     }
     out=shared;
     xSemaphoreGive(guard);
-    if(start && xTaskCreate(worker_main,"geocode",6144,nullptr,2,nullptr)!=pdPASS) {
-        fail(GeocodeError::LowMemory);
+    if(start) {
+        NetworkBudgetLease allocation(0,0,0);
+        if(!allocation.held())fail(GeocodeError::Busy);
+        else if(xTaskCreate(worker_main,"geocode",6144,nullptr,2,nullptr)!=pdPASS)
+            fail(GeocodeError::LowMemory);
+        else return out.state;
         xSemaphoreTake(guard,portMAX_DELAY);
         out=shared;
         xSemaphoreGive(guard);

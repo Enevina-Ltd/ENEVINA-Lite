@@ -152,6 +152,9 @@ bool fetch_weather(WeatherCache& next,double fetch_lat,double fetch_lon,
                                    previous->last_modified);
     bool ok=false;
     if(esp_http_client_open(client,0)==ESP_OK) {
+#ifdef COTTAGE_SHARED_MEMORY_GUARD
+        network_budget_sample();
+#endif
         const int64_t content_size=esp_http_client_fetch_headers(client);
         http_status=esp_http_client_get_status_code(client);
         const int64_t now=time(nullptr);
@@ -362,11 +365,27 @@ bool weather_update_location(const char* selected) {
     xSemaphoreGive(mutex);
     // Settings already persist before this function is called; retry on any
     // subsequent location update if allocation temporarily fails.
+#ifdef COTTAGE_SHARED_MEMORY_GUARD
+    // The Lite loop retries a missing worker with the existing memory
+    // lease. Do not allocate a new stack while another TLS job holds it.
+#else
     if(enabled && !ensure_weather_reader())return false;
+#endif
     if(changed && weather_task)xTaskNotifyGive(weather_task);
     return true;
 }
 
+#ifdef COTTAGE_SHARED_MEMORY_GUARD
+void weather_retry_reader_start() {
+    if(weather_task||!mutex)return;
+    xSemaphoreTake(mutex,portMAX_DELAY);
+    const bool needed=configured;
+    xSemaphoreGive(mutex);
+    if(!needed)return;
+    NetworkBudgetLease lease(0,0,0);
+    if(lease.held())ensure_weather_reader();
+}
+#endif
 WeatherStatus weather_status() {
     WeatherStatus result;
     const time_t now=time(nullptr);
