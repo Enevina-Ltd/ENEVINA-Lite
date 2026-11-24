@@ -90,6 +90,8 @@ struct State {
     Link scan_link{};
     uint32_t scan_ms=0;
     bool scan_received=false,draft_started=false,busy=false;
+    bool write_active=false;
+    uint32_t write_generation=0;
     uint32_t stage_id=0,next_id=0,revision=0,request_generation=0,request_since_ms=0,mode_since_ms=0;
     int64_t automatic_queued_utc=0,automatic_confirmed_utc=0;
     MitsubishiModeHistory dwell{};
@@ -160,6 +162,7 @@ void install(const Snapshot& sample) {
 }
 void enqueue_command(Command cmd) {
     cmd.queued_utc=time(nullptr);
+    ++state.write_generation;
     state.pending={Task::Write,state.active.link,state.active.config.peer,false,cmd};
     state.requested={cmd.desired,cmd.queued_utc,true};state.sent={};state.confirmed={};
     state.status="write_queued";
@@ -645,8 +648,7 @@ ControlBlock cottage_echonet_submit_automatic(const PumpRoomState& earlier,Contr
     xSemaphoreTake(gate,portMAX_DELAY);
     ControlBlock result=ControlBlock::InputsUnverified;
     const auto mode=el::room_mode(state.active.reading);
-    if(!state.reconciliation.allow(authorization,available(),mode,
-          state.active.reading.setpoint_c?double(*state.active.reading.setpoint_c):NAN)) {
+    if(state.reconciliation.awaiting(authorization)) {
         xSemaphoreGive(gate);return ControlBlock::AwaitingReadback;
     }
     if(available() && state.approval.modes.heat.valid() &&
@@ -687,6 +689,8 @@ PumpRoomState cottage_echonet_room_state() {
     if(approved())out.heating=state.approval.modes.heating();
     out.request_generation=state.request_generation;
     out.command_unconfirmed=state.reconciliation.awaiting(cottage_control_authorization_generation());
+    out.write_generation=state.write_generation;
+    out.write_in_progress=state.write_active || state.pending.task==Task::Write;
     out.request_minutes=(millis()-state.request_since_ms)/60000;
     out.mode_minutes=(millis()-state.mode_since_ms)/60000;
     out.automatic_queued_utc=state.automatic_queued_utc;out.automatic_confirmed_utc=state.automatic_confirmed_utc;
@@ -714,6 +718,7 @@ void cottage_echonet_tick() {
     const bool staged=job.draft && state.stage_id && state.staged.link.current();
     Config config=staged?state.staged.config:state.saved;
     state.pending={};state.busy=job.task!=Task::None;
+    state.write_active=job.task==Task::Write;
     xSemaphoreGive(gate);
     if(job.task==Task::None)return;
     if(job.task==Task::Identify)config={0,job.peer,{}};
@@ -738,6 +743,7 @@ void cottage_echonet_tick() {
         } else {result.status="network_busy";command.status="network_busy";}
     }
     xSemaphoreTake(gate,portMAX_DELAY);state.busy=false;
+    state.write_active=false;
     if(job.task==Task::Write && job.command.automatic && command.attempted &&
        !command.confirmed && job.command.revision==revision.load()) {
         const auto& wanted=job.command.desired;
@@ -776,6 +782,13 @@ void cottage_echonet_tick() {
             } else if(!job.draft || !state.draft_started) {
                 if(!result.sample.received && std::strcmp(result.status,"device_changed")==0)revoke();
                 observe(result.sample);
+                if(!job.draft && selected && state.reconciliation.observe(
+                        cottage_control_authorization_generation(),available(),
+                        el::room_mode(state.active.reading),
+                        state.active.reading.setpoint_c?double(*state.active.reading.setpoint_c):NAN)) {
+                    ++state.request_generation;state.request_since_ms=millis();
+                    state.automatic_queued_utc=state.automatic_confirmed_utc=0;
+                }
             }
         }
     } else result.status="link_changed";

@@ -173,7 +173,8 @@ inline bool same_cn105_gateway_request(const PumpRoomState& begin,const PumpRoom
 // Single shared eligibility rule for host tests and production runtime.
 inline CN105LearningRequest cn105_learning_request(const CN105GatewayRequestHistory& history,
         const PumpRoomState& begin,const PumpRoomState& end,const CN105SlotCommands& commands) {
-    if(begin.evidence.received_utc<=0 || !history.matches_current(end))return {};
+    if(begin.command_unconfirmed || end.command_unconfirmed ||
+       begin.evidence.received_utc<=0 || !history.matches_current(end))return {};
     const int64_t span=end.evidence.received_utc-begin.evidence.received_utc;
     if(span<840 || span>960)return {};
     const bool quiet=commands.sent==0 && commands.confirmed==0 && commands.failed==0;

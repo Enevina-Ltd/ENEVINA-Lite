@@ -74,6 +74,8 @@ struct State {
     uint32_t revision=0,stage_id=0,next_id=0;
     Work pending{};
     bool busy=false;
+    bool write_active=false;
+    uint32_t write_generation=0;
     const char* status="not_tested";
     const char* draft_status="not_tested";
     PumpHeatingLimits limits{};
@@ -155,6 +157,7 @@ void install(Snapshot sample) {
 }
 void enqueue_command(Command command) {
     command.queued_utc=time(nullptr);
+    ++state.write_generation;
     state.pending={Task::Write,state.active.link,{},false,std::move(command)};
     state.requested={state.pending.command.patch,state.pending.command.queued_utc,true};
     state.sent={};
@@ -518,8 +521,7 @@ ControlBlock cottage_daikin_submit_automatic(const PumpRoomState& earlier,Contro
     xSemaphoreTake(gate,portMAX_DELAY);
     ControlBlock result=ControlBlock::InputsUnverified;
     const bool usable=available();
-    if(!state.reconciliation.allow(authorization,usable,room_mode(state.active.reading),
-          state.active.reading.target_c.value_or(NAN))) {
+    if(state.reconciliation.awaiting(authorization)) {
         xSemaphoreGive(gate);return ControlBlock::AwaitingReadback;
     }
     if(usable && earlier.configuration_generation==configuration_revision.load() &&
@@ -570,6 +572,8 @@ enevina::PumpRoomState cottage_daikin_room_state() {
     if(approved())result.heating=state.limits;
     result.request_generation=state.request_generation;
     result.command_unconfirmed=state.reconciliation.awaiting(cottage_control_authorization_generation());
+    result.write_generation=state.write_generation;
+    result.write_in_progress=state.write_active || state.pending.task==Task::Write;
     result.request_minutes=(millis()-state.request_since_ms)/60000;
     result.mode_minutes=(millis()-state.mode_since_ms)/60000;
     result.automatic_queued_utc=state.automatic_queued_utc;
@@ -606,6 +610,7 @@ void cottage_daikin_tick() {
     const auto limits=state.limits;
     state.pending={};
     state.busy=job.task!=Task::None;
+    state.write_active=job.task==Task::Write;
     xSemaphoreGive(gate);
     if(job.task==Task::None) {return;}
     if(job.task==Task::Identify) {
@@ -626,6 +631,7 @@ void cottage_daikin_tick() {
     }
     xSemaphoreTake(gate,portMAX_DELAY);
     state.busy=false;
+    state.write_active=false;
     if(job.task==Task::Write && job.command.automatic && command.attempted &&
        !command.confirmed && job.command.revision==configuration_revision.load()) {
         const auto& wanted=job.command.patch;
@@ -662,7 +668,15 @@ void cottage_daikin_tick() {
             if(staged) {
                 if(result.sample.received)state.staged=std::move(result.sample);
                 else state.staged.received=false;
-            } else observe(std::move(result.sample));
+            } else {
+                observe(std::move(result.sample));
+                if(!job.draft && selected && state.reconciliation.observe(
+                        cottage_control_authorization_generation(),available(),
+                        room_mode(state.active.reading),state.active.reading.target_c.value_or(NAN))) {
+                    ++state.request_generation;state.request_since_ms=millis();
+                    state.automatic_queued_utc=state.automatic_confirmed_utc=0;
+                }
+            }
         }
     } else result.status="link_changed";
     (job.draft?state.draft_status:state.status)=result.status;

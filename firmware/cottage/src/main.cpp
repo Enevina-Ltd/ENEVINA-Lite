@@ -237,7 +237,7 @@ static std::atomic<uint32_t> control_armed_panasonic_revision{0},control_armed_p
 // change pump mode. Track bridge observations even while disarmed.
 // Owned by the optimizer task after setup restores the saved authorization.
 static MitsubishiModeHistory control_mode_history{};
-static AutomaticCommandReconciliation cn105_reconciliation{}; // optimizer task only
+static AutomaticCommandReconciliation cn105_reconciliation{}; // lock_data
 static uint32_t control_mode_history_endpoint=0;
 static void control_note_observed_mode(bool heating,Cn105LinkIdentity link) {
     if(!link.current())return;
@@ -918,7 +918,8 @@ static enevina::PumpRoomState optimizer_pump_state(int64_t now,bool midea) {
     const auto link=cottage_wifi_link_generation();
     const auto ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
     xSemaphoreTake(lock_data,portMAX_DELAY);
-    const auto state=cn105_gateway_requests.snapshot(now,ms,endpoint,link);
+    auto state=cn105_gateway_requests.snapshot(now,ms,endpoint,link);
+    state.command_unconfirmed=cn105_reconciliation.awaiting(cottage_control_authorization_generation());
     xSemaphoreGive(lock_data);
     if(endpoint!=site_settings_endpoint_generation() || link!=cottage_wifi_link_generation())return {};
     return state;
@@ -1197,6 +1198,18 @@ static enevina::PumpRoomState cn105_room_state() {
     if(!cn105_bridge_get(heat,setpoint) || endpoint!=site_settings_endpoint_generation() ||
        link!=cottage_wifi_link_generation())return state;
     control_note_observed_mode(heat,{endpoint,link});
+    // Regular optimizer GET, including HOLD/disarmed cycles. A matching
+    // observation can close uncertainty, not fabricate a POST acknowledgement.
+    xSemaphoreTake(lock_data,portMAX_DELAY);
+    if(endpoint==site_settings_endpoint_generation() && link==cottage_wifi_link_generation() &&
+       cn105_reconciliation.observe(cottage_control_authorization_generation(),true,
+           heat?PumpRoomMode::Heat:PumpRoomMode::Off,setpoint)) {
+        cn105_gateway_requests.invalidate();
+        cn105_gateway_requests.note(heat,setpoint,control_last_bridge_read_utc.load(),
+            static_cast<uint64_t>(esp_timer_get_time()/1000),endpoint,link);
+    }
+    state.command_unconfirmed=cn105_reconciliation.awaiting(cottage_control_authorization_generation());
+    xSemaphoreGive(lock_data);
     // Once per existing optimizer tick while HEAT is requested, also
     // observe the optional diagnostic entity even when SSE is quiet.
     if(heat)cn105_read_optional_submode({endpoint,link});
@@ -1400,9 +1413,9 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
                               uint32_t site_generation,Cn105LinkIdentity link,
                               ControlStep step,double required_target,
                               bool expected_heat,double expected_setpoint) {
-    if(!cn105_selected())return false;
     control_post_stage.store(1);
     control_post_http_code.store(0);
+    if(!cn105_selected())return false;
     // A browser settings change (URL, tariff) supersedes an in-flight command
     // exactly like a mode change does; no new gate, same cancellation points.
     if(!command.valid || !control_armed.load() || !wifi_ok.load() ||
@@ -1735,6 +1748,9 @@ static void cottage_control_tick(const enevina::PumpRoomState& bridge) {
     }
     // A HOLD proposal does not authorize any physical command. A failed
     // observation must not turn it into an input error.
+    if(bridge.command_unconfirmed) {
+        control_gate.store(static_cast<int>(ControlBlock::AwaitingReadback));return;
+    }
     if(proposal.action==BootstrapAction::Hold) {
         control_gate.store(static_cast<int>(ControlBlock::NoProposal));
         return;
@@ -1760,9 +1776,6 @@ static void cottage_control_tick(const enevina::PumpRoomState& bridge) {
     const bool current_heat=bridge.mode==enevina::PumpRoomMode::Heat;
     candidate.current_heat=current_heat;
     candidate.current_setpoint_c=bridge.setpoint_c;
-    if(!cn105_reconciliation.allow(authorization_generation,true,bridge.mode,bridge.setpoint_c)) {
-        control_gate.store(static_cast<int>(ControlBlock::AwaitingReadback));return;
-    }
     candidate.ms_since_mode_change=control_ms_since_mode_change();
     const auto decision=choose_mitsubishi_control(candidate);
     control_gate.store(static_cast<int>(decision.gate));
@@ -1820,10 +1833,10 @@ static void cottage_control_tick(const enevina::PumpRoomState& bridge) {
         }
     }
     if(confirmed) {
-        cn105_reconciliation.clear();
         control_post_stage.store(8);
         const int64_t ack_utc=time(nullptr);
         xSemaphoreTake(lock_data,portMAX_DELAY);
+        cn105_reconciliation.clear();
         cn105_history_ack={static_cast<uint32_t>(ack_utc),
             static_cast<uint8_t>(decision.step),static_cast<uint8_t>(arbitration.source),
             static_cast<uint16_t>(std::lround(decision.target_c*10))};
@@ -2237,10 +2250,9 @@ struct LearningSlot {
     uint32_t config_generation=0,site_generation=0;
     bool energy_ok=false;double total_wh=0;int64_t energy_utc=0;
     uint32_t energy_meter_identity=0;
-    enevina::PumpRoomState gateway_start{};
+    enevina::PumpRoomState pump_start{};
     uint32_t defrost_reports=0;
     bool defrost_at_start=false;
-    bool command_unconfirmed_at_start=false;
 };
 static void optimizer_worker(void*) {
     // N16R8 physical CN105/Shelly benchmark: the old ordinary new[] for
@@ -2424,8 +2436,8 @@ static void optimizer_worker(void*) {
                 // or one continuously bracketed mode transition; reject
                 // unknown intervals. Independent room response validates it.
                 const bool no_command=control_commands_sent.load()==slot.commands_sent;
-                o.heat_valid=known_heating_mode(view) && view.request_minutes>=14 && no_command &&
-                    !slot.command_unconfirmed_at_start;
+                o.heat_valid=known_heating_mode(view) && no_command &&
+                    quiet_common_learning_request(slot.pump_start,view);
                 o.heat_requested=view_heat;
                 o.setpoint_c=view.setpoint_c;
                 if(view.protocol==enevina::PumpRoomProtocol::Cn105EspHome) {
@@ -2444,7 +2456,7 @@ static void optimizer_worker(void*) {
                             commands.step=ControlStep::None;
                     }
                     const auto input=cn105_learning_request(cn105_gateway_requests,
-                        slot.gateway_start,view,commands);
+                        slot.pump_start,view,commands);
                     xSemaphoreGive(lock_data);
                     o.heat_valid=input.valid;
                     const auto defrost=cn105_defrost_view();
@@ -2452,7 +2464,7 @@ static void optimizer_worker(void*) {
                         defrost.generation!=slot.defrost_reports;
                     o.transition_before_fraction=input.before_fraction;
                     if(input.valid && input.before_fraction>0 && !view_heat)
-                        o.setpoint_c=slot.gateway_start.setpoint_c;
+                        o.setpoint_c=slot.pump_start.setpoint_c;
                 }
                 o.in_model_domain=id->variable_setpoints() ||
                     (!view_heat && o.transition_before_fraction<0) || o.setpoint_c<=16.01;
@@ -2634,9 +2646,9 @@ static void optimizer_worker(void*) {
                slot.config_generation!=c23_config_generation() ||
                (id && identifier_identity()!=identity))slot.indoor_ok=false;
             if(uses_common_pump_state())
-                slot.command_unconfirmed_at_start=optimizer_pump_state(time(nullptr),midea).command_unconfirmed;
+                slot.pump_start=optimizer_pump_state(time(nullptr),midea);
             if(cn105_selected()) {
-                slot.gateway_start=optimizer_pump_state(time(nullptr),false);
+                slot.pump_start=optimizer_pump_state(time(nullptr),false);
                 const auto defrost=cn105_defrost_view();
                 slot.defrost_reports=defrost.generation;
                 slot.defrost_at_start=defrost.defer_write;

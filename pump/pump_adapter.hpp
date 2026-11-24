@@ -52,6 +52,10 @@ struct PumpRoomState {
     PumpStateSource source=PumpStateSource::None;
     MeasurementEvidence evidence{};
     bool command_unconfirmed=false; // valid LAN/bus state is not a confirmed control transition
+    // Independent learning evidence: queued/in-flight writes must not
+    // invalidate their own live control preflight or manufacture a quiet slot.
+    uint32_t write_generation=0;
+    bool write_in_progress=false;
 };
 
 struct PumpDescriptor {

@@ -178,6 +178,10 @@ int main(){
         const auto end=tracker.snapshot(t+900,ms+900000,1,1);
         auto quiet=cn105_learning_request(tracker,begin,end,{});
         CHECK(quiet.valid && quiet.before_fraction==-1);
+        auto uncertain_start=begin;uncertain_start.command_unconfirmed=true;
+        auto uncertain_end=end;uncertain_end.command_unconfirmed=true;
+        CHECK(!cn105_learning_request(tracker,uncertain_start,end,{}).valid);
+        CHECK(!cn105_learning_request(tracker,begin,uncertain_end,{}).valid);
         CN105SlotCommands failure{};failure.failed=1;
         CHECK(!cn105_learning_request(tracker,begin,end,failure).valid);
         CN105SlotCommands setpoint{1,1,0,ControlStep::Setpoint,t+400,t+401,16};

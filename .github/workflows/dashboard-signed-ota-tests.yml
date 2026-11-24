@@ -10,6 +10,9 @@ on:
       - 'firmware/cottage/**'
       - 'cottage/mitsubishi_control_policy.hpp'
       - 'cottage/automatic_command_reconciliation.hpp'
+      - 'cottage/learning_observation.hpp'
+      - 'pump/pump_adapter.hpp'
+      - 'tests/test_c2_heartbeat_plan_invalidation.py'
       - 'cottage/bounded_http_write.hpp'
       - 'cottage/bounded_http_request.hpp'
       - 'tests/bounded_http_request_tests.cpp'
@@ -86,6 +89,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_mode_dwell_wiring.py' -v
           python3 -m unittest discover -s tests -p 'test_mpc_control_wiring.py' -v
           python3 -m unittest discover -s tests -p 'test_automatic_command_reconciliation_source.py' -v
+          python3 -m unittest discover -s tests -p 'test_c2_heartbeat_plan_invalidation.py' -v
           python3 -m unittest discover -s tests -p 'test_bounded_web_source.py' -v
           python3 -m unittest discover -s tests -p 'test_history_busy_source.py' -v
           python3 -m unittest discover -s tests -p 'test_air_history_background.py' -v

@@ -73,6 +73,7 @@ std::atomic<bool> polling{false};
 std::atomic<TaskHandle_t> poll_task{nullptr};
 std::atomic<bool> control_pending{false};
 bool control_busy=false; // guarded by mutex
+uint32_t write_generation=0; // guarded by mutex
 std::atomic<bool> config_updating{false}; // held through NVS persistence
 // Per-device, explicit, volatile physical-pilot approval. Never persisted
 // and never automatically inherited from read-only credentials or OTA.
@@ -406,6 +407,8 @@ enevina::PumpRoomState room_state_locked(int64_t now) {
     out.setpoint_c=observed.setpoint_c;
     out.request_generation=observed_request.generation();
     out.command_unconfirmed=reconciliation.awaiting(cottage_control_authorization_generation());
+    out.write_generation=write_generation;
+    out.write_in_progress=control_busy || control_pending.load();
     const uint64_t monotonic_ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
     out.mode_minutes=observed_request.mode_minutes(monotonic_ms);
     out.request_minutes=observed_request.request_minutes(monotonic_ms);
@@ -428,6 +431,7 @@ enevina::PumpRoomState room_state_locked(int64_t now) {
 // mutex held: both manual and automatic submit to this single worker queue.
 void queue_locked(const enevina::midea::ControlPatch& patch,int64_t now,
                   uint32_t link,uint32_t endpoint,const AutomaticWriteContext* automatic) {
+    ++write_generation;
     pending_patch=patch;
     pending_is_automatic=automatic!=nullptr;
     pending_automatic=automatic?*automatic:AutomaticWriteContext{};
@@ -664,9 +668,7 @@ enevina::cottage::ControlBlock cottage_midea_submit_automatic(
     const auto current=room_state_locked(now);
     const auto task=poll_task.load();
     const auto offer=[&]() {
-        const bool usable=current.source==PumpStateSource::DirectLan && !control_busy &&
-            !control_pending.load() && pilot_current_locked(current.endpoint_generation);
-        if(!reconciliation.allow(authorization_generation,usable,current.mode,current.setpoint_c))
+        if(reconciliation.awaiting(authorization_generation))
             return ControlBlock::AwaitingReadback;
         if(!task || control_busy || control_pending.load() ||
            current.source!=PumpStateSource::DirectLan ||
@@ -1408,9 +1410,13 @@ void cottage_midea_service_worker(void*) {
                     const uint32_t sampled_at_ms=millis();
                     const auto mode=!sample.power?enevina::PumpRoomMode::Off:
                         sample.mode==4?enevina::PumpRoomMode::Heat:enevina::PumpRoomMode::Other;
+                    const bool reconciled=!action && reconciliation.observe(
+                        cottage_control_authorization_generation(),pilot_current_locked(sample_endpoint),
+                        mode,sample.setpoint_c);
                     observed_request.observe(mode,sample.setpoint_c,
                         static_cast<uint64_t>(esp_timer_get_time()/1000),
-                        fresh_locked(sampled_utc,sample_link,sample_endpoint));
+                        !reconciled && fresh_locked(sampled_utc,sample_link,sample_endpoint));
+                    if(reconciled)automatic_queued_utc=automatic_confirmed_utc=0;
                     if(action && automatic && receipt.sent) {
                         automatic_confirmation_generation=observed_request.generation();
                         automatic_queued_utc=control_queued_utc.load();
