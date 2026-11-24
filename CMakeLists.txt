@@ -536,3 +536,13 @@ if(GREE_CJSON_INCLUDE AND GREE_CJSON_LIBRARY)
   endif()
   add_test(NAME daikin_dsiot_tests COMMAND daikin_dsiot_tests)
 endif()
+
+# ECHONET format-1 HVAC codec, transport-independent.
+add_executable(echonet_lite_tests tests/echonet_lite_tests.cpp)
+target_include_directories(echonet_lite_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(MSVC)
+  target_compile_options(echonet_lite_tests PRIVATE /UNDEBUG)
+else()
+  target_compile_options(echonet_lite_tests PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME echonet_lite_tests COMMAND echonet_lite_tests)

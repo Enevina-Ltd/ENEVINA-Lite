@@ -121,6 +121,11 @@ inline constexpr AdapterCatalogEntry adapter_catalog[]={
      "identified bus protocol, power, mode, setpoint and supported temperatures",
      "model-approved HEAT, OFF and half-degree Celsius setpoint",0,0,0,
      "checksum-valid status poll; WLAN also matches the request counter",true,"docs/integrations/PANASONIC_UART.md"},
+    {"echonet_lite_lan","ECHONET Lite / compatible OEM","Home air conditioner class 0130 (no field-verified models)",
+     HeatPumpType::AirToAir,AdapterLink::VendorLanProtocol,AdapterMaturity::HostTestedOnly,
+     "host codec: discovery, property maps, mode, power, setpoint, optional temperatures",
+     "host codec only: power, mode and integer Celsius setpoint; no firmware transport",0,0,0,
+     "no pump-origin timestamp or firmware worker",false,"docs/integrations/ECHONET_LITE.md"},
 };
 inline constexpr size_t adapter_catalog_size=sizeof(adapter_catalog)/sizeof(adapter_catalog[0]);
 
