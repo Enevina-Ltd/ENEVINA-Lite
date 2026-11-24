@@ -112,7 +112,7 @@ class WifiOnboardingSource(unittest.TestCase):
         self.assertIn('nvs_commit(handle)', MAIN)
         self.assertIn('control_armed_endpoint.store(site_settings_endpoint_generation())', MAIN)
         disarm = MAIN.split("static void cottage_control_disarm() {", 1)[1].split(
-            "static void cottage_control_tick()", 1)[0]
+            "static void cottage_control_tick(const enevina::PumpRoomState& bridge)", 1)[0]
         self.assertIn('cottage_control_revoke_saved_intent()', disarm)
         self.assertIn('prefs.putBytes("intent1",&record,sizeof(record))', MAIN)
 
@@ -220,7 +220,7 @@ class SiteSettingsSource(unittest.TestCase):
 
     def test_settings_change_cancels_inflight_command(self):
         post = MAIN.split("static bool cn105_bridge_post(", 1)[1].split(
-            "static void cottage_control_tick()", 1)[0]
+            "static void cottage_control_tick(const enevina::PumpRoomState& bridge)", 1)[0]
         before, final = post.split("// Last cancellation point", 1)
         self.assertIn("site_settings_generation()!=site_generation", before)
         dispatch = final.split("const bool dispatch=", 1)[1].split(";", 1)[0]
@@ -234,7 +234,7 @@ class SiteSettingsSource(unittest.TestCase):
         self.assertIn("endpoint_changed) endpoint_generation.fetch_add(1)", SITE)
         self.assertIn("strcmp(effective_previous.cn105_url,next.cn105_url)!=0", SITE)
         self.assertIn("const SiteSettings effective_previous=site_settings_snapshot();", SITE)
-        tick = MAIN.split("static void cottage_control_tick() {", 1)[1].split(
+        tick = MAIN.split("static void cottage_control_tick(const enevina::PumpRoomState& bridge) {", 1)[1].split(
             "ControlSnapshot candidate", 1)[0]
         self.assertIn("control_armed_endpoint.load()!=site_settings_endpoint_generation()", tick)
         self.assertIn("cottage_control_disarm();", tick)
@@ -242,7 +242,7 @@ class SiteSettingsSource(unittest.TestCase):
             "static void cottage_control_disarm()", 1)[0]
         self.assertIn('prefs.putBytes("intent1",&record,sizeof(record))', revoke)
         post = MAIN.split("static bool cn105_bridge_post(", 1)[1].split(
-            "static void cottage_control_tick()", 1)[0]
+            "static void cottage_control_tick(const enevina::PumpRoomState& bridge)", 1)[0]
         self.assertIn("control_armed_endpoint.load()!=site_settings_endpoint_generation()", post)
         arm = MAIN.split('web.on("/api/control/arm"', 1)[1]
         self.assertLess(arm.index("control_armed_endpoint.store("),

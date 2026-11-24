@@ -34,7 +34,7 @@ class OccupiedModeTests(unittest.TestCase):
         self.assertIn("mode.mode==CottageMode::Occupied", MAIN)
         self.assertIn("c23_current_mode_plan()", MAIN)
         self.assertIn("c23_config_generation()!=config_generation", MAIN)
-        self.assertIn("cottage_control_tick()", MAIN)
+        self.assertIn("cottage_control_tick(bridge);", MAIN)
         self.assertNotIn('static const char html[] PROGMEM', MAIN)
         self.assertIn('id="setting-occupied"', UI)
         self.assertIn("occupied:String(occupied)", UI)

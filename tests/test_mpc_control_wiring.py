@@ -13,10 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 MAIN = (ROOT / "firmware/cottage/src/main.cpp").read_text(encoding="utf-8")
 CORE = (ROOT / "firmware/cottage/src/core.cpp").read_text(encoding="utf-8")
 ARB = (ROOT / "cottage/mpc_arbiter.hpp").read_text(encoding="utf-8")
-TICK = MAIN.split("static void cottage_control_tick() {", 1)[1].split(
+TICK = MAIN.split("static void cottage_control_tick(const enevina::PumpRoomState& bridge) {", 1)[1].split(
     "static void cottage_control_registration()", 1)[0]
 POST = MAIN.split("static bool cn105_bridge_post(", 1)[1].split(
-    "static void cottage_control_tick()", 1)[0]
+    "static void cottage_control_tick(const enevina::PumpRoomState& bridge)", 1)[0]
 WORKER = MAIN.split("static void optimizer_worker(void*) {", 1)[1].split(
     "static void status_endpoint()", 1)[0]
 
@@ -25,7 +25,7 @@ class MpcControlWiring(unittest.TestCase):
     def test_one_arbitrated_proposal_for_tick_and_post(self):
         self.assertIn("const auto proposal=active_control_proposal(now,sample,&arbitration);", TICK)
         self.assertNotIn("bootstrap_preview(", TICK)
-        self.assertIn("const auto latest=active_control_proposal(now,current_temp);", POST)
+        self.assertIn("const auto latest=active_control_proposal(after_get_utc,selected_room_sample(after_get_utc));", POST)
         self.assertIn("const auto refreshed=active_control_proposal(", POST)
         self.assertNotIn("bootstrap_preview(", POST)
         # The arbiter falls back to the existing price/thermostat decision.
@@ -93,13 +93,21 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("const bool energy_ok=plan_ok && energy;", mpc)
         self.assertIn('\\"cop_identified\\":false', mpc)
 
-    def test_pump_state_only_from_verified_source(self):
-        # Codex P1 (PR #63): a gateway GET/SSE receipt may repeat cached
-        # state; learning labels, planning state and plan validity use only
-        # a fresh CN105 source proof or a fresh paired Midea LAN read.
+    def test_pump_state_from_standard_gateway_request_or_native_adapter(self):
+        # A gateway GET may repeat cached pump state. Treat it only as a
+        # request for an independently validated input-response model.
         view = MAIN.split("static enevina::PumpRoomState optimizer_pump_state(", 1)[1].split("\n}\n", 1)[0]
-        self.assertIn("verified_cn105_link.current() && valid_cn105(pump,now)", view)
-        self.assertIn("state.source=PumpStateSource::VerifiedBus;", view)
+        self.assertIn("cn105_gateway_requests.snapshot(now,ms,endpoint,link)", view)
+        self.assertNotIn("sse_observed_pump", view)
+        self.assertNotIn("PumpStateSource::VerifiedBus", view)
+        self.assertIn("same_cn105_gateway_request(slot.gateway_start,view)", WORKER)
+        self.assertIn("cn105_gateway_requests.single_mode_transition(slot.gateway_start,view,fraction)", WORKER)
+        self.assertIn("cn105-gateway-request-v2", MAIN)
+        self.assertIn("cn105_gateway_requests.note(heating,target,utc,ms,link.endpoint,link.wifi)", MAIN)
+        self.assertIn("cn105_gateway_requests.invalidate()", MAIN)
+        self.assertIn("slot.gateway_start=optimizer_pump_state(time(nullptr),false)", WORKER)
+        self.assertLess(WORKER.index("cn105_room_state()"),WORKER.index("const auto view=boundary?optimizer_pump_state(now,midea)"))
+        self.assertLess(WORKER.index("const auto view=boundary?optimizer_pump_state(now,midea)"),WORKER.index("cottage_control_tick(bridge);"))
         self.assertIn("if(midea)return cottage_midea_room_state();", view)
         self.assertIn("if(cottage_gree_selected())return cottage_gree_room_state();", view)
         self.assertLess(TICK.index("cottage_gree_submit_automatic("), TICK.index("cn105_bridge_post("))

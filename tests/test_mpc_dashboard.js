@@ -84,6 +84,11 @@ const active={...learning,state:'ACTIVE',fallback:'NONE',source:'MPC',armed:true
   assert.ok(r.card.textContent.includes('A fresh pump reading is unavailable.'));
   r=await run({...learning,pump_source_verified:true},'en');
   assert.ok(!r.card.textContent.includes('A fresh pump reading is unavailable.'));
+  for(const language of ['fi','en']) {
+    r=await run({...learning,pump_source_verified:false,pump_connection_ready:true,gateway_request:true},language);
+    assert.ok(r.card.textContent.includes(language==='en'?'Learns from gateway requests':'Oppii sillan lämmityspyynnöistä'));
+    assert.ok(!r.card.textContent.includes('A fresh pump reading is unavailable.'));
+  }
   // Learning, English.
   r=await run(learning,'en');
   text=r.card.textContent;

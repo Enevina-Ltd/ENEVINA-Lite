@@ -53,13 +53,18 @@ struct SlotObservation {
     double indoor_end_c=0;
     bool outdoor_valid=false;    // as-of forecast/measurement for this slot
     double outdoor_c=0;
-    bool heat_valid=false;       // request held unchanged for the whole slot
+    bool heat_valid=false;       // request observed throughout (constant or one bracketed transition)
     bool heat_requested=false;   // HEAT (at the model's 16 C setpoint) vs OFF
     bool in_model_domain=true;   // false: setpoint above 16 C, other modes...
     bool electric_valid=false;   // energy counter delta over the slot
     double electric_kwh=0;
     bool meter_pump_only=false;  // owner-confirmed heat-pump-only meter
-    double setpoint_c=0;         // verified request in the variable-setpoint domain
+    double setpoint_c=0;         // HEAT request in the variable-setpoint domain
+    // -1: unchanged request for the slot. Otherwise a single continuously
+    // observed mode change, with the fraction of time BEFORE the transition.
+    // heat_requested is the END mode; setpoint_c is the HEAT segment target.
+    // No transition is inferred from a gap or an uncertain command.
+    double transition_before_fraction=-1.0;
 };
 
 template<size_t N> struct RlsState {
@@ -203,6 +208,7 @@ private:
     explicit BuildingIdentifier(NoInit) {}
     ModelEstimate estimate() const;
     void validation_step(const SlotObservation& o,bool start,bool stop);
+    double heat_demand(const SlotObservation& o,double indoor_c) const;
     double requested_heat_fraction(const SlotObservation& o,double indoor_c) const;
     void push_trend(int64_t utc, double measured, double one_step, double open_loop);
     void refresh_state();

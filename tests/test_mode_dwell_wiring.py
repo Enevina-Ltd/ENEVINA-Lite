@@ -8,17 +8,18 @@ from pathlib import Path
 
 MAIN = (Path(__file__).resolve().parents[1] / "firmware" / "cottage" / "src" /
         "main.cpp").read_text(encoding="utf-8")
-TICK = MAIN.split("static void cottage_control_tick() {", 1)[1].split(
+TICK = MAIN.split("static void cottage_control_tick(const enevina::PumpRoomState& bridge) {", 1)[1].split(
     "static void cottage_control_registration()", 1)[0]
 POST = MAIN.split("static bool cn105_bridge_post(", 1)[1].split(
-    "static void cottage_control_tick()", 1)[0]
+    "static void cottage_control_tick(const enevina::PumpRoomState& bridge)", 1)[0]
 
 
 class ModeDwellWiring(unittest.TestCase):
     def test_snapshot_gets_time_since_last_mode_change(self):
         self.assertIn("candidate.ms_since_mode_change=", TICK)
-        self.assertLess(TICK.index("cn105_room_state()"),
-                        TICK.index("choose_mitsubishi_control(candidate)"))
+        worker=MAIN.split("static void optimizer_worker(void*) {",1)[1]
+        self.assertLess(worker.index("cn105_room_state()"),worker.index("cottage_control_tick(bridge);"))
+        self.assertIn("choose_mitsubishi_control(candidate)",TICK)
 
     def test_dwell_starts_at_actual_dispatch(self):
         # Codex P2 (post-merge #28): only after all preconditions, right
@@ -30,8 +31,9 @@ class ModeDwellWiring(unittest.TestCase):
                                               POST.index('req.POST("")')))
 
     def test_history_is_observed_even_when_disarmed_without_resetting_on_arm(self):
-        self.assertLess(TICK.index("cn105_room_state()"),
-                        TICK.index("if(!control_armed.load())return;"))
+        worker=MAIN.split("static void optimizer_worker(void*) {",1)[1]
+        self.assertLess(worker.index("cn105_room_state()"),worker.index("cottage_control_tick(bridge);"))
+        self.assertNotIn("control_armed.load()",worker[:worker.index("cn105_room_state()")])
         arm = MAIN.split('web.on("/api/control/arm"', 1)[1].split(
             "static uint64_t cottage_now_ms",1)[0]
         self.assertNotIn("control_reset_mode_history", arm)

@@ -7,7 +7,7 @@ SRC=(Path(__file__).resolve().parents[1]/
      "firmware/cottage/src/main.cpp").read_text(encoding="utf-8")
 class CN105Maintenance(unittest.TestCase):
     def test_hold_does_not_require_get_to_avoid_false_error(self):
-        body=SRC.split("static void cottage_control_tick() {",1)[1].split(
+        body=SRC.split("static void cottage_control_tick(const enevina::PumpRoomState& bridge) {",1)[1].split(
             "static void cottage_control_registration()",1)[0]
         marker="if(proposal.action==BootstrapAction::Hold) {"
         self.assertIn(marker,body)
@@ -16,7 +16,8 @@ class CN105Maintenance(unittest.TestCase):
         self.assertIn("proposal.action==BootstrapAction::Unavailable",earlier)
         later=body[body.index(marker):]
         self.assertIn("ControlBlock::NoProposal",later)
-        self.assertIn("cn105_room_state()",earlier)
+        worker=SRC.split("static void optimizer_worker(void*) {",1)[1]
+        self.assertLess(worker.index("cn105_room_state()"),worker.index("cottage_control_tick(bridge);"))
         # HOLD is read-only/NoProposal. Actionable requests require the
         # bridge GET above to have succeeded on the current connection.
         self.assertLess(later.index("ControlBlock::NoProposal"),

@@ -93,6 +93,9 @@ add_test(NAME cottage_cn105_source_proof_tests COMMAND cottage_cn105_source_proo
 add_executable(cn105_bridge_poll_tests tests/cn105_bridge_poll_tests.cpp)
 target_include_directories(cn105_bridge_poll_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME cn105_bridge_poll_tests COMMAND cn105_bridge_poll_tests)
+add_executable(cn105_gateway_request_tests tests/cn105_gateway_request_tests.cpp)
+target_include_directories(cn105_gateway_request_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME cn105_gateway_request_tests COMMAND cn105_gateway_request_tests)
 
 # Confirmed HEAT/OFF dwell age from the CN105 stream, reset on loss.
 add_executable(cottage_mode_timing_tests tests/cottage_mode_timing_tests.cpp)

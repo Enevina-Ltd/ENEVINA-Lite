@@ -36,6 +36,6 @@ class OtaRuntimeRegression(unittest.TestCase):
     def test_telemetry_and_control_separate(self):
         self.assertIn('"ota_downloaded_bytes"',APP)
         self.assertIn('"ota_idle_yields"',APP)
-        self.assertIn("cottage_control_tick();",APP)
+        self.assertIn("cottage_control_tick(bridge);",APP)
 
 if __name__=="__main__":unittest.main()

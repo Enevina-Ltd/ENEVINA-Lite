@@ -191,10 +191,14 @@ size_t BuildingIdentifier::trend(TrendPoint* out,size_t capacity) const {
 namespace {
 constexpr double residential_thermostat_band_c=1.0;
 }
-double BuildingIdentifier::requested_heat_fraction(const SlotObservation& o,double indoor_c) const {
-    if(!o.heat_requested)return 0.0;
+double BuildingIdentifier::heat_demand(const SlotObservation& o,double indoor_c) const {
     return variable_setpoints_?
         std::clamp((o.setpoint_c-indoor_c)/residential_thermostat_band_c,0.0,1.0):1.0;
+}
+double BuildingIdentifier::requested_heat_fraction(const SlotObservation& o,double indoor_c) const {
+    const double f=o.transition_before_fraction;
+    const double duty=f<0?(o.heat_requested?1.0:0.0):(o.heat_requested?1.0-f:f);
+    return duty>0?duty*heat_demand(o,indoor_c):0.0;
 }
 
 void BuildingIdentifier::validation_step(const SlotObservation& o,bool start,bool stop) {
@@ -212,7 +216,7 @@ void BuildingIdentifier::validation_step(const SlotObservation& o,bool start,boo
     const double to=o.outdoor_c,u=requested_heat_fraction(o,window_pred_);
     const double* t=window_theta_;
     window_pred_=to+t[0]*(window_pred_-to)+t[1]*u+t[2]*u*to+
-        t[3]*(start?u:0.0)+t[4]*(stop?1.0:0.0)+t[5];
+        t[3]*(start?heat_demand(o,window_pred_):0.0)+t[4]*(stop?1.0:0.0)+t[5];
     const double err=window_pred_-o.indoor_end_c;
     window_sq_+=err*err;
     window_max_=std::max(window_max_,std::fabs(err));
@@ -240,11 +244,18 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
     const bool contiguous=prev_slot_utc_>0 && prev_slot_utc_==o.slot_utc-900 &&
         prev_heat_>=0;
     const bool heat=o.heat_valid && o.heat_requested;
+    const double f=o.transition_before_fraction;
+    const bool transition=f>0 && f<1;
+    const bool valid_fraction=f==-1.0 || transition;
+    // A mixed slot is only usable when its beginning matches the preceding
+    // accepted end mode. An unobserved extra boundary change is not counted.
+    const bool transition_contiguous=!transition || (contiguous && prev_heat_==(heat?0:1));
     const bool start=contiguous && o.heat_valid && heat && prev_heat_==0;
     const bool stop=contiguous && o.heat_valid && !heat && prev_heat_==1;
-    const bool known_setpoint=!variable_setpoints_ || !heat ||
+    const bool contains_heat=heat || transition;
+    const bool known_setpoint=!variable_setpoints_ || !contains_heat ||
         (id_finite(o.setpoint_c) && o.setpoint_c>=5.0 && o.setpoint_c<=35.0);
-    const bool slot_ok=known_setpoint && o.heat_valid && o.indoor_valid &&
+    const bool slot_ok=valid_fraction && known_setpoint && o.heat_valid && o.indoor_valid &&
         o.outdoor_valid && o.in_model_domain &&
         id_finite(o.indoor_start_c) && id_finite(o.indoor_end_c) && id_finite(o.outdoor_c) &&
         o.indoor_start_c>-10 && o.indoor_start_c<40 &&
@@ -252,8 +263,8 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
         o.outdoor_c>=-55 && o.outdoor_c<=45 &&
         std::fabs(o.indoor_end_c-o.indoor_start_c)<3.0 &&
         // The pump's own 16 C thermostat throttles above ~15.5 C indoors.
-        (variable_setpoints_ || !(heat && o.indoor_start_c>15.3));
-    const bool thermal_ok=contiguous && slot_ok;
+        (variable_setpoints_ || !(contains_heat && o.indoor_start_c>15.3));
+    const bool thermal_ok=contiguous && slot_ok && transition_contiguous;
     last_sample_utc_=o.slot_utc;
     prev_slot_utc_=o.slot_utc;
     // A start/stop is only ever inferred between two ACCEPTED slots: a slot
@@ -266,7 +277,7 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
     if(thermal_ok) {
         const double to=o.outdoor_c,u=requested_heat_fraction(o,o.indoor_start_c);
         const double phi[thermal_n]={o.indoor_start_c-to,u,u*to,
-            start?u:0.0,stop?1.0:0.0,1.0};
+            start?heat_demand(o,o.indoor_start_c):0.0,stop?1.0:0.0,1.0};
         const double y=o.indoor_end_c-to;
         const double one_step=samples_>0?to+rls_dot(thermal_,phi):nan;
         validation_step(o,start,stop);
@@ -277,7 +288,7 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
         if(updated) {
             samples_++;
             if(u>0.05) heating_++;
-            else if(!heat) off_++;
+            else if(!contains_heat) off_++;
             if(start) {starts_++;start_outdoor_sum_+=to;}
             if(stop) {stops_++;stop_outdoor_sum_+=to;}
             outdoor_min_=std::min(outdoor_min_,to);
@@ -292,11 +303,12 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
     }
     // Electric fit: ONLY an owner-confirmed heat-pump-only meter.
     if(o.meter_pump_only && o.electric_valid && contiguous && o.heat_valid &&
+       valid_fraction && transition_contiguous && (!transition || slot_ok) &&
        (!variable_setpoints_ || slot_ok) &&
        o.outdoor_valid && o.in_model_domain && id_finite(o.electric_kwh) &&
        o.electric_kwh>=0 && o.electric_kwh<=5.0 && id_finite(o.outdoor_c)) {
         const double to=o.outdoor_c,u=requested_heat_fraction(o,o.indoor_start_c);
-        const double phi[electric_n]={u,u*to,start?(variable_setpoints_?u:1.0):0.0,1.0};
+        const double phi[electric_n]={u,u*to,start?heat_demand(o,o.indoor_start_c):0.0,1.0};
         const double y=o.electric_kwh/slot_hours;
         if(electric_.updates>=48) {
             const double e=y-rls_dot(electric_,phi);
