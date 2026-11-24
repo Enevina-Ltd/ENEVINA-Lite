@@ -7,12 +7,19 @@ function element(id){return {id,value:'',textContent:'',disabled:false,hidden:fa
   appendChild(v){this.children.push(v)},replaceChildren(...v){this.children=[...v]},
   addEventListener(k,v){this.handlers[k]=v}};}
 const elements=new Map(),$=id=>{if(!elements.has(id))elements.set(id,element(id));return elements.get(id)};
-let devices=[],calls=[],wizardOpen=false;
+let devices=[],calls=[],wizardOpen=false,scanCounter=0,pendingPolls=0,wrongScan=false;
 const WZ={mideaChanged:false};
 const context={document:{createElement:element},$,URLSearchParams,WZ,wzMideaStep:()=>wizardOpen,
   state:{status:{air:{config_token:'existing-test-token'}}},showMideaProtocolFields:()=>{},
   text:(id,value)=>{$(id).textContent=String(value)},
-  fetch:async(url,options)=>{calls.push({url,body:String(options.body)});return {ok:true,json:async()=>({devices})}}};
+  setTimeout:fn=>{fn();},
+  fetch:async(url,options)=>{
+    const form=new URLSearchParams(options.body);calls.push({url,body:String(options.body)});
+    if(!form.has('scan_id')){++scanCounter;pendingPolls=0;return {ok:true,status:202,json:async()=>({state:'pending',scan_id:scanCounter})};}
+    assert.equal(form.get('scan_id'),String(scanCounter));
+    if(++pendingPolls===1)return {ok:true,status:202,json:async()=>({state:'pending',scan_id:scanCounter})};
+    return {ok:true,status:200,json:async()=>({state:'done',scan_id:wrongScan?scanCounter+1:scanCounter,devices})};
+  }};
 vm.createContext(context);vm.runInContext(source,context,{filename:'midea-discovery-dashboard.js'});
 const run=s=>vm.runInContext(s,context);
 const choose=device=>{context.candidate=device;run('selectDiscoveredMidea(candidate)')};
@@ -53,7 +60,8 @@ const unchanged=()=>{for(const name of ['ip','id','protocol','token','key'])asse
   assert.match(options[1].textContent,/NEW0OEM1/);
   assert.match(options[2].textContent,/171PNL01/);
   assert.match(options[2].textContent,/0xCC/i);
-  assert.equal(calls.length,1);assert.equal(calls[0].url,'/api/midea/discover');
+  assert.equal(calls.length,3);assert(calls.every(c=>c.url==='/api/midea/discover'));
+  assert.equal(new URLSearchParams(calls[1].body).get('scan_id'),'1');
   assert.equal(new URLSearchParams(calls[0].body).get('token'),'existing-test-token');
 
   $('midea-discover-select').value='1';$('midea-discover-select').handlers.change();unchanged();
@@ -74,5 +82,8 @@ const unchanged=()=>{for(const name of ['ip','id','protocol','token','key'])asse
   reset();devices=[legacy];await $('midea-discover').handlers.click();
   assert.equal($('midea-id').value,'123459','single unknown-metadata device retains autofill');
   assert.equal($('midea-discover-select').hidden,true,'minimal legacy discovery retains its existing display');
-  console.log('PASS Midea discovery: typed AC selection, unsupported visibility and legacy fallback');
+  reset();wrongScan=true;await $('midea-discover').handlers.click();unchanged();
+  assert.match($('midea-feedback').textContent,/SCAN_ID/);
+  assert.equal($('midea-discover').disabled,false);
+  console.log('PASS Midea discovery: asynchronous polling, typed AC selection, unsupported visibility and legacy fallback');
 })().catch(error=>{console.error(error);process.exit(1)});

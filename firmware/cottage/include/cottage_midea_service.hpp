@@ -18,6 +18,8 @@ enevina::cottage::ControlBlock cottage_midea_submit_automatic(
 void cottage_midea_service_initialize();
 void cottage_midea_service_register_routes(WebServer& web);
 void cottage_midea_service_worker(void*);
+// One bounded read-only discovery step on the existing loop task.
+void cottage_midea_discovery_tick();
 // True only for a selected Midea adapter with committed LAN credentials.
 // Config and status routes continue to work even before the worker starts.
 bool cottage_midea_service_needs_worker();

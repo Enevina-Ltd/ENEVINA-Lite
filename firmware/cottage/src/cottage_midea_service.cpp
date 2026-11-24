@@ -3,7 +3,8 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <WiFi.h>
-#include <WiFiUdp.h>
+#include <lwip/sockets.h>
+#include <esp_heap_caps.h>
 #include <algorithm>
 #include <array>
 #include <IPAddress.h>
@@ -30,7 +31,7 @@
 #include "cottage_network_budget.hpp"
 #include "pump/midea_config_migration.hpp"
 #include "pump/midea_discovery.hpp"
-#include "pump/midea_discovery_info.hpp"
+#include "pump/midea_discovery_job.hpp"
 #include "pump/midea_ac_protocol.hpp"
 
 namespace {
@@ -761,6 +762,135 @@ void cottage_midea_service_initialize() {
         configured=true;
     }
 }
+namespace {
+using namespace enevina::midea;
+DiscoveryJob discovery_job{};
+int discovery_fd=-1;
+uint32_t discovery_last_tick=0;
+std::array<uint8_t,discovery_packet_max+1> discovery_packet{};
+DiscoveryIp discovery_ip(IPAddress ip){return {ip[0],ip[1],ip[2],ip[3]};}
+DiscoveryLink discovery_live_link(){
+    return {cottage_wifi_link_generation(),site_settings_endpoint_generation(),
+        discovery_ip(WiFi.localIP()),discovery_ip(WiFi.subnetMask())};
+}
+uint32_t discovery_address(const DiscoveryIp& ip){
+    return static_cast<uint32_t>(IPAddress(ip[0],ip[1],ip[2],ip[3]));
+}
+void discovery_finish(const char* error=nullptr){
+    if(discovery_fd>=0){::close(discovery_fd);discovery_fd=-1;}
+    discovery_job.finish(millis(),error);
+}
+bool discovery_open(){
+    const auto& link=discovery_job.link();
+    const auto local=discovery_address(link.ip);
+    if(!local)return false;
+    discovery_fd=::socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
+    if(discovery_fd<0)return false;
+    const int yes=1;
+    sockaddr_in source{};source.sin_family=AF_INET;source.sin_addr.s_addr=local;
+    if(::setsockopt(discovery_fd,SOL_SOCKET,SO_BROADCAST,&yes,sizeof(yes))<0 ||
+       ::bind(discovery_fd,reinterpret_cast<sockaddr*>(&source),sizeof(source))<0)return false;
+    DiscoveryIp directed{};
+    for(size_t i=0;i<4;++i)directed[i]=static_cast<uint8_t>(link.ip[i]|~link.mask[i]);
+    const DiscoveryIp broadcasts[]={{255,255,255,255},directed};
+    unsigned sent=0;
+    for(const auto& address:broadcasts)for(const uint16_t port:{6445u,20086u}) {
+        sockaddr_in dest{};dest.sin_family=AF_INET;dest.sin_port=htons(port);
+        dest.sin_addr.s_addr=discovery_address(address);
+        const auto n=::sendto(discovery_fd,discovery_request.data(),discovery_request.size(),
+            MSG_DONTWAIT,reinterpret_cast<sockaddr*>(&dest),sizeof(dest));
+        if(n==static_cast<int>(discovery_request.size()))sent|=port==6445?1u:2u;
+    }
+    return sent==3u;
+}
+void send_discovery_result(WebServer& web,uint32_t id){
+    web.sendHeader("Cache-Control","no-store");
+    if(discovery_job.active()) {
+        char json[80]{};
+        std::snprintf(json,sizeof(json),"{\"state\":\"pending\",\"scan_id\":%lu}",static_cast<unsigned long>(id));
+        web.send(202,"application/json",json);return;
+    }
+    if(discovery_job.phase()==DiscoveryPhase::Failed) {
+        char json[128]{};
+        std::snprintf(json,sizeof(json),"{\"state\":\"failed\",\"scan_id\":%lu,\"error\":\"%s\"}",
+            static_cast<unsigned long>(id),discovery_job.error());
+        web.send(503,"application/json",json);return;
+    }
+    constexpr size_t json_capacity=2048;
+    std::unique_ptr<char,decltype(&heap_caps_free)> json(static_cast<char*>(
+        heap_caps_malloc(json_capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)),heap_caps_free);
+    if(!json){web.send(503,"application/json","{\"error\":\"RESOURCE_BUSY\"}");return;}
+    size_t used=0;
+    auto add=[&](const char* format,auto... args)->bool{
+        if(used>=json_capacity)return false;
+        const int n=std::snprintf(json.get()+used,json_capacity-used,format,args...);
+        if(n<0||static_cast<size_t>(n)>=json_capacity-used)return false;
+        used+=static_cast<size_t>(n);return true;
+    };
+    bool ok=add("{\"state\":\"done\",\"scan_id\":%lu,\"devices\":[",static_cast<unsigned long>(id));
+    for(size_t i=0;i<discovery_job.count()&&ok;++i) {
+        const auto& hit=discovery_job.hit(i);
+        ok=add("%s{\"ip\":\"%u.%u.%u.%u\",\"protocol\":%u,\"device_id\":\"%llu\","
+            "\"device_type_known\":%s,\"device_type\":%u,\"model_known\":%s,\"model\":\"%s\","
+            "\"subtype_known\":%s,\"subtype\":%u}",i?",":"",
+            unsigned(hit.ip[0]),unsigned(hit.ip[1]),unsigned(hit.ip[2]),unsigned(hit.ip[3]),
+            unsigned(hit.protocol),static_cast<unsigned long long>(hit.id),
+            hit.metadata_known?"true":"false",unsigned(hit.info.device_type),
+            hit.metadata_known?"true":"false",hit.info.model.data(),
+            hit.metadata_known&&hit.info.subtype_known?"true":"false",unsigned(hit.info.subtype));
+    }
+    if(ok)ok=add("],\"count\":%u,\"truncated\":%s}",unsigned(discovery_job.count()),
+        discovery_job.truncated()?"true":"false");
+    web.send(ok?200:500,"application/json",ok?json.get():"{\"error\":\"BUFFER\"}");
+}
+} // namespace
+
+void cottage_midea_discovery_tick(){
+    using namespace enevina::midea;
+    if(!discovery_job.active())return;
+    const uint32_t now=millis();
+    if(WiFi.status()!=WL_CONNECTED||!discovery_job.current(discovery_live_link())){
+        discovery_finish("NETWORK_CHANGED");return;
+    }
+    if(cottage_ota_network_maintenance()){discovery_finish("OTA_BUSY");return;}
+    if(discovery_job.queue_expired(now)){discovery_finish("NETWORK_BUSY");return;}
+    // If another task held the memory lease (or the loop was busy) for
+    // too much of the receive window, do not claim a successful empty scan.
+    if(discovery_job.receive_interrupted(now)){discovery_finish("NETWORK_BUSY");return;}
+    if(discovery_job.receive_expired(now)){discovery_finish();return;}
+    if(now-discovery_last_tick<discovery_poll_ms)return;
+    discovery_last_tick=now;
+    // A nonblocking lease for this small step only. Never hold the shared
+    // network mutex across loop iterations, or wait inside the web task.
+    enevina_firmware::NetworkBudgetLease lease(0,64*1024,16*1024);
+    if(!lease.held())return;
+    if(!discovery_job.current(discovery_live_link())||cottage_ota_network_maintenance()){
+        discovery_finish("NETWORK_CHANGED");return;
+    }
+    if(discovery_job.phase()==DiscoveryPhase::Queued) {
+        if(!discovery_open()){discovery_finish("UDP");return;}
+        discovery_job.receiving(millis());return;
+    }
+    // At most four datagrams per loop turn, even during a flood. The extra
+    // byte detects a datagram truncated to our fixed buffer.
+    for(size_t i=0;i<discovery_receive_quota;++i) {
+        sockaddr_in peer{};socklen_t length=sizeof(peer);
+        const int n=::recvfrom(discovery_fd,discovery_packet.data(),discovery_packet.size(),
+            MSG_DONTWAIT,reinterpret_cast<sockaddr*>(&peer),&length);
+        if(n<0){
+            if(errno!=EAGAIN&&errno!=EWOULDBLOCK&&errno!=EINTR){discovery_finish("UDP");return;}
+            break;
+        }
+        if(peer.sin_family==AF_INET && length>=sizeof(peer))
+            discovery_job.accept(discovery_ip(IPAddress(peer.sin_addr.s_addr)),discovery_packet.data(),size_t(n));
+    }
+    if(!discovery_job.current(discovery_live_link())||cottage_ota_network_maintenance()){
+        discovery_finish("NETWORK_CHANGED");return;
+    }
+    discovery_job.polled(millis());
+    if(discovery_job.receive_expired(millis()))discovery_finish();
+}
+
 void cottage_midea_service_register_routes(WebServer& web) {
     web.on("/api/midea/status",HTTP_GET,[&web](){if(cottage_wifi_require_home_lan(web))send_status(web);});
     web.on("/api/midea/discover",HTTP_POST,[&web](){
@@ -778,122 +908,36 @@ void cottage_midea_service_register_routes(WebServer& web) {
             web.send(503,"application/json","{\"error\":\"OTA_BUSY\"}");
             return;
         }
-        // One bounded UDP discovery pass. It cannot enroll a device, write
-        // NVS, authenticate against a cloud, or send an HVAC command.
-        enevina_firmware::NetworkBudgetLease lease(100,64*1024,16*1024);
-        if(!lease.held()) {
-            web.send(503,"application/json","{\"error\":\"NETWORK_BUSY\"}");
-            return;
-        }
-        WiFiUDP udp;
-        if(!udp.begin(0)) {
-            web.send(503,"application/json","{\"error\":\"UDP\"}");
-            return;
-        }
-        const auto ip=WiFi.localIP();
-        const auto mask=WiFi.subnetMask();
-        const IPAddress directed(
-            static_cast<uint8_t>(ip[0] | ~mask[0]),
-            static_cast<uint8_t>(ip[1] | ~mask[1]),
-            static_cast<uint8_t>(ip[2] | ~mask[2]),
-            static_cast<uint8_t>(ip[3] | ~mask[3]));
-        // Both Midea discovery ports. 255.255.255.255 works on LANs which
-        // reject directed broadcast. Failed sends do not create a false hit.
-        const IPAddress broadcasts[2]={{255,255,255,255},directed};
-        for(const auto& dest:broadcasts)
-            for(const uint16_t port:{6445u,20086u}) {
-                if(udp.beginPacket(dest,port)) {
-                    udp.write(enevina::midea::discovery_request.data(),
-                              enevina::midea::discovery_request.size());
-                    udp.endPacket();
+        const auto link=discovery_live_link();
+        const uint32_t now=millis();
+        if(discovery_job.active() && !discovery_job.current(link))
+            discovery_finish("NETWORK_CHANGED");
+        uint32_t id=0;
+        if(web.hasArg("scan_id")) {
+            const String value=web.arg("scan_id");
+            if(value.isEmpty()||value.length()>10) {
+                web.send(400,"application/json","{\"error\":\"SCAN_ID\"}");return;
+            }
+            uint64_t parsed=0;
+            for(size_t i=0;i<value.length();++i) {
+                if(value[i]<'0'||value[i]>'9') {
+                    web.send(400,"application/json","{\"error\":\"SCAN_ID\"}");return;
                 }
+                parsed=parsed*10u+static_cast<unsigned>(value[i]-'0');
             }
-        struct Hit {
-            IPAddress ip;uint64_t id;uint8_t protocol;
-            bool metadata_known=false;
-            enevina::midea::DiscoveryInfo info{};
-        };
-        std::array<Hit,8> hits{};
-        size_t count=0;
-        bool truncated=false;
-        const uint32_t begin=millis();
-        std::array<uint8_t,512> reply{};
-        while(static_cast<uint32_t>(millis()-begin)<1350u) {
-            const int packet_size=udp.parsePacket();
-            if(packet_size<1) {delay(15);continue;}
-            const IPAddress src=udp.remoteIP();
-            if(packet_size>static_cast<int>(reply.size())) {
-                udp.flush();
-                continue;
+            if(!parsed||parsed>UINT32_MAX) {
+                web.send(400,"application/json","{\"error\":\"SCAN_ID\"}");return;
             }
-            const int received=udp.read(reply.data(),reply.size());
-            if(received!=packet_size)continue;
-            // Reject responses from off-LAN hosts even if they resemble
-            // Midea: this is a local setup shortlist only.
-            bool on_subnet=true;
-            for(uint8_t n=0;n<4;n++)
-                on_subnet=on_subnet &&
-                    (static_cast<uint8_t>(src[n]&mask[n])==
-                     static_cast<uint8_t>(ip[n]&mask[n]));
-            if(!on_subnet || src==ip)continue;
-            enevina::midea::DiscoveredDevice candidate{};
-            if(!enevina::midea::parse_discovery_reply(
-                    reply.data(),static_cast<size_t>(received),candidate))
-                continue;
-            // Optional validated metadata identifies the appliance family.
-            // Keep older/minimal discovery replies visible when it is absent.
-            enevina::midea::DiscoveryInfo info{};
-            const bool metadata_known=enevina::midea::parse_discovery_info(
-                reply.data(),static_cast<size_t>(received),info);
-            bool duplicate=false;
-            for(size_t i=0;i<count;i++) {
-                if(hits[i].id!=candidate.id || hits[i].protocol!=candidate.protocol)continue;
-                duplicate=true;
-                // A later complete reply can enrich the same host's shortlist
-                // row; it cannot move an existing ID to a different address.
-                if(metadata_known && hits[i].ip==src) {
-                    hits[i].info=info;hits[i].metadata_known=true;
-                }
+            id=static_cast<uint32_t>(parsed);
+            if(!discovery_job.available(now,id)||!discovery_job.current(link)) {
+                web.send(409,"application/json","{\"error\":\"SCAN_EXPIRED\"}");return;
             }
-            if(duplicate)continue;
-            if(count==hits.size()) {truncated=true;continue;}
-            hits[count++]={src,candidate.id,candidate.protocol,metadata_known,info};
+        } else {
+            // Only an explicit owner start creates a scan. Polling never
+            // creates a new job or waits for a network packet.
+            id=discovery_job.start(now,link);
         }
-        udp.stop();
-        // Bounded and escaped-by-construction response; no Wi-Fi credential,
-        // V3 token/key, MAC address, SSID, or sensor data is returned.
-        constexpr size_t json_capacity=2048;
-        auto json=std::unique_ptr<char[]>(new(std::nothrow) char[json_capacity]{});
-        if(!json) {
-            web.send(503,"application/json","{\"error\":\"RESOURCE_BUSY\"}");
-            return;
-        }
-        size_t used=0;
-        auto add=[&](const char* format,auto... args)->bool{
-            if(used>=json_capacity)return false;
-            const int n=std::snprintf(json.get()+used,json_capacity-used,format,args...);
-            if(n<0 || static_cast<size_t>(n)>=json_capacity-used)return false;
-            used+=static_cast<size_t>(n);
-            return true;
-        };
-        bool ok=add("%s","{\"devices\":[");
-        for(size_t i=0;i<count && ok;i++)
-            ok=add("%s{\"ip\":\"%u.%u.%u.%u\",\"protocol\":%u,\"device_id\":\"%llu\","
-                   "\"device_type_known\":%s,\"device_type\":%u,\"model_known\":%s,\"model\":\"%s\","
-                   "\"subtype_known\":%s,\"subtype\":%u}",
-                   i?",":"",hits[i].ip[0],hits[i].ip[1],
-                   hits[i].ip[2],hits[i].ip[3],
-                   static_cast<unsigned>(hits[i].protocol),
-                   static_cast<unsigned long long>(hits[i].id),
-                   hits[i].metadata_known?"true":"false",
-                   static_cast<unsigned>(hits[i].info.device_type),
-                   hits[i].metadata_known?"true":"false",hits[i].info.model.data(),
-                   hits[i].metadata_known && hits[i].info.subtype_known?"true":"false",
-                   static_cast<unsigned>(hits[i].info.subtype));
-        if(ok)ok=add("],\"count\":%u,\"truncated\":%s}",
-                      static_cast<unsigned>(count),truncated?"true":"false");
-        web.sendHeader("Cache-Control","no-store");
-        web.send(ok?200:500,"application/json",ok?json.get():"{\"error\":\"BUFFER\"}");
+        send_discovery_result(web,id);
     });
     web.on("/api/midea/config",HTTP_POST,[&web](){
         // This is a development-only LAN enrollment endpoint. Reject open
