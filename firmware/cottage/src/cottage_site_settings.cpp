@@ -4,6 +4,8 @@
 #include <nvs.h>
 #include <esp_log.h>
 #include <esp_ota_ops.h>
+#include <esp_heap_caps.h>
+#include <new>
 #include "cottage/site_rollback_policy.hpp"
 #include "cottage/nvs_cache_reclaim_policy.hpp"
 #include <WebServer.h>
@@ -319,6 +321,24 @@ void apply_market_region(const SiteSettings& s) {
 void site_settings_initialize() {
     guard=xSemaphoreCreateMutex();
     if(!guard) abort();
+    // One boot-only scratch allocation, with no internal-RAM fallback.
+    // The caller already requires working PSRAM before reading settings.
+    // Do not replace saved owner settings with defaults on allocation failure.
+    struct RestoreScratch {
+        Stored blob{};
+        StoredV1 old{};
+        uint8_t raw4[sizeof(Stored)]{},raw3[sizeof(Stored)]{},raw2[sizeof(Stored)]{};
+        SiteSettings from4{},from3{},from2{};
+    };
+    auto* mem=heap_caps_malloc(sizeof(RestoreScratch),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!mem) {
+        ESP_LOGE("enevina_site","PSRAM restore scratch allocation failed; preserving NVS");
+        // Existing setup's fail-closed resource path: no readers/writes start.
+        while(true) delay(1000);
+    }
+    auto* scratch=new(mem) RestoreScratch{};
+    struct ScratchFree {void operator()(RestoreScratch* p) const {p->~RestoreScratch();heap_caps_free(p);}};
+    std::unique_ptr<RestoreScratch,ScratchFree> storage(scratch);
     SiteSettings s=compiled_defaults();
     room_temperature_configured.store(false);
     Preferences p;
@@ -336,8 +356,8 @@ void site_settings_initialize() {
                 room_temperature_configured.store(true);
             }
         }
-        Stored blob{};
-        StoredV1 old{};
+        auto& blob=scratch->blob;
+        auto& old=scratch->old;
         bool v5_valid=false;
         // v5 is authoritative unless rollback firmware changed v4/v3/v2.
         if(p.getBytesLength("v5")==sizeof(blob) &&
@@ -352,9 +372,9 @@ void site_settings_initialize() {
         // The previous release stores version FOUR with a smaller settings
         // payload (480 bytes), followed by both older-version fingerprints.
         // Never require today's sizeof(Stored) when reading the legacy key.
-        uint8_t raw4[sizeof(Stored)]{};
+        auto& raw4=scratch->raw4;
         const size_t len4=p.getBytesLength("v4");
-        SiteSettings from4{};
+        auto& from4=scratch->from4;
         uint64_t v4_baseline_v2=0,v4_baseline_v3=0;
         const bool v4_valid=len4>h && len4<=sizeof(raw4) &&
             p.getBytes("v4",raw4,len4)==len4 &&
@@ -363,9 +383,9 @@ void site_settings_initialize() {
             acceptable(from4);
         // v3 is a full settings record, optionally followed by a prior
         // v2 fingerprint. Decode only the validated settings prefix.
-        uint8_t raw3[sizeof(Stored)]{};
+        auto& raw3=scratch->raw3;
         const size_t len3=p.getBytesLength("v3");
-        SiteSettings from3{};
+        auto& from3=scratch->from3;
         bool v3_valid=false;
         size_t v3_settings_bytes=0;
         if(len3>h && len3<=sizeof(raw3) &&
@@ -384,9 +404,9 @@ void site_settings_initialize() {
             if(v3_valid) v3_settings_bytes=size;
         }
         // v2 used several supported prefix layouts as fields were appended.
-        uint8_t raw2[sizeof(Stored)]{};
+        auto& raw2=scratch->raw2;
         const size_t len2=p.getBytesLength("v2");
-        SiteSettings from2{};
+        auto& from2=scratch->from2;
         bool v2_valid=false;
         if(len2>h && len2<=sizeof(raw2) &&
            p.getBytes("v2",raw2,len2)==len2) {

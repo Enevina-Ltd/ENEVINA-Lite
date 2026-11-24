@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <new>
 
 namespace enevina::cottage {
 // Named (not anonymous): firmware/cottage/src/core.cpp is a unity build.
@@ -140,14 +141,21 @@ bool mpc_comfort_band(double target_c,ComfortBand& out,const ComfortLimits& limi
     return true;
 }
 
-void BuildingIdentifier::reset() {
-    const bool variable=variable_setpoints_;
-    *this=BuildingIdentifier(NoInit{});
-    variable_setpoints_=variable;
+BuildingIdentifier::BuildingIdentifier(bool variable_setpoints)
+    : variable_setpoints_(variable_setpoints) {
+    // Members are initialized directly at their destination (PSRAM on ESP).
     // Weak generic prior: 30 h time constant, no heating lift known.
     const double thermal0[thermal_n]={std::exp(-slot_hours/30.0),0,0,0,0,0};
     rls_init(thermal_,thermal0,prior_p);
     rls_init(electric_,nullptr,prior_p);
+}
+
+void BuildingIdentifier::reset() {
+    // Do not create a full BuildingIdentifier temporary on the task stack.
+    // In-place reconstruction also clears all transient validation/trend data.
+    const bool variable=variable_setpoints_;
+    this->~BuildingIdentifier();
+    new(this) BuildingIdentifier(variable);
 }
 
 void BuildingIdentifier::select_electric_meter(uint32_t identity) {
@@ -656,7 +664,12 @@ bool BuildingIdentifier::load(uint32_t identity,const uint8_t* in,size_t size) {
     if(b.ring_count>window_ring || b.ring_head>=window_ring || b.window_count>window_slots ||
        b.prev_heat<-1 || b.prev_heat>1 || !id_finite(b.window_pred))
         return false;
-    BuildingIdentifier x(variable_setpoints_);
+    // Every potentially failing validation is above this point. Rebuild
+    // the existing object in place rather than nesting two full model
+    // copies on the optimizer's internal stack. Rejected images leave the
+    // previous model untouched.
+    reset();
+    auto& x=*this;
     x.thermal_=b.thermal;
     if(has_meter) {
         x.electric_meter_identity_=image.meter_identity;
@@ -679,7 +692,6 @@ bool BuildingIdentifier::load(uint32_t identity,const uint8_t* in,size_t size) {
     x.ring_count_=b.ring_count;x.ring_head_=b.ring_head;
     x.windows_aborted_=b.windows_aborted;x.revision_=b.revision;
     x.refresh_state();
-    *this=x;
     return true;
 }
 } // namespace enevina::cottage

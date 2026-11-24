@@ -168,8 +168,7 @@ public:
     static constexpr size_t trend_slots=96;      // last 24 h for the UI
     static constexpr uint32_t blob_version=1;
 
-    explicit BuildingIdentifier(bool variable_setpoints=false)
-        : variable_setpoints_(variable_setpoints) { reset(); }
+    explicit BuildingIdentifier(bool variable_setpoints=false);
     void reset();
     bool variable_setpoints() const { return variable_setpoints_; }
     // Retain the electric fit only while it belongs to the selected meter.
@@ -204,8 +203,6 @@ public:
     bool load(uint32_t identity, const uint8_t* in, size_t size);
 
 private:
-    struct NoInit {};
-    explicit BuildingIdentifier(NoInit) {}
     ModelEstimate estimate() const;
     void validation_step(const SlotObservation& o,bool start,bool stop);
     double heat_demand(const SlotObservation& o,double indoor_c) const;
