@@ -107,14 +107,21 @@ struct TariffCycleSolver {
     const MaintenanceTariffInput& in;
     MaintenanceTariffScratch& w;
     unsigned n=0;
-    float tau=0,decay=0,gain=0,lift=0,delay=0,afterheat=0,ceiling=0,floor=0;
+    float tau=0,decay=0,gain=0,lift=0,lift_slope=0,lift_ref=0,delay=0,afterheat=0,ceiling=0,floor=0;
     float cool(float room,unsigned t)const {
         const float eq=w.outdoor[t]+gain;
         return eq+(room-eq)*decay;
     }
+    float heating_lift(unsigned t)const {
+        return lift+lift_slope*(w.outdoor[t]-lift_ref);
+    }
+    float off_node_temperature(unsigned t)const {
+        const float charged=ceiling+afterheat;
+        return t==0?charged:std::min(charged,cool(charged,t-1));
+    }
     float terminal(float room)const {
         if(room>=in.target_c)return 0;
-        const float hot=w.outdoor[n-1]+gain+lift;
+        const float hot=w.outdoor[n-1]+gain+heating_lift(n-1);
         if(hot<=in.target_c)return INFINITY;
         const float restore=tau*std::log((hot-room)/(hot-float(in.target_c)))+delay/60;
         // A positive restoration obligation is priced at the last observed
@@ -125,7 +132,7 @@ struct TariffCycleSolver {
         TariffCharge r{};r.end=s;r.room=room;
         float remaining=already_heating?0:delay;
         for(unsigned j=s;j<n;++j) {
-            const float eq=w.outdoor[j]+gain,hot=eq+lift;
+            const float eq=w.outdoor[j]+gain,hot=eq+heating_lift(j);
             if(hot<=ceiling+0.1f)return r;
             const float idle=std::min(float(tariff_step_minutes),remaining);
             remaining-=idle;
@@ -178,9 +185,8 @@ struct TariffCycleSolver {
         // The full charge can finish anywhere inside the last 5-min step.
         // Use a conservative common OFF-node temperature, not the hottest
         // possible value, so the scheduler does not invent thermal storage.
-        const float common=std::max(floor,ceiling+afterheat-0.25f);
         for(unsigned t=n;t-->0;) {
-            const auto r=off(t,common,3);
+            const auto r=off(t,off_node_temperature(t),3);
             w.value[t]=r.best;w.start[t]=static_cast<uint16_t>(r.start);
         }
         return true;
@@ -209,6 +215,8 @@ inline bool tariff_schedule(const MaintenanceTariffInput& in,size_t count,
     solver.decay=std::exp(-float(tariff_step_minutes)/(60*solver.tau));
     solver.gain=static_cast<float>(m.gain_rise_k-(conservative?std::max(.5,2*m.one_step_sigma_c):0));
     solver.lift=static_cast<float>(m.lift_k_ref-(conservative?m.lift_std_k:0));
+    solver.lift_slope=static_cast<float>(m.lift_k_per_c);
+    solver.lift_ref=static_cast<float>(m.lift_ref_outdoor_c);
     solver.delay=static_cast<float>(std::clamp(m.start_delay_min,0.,14.));
     solver.afterheat=static_cast<float>(conservative?0:std::clamp(m.afterheat_k,0.,1.));
     solver.floor=static_cast<float>(in.lower_c);solver.ceiling=static_cast<float>(in.cycle_ceiling_c);
@@ -284,6 +292,7 @@ inline MaintenanceTariffAdvice maintenance_tariff_decision(const MaintenanceTari
         m.tau_std_h>=0&&m.tau_std_h<=0.75*m.tau_h &&
         std::isfinite(m.gain_rise_k)&&std::isfinite(m.lift_k_ref)&&m.lift_k_ref>2 &&
         std::isfinite(m.lift_std_k)&&m.lift_std_k>=0 &&
+        std::isfinite(m.lift_k_per_c)&&std::isfinite(m.lift_ref_outdoor_c) &&
         std::isfinite(m.start_delay_min)&&std::isfinite(m.one_step_sigma_c)&&
         std::isfinite(in.outside_c)&&in.outside_c>=-55&&in.outside_c<=45;
     out.model_based=model;

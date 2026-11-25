@@ -66,5 +66,22 @@ int main(){
     in.count=p.size();p[0].eur_per_kwh=NAN;assert(!maintenance_tariff_decision(in).valid);
     set(.25,.50,2);p[1].utc+=900;
     assert(!maintenance_tariff_decision(in).valid);
+    // Charging and terminal restoration use the fitted outdoor-dependent lift.
+    TariffCycleSolver solver{in,scratch};
+    solver.n=96;solver.tau=2;solver.decay=std::exp(-5.f/120.f);
+    solver.ceiling=15.8f;solver.floor=11.5f;solver.lift=40;solver.delay=3;
+    solver.lift_ref=-2;solver.lift_slope=1.5f;solver.gain=0;
+    for(unsigned j=0;j<solver.n;++j){scratch.outdoor[j]=-10;scratch.price[j]=.25f;}
+    assert(std::abs(solver.heating_lift(0)-28)<.001f);
+    const auto cold=solver.charge(0,12);
+    const auto cold_terminal=solver.terminal(11.5f);
+    solver.lift_slope=0;
+    const auto warm=solver.charge(0,12);
+    assert(cold.valid && warm.valid && cold.cost>warm.cost);
+    assert(cold_terminal>solver.terminal(11.5f));
+    // End-of-step cooling can be much greater than 0.25 C.
+    assert(solver.off_node_temperature(1)<15.55f);
+    assert(solver.off_node_temperature(warm.end)<=warm.room+.0001f);
+    assert(solver.off_node_temperature(cold.end)<=cold.room+.0001f);
     std::cout<<"PASS forecast-aware preheat, reachable cheaper window, plateau, floor, dwell and missing evidence\n";
 }
