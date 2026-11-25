@@ -171,7 +171,8 @@ class TimelineWiring(unittest.TestCase):
     def test_endpoint_uses_the_controllers_profile_and_classifier(self):
         self.assertIn("timeline_setup(site.profile", self.MAIN)
         self.assertIn("build_timeline(utc,total,n,params,*timeline)", self.MAIN)
-        self.assertIn("bootstrap_preview(now,indoor)", self.MAIN)
+        self.assertIn("active_control_proposal(now,indoor,&active,&fallback_price_valid)", self.MAIN)
+        self.assertIn("in.bootstrap=bootstrap_preview(now,t);", self.MAIN)
         # one classifier: the controller and the timeline share it
         self.assertIn("classify_price(in.next_total_prices", self.BOOT)
         self.assertIn("classify_price(total+i", self.TL)
@@ -191,7 +192,8 @@ class TimelineWiring(unittest.TestCase):
         self.assertIn("drying_blocks_heat(plan)", timeline)
         self.assertIn("meta.indoor_fresh=valid_temperature(indoor,now)", timeline)
         self.assertIn("has_target && meta.indoor_fresh", timeline)
-        self.assertIn("bootstrap_preview(now,indoor)", timeline)
+        self.assertIn("active_control_proposal(now,indoor,&active,&fallback_price_valid)", timeline)
+        self.assertIn("meta.decision_price_valid=fallback_price_valid;", timeline)
         self.assertIn('heating_permitted', self.TL)
         dashboard = (ROOT / "firmware/cottage/include/cottage_premium_dashboard.hpp").read_text(encoding="utf-8")
         self.assertIn('heating_permitted===false', dashboard)
