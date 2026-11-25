@@ -26,7 +26,7 @@ struct MaintenanceCycleSample {
     uint32_t meter_id=0,base_revision=0,endpoint=0,link=0,request_generation=0;
     uint32_t sent=0,confirmed=0,failed=0;
     int64_t ack_utc=0;
-    bool heat=false,valid=false,price_valid=false;
+    bool heat=false,valid=false,price_valid=false,price_priority=false;
 };
 struct MaintenanceCycleObservation {
     bool valid=false;
@@ -102,7 +102,7 @@ public:
         if(transition && s.heat) {
             if(open_)finish(p);
             start(p);
-            candidate_=choose(s.outdoor_c);
+            candidate_=choose(s.outdoor_c,s.price_priority);
             active_candidate_=candidate_;
         }
         if(open_) {
@@ -169,8 +169,18 @@ private:
         records_[active_candidate_][next_[active_candidate_]++%3]=x;
         last_=x;++completed_;open_=false;
     }
-    unsigned choose(double outdoor) const {
+    unsigned choose(double outdoor,bool price_priority) const {
         const auto r=report(outdoor);
+        if(price_priority) {
+            // During costly periods do not spend electricity to explore
+            // an unmeasured narrow cycle. Exploit qualified local evidence,
+            // or retain the initial wide-cycle policy until there is evidence.
+            unsigned best=2;
+            for(unsigned i: {2u,1u,0u})
+                if(r.compared[i]>=2 && (r.compared[best]<2 ||
+                   r.rate_kw[i]<r.rate_kw[best]*0.95))best=i;
+            return best;
+        }
         // Initial sample uses the wide candidate; then compare short and
         // intermediate cycles, rather than assuming wider is always better.
         for(unsigned i: {2u,0u,1u})if(r.compared[i]==0)return i;

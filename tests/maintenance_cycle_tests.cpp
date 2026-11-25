@@ -83,6 +83,11 @@ int main(){
     // An immediate material change without a missing sample also resets.
     jitter.s.base_w=1000;++jitter.s.base_revision;jitter.tick(true,12,1500);
     assert(jitter.r.completed==0 && jitter.r.compared[2]==0);
+    // A costly forecast is not permission to spend energy exploring short
+    // cycles. Keep the qualified wide candidate until cheaper evidence.
+    Fixture cost;cost.s.price_priority=true;cost.begin();
+    cost.complete();assert(cost.r.completed==1 && cost.r.candidate==2);
+    cost.complete();assert(cost.r.completed==2 && cost.r.candidate==2);
     Fixture gaps;gaps.begin();gaps.s.utc+=180;gaps.tick(true,12,1500);
     assert(gaps.r.completed==0 && gaps.r.rejected==1);
     Fixture reset;reset.begin();++reset.s.base_revision;reset.tick(true,12,1500);

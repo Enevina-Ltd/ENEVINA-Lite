@@ -43,3 +43,22 @@ reboot; the existing persistent thermal and electrical model is retained.
 A simulated comparison is not proof of savings in a real installation.
 The 15.8 C model limit is a stop/forecast threshold, not a promise that
 post-stop residual heat cannot briefly raise room temperature above it.
+
+## Forecast-first maintenance timing
+
+The Saving maintenance path gives actual marginal electricity price priority
+over exploratory cycle-size experiments. It uses contiguous known tariffs
+(up to 24 hours), hourly outdoor forecasts and the existing locally fitted
+thermal response. A bounded event-based dynamic program compares complete
+charges at the selected economical ceiling, including the measured startup
+delay, the intervening OFF cooling and a terminal temperature-restoration
+obligation. Only a shift supported by both nominal and faster-cooling /
+lower-output estimates may change the live proposal. Real temperature limits,
+observed gateway state, minimum restart dwell and defrost protection still
+override price advice. The solver is provisional: its objective is
+price-weighted HEAT-request time, not validated kWh or a guaranteed euro
+saving. It does not bypass calibrated monetary MPC. A stale model/forecast
+cannot authorise a long-range shift; an imminent material price rise can
+use the conservative near-target fallback. During a material expensive
+period, completed qualified energy comparisons take priority over exploration.
+Price-directed cycles are excluded from the temperature-only comparison.
