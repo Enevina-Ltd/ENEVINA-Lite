@@ -53,6 +53,7 @@
 #include "cottage/building_identification.hpp"
 #include "cottage/baseload_learning.hpp"
 #include "cottage/maintenance_cycle.hpp"
+#include "cottage/maintenance_tariff.hpp"
 #include "cottage/model_persistence.hpp"
 #include "cottage/learning_observation.hpp"
 #include "cottage/mpc_arbiter.hpp"
@@ -327,6 +328,7 @@ static bool mpc_energy_in_kwh=false;
 static bool mpc_energy_incremental=false;
 static BaseloadEstimate baseload_snapshot{}; // protected by existing lock_data
 static MaintenanceCycleReport maintenance_cycle_snapshot{}; // same existing lock
+static MaintenanceTariffAdvice maintenance_tariff_snapshot{}; // same existing lock
 static double mpc_energy_kwh=0,mpc_cost=0,mpc_uncertainty_c=0;
 static size_t horizon_price_slots=0,horizon_weather_slots=0,horizon_slots=0;
 static HorizonLimit horizon_limit=HorizonLimit::None;
@@ -943,14 +945,35 @@ static BootstrapDecision bootstrap_preview(int64_t now,
         const uint32_t sg=site_settings_generation(),cg=c23_config_generation();
         const uint32_t meter=confirmed_shared_meter_identity(site);
         unsigned candidate=2;
+        MaintenanceTariffAction tariff_action=MaintenanceTariffAction::None;
+        double tariff_ceiling=0;
         xSemaphoreTake(lock_data,portMAX_DELAY);
         const auto& cycle=maintenance_cycle_snapshot;
         if(cycle.enabled && cycle.site_generation==sg && cycle.config_generation==cg &&
            cycle.meter_identity==meter && cycle.target_c==input.desired_room_c)
             candidate=cycle.candidate;
+        const auto& tariff=maintenance_tariff_snapshot;
+        if(tariff.valid && tariff.site_generation==sg && tariff.config_generation==cg &&
+           tariff.price_revision==market.cache_revision &&
+           tariff.region_generation==market.region_generation &&
+           tariff.computed_utc>0 && now>=tariff.computed_utc &&
+           now-tariff.computed_utc<=90 && now/900==tariff.computed_utc/900 &&
+           now<tariff.price_end_utc) {
+            tariff_action=tariff.action;tariff_ceiling=tariff.ceiling_c;
+        }
         xSemaphoreGive(lock_data);
         input.maintenance_ceiling_c=maintenance_cycle_ceiling(input.desired_room_c,
             input.comfort_upper_c,candidate);
+        const double max_storage=maintenance_cycle_ceiling(input.desired_room_c,
+            input.comfort_upper_c,2);
+        if(valid_prices && tariff_action!=MaintenanceTariffAction::None &&
+           std::isfinite(tariff_ceiling) && tariff_ceiling>=input.desired_room_c &&
+           tariff_ceiling<=max_storage) {
+            input.maintenance_ceiling_c=tariff_ceiling;
+            input.maintenance_tariff_preheat=tariff_action==MaintenanceTariffAction::Preheat;
+            input.maintenance_tariff_coast=tariff_action==MaintenanceTariffAction::Coast &&
+                input.indoor_c<max_storage;
+        }
     }
     return bootstrap_price_decision(input);
 }
@@ -2353,6 +2376,14 @@ static void optimizer_worker(void*) {
         MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     auto* rows=static_cast<PlanRow*>(heap_caps_malloc(sizeof(PlanRow)*max_horizon_slots,
         MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    auto* tariff_input=static_cast<MaintenanceTariffInput*>(heap_caps_malloc(
+        sizeof(MaintenanceTariffInput),scratch_caps));
+    if(tariff_input) {
+        new(tariff_input) MaintenanceTariffInput{};
+        tariff_input->scratch=static_cast<MaintenanceTariffScratch*>(heap_caps_malloc(
+            sizeof(MaintenanceTariffScratch),scratch_caps));
+        if(tariff_input->scratch)new(tariff_input->scratch) MaintenanceTariffScratch{};
+    }
     auto* trend=static_cast<TrendPoint*>(heap_caps_malloc(
         sizeof(TrendPoint)*BuildingIdentifier::trend_slots,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     void* id_mem=heap_caps_malloc(sizeof(BuildingIdentifier),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -2390,6 +2421,9 @@ static void optimizer_worker(void*) {
     LearningSlot slot{};
     BaseloadLearner baseload_learner;
     MaintenanceCycleLearner maintenance_cycles;
+    bool previous_tariff_shift=false,previous_preheat=false,preheat_latched=false;
+    double previous_preheat_ceiling=0,preheat_latched_ceiling=0;
+    uint32_t preheat_site=0,preheat_config=0;
     uint32_t baseload_building_identity=identity;
     int64_t last_boundary=0;
     uint32_t saved_revision=id?id->report(0).revision:0;
@@ -2540,6 +2574,71 @@ static void optimizer_worker(void*) {
         // request interval and baseline regime. No new polling task.
         const auto cycle_mode=c23_mode_config();
         const bool economy=maintenance_economy_selected(meter_site,cycle_mode.mode,cycle_mode.hold_target_c);
+        // Reuse the optimizer's existing price and weather scratch. Unlike
+        // the short median classifier, read the full available 24h tariff
+        // horizon at each economy-control tick (no extra network requests).
+        const size_t pc=(boundary || economy) && prices && aligned &&
+            market_matches_site(ms,meter_site)?
+            enevina_firmware::future_prices(prices,200,&ms):0;
+        const size_t wc=(boundary || economy) && weather?
+            enevina_firmware::future_weather(weather,64):0;
+        MaintenanceTariffAdvice tariff{};
+        size_t tariff_n=0;
+        unsigned old_candidate=2;
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        if(maintenance_cycle_snapshot.enabled &&
+           maintenance_cycle_snapshot.site_generation==optimizer_site_generation &&
+           maintenance_cycle_snapshot.config_generation==optimizer_config_generation &&
+           maintenance_cycle_snapshot.target_c==cycle_mode.hold_target_c)
+            old_candidate=maintenance_cycle_snapshot.candidate;
+        if(tariff_input) {
+            tariff_input->model=calibration_snapshot.model;
+            tariff_input->samples=calibration_snapshot.samples;
+            tariff_input->off_samples=calibration_snapshot.off_slots;
+            if(calibration_snapshot.state==CalibrationState::Degraded ||
+               calibration_snapshot.last_sample_utc<=0 ||
+               now-calibration_snapshot.last_sample_utc>6*3600)
+                tariff_input->model.plausible=false;
+        }
+        xSemaphoreGive(lock_data);
+        if(economy && tariff_input && pc && aligned && valid_temperature(ts,now) &&
+           known_heating_mode(request) && ms.clock_trusted && ms.current_price_valid &&
+           ms.last_fetch_utc<=now && ms.last_fetch_utc>=now-36*3600 &&
+           ms.valid_until_utc>now && mode_comfort_limits_fit(meter_site,cycle_mode)) {
+            for(size_t i=0;i<std::min<size_t>(pc,96);++i) {
+                double total=0;
+                if(prices[i].start_utc!=slot_start+static_cast<int64_t>(i)*900 ||
+                   prices[i].start_utc+900>ms.valid_until_utc ||
+                   !site_region_total_price(meter_site,prices[i].start_utc,
+                       prices[i].spot_eur_per_kwh,total))break;
+                aligned[tariff_n++]={prices[i].start_utc,total};
+            }
+            // A conservative outside temperature over the reachable thermal
+            // storage interval. No forecast gap is replaced with fake data.
+            double outside=ws.next_temperature_c;
+            bool weather_ok=ws.available && ws.fetched_utc>0 &&
+                ws.fetched_utc<=now && ws.valid_until_utc>=now+4*3600 && wc>0 &&
+                std::isfinite(outside) && outside>=-55 && outside<=45;
+            if(weather_ok)for(int h=0;h<=4;++h) {
+                double value=0;
+                if(!weather_at(weather,wc,now+h*3600,value)) {weather_ok=false;break;}
+                outside=std::min(outside,value);
+            }
+            if(!weather_ok || !base.ready)tariff_input->model.plausible=false;
+            const double target=cycle_mode.hold_target_c;
+            const double owner_hi=meter_site.comfort_max_c>0?
+                std::max(target+0.5,meter_site.comfort_max_c-profile_tuning(meter_site.profile).limit_margin_c):0;
+            tariff_input->now=now;tariff_input->room_c=ts.indoor_c;
+            tariff_input->target_c=target;tariff_input->lower_c=target-0.5;
+            tariff_input->storage_ceiling_c=maintenance_cycle_ceiling(target,owner_hi,2);
+            tariff_input->cycle_ceiling_c=maintenance_cycle_ceiling(target,owner_hi,old_candidate);
+            tariff_input->outside_c=outside;tariff_input->price_scale=currency_limit_scale(ms.currency);
+            tariff_input->heating=request.mode==enevina::PumpRoomMode::Heat;
+            tariff_input->minutes_in_mode=request.mode_minutes;
+            tariff_input->prices=aligned;tariff_input->count=tariff_n;
+            tariff_input->weather=weather;tariff_input->weather_count=wc;
+            tariff=maintenance_tariff_decision(*tariff_input);
+        }
         bool model_in_use=false;
         xSemaphoreTake(lock_data,portMAX_DELAY);
         model_in_use=mpc_plan.has_plan && mpc_plan.maintenance_storage &&
@@ -2559,8 +2658,13 @@ static void optimizer_worker(void*) {
         cycle_sample.heat=request.mode==enevina::PumpRoomMode::Heat;
         cycle_sample.price_valid=ms.current_price_valid && market_matches_site(ms,meter_site) &&
             ms.last_fetch_utc<=now && ms.valid_until_utc>now &&
-            site_slot_total_price(slot_start,ms.current_spot_eur_per_kwh,cycle_sample.price);
-        cycle_sample.valid=economy && !model_in_use && current_meter_scope &&
+            site_region_total_price(meter_site,slot_start,ms.current_spot_eur_per_kwh,cycle_sample.price);
+        // Tariff-driven shifts are useful operational data, but are not
+        // comparable to a temperature-only experiment. Never let them
+        // bias the empirical cycle-size selection.
+        cycle_sample.price_priority=tariff.avoid_exploration;
+        cycle_sample.valid=economy && !model_in_use && !previous_tariff_shift &&
+            tariff.action==MaintenanceTariffAction::None && current_meter_scope &&
             active_control_armed(midea) && valid_temperature(ts,now) &&
             valid_shelly(meter,now,30) && meter_relay && meter.source_identity==shared_id &&
             baseload_current(base,shared_id,now) && ws.available &&
@@ -2576,12 +2680,43 @@ static void optimizer_worker(void*) {
             c23_config_generation()==optimizer_config_generation;
         const auto cycle_report=maintenance_cycles.observe(economy,shared_id,
             optimizer_site_generation,optimizer_config_generation,cycle_mode.hold_target_c,cycle_sample);
+        if(tariff.valid && tariff_input && cycle_report.candidate!=old_candidate) {
+            tariff_input->cycle_ceiling_c=maintenance_cycle_ceiling(cycle_mode.hold_target_c,
+                tariff_input->storage_ceiling_c,cycle_report.candidate);
+            tariff=maintenance_tariff_decision(*tariff_input);
+        }
+        // Once price-directed preheat actually begins, keep its storage
+        // target through the same observed HEAT cycle, unless a reachable
+        // cheaper opportunity explicitly asks to coast. No price-directed
+        // start is inferred from a failed/unconfirmed command.
+        const bool heating_now=known_heating_mode(request) &&
+            request.mode==enevina::PumpRoomMode::Heat;
+        if(!economy || !tariff.valid || preheat_site!=optimizer_site_generation ||
+           preheat_config!=optimizer_config_generation) {
+            previous_preheat=false;preheat_latched=false;
+        }
+        if(!heating_now)preheat_latched=false;
+        if(heating_now && tariff.valid && previous_preheat) {
+            preheat_latched=true;
+            preheat_latched_ceiling=previous_preheat_ceiling;
+        }
+        if(preheat_latched && tariff.action==MaintenanceTariffAction::None &&
+           tariff_input && tariff.valid) {
+            tariff.action=MaintenanceTariffAction::FinishStorage;
+            tariff.ceiling_c=std::clamp(preheat_latched_ceiling,
+                tariff_input->target_c,tariff_input->storage_ceiling_c);
+        }
+        previous_preheat=tariff.action==MaintenanceTariffAction::Preheat;
+        previous_preheat_ceiling=tariff.ceiling_c;
+        preheat_site=optimizer_site_generation;preheat_config=optimizer_config_generation;
+        tariff.site_generation=optimizer_site_generation;
+        tariff.config_generation=optimizer_config_generation;
+        tariff.price_revision=ms.cache_revision;tariff.region_generation=ms.region_generation;
+        previous_tariff_shift=tariff.action!=MaintenanceTariffAction::None;
         xSemaphoreTake(lock_data,portMAX_DELAY);
         maintenance_cycle_snapshot=cycle_report;
+        maintenance_tariff_snapshot=tariff;
         xSemaphoreGive(lock_data);
-        const size_t pc=boundary&&market_matches_site(ms,site_settings_snapshot())?
-            enevina_firmware::future_prices(prices,200,&ms):0;
-        const size_t wc=boundary?enevina_firmware::future_weather(weather,64):0;
         if(boundary) {
             last_boundary=slot_start;
             // (1) Close the previous slot: one identification observation.
@@ -2956,6 +3091,32 @@ static void status_endpoint() {
     cJSON_AddBoolToObject(root,"maintenance_storage",bootstrap.maintenance_storage);
     if(bootstrap.maintenance_storage) {
         cJSON_AddNumberToObject(root,"maintenance_ceiling_c",bootstrap.maintenance_ceiling_c);
+        // Expose the exact tariff comparison, not a fabricated MPC plan.
+        if(auto* a=cJSON_AddObjectToObject(root,"maintenance_tariff")) {
+            const uint32_t sg=site_settings_generation(),cg=c23_config_generation();
+            xSemaphoreTake(lock_data,portMAX_DELAY);
+            const auto& v=maintenance_tariff_snapshot;
+            const bool fresh=v.valid && v.site_generation==sg && v.config_generation==cg &&
+                v.price_revision==price.cache_revision && v.region_generation==price.region_generation &&
+                now>=v.computed_utc && now-v.computed_utc<=90 && now/900==v.computed_utc/900 &&
+                now<v.price_end_utc;
+            cJSON_AddBoolToObject(a,"valid",fresh);
+            cJSON_AddStringToObject(a,"action",maintenance_tariff_name(fresh?v.action:MaintenanceTariffAction::None));
+            cJSON_AddBoolToObject(a,"model_based",fresh&&v.model_based);
+            cJSON_AddBoolToObject(a,"cost_priority",true);
+            cJSON_AddBoolToObject(a,"exploration_deferred",fresh&&v.avoid_exploration);
+            if(fresh) {
+                cJSON_AddNumberToObject(a,"current_price",v.current_price);
+                cJSON_AddNumberToObject(a,"forecast_end_utc",v.price_end_utc);
+                if(v.deadline_utc>0)cJSON_AddNumberToObject(a,"cooling_deadline_utc",v.deadline_utc);
+                if(v.next_start_utc>0)cJSON_AddNumberToObject(a,"next_planned_start_utc",v.next_start_utc);
+                if(v.alternative_utc>0) {
+                    cJSON_AddNumberToObject(a,"alternative_utc",v.alternative_utc);
+                    cJSON_AddNumberToObject(a,"alternative_price",v.alternative_price);
+                }
+            }
+            xSemaphoreGive(lock_data);
+        }
         MaintenanceCycleReport cycle;
         xSemaphoreTake(lock_data,portMAX_DELAY);cycle=maintenance_cycle_snapshot;xSemaphoreGive(lock_data);
         if(auto* c=cJSON_AddObjectToObject(root,"maintenance_cycles")) {

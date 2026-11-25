@@ -92,6 +92,8 @@ struct BootstrapInput {
     bool low_temperature_cycle=false;
     bool maintenance_storage=false;
     double maintenance_ceiling_c=0;
+    bool maintenance_tariff_preheat=false;
+    bool maintenance_tariff_coast=false;
 };
 struct BootstrapDecision {
     BootstrapAction action=BootstrapAction::Unavailable;
@@ -172,12 +174,17 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
             if(ceiling<floor+0.5)return {};
             d.maintenance_storage=true;d.maintenance_ceiling_c=ceiling;
             if(in.indoor_c>=ceiling) {
-                d.action=BootstrapAction::Off;d.reason=BootstrapReason::LowTargetReached;
-            } else if(in.indoor_c<=floor) {
+                d.action=BootstrapAction::Off;
+                // Price-only stop obeys the normal scoped dwell. It must
+                // never inherit the physical temperature-ceiling exception.
+                d.reason=price_valid && in.maintenance_tariff_coast?
+                    BootstrapReason::ExpensiveWindow:BootstrapReason::LowTargetReached;
+            } else if(in.indoor_c<=floor ||
+                      (price_valid && in.maintenance_tariff_preheat && ceiling-in.indoor_c>=1.0)) {
                 d.action=BootstrapAction::HeatSetpoint;
                 d.heat_setpoint_c=cn105_minimum_heat_setpoint_c;
                 d.reason=!price_valid?BootstrapReason::ThermostatWithoutPrices:
-                    cheap?BootstrapReason::CheapWindow:
+                    (in.maintenance_tariff_preheat || cheap)?BootstrapReason::CheapWindow:
                     expensive?BootstrapReason::ExpensiveWindow:BootstrapReason::TemperatureLow;
             } else {
                 d.action=BootstrapAction::Hold;d.reason=BootstrapReason::DeadbandHold;

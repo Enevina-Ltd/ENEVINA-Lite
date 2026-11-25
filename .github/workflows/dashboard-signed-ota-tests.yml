@@ -11,6 +11,8 @@ on:
       - 'cottage/mitsubishi_control_policy.hpp'
       - 'cottage/price_bootstrap.hpp'
       - 'cottage/maintenance_cycle.hpp'
+      - 'cottage/maintenance_tariff.hpp'
+      - 'tests/maintenance_tariff_tests.cpp'
       - 'tests/maintenance_cycle_tests.cpp'
       - 'cottage/mpc_arbiter.hpp'
       - 'cottage/mpc_planner.*'
