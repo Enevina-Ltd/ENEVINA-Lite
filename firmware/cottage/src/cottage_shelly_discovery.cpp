@@ -16,7 +16,6 @@ namespace enevina_firmware {
 namespace {
 using namespace enevina::cottage;
 SemaphoreHandle_t guard=nullptr;
-TaskHandle_t worker=nullptr;
 ShellyScanSnapshot shared{};
 uint32_t finished_ms=0;
 uint32_t started_ms=0;
@@ -98,10 +97,10 @@ void run_scan() {
 }
 
 void worker_main(void*) {
-    for(;;) {
-        ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
-        run_scan();
-    }
+    run_scan();
+    // The pending snapshot serializes discoveries. A finished optional
+    // scan must not park a 7168-byte internal stack for the next request.
+    vTaskDelete(nullptr);
 }
 } // namespace
 
@@ -130,19 +129,15 @@ ShellyScanState shelly_scan(ShellyScanSnapshot& out) {
     out.age_ms=shared.state==ShellyScanState::Done?now-finished_ms:0;
     xSemaphoreGive(guard);
     if(start) {
-        if(!worker) {
-            NetworkBudgetLease allocation(0,0,0);
-            if(!allocation.held() ||
-               xTaskCreate(worker_main,"shelly_scan",7168,nullptr,2,&worker)!=pdPASS) {
-                worker=nullptr;
-                xSemaphoreTake(guard,portMAX_DELAY);
-                shared.state=ShellyScanState::Failed;
-                out=shared;
-                xSemaphoreGive(guard);
-                return out.state;
-            }
+        NetworkBudgetLease allocation(0,0,0);
+        if(!allocation.held() ||
+           xTaskCreate(worker_main,"shelly_scan",7168,nullptr,2,nullptr)!=pdPASS) {
+            xSemaphoreTake(guard,portMAX_DELAY);
+            shared.state=ShellyScanState::Failed;
+            out=shared;
+            xSemaphoreGive(guard);
+            return out.state;
         }
-        xTaskNotifyGive(worker);
     }
     return out.state;
 }

@@ -83,6 +83,32 @@ static CottageWebServer web(80);
 static SemaphoreHandle_t lock_data=nullptr;
 static std::atomic<bool> wifi_ok{false};
 static std::atomic<uint32_t> web_loop_heartbeat_ms{0};
+// The SDK all-time minimum sums per-region minima from different moments.
+// Keep that conservative number, and separately measure simultaneous
+// free 8-bit internal RAM. The callback does not log or allocate.
+static uint32_t runtime_min_internal=UINT32_MAX;
+static uint32_t runtime_heap_samples=0;
+static std::atomic<uint32_t> heap_allocation_failures{0};
+static std::atomic<uint32_t> heap_internal_allocation_failures{0};
+static std::atomic<uint32_t> heap_last_failed_bytes{0};
+static std::atomic<uint32_t> heap_last_failed_caps{0};
+static bool heap_failure_hook_registered=false;
+static void heap_allocation_failed(size_t size,uint32_t caps,const char*) {
+    heap_allocation_failures.fetch_add(1,std::memory_order_relaxed);
+    if(caps&MALLOC_CAP_INTERNAL)
+        heap_internal_allocation_failures.fetch_add(1,std::memory_order_relaxed);
+    heap_last_failed_bytes.store(static_cast<uint32_t>(size),std::memory_order_relaxed);
+    heap_last_failed_caps.store(caps,std::memory_order_relaxed);
+}
+static void sample_runtime_heap() {
+    static uint32_t last=0;
+    const uint32_t now=millis();
+    if(runtime_heap_samples && uint32_t(now-last)<250u)return;
+    last=now;
+    const uint32_t free=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    runtime_min_internal=std::min(runtime_min_internal,free);
+    ++runtime_heap_samples;
+}
 static CN105Telemetry pump{};
 struct Cn105LinkIdentity {
     uint32_t endpoint=0, wifi=0;
@@ -3060,6 +3086,13 @@ static void status_endpoint() {
                             heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(root,"min_free_internal_heap",
                             heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+    cJSON_AddNumberToObject(root,"runtime_sampled_min_internal",runtime_heap_samples?runtime_min_internal:0);
+    cJSON_AddNumberToObject(root,"runtime_heap_samples",runtime_heap_samples);
+    cJSON_AddBoolToObject(root,"heap_failure_hook_registered",heap_failure_hook_registered);
+    cJSON_AddNumberToObject(root,"heap_allocation_failures",heap_allocation_failures.load());
+    cJSON_AddNumberToObject(root,"heap_internal_allocation_failures",heap_internal_allocation_failures.load());
+    cJSON_AddNumberToObject(root,"heap_last_failed_bytes",heap_last_failed_bytes.load());
+    cJSON_AddNumberToObject(root,"heap_last_failed_caps",heap_last_failed_caps.load());
     cJSON_AddBoolToObject(root,"tls_psram_enabled",enevina_firmware::cottage_tls_memory_enabled());
     cJSON_AddNumberToObject(root,"tls_psram_record_bytes",enevina_firmware::cottage_tls_record_size());
     cJSON_AddNumberToObject(root,"tls_psram_market_allocations",enevina_firmware::cottage_tls_psram_allocations(enevina_firmware::PublicTlsSource::Market));
@@ -3087,6 +3120,8 @@ static void status_endpoint() {
     }
     cJSON_AddNumberToObject(root,"network_budget_denials",
                             enevina_firmware::network_budget_denials());
+    cJSON_AddNumberToObject(root,"network_budget_busy_denials",enevina_firmware::network_budget_busy_denials());
+    cJSON_AddNumberToObject(root,"network_budget_low_memory_denials",enevina_firmware::network_budget_low_memory_denials());
     cJSON_AddNumberToObject(root,"network_sampled_min_internal",enevina_firmware::network_budget_min_sampled_free());
     cJSON_AddBoolToObject(root,"ble_initialized",c23_ble_initialized());
     cJSON_AddNumberToObject(root,"observed_min_largest_internal",
@@ -3115,6 +3150,14 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"web_response_aborts",web.responseAborts());
     cJSON_AddNumberToObject(root,"web_request_rejects",web.requestRejects());
     cJSON_AddNumberToObject(root,"web_request_timeouts",web.requestTimeouts());
+    cJSON_AddNumberToObject(root,"web_idle_timeouts",web.idleTimeouts());
+    cJSON_AddNumberToObject(root,"web_partial_timeouts",web.partialTimeouts());
+    cJSON_AddNumberToObject(root,"web_idle_closes",web.idleCloses());
+    cJSON_AddNumberToObject(root,"web_idle_evictions",web.idleEvictions());
+    cJSON_AddNumberToObject(root,"web_partial_closes",web.partialCloses());
+    cJSON_AddNumberToObject(root,"web_invalid_requests",web.invalidRequests());
+    cJSON_AddNumberToObject(root,"web_resource_rejects",web.resourceRejects());
+    cJSON_AddNumberToObject(root,"web_completed_requests",web.completedRequests());
     cJSON_AddNumberToObject(root,"history_read_busy",enevina_firmware::history_read_busy_count());
     cJSON_AddNumberToObject(root,"web_longest_write_ms",web.longestWriteMs());
     if(WiFi.status()==WL_CONNECTED)cJSON_AddNumberToObject(root,"wifi_rssi_dbm",WiFi.RSSI());
@@ -3779,6 +3822,7 @@ static void start_optional_workers(bool boot_lease_held=false) {
 void setup() {
     Serial.begin(115200);
     boot_memory_sample("setup_entry");
+    heap_failure_hook_registered=heap_caps_register_failed_alloc_callback(heap_allocation_failed)==ESP_OK;
     boot_reset_reason_code=static_cast<int>(esp_reset_reason());
     Serial.printf("ENEVINA_LITE_BOOT reset_reason_code=%d\n",boot_reset_reason_code);
     lock_data=xSemaphoreCreateMutex();
@@ -3993,6 +4037,7 @@ static void cottage_local_lan_worker(void*) {
 void loop() {
     wifi_ok.store(WiFi.status()==WL_CONNECTED);
     web_loop_heartbeat_ms.store(millis());
+    sample_runtime_heap();
     web.handleClient();
     cottage_wifi_loop();
     cottage_midea_discovery_tick();

@@ -7,6 +7,7 @@
 #include <esp_heap_caps.h>
 #include <memory>
 #include <new>
+#include <utility>
 
 using namespace enevina::cottage;
 
@@ -19,6 +20,17 @@ bool decode_text(String& out,std::string_view view) {
     out="";
     return out.reserve(view.size()) && decode_http_form(view,[&](char c){return out.concat(c);});
 }
+// Credential-containing request data is scrubbed in either pending or
+// dispatched ownership before the external buffer is released.
+void release_request_buffer(char*& buffer,HttpIngress& ingress) {
+    if(buffer) {
+        volatile char* bytes=buffer;
+        for(size_t i=0;i<ingress.used();++i)bytes[i]=0;
+        heap_caps_free(buffer);buffer=nullptr;
+    }
+    ingress.reset();
+}
+bool retryable_socket_error(){return errno==EAGAIN||errno==EWOULDBLOCK||errno==EINTR;}
 }
 void CottageWebServer::finishRequest() {
     _currentClient.stop();
@@ -31,18 +43,26 @@ void CottageWebServer::finishRequest() {
     _chunked=false;
     delete[] _currentArgs;_currentArgs=nullptr;_currentArgCount=0;
     for(int i=0;i<_headerKeysCount;++i)_currentHeaders[i].value="";
-    if(request_buffer_) {
-        // Forms may contain credentials. Erase only the used bytes before
-        // freeing the request-local PSRAM allocation.
-        volatile char* bytes=request_buffer_;
-        for(size_t i=0;i<ingress_.used();++i)bytes[i]=0;
-        heap_caps_free(request_buffer_);request_buffer_=nullptr;
-    }
-    ingress_.reset();
+    release_request_buffer(request_buffer_,ingress_);
+}
+void CottageWebServer::closePending(Pending& p) {
+    p.client.stop();
+    release_request_buffer(p.buffer,p.ingress);
+    p.started=0;
+}
+void CottageWebServer::finishAllRequests() {
+    finishRequest();
+    for(auto& p:pending_)closePending(p);
 }
 void CottageWebServer::close() {
-    finishRequest();
+    finishAllRequests();
     WebServer::close();
+}
+void CottageWebServer::rejectPending(Pending& p,const char* response) {
+    ++request_rejects_;
+    const int fd=p.client.fd();
+    if(fd>=0 && response)::send(fd,response,std::strlen(response),MSG_DONTWAIT);
+    closePending(p);
 }
 void CottageWebServer::rejectRequest(const char* response) {
     ++request_rejects_;
@@ -105,48 +125,105 @@ bool CottageWebServer::prepareRequest() {
     }
     return true;
 }
-void CottageWebServer::handleClient() {
-    if(_currentStatus==HC_NONE) {
-        _currentClient=_server.available();
-        if(_currentClient.fd()<0){if(_nullDelay)delay(1);return;}
-        request_started_=millis();
-        _currentStatus=HC_WAIT_READ;
-        request_buffer_=static_cast<char*>(heap_caps_malloc(web_request_capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
-        if(!request_buffer_) {
-            rejectRequest("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-            return;
+bool CottageWebServer::pollPending(Pending& p) {
+    const int fd=p.client.fd();
+    if(fd<0)return false;
+    if(request_expired(millis(),p.started)) {
+        ++request_timeouts_;
+        if(p.ingress.used())++partial_timeouts_;else ++idle_timeouts_;
+        rejectPending(p,nullptr);return false;
+    }
+    if(!p.buffer) {
+        // Browser preconnects are not requests. Do not reserve a 16 KiB
+        // ingress buffer until a byte is actually waiting on this socket.
+        char byte=0;
+        const int ready=::recv(fd,&byte,1,MSG_PEEK|MSG_DONTWAIT);
+        if(ready<=0) {
+            if(ready<0 && retryable_socket_error())return false;
+            ++idle_closes_;rejectPending(p,nullptr);return false;
+        }
+        p.buffer=static_cast<char*>(heap_caps_malloc(web_request_capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+        if(!p.buffer) {
+            ++resource_rejects_;
+            rejectPending(p,"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            return false;
         }
     }
-    if(request_expired(millis(),request_started_)) {
-        ++request_timeouts_;rejectRequest(nullptr);return;
+    const auto count=std::min(p.ingress.room(),web_receive_block);
+    if(!count){++invalid_requests_;rejectPending(p,nullptr);return false;}
+    // At most one nonblocking receive per pending socket per loop.
+    const int n=::recv(fd,p.buffer+p.ingress.used(),count,MSG_DONTWAIT);
+    if(n<=0) {
+        if(n<0 && retryable_socket_error())return false;
+        if(p.ingress.used())++partial_closes_;else ++idle_closes_;
+        rejectPending(p,nullptr);return false;
     }
-    const int fd=_currentClient.fd();
-    if(fd<0){finishRequest();return;}
-    const auto count=std::min(ingress_.room(),web_receive_block);
-    if(!count){rejectRequest(nullptr);return;}
-    // One nonblocking receive per loop; never wait for a missing byte.
-    const int n=::recv(fd,request_buffer_+ingress_.used(),count,MSG_DONTWAIT);
-    if(n<0) {
-        if(errno==EAGAIN||errno==EWOULDBLOCK||errno==EINTR){delay(1);return;}
-        rejectRequest(nullptr);return;
-    }
-    if(!n){rejectRequest(nullptr);return;}
-    const auto state=ingress_.received(request_buffer_,size_t(n));
-    if(state==HttpInput::Pending){delay(1);return;}
-    if(state!=HttpInput::Complete||!prepareRequest()) {
-        rejectRequest(state==HttpInput::TooLarge?
+    const auto state=p.ingress.received(p.buffer,size_t(n));
+    if(state==HttpInput::Pending)return false;
+    if(state!=HttpInput::Complete) {
+        ++invalid_requests_;
+        rejectPending(p,state==HttpInput::TooLarge?
             "HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\nContent-Length: 0\r\n\r\n":
             "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-        return;
+        return false;
     }
-    if(request_expired(millis(),request_started_)) {
-        ++request_timeouts_;rejectRequest(nullptr);return;
+    if(request_expired(millis(),p.started)) {
+        ++request_timeouts_;++partial_timeouts_;rejectPending(p,nullptr);return false;
     }
-    // Reception is spread over loop iterations. Give the existing response
-    // path its own absolute budget when a complete validated request arrives.
+    // Move buffer ownership, including its views, to the unchanged SDK
+    // dispatch context. The pinned WiFiClient shares the socket handle
+    // on assignment; clearing the pending copy does not close our copy.
+    _currentClient=std::move(p.client);
+    p.client.stop();
+    request_buffer_=p.buffer;p.buffer=nullptr;
+    ingress_=p.ingress;p.ingress.reset();p.started=0;
+    _currentStatus=HC_WAIT_READ;
+    if(!prepareRequest()) {
+        ++invalid_requests_;
+        rejectRequest("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        return true;
+    }
     start_ms_=millis();aborted_=false;
+    ++completed_requests_;
     _handleRequest();
     finishRequest();
+    return true;
+}
+void CottageWebServer::handleClient() {
+    // First give both established connections a nonblocking turn.
+    // A ready request is dispatched even when the other socket is idle.
+    for(size_t offset=0;offset<pending_.size();++offset) {
+        const size_t i=(next_slot_+offset)%pending_.size();
+        if(pollPending(pending_[i])) {
+            next_slot_=(i+1)%pending_.size();
+            return; // one route dispatch per Arduino loop iteration
+        }
+    }
+    Pending* free_slot=nullptr;
+    Pending* oldest_idle=nullptr;
+    const uint32_t now=millis();
+    for(auto& p:pending_) {
+        if(p.client.fd()<0){free_slot=&p;break;}
+        if(!p.ingress.used() && (!oldest_idle ||
+            uint32_t(now-p.started)>uint32_t(now-oldest_idle->started)))oldest_idle=&p;
+    }
+    // If both slots are occupied, a speculative empty connection can
+    // yield to a queued client. A partially received request never is
+    // evicted. WiFiServer::hasClient caches one accepted socket.
+    if(!free_slot && oldest_idle && _server.hasClient()) {
+        ++idle_evictions_;rejectPending(*oldest_idle,nullptr);free_slot=oldest_idle;
+    }
+    if(free_slot) {
+        free_slot->client=_server.available();
+        if(free_slot->client.fd()>=0) {
+            free_slot->started=millis();
+            if(pollPending(*free_slot)) {
+                next_slot_=(size_t(free_slot-pending_.data())+1)%pending_.size();
+                return;
+            }
+        }
+    }
+    if(_nullDelay)delay(1);
 }
 void CottageWebServer::abortResponse() {
     if(!aborted_)++aborts_;

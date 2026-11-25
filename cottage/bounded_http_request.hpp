@@ -12,6 +12,10 @@ inline constexpr size_t web_request_capacity=web_header_limit+web_body_limit;
 inline constexpr size_t web_target_limit=2048,web_argument_limit=64;
 inline constexpr size_t web_receive_block=4096;
 inline constexpr uint32_t web_request_budget_ms=3000;
+// Two incremental ingress slots permit a useful request to pass a slow
+// connection. Idle speculative sockets can be evicted; partial requests
+// retain the original absolute deadline and are never evicted for fairness.
+inline constexpr size_t web_pending_connections=2;
 enum class HttpInput : uint8_t { Pending, Complete, BadRequest, TooLarge, Unsupported };
 enum class HttpVerb : uint8_t { Get, Post };
 enum class HttpBody : uint8_t { None, Form, Plain };

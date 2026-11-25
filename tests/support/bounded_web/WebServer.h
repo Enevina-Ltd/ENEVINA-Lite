@@ -41,6 +41,7 @@ public:
     ~WiFiServer(){if(pending_>=0)::close(pending_);}
     void attach(int fd){if(pending_>=0)::close(pending_);pending_=fd;}
     WiFiClient available(){return WiFiClient(std::exchange(pending_,-1));}
+    bool hasClient(){return pending_>=0;}
 };
 enum HTTPMethod {HTTP_ANY,HTTP_GET,HTTP_POST};
 enum HTTPClientStatus {HC_NONE,HC_WAIT_READ,HC_WAIT_CLOSE};
