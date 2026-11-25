@@ -165,7 +165,8 @@ bool valid_comfort_limits_for_mpc(const ComfortLimits& limits);
 // other limits). lower = max(target - 0.5, owner min), upper =
 // min(target + 1.0, 15.8, owner max).
 bool mpc_comfort_band(double target_c, ComfortBand& out,
-                      const ComfortLimits& limits=ComfortLimits{},bool variable_setpoints=false);
+                      const ComfortLimits& limits=ComfortLimits{},bool variable_setpoints=false,
+                      bool maintenance_storage=false);
 
 enum class ModelBuildError : uint8_t {
     None, NotCalibrated, Implausible, OutsideDomain, NumericalFailure

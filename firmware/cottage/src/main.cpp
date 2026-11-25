@@ -52,6 +52,7 @@
 #include "cottage/forecast_bridge.hpp"
 #include "cottage/building_identification.hpp"
 #include "cottage/baseload_learning.hpp"
+#include "cottage/maintenance_cycle.hpp"
 #include "cottage/model_persistence.hpp"
 #include "cottage/learning_observation.hpp"
 #include "cottage/mpc_arbiter.hpp"
@@ -325,6 +326,7 @@ static ArbiterOutput last_arbiter{};
 static bool mpc_energy_in_kwh=false;
 static bool mpc_energy_incremental=false;
 static BaseloadEstimate baseload_snapshot{}; // protected by existing lock_data
+static MaintenanceCycleReport maintenance_cycle_snapshot{}; // same existing lock
 static double mpc_energy_kwh=0,mpc_cost=0,mpc_uncertainty_c=0;
 static size_t horizon_price_slots=0,horizon_weather_slots=0,horizon_slots=0;
 static HorizonLimit horizon_limit=HorizonLimit::None;
@@ -854,6 +856,13 @@ static bool cn105_low_temperature_cycle_selected(const SiteSettings& site,
         site_room_temperature_config().source==RoomTemperatureSource::Ruuvi &&
         low_temperature_room_target(target_c);
 }
+// Explicit Saving profile plus a confirmed shared meter opts in to
+// energy-first storage cycles. Other modes/profiles retain their old band.
+static bool maintenance_economy_selected(const SiteSettings& site,CottageMode mode,double target) {
+    return cn105_low_temperature_cycle_selected(site,mode,target) &&
+        site.profile==OptimizationProfile::Saving && confirmed_shared_meter_identity(site)!=0 &&
+        target>=5.5 && target<=14.8;
+}
 static BootstrapDecision bootstrap_preview(int64_t now,
                                             const TemperatureSample& t) {
     BootstrapInput input{};
@@ -928,6 +937,17 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     // end its HEAT request at the independent room target. No NVS schema,
     // adapter protocol, pump firmware or other mode is changed.
     input.low_temperature_cycle=cn105_low_temperature_cycle_selected(site,mode.mode,input.desired_room_c);
+    input.maintenance_storage=maintenance_economy_selected(site,mode.mode,input.desired_room_c);
+    if(input.maintenance_storage) {
+        MaintenanceCycleReport cycle;
+        xSemaphoreTake(lock_data,portMAX_DELAY);cycle=maintenance_cycle_snapshot;xSemaphoreGive(lock_data);
+        const bool current=cycle.enabled && cycle.site_generation==site_settings_generation() &&
+            cycle.config_generation==c23_config_generation() &&
+            cycle.meter_identity==confirmed_shared_meter_identity(site) &&
+            cycle.target_c==input.desired_room_c;
+        input.maintenance_ceiling_c=maintenance_cycle_ceiling(input.desired_room_c,
+            input.comfort_upper_c,current?cycle.candidate:2);
+    }
     return bootstrap_price_decision(input);
 }
 // The room target and whether heat is permitted, from the SAME mode logic as
@@ -2362,6 +2382,7 @@ static void optimizer_worker(void*) {
     }
     LearningSlot slot{};
     BaseloadLearner baseload_learner;
+    MaintenanceCycleLearner maintenance_cycles;
     uint32_t baseload_building_identity=identity;
     int64_t last_boundary=0;
     uint32_t saved_revision=id?id->report(0).revision:0;
@@ -2425,6 +2446,7 @@ static void optimizer_worker(void*) {
                 identity=current_identity;
                 id->reset();
                 baseload_learner=BaseloadLearner{};
+                maintenance_cycles=MaintenanceCycleLearner{};
                 reset_unpersisted=persist_model_reset(model_store,model_epoch,epoch_known)!=
                     ModelResetResult::Persisted;
                 slot=LearningSlot{};
@@ -2458,6 +2480,7 @@ static void optimizer_worker(void*) {
         if(id)id->select_electric_meter(shared_id?shared_id:meter_id,shared_id!=0);
         if(identity!=baseload_building_identity) {
             baseload_learner=BaseloadLearner{};
+            maintenance_cycles=MaintenanceCycleLearner{};
             baseload_building_identity=identity;
         }
         if(wifi_ok.load() && clock_ok() && prices && weather && aligned && hz && rows &&
@@ -2505,6 +2528,50 @@ static void optimizer_worker(void*) {
            (id && identifier_identity()!=identity))ts={};
         const auto ms=enevina_firmware::market_status();
         const auto ws=enevina_firmware::weather_status();
+        // Compare complete measured cycles while calibrated monetary MPC
+        // is not active. A meter sample must belong to the same known
+        // request interval and baseline regime. No new polling task.
+        const auto cycle_mode=c23_mode_config();
+        const bool economy=maintenance_economy_selected(meter_site,cycle_mode.mode,cycle_mode.hold_target_c);
+        bool model_in_use=false;
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        model_in_use=mpc_plan.has_plan && mpc_plan.maintenance_storage &&
+            mpc_energy_in_kwh && mpc_plan.first_utc==slot_start;
+        xSemaphoreGive(lock_data);
+        MaintenanceCycleSample cycle_sample{};
+        cycle_sample.utc=meter.captured_utc;
+        cycle_sample.room_c=ts.indoor_c;cycle_sample.outdoor_c=ws.next_temperature_c;
+        cycle_sample.total_wh=meter.total_wh;cycle_sample.base_w=base.watts;
+        cycle_sample.meter_id=meter.source_identity;cycle_sample.base_revision=base.revision;
+        cycle_sample.endpoint=request.endpoint_generation;cycle_sample.link=request.link_generation;
+        cycle_sample.request_generation=request.request_generation;
+        cycle_sample.sent=control_commands_sent.load();
+        cycle_sample.confirmed=control_commands_confirmed.load();
+        cycle_sample.failed=control_commands_failed.load();
+        cycle_sample.ack_utc=control_last_ack_utc.load();
+        cycle_sample.heat=request.mode==enevina::PumpRoomMode::Heat;
+        cycle_sample.price_valid=ms.current_price_valid && market_matches_site(ms,meter_site) &&
+            ms.last_fetch_utc<=now && ms.valid_until_utc>now &&
+            site_slot_total_price(slot_start,ms.current_spot_eur_per_kwh,cycle_sample.price);
+        cycle_sample.valid=economy && !model_in_use && current_meter_scope &&
+            active_control_armed(midea) && valid_temperature(ts,now) &&
+            valid_shelly(meter,now,30) && meter_relay && meter.source_identity==shared_id &&
+            baseload_current(base,shared_id,now) && ws.available &&
+            ws.fetched_utc>0 && ws.fetched_utc<=now && ws.valid_until_utc>now &&
+            request.source==enevina::PumpStateSource::Gateway &&
+            request.protocol==enevina::PumpRoomProtocol::Cn105EspHome &&
+            known_heating_mode(request) && !request.write_in_progress &&
+            request.evidence.received_utc>0 && now>=request.evidence.received_utc &&
+            now-request.evidence.received_utc<=30 &&
+            std::llabs(meter.captured_utc-request.evidence.received_utc)<=30 &&
+            (!cycle_sample.heat || std::fabs(request.setpoint_c-16.0)<=0.001) &&
+            site_settings_generation()==optimizer_site_generation &&
+            c23_config_generation()==optimizer_config_generation;
+        const auto cycle_report=maintenance_cycles.observe(economy,shared_id,
+            optimizer_site_generation,optimizer_config_generation,cycle_mode.hold_target_c,cycle_sample);
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        maintenance_cycle_snapshot=cycle_report;
+        xSemaphoreGive(lock_data);
         const size_t pc=boundary&&market_matches_site(ms,site_settings_snapshot())?
             enevina_firmware::future_prices(prices,200,&ms):0;
         const size_t wc=boundary?enevina_firmware::future_weather(weather,64):0;
@@ -2627,6 +2694,8 @@ static void optimizer_worker(void*) {
             pi.target_c=target_c;
             pi.low_temperature_cycle=heating_allowed &&
                 cn105_low_temperature_cycle_selected(site_settings_snapshot(),c23_mode_config().mode,target_c);
+            pi.maintenance_storage=pi.low_temperature_cycle &&
+                maintenance_economy_selected(site_settings_snapshot(),c23_mode_config().mode,target_c);
             pi.temperature_fresh=valid_temperature(ts,now);pi.indoor_c=ts.indoor_c;
             pi.pump_state_known=known_heating_mode(view);pi.pump_heat=view_heat;
             if(view.protocol==enevina::PumpRoomProtocol::Cn105EspHome) {
@@ -2877,6 +2946,34 @@ static void status_endpoint() {
     cJSON_AddStringToObject(root,"bootstrap_reason",
                              bootstrap_reason_name(bootstrap.reason));
     cJSON_AddBoolToObject(root,"bootstrap_low_temperature_cycle",low_temperature_cycle(bootstrap));
+    cJSON_AddBoolToObject(root,"maintenance_storage",bootstrap.maintenance_storage);
+    if(bootstrap.maintenance_storage) {
+        cJSON_AddNumberToObject(root,"maintenance_ceiling_c",bootstrap.maintenance_ceiling_c);
+        MaintenanceCycleReport cycle;
+        xSemaphoreTake(lock_data,portMAX_DELAY);cycle=maintenance_cycle_snapshot;xSemaphoreGive(lock_data);
+        if(auto* c=cJSON_AddObjectToObject(root,"maintenance_cycles")) {
+            cJSON_AddNumberToObject(c,"candidate",cycle.candidate);
+            cJSON_AddNumberToObject(c,"completed",cycle.completed);
+            cJSON_AddNumberToObject(c,"rejected",cycle.rejected);
+            if(auto* a=cJSON_AddArrayToObject(c,"comparison"))for(unsigned i=0;i<maintenance_cycle_candidates;++i) {
+                if(auto* r=cJSON_CreateObject()) {
+                    cJSON_AddItemToArray(a,r);
+                    cJSON_AddNumberToObject(r,"candidate",i);
+                    cJSON_AddNumberToObject(r,"cycles",cycle.compared[i]);
+                    if(cycle.compared[i])cJSON_AddNumberToObject(r,"average_incremental_w",cycle.rate_kw[i]*1000);
+                    else cJSON_AddNullToObject(r,"average_incremental_w");
+                }
+            }
+            if(cycle.last.valid) {
+                cJSON_AddNumberToObject(c,"last_energy_kwh",cycle.last.energy_kwh);
+                cJSON_AddNumberToObject(c,"last_hours",cycle.last.hours);
+                cJSON_AddNumberToObject(c,"last_peak_c",cycle.last.peak_c);
+                cJSON_AddNumberToObject(c,"last_mean_room_c",cycle.last.mean_room_c);
+                cJSON_AddNumberToObject(c,"last_outdoor_c",cycle.last.outdoor_c);
+                if(cycle.last.cost_valid)cJSON_AddNumberToObject(c,"last_cost",cycle.last.cost);
+            }
+        }
+    } else cJSON_AddNullToObject(root,"maintenance_ceiling_c");
     cJSON_AddNumberToObject(root,"bootstrap_mode_dwell_minutes",
         low_temperature_cycle(bootstrap)?cn105_low_temperature_dwell_minutes:
             mitsubishi_min_mode_dwell_ms/60000u);

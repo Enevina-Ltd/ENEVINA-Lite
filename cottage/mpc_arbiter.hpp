@@ -22,7 +22,7 @@ enum class MpcFallback : uint8_t {
     HorizonTooShort, PumpStateUnknown, TemperatureStale, SolverFailed,
     SolverTimeout, PlanStale, PlanInputsChanged, BelowComfortFloor,
     AboveComfortCeiling, ResourceLimit, SyntheticModelOnly, ComfortLimitsInvalid, DefrostHold,
-    LowTargetReached, LowTemperatureBand
+    LowTargetReached, LowTemperatureBand, MaintenanceElectricLearning
 };
 
 // Everything the planner fixed when it computed the plan. A plan is only
@@ -40,6 +40,7 @@ struct MpcPlanRecord {
     bool first_heat=false;    // plan decision for first_utc
     bool variable_setpoints=false;
     bool low_temperature_cycle=false;
+    bool maintenance_storage=false;
     OptimizationProfile profile=OptimizationProfile::Balanced;
     double initial_setpoint_c=16;
     double first_setpoint_c=16;
@@ -141,16 +142,18 @@ inline MpcFallback plan_validity(const ArbiterInput& in) {
         return MpcFallback::PlanInputsChanged;
     if(!in.pump_state_known) return MpcFallback::PumpStateUnknown;
     if(p.low_temperature_cycle!=
-       (in.pump_gateway_request && low_temperature_cycle(in.bootstrap)))
+       (in.pump_gateway_request && low_temperature_cycle(in.bootstrap)) ||
+       p.maintenance_storage!=(p.low_temperature_cycle && in.bootstrap.maintenance_storage))
         return MpcFallback::PlanInputsChanged;
     // The full-slot model cannot insist on a heating request beyond a
     // below-device-minimum room ceiling. The same plan_validity predicate
     // is used for dispatch and every published plan. Defrost wins above.
-    if((p.first_heat || in.pump_heat) && in.pump_gateway_request && low_temperature_stop(in.bootstrap))
+    if((p.first_heat || in.pump_heat) && in.pump_gateway_request && low_temperature_stop(in.bootstrap) &&
+       (!p.maintenance_storage || in.indoor_c>=p.band.upper_c))
         return MpcFallback::LowTargetReached;
     // Do not start a brief, inefficient 16 C pulse merely because the
     // electricity price changed within the independent room deadband.
-    if(p.low_temperature_cycle && p.first_heat && !in.pump_heat &&
+    if(p.low_temperature_cycle && !p.maintenance_storage && p.first_heat && !in.pump_heat &&
        in.bootstrap.action!=BootstrapAction::HeatSetpoint)
         return MpcFallback::LowTemperatureBand;
     // The pump-mode generation advances on every source gap, mode change and
@@ -182,7 +185,7 @@ inline MpcFallback plan_validity(const ArbiterInput& in) {
     // The owner's hard comfort limits. Malformed or contradictory limits: no
     // MPC (the existing controller takes over); changed limits revoke the plan.
     ComfortBand band{};
-    if(!mpc_comfort_band(p.target_c,band,in.limits,p.variable_setpoints))
+    if(!mpc_comfort_band(p.target_c,band,in.limits,p.variable_setpoints,p.maintenance_storage))
         return MpcFallback::ComfortLimitsInvalid;
     if(p.variable_setpoints)apply_mpc_profile(band,p.profile);
     if(!(in.limits==p.limits) ||
@@ -225,6 +228,8 @@ inline ArbiterOutput arbitrate(const ArbiterInput& in) {
     BootstrapDecision d{};
     d.requested_room_c=p.target_c;
     d.low_temperature_cycle=p.low_temperature_cycle;
+    d.maintenance_storage=p.maintenance_storage;
+    d.maintenance_ceiling_c=p.maintenance_storage?p.band.upper_c:0;
     d.price_data_valid=true;
     d.executable=false;
     if(p.first_heat) {
@@ -284,6 +289,7 @@ inline const char* mpc_fallback_name(MpcFallback f) {
     case MpcFallback::DefrostHold:return "DEFROST_HOLD";
     case MpcFallback::LowTargetReached:return "LOW_TARGET_REACHED";
     case MpcFallback::LowTemperatureBand:return "LOW_TEMPERATURE_BAND";
+    case MpcFallback::MaintenanceElectricLearning:return "MAINTENANCE_ELECTRIC_LEARNING";
     }
     return "UNKNOWN";
 }

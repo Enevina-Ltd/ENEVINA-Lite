@@ -44,6 +44,7 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     rec.profile=in.profile;
     rec.initial_heat=in.pump_heat;
     rec.low_temperature_cycle=in.low_temperature_cycle && low_temperature_room_target(in.target_c);
+    rec.maintenance_storage=rec.low_temperature_cycle && in.maintenance_storage;
     const auto no_plan=[&](MpcFallback why) {rec.has_plan=false;rec.planning_fallback=why;return out;};
     if(in.pump_defrost_hold && in.pump_heat)return no_plan(MpcFallback::DefrostHold);
     if(!in.identifier) return no_plan(MpcFallback::ModelLearning);
@@ -61,9 +62,9 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
         // A target outside the HEAT 16 C model is reported as such; a target
         // inside it with malformed / contradictory owner limits is reported
         // as invalid limits. The MPC never invents other limits.
-        if(!in.target_valid || !mpc_comfort_band(in.target_c,model_band,{},rec.variable_setpoints))
+        if(!in.target_valid || !mpc_comfort_band(in.target_c,model_band,{},rec.variable_setpoints,rec.maintenance_storage))
             return no_plan(MpcFallback::TargetOutsideModel);
-        if(!mpc_comfort_band(in.target_c,band,in.limits,rec.variable_setpoints))
+        if(!mpc_comfort_band(in.target_c,band,in.limits,rec.variable_setpoints,rec.maintenance_storage))
             return no_plan(MpcFallback::ComfortLimitsInvalid);
     }
     if(rec.variable_setpoints)apply_mpc_profile(band,in.profile);
@@ -91,6 +92,10 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     case ModelBuildError::Implausible:
     case ModelBuildError::NumericalFailure:return no_plan(MpcFallback::SolverFailed);
     }
+    // Economy maintenance must optimize validated electrical consumption,
+    // not the old price-weighted runtime proxy. Until then use measured
+    // complete-cycle selection in the existing bootstrap controller.
+    if(rec.maintenance_storage && !kwh)return no_plan(MpcFallback::MaintenanceElectricLearning);
     if(rec.low_temperature_cycle) {
         // The full-slot solver can express 15-min pulses, but the live
         // independent thermostat may stop one earlier at the room ceiling.

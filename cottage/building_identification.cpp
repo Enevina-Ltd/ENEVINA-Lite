@@ -133,14 +133,15 @@ bool valid_comfort_limits_for_mpc(const ComfortLimits& l) {
 }
 
 bool mpc_comfort_band(double target_c,ComfortBand& out,const ComfortLimits& limits,
-                      bool variable_setpoints) {
+                      bool variable_setpoints,bool maintenance_storage) {
     out=ComfortBand{};
     if(!id_finite(target_c) || !valid_comfort_limits_for_mpc(limits) ||
        (variable_setpoints && target_c>26)) return false;
     // Same lower edge as the thermostat/price controller (target - 0.5).
     // HEAT 16 C / OFF physics are only valid up to 15.8 C indoors.
     double lower=std::max(5.0,target_c-0.5);
-    double upper=variable_setpoints?target_c+0.5:std::min(15.8,target_c+1.0);
+    double upper=variable_setpoints?target_c+0.5:
+        maintenance_storage?15.8:std::min(15.8,target_c+1.0);
     // The owner's limits are HARD: they can only tighten the band. A limit
     // that is not at least 0.5 C beyond the target on its own side (the
     // thermostat deadband) is contradictory, not a limit to be ignored.
@@ -150,7 +151,8 @@ bool mpc_comfort_band(double target_c,ComfortBand& out,const ComfortLimits& limi
     }
     if(limits.max_c>0) {
         if(limits.max_c<target_c+0.5-1e-9) return false;
-        upper=variable_setpoints?limits.max_c:std::min(upper,limits.max_c);
+        upper=variable_setpoints?limits.max_c:std::min(upper,maintenance_storage?
+            std::max(target_c+0.5,limits.max_c-0.75):limits.max_c);
     }
     if(target_c<5.0 || upper-lower<0.8) return false;
     out.target_c=target_c;out.lower_c=lower;out.upper_c=upper;

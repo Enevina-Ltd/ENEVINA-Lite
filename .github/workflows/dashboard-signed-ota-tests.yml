@@ -10,6 +10,8 @@ on:
       - 'firmware/cottage/**'
       - 'cottage/mitsubishi_control_policy.hpp'
       - 'cottage/price_bootstrap.hpp'
+      - 'cottage/maintenance_cycle.hpp'
+      - 'tests/maintenance_cycle_tests.cpp'
       - 'cottage/mpc_arbiter.hpp'
       - 'cottage/mpc_planner.*'
       - 'cottage/plan_timeline.hpp'

@@ -230,7 +230,9 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("in.limits=owner_comfort_limits();", arb)
         self.assertIn("pi.limits=owner_comfort_limits();", WORKER)
         self.assertIn("static ComfortLimits owner_comfort_limits()", MAIN)
-        self.assertIn("mpc_comfort_band(p.target_c,band,in.limits,p.variable_setpoints)", ARB)
+        self.assertIn("mpc_comfort_band(p.target_c,band,in.limits,p.variable_setpoints,p.maintenance_storage)", ARB)
+        self.assertIn("pi.maintenance_storage=pi.low_temperature_cycle", WORKER)
+        self.assertIn("p.maintenance_storage!=(p.low_temperature_cycle && in.bootstrap.maintenance_storage)", ARB)
         self.assertNotIn("p.band.lower_c-0.2", ARB)       # no tolerance beyond the limit
         self.assertNotIn("p.band.upper_c+0.3", ARB)
 
