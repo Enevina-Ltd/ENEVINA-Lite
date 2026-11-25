@@ -23,6 +23,10 @@ acknowledged own transitions enter the comparison. Both room-temperature
 boundaries must be near the same target and within 0.5 C of one another.
 Comparisons use recent cycles within 1.5 C outdoor temperature; at least
 two matched cycles of each alternative are required for selection.
+A materially changed qualified baseline (more than 25 W or 15 percent,
+whichever is larger) clears completed cycle comparisons and rejects an
+open cycle, including after a data gap. The comparison does not mix
+different internal heat-gain regimes.
 The winner minimizes average incremental kWh per elapsed hour; a
 difference below 5 percent does not favor a hotter alternative. An
 occasional alternative cycle allows further learning. The last cycle's

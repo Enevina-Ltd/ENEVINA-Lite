@@ -65,6 +65,18 @@ public:
             have_previous_=false;
             return report(s.outdoor_c);
         }
+        // A new qualified background-load regime changes heat balance as
+        // well as the electrical reference. Reject the partial cycle and
+        // discard completed comparisons even after an observation gap.
+        if(regime_w_>=0 &&
+           std::fabs(s.base_w-regime_w_)>std::max(25.0,0.15*regime_w_)) {
+            reject_open();
+            records_={};next_={};last_={};completed_=0;
+            candidate_=2;
+            have_previous_=false;
+            regime_w_=-1;
+        }
+        if(regime_w_<0)regime_w_=s.base_w;
         if(!have_previous_) {previous_=s;have_previous_=true;return report(s.outdoor_c);}
         const auto p=previous_;
         const int64_t dt=s.utc-p.utc;
@@ -173,6 +185,7 @@ private:
     uint32_t identity_=0,site_=0,config_=0,completed_=0,rejected_=0;
     unsigned candidate_=2,active_candidate_=2;
     double target_=0,start_room_=0,peak_=0,energy_=0,outdoor_hours_=0,room_hours_=0,cost_=0;
+    double regime_w_=-1;
     int64_t start_utc_=0,stop_utc_=0;
     MaintenanceCycleSample previous_{};
     MaintenanceCycleObservation last_{};

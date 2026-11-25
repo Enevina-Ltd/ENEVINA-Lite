@@ -65,6 +65,24 @@ int main(){
     assert(f.r.last.cost_valid && f.r.last.energy_kwh>0);
     // Outside matched weather no comparison is represented as established.
     assert(f.learner.report(-10).compared[2]==0);
+    // A changed background heat source invalidates ALL old comparisons,
+    // not just the open cycle. This must work across a data gap as well.
+    Fixture regime;regime.begin();regime.complete();regime.complete();regime.complete();
+    assert(regime.r.completed==3);
+    regime.s.valid=false;
+    regime.learner.observe(true,3,1,1,12,regime.s);
+    regime.s.valid=true;regime.s.base_w=1000;++regime.s.base_revision;
+    regime.tick(true,12,1500);
+    assert(regime.r.completed==0 && !regime.r.last.valid);
+    for(auto n:regime.r.compared)assert(n==0);
+    assert(regime.r.candidate==2);
+    // Small changes within the same heat regime retain completed evidence.
+    Fixture jitter;jitter.begin();jitter.complete();
+    jitter.s.base_w=178;++jitter.s.base_revision;jitter.tick(true,12,1500);
+    assert(jitter.r.completed==1 && jitter.r.compared[2]==1);
+    // An immediate material change without a missing sample also resets.
+    jitter.s.base_w=1000;++jitter.s.base_revision;jitter.tick(true,12,1500);
+    assert(jitter.r.completed==0 && jitter.r.compared[2]==0);
     Fixture gaps;gaps.begin();gaps.s.utc+=180;gaps.tick(true,12,1500);
     assert(gaps.r.completed==0 && gaps.r.rejected==1);
     Fixture reset;reset.begin();++reset.s.base_revision;reset.tick(true,12,1500);
