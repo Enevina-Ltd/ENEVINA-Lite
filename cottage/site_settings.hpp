@@ -153,6 +153,24 @@ inline uint32_t confirmed_shelly_meter_identity(const SiteSettings& settings) {
     return hash?hash:1;
 }
 
+// Source identity for OFF-load estimation. Do not use it as pump-only
+// consent. The scope is part of the identity, so reconfiguration discards
+// old observations. Existing pump-only hashes remain unchanged.
+inline uint32_t observed_shelly_meter_identity(const SiteSettings& settings) {
+    if(!valid_shelly_base_url(settings.shelly_url))return 0;
+    uint32_t h=2166136261u;
+    for(const char* p=settings.shelly_url;*p;++p) {
+        h^=static_cast<uint8_t>(*p);h*=16777619u;
+    }
+    h^=0xA5u;h*=16777619u;
+    h^=static_cast<uint8_t>(settings.shelly_scope);h*=16777619u;
+    return h?h:1;
+}
+inline uint32_t confirmed_shared_meter_identity(const SiteSettings& settings) {
+    return settings.shelly_scope==ShellyScope::WholeHouse?
+        observed_shelly_meter_identity(settings):0;
+}
+
 // Byte layout of the shipped v1 settings blob (Finland-only, before regional
 // setup). It exists ONLY so devices that already hold a configuration keep it
 // on upgrade; members and order must never change.

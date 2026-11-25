@@ -51,6 +51,8 @@ on:
       - 'tests/cottage_identification_tests.cpp'
       - 'cottage/cn105_gateway_request.hpp'
       - 'cottage/building_identification.*'
+      - 'cottage/baseload_learning.hpp'
+      - 'tests/baseload_learning_tests.cpp'
       - 'tests/test_dashboard_signed_ota.py'
       - 'tests/test_dashboard_translations.py'
       - 'tests/test_network_budget_diagnostic_source.py'

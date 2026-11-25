@@ -577,6 +577,79 @@ void test_meter_scope_rule() {
     }
 }
 
+void test_shared_meter_incremental_model() {
+    Sim sim;sim.pump_meter=false;sim.gain_kw=0.17;
+    BuildingIdentifier id;
+    id.select_electric_meter(23,true);
+    CHECK(id.note_baseload_regime(169));
+    CHECK(!id.note_baseload_regime(172));
+    // Use an independently measured shared meter: subtract its known
+    // OFF baseline, including the pump's standby. No heat meter exists.
+    for(int i=0;i<12*96;++i) {
+        auto o=sim.step();
+        o.meter_incremental=true;
+        o.electric_kwh=std::max(0.0,o.electric_kwh-sim.truth.off_standby_kw*0.25);
+        id.add(o);
+    }
+    const auto r=id.report(sim.utc);
+    CHECK(r.model.electric_incremental && r.model.electric_trusted);
+    CHECK(!r.model.absolute_bounds && !r.model.cop_identified);
+    CHECK(r.model.baseload_reference_w==169);
+    CHECK(r.state==CalibrationState::Calibrated);
+    // Room-derived gain includes the miner's heat exactly once.
+    CHECK(std::fabs(r.model.gain_rise_k-sim.gain_kw/sim.truth.loss_kw_per_c)<1.5);
+    ComfortBand band{};CHECK(mpc_comfort_band(12,band));
+    Parameters p{};bool kwh=false;
+    CHECK(id.build_parameters(sim.utc,band,false,1,p,kwh,true)==ModelBuildError::None && kwh);
+    CHECK(p.heat_standby_kw==0 && p.off_standby_kw==0);
+    HorizonResult horizon{};horizon.bridge.status=BridgeStatus::Ready;
+    horizon.bridge.first_utc=sim.utc;horizon.bridge.count=48;
+    for(size_t i=0;i<horizon.bridge.count;++i)
+        horizon.bridge.periods[i]={r.model.lift_ref_outdoor_c,i<24?0.12:0.30,0,1};
+    PlannerInput input{};input.now_utc=sim.utc;input.identifier=&id;input.horizon=&horizon;
+    input.heating_allowed=input.target_valid=input.temperature_fresh=input.pump_state_known=true;
+    input.target_c=12;input.indoor_c=12;input.pump_heat=false;input.minutes_in_mode=120;
+    input.meter_incremental=true;
+    const auto plan=plan_mpc(input,nullptr);
+    CHECK(plan.record.has_plan && plan.energy_in_kwh && plan.energy_incremental);
+    CHECK(std::isfinite(plan.energy_kwh) && plan.energy_kwh>0);
+    CHECK(std::fabs(horizon.bridge.periods[0].internal_gain_kw-
+        r.model.gain_rise_k*plan.params.loss_kw_per_c)<1e-9);
+    input.meter_incremental=false;
+    const auto relative=plan_mpc(input,nullptr);
+    CHECK(relative.record.has_plan && !relative.energy_in_kwh && !relative.energy_incremental);
+    CHECK(id.build_parameters(sim.utc,band,false,1,p,kwh)==ModelBuildError::None && !kwh);
+    CHECK(id.build_parameters(sim.utc,band,true,1,p,kwh)==ModelBuildError::None && !kwh);
+    std::vector<uint8_t> bytes(BuildingIdentifier::blob_capacity);size_t used=0;
+    CHECK(id.save(12,bytes.data(),bytes.size(),used));
+    BuildingIdentifier restored;
+    CHECK(restored.load(12,bytes.data(),used));
+    restored.select_electric_meter(23,true);
+    CHECK(restored.report(sim.utc).model.electric_incremental);
+    CHECK(restored.report(sim.utc).model.electric_trusted);
+    CHECK(!restored.report(sim.utc).model.absolute_bounds);
+    CHECK(restored.report(sim.utc).model.baseload_reference_w==169);
+    const auto before=restored.report(sim.utc);
+    CHECK(restored.note_baseload_regime(40));
+    const auto after=restored.report(sim.utc);
+    CHECK(after.samples==before.samples);
+    CHECK(after.model.electric_samples==0 && !after.model.electric_trusted);
+    CHECK(after.state!=CalibrationState::Calibrated && after.windows==0);
+    CHECK(after.model.baseload_reference_w==40);
+    CHECK(!restored.note_baseload_regime(41));
+    auto damaged=bytes;damaged[used-12]^=0x01;
+    CHECK(!restored.load(12,damaged.data(),used));
+    restored.select_electric_meter(23,false);
+    CHECK(!restored.report(sim.utc).model.electric_incremental &&
+          restored.report(sim.utc).model.electric_samples==0);
+    // A direct sample must not leak into the shared model.
+    BuildingIdentifier separate;separate.select_electric_meter(23,true);
+    separate.note_baseload_regime(170);
+    sim.pump_meter=true;
+    for(int i=0;i<100;++i)separate.add(sim.step());
+    CHECK(separate.report(sim.utc).model.electric_samples==0);
+}
+
 void test_rejects_replay_gap_and_outlier() {
     Sim sim;
     BuildingIdentifier id;
@@ -845,6 +918,7 @@ int main() {
     test_residential_identification_and_planning();
     test_no_heating_never_calibrates();
     test_meter_scope_rule();
+    test_shared_meter_incremental_model();
     test_rejects_replay_gap_and_outlier();
     test_wrong_prior_converges();
     test_degrades_when_building_changes();

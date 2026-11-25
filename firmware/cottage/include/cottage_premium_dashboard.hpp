@@ -5165,7 +5165,7 @@ setInterval(periodicRefresh,15000);
 // Predictive control (MPC) card on the Optimization view. Read-only: it
 // only GETs /api/mpc. FI+EN texts are bundled here. Predicted energy and
 // cost appear only when the backend marks them trustworthy (a calibrated
-// model AND an owner-confirmed heat-pump-only meter). No savings are
+// model AND a qualified measured or incremental electric model). No savings are
 // calculated or claimed. Colours come from the theme variables, so the
 // automatic night theme applies.
 (function(){
@@ -5180,7 +5180,7 @@ fi:{title:'Ennakoiva säätö (MPC)',active:'Käytössä',calibrating:'Kalibroid
  heat:'HEAT 16 °C',off:'OFF',confirmed:'pumppu vahvisti tilan',unconfirmed:'ei vielä vahvistettu pumpulta',
  shadow:'varjotila: komentoja ei lähetetä',noplan:'Voimassa olevaa MPC-suunnitelmaa ei ole tälle varttitunnille.',
  energy:'Ennustettu sähkö ja kustannus',energyno:'Luotettavaa pumppukohtaista kulutusmallia ei ole saatavilla. Optimointi käyttää suhteellista energiaa.',
- meter:'Mitattu kulutus nyt (Shelly)',scopeU:'mittauskohde vahvistamaton – voi sisältää muuta kulutusta',scopeP:'vain lämpöpumppu',
+ meter:'Mitattu kulutus nyt (Shelly)',scopeU:'mittauskohde vahvistamaton – voi sisältää muuta kulutusta',scopeP:'vain lämpöpumppu',scopeH:'koko rakennuksen mittari',baseLoad:'Opittu OFF-pohjakuorma',baseLearning:'Odottaa vakaata OFF-jaksoa',baseNote:'Sisäinen lämpövaikutus opitaan huonemittauksista; myös pumpun valmiuskulutus voi sisältyä pohjakuormaan.',increment:'Arvioitu lisäkulutus',incrementEnergy:'Arvioitu lämmityksen lisäsähkö ja kustannus',scopeConfirm:'Vahvista yhteismittari asetuksista sähkömallia varten.',
  measured:'Mitattu sisälämpö',predicted:'Mallin ennuste (testi)',planned:'Suunniteltu sisälämpö',outdoor:'Ulkolämpö (MET Norway)',
  price:'Kokonaishinta',heating:'Lämmitys (suunnitelma)',band:'Mukavuusalue',now:'nyt',h:'h',
  err:'MPC-tietoja ei saatu laitteelta.',sim:'Kaikki luvut ovat laitteen omia laskelmia; säästöjä ei väitetä.',
@@ -5198,7 +5198,7 @@ en:{title:'Predictive control (MPC)',active:'Active',calibrating:'Calibrating',f
  heat:'HEAT 16 °C',off:'OFF',confirmed:'confirmed by the pump',unconfirmed:'not yet confirmed by the pump',
  shadow:'shadow mode: no commands are sent',noplan:'There is no valid MPC plan for this quarter-hour.',
  energy:'Predicted electricity and cost',energyno:'A reliable heat-pump consumption model is unavailable. Optimization uses relative energy.',
- meter:'Measured consumption now (Shelly)',scopeU:'measurement scope unconfirmed – may include other loads',scopeP:'heat pump only',
+ meter:'Measured consumption now (Shelly)',scopeU:'measurement scope unconfirmed – may include other loads',scopeP:'heat pump only',scopeH:'whole-building meter',baseLoad:'Learned OFF baseload',baseLearning:'Waiting for a stable OFF interval',baseNote:'Indoor heat gain is learned from room measurements; baseload may also include pump standby.',increment:'Estimated incremental draw',incrementEnergy:'Estimated incremental heating electricity and cost',scopeConfirm:'Confirm the shared meter in settings to enable the electric model.',
  measured:'Measured indoor',predicted:'Model prediction (test)',planned:'Planned indoor',outdoor:'Outdoor (MET Norway)',
  price:'Total price',heating:'Heating (plan)',band:'Comfort band',now:'now',h:'h',
  err:'MPC data could not be read from the device.',sim:'All numbers are the device’s own calculations; no savings are claimed.',
@@ -5384,7 +5384,7 @@ function render(){
     let status=d.decision_confirmed?t('confirmed'):d.armed?t('unconfirmed'):t('shadow');
     g3.append(box(t('next'),(first.heat&&num(first.setpoint_c)!==null?'HEAT '+f(first.setpoint_c,1)+' °C':first.heat?t('heat'):t('off'))+' · '+hm(first.utc),status));
     g3.append(box(t('updated'),day(p.computed_utc),t('horizon')+' '+f(p.horizon_slots/4,1)+' '+t('h')+' ('+t('limit_'+p.horizon_limit)+')'));
-    g3.append(box(t('energy'),p.energy_valid?f(p.energy_kwh,2)+' kWh · '+f(p.cost,2)+' '+(p.currency||''):'—',p.energy_valid?null:t('energyno')));
+    g3.append(box(t(d.energy_basis==='ESTIMATED_INCREMENTAL'?'incrementEnergy':'energy'),p.energy_valid?f(p.energy_kwh,2)+' kWh · '+f(p.cost,2)+' '+(p.currency||''):'—',p.energy_valid?null:t('energyno')));
   } else {
     // A plan the controller has rejected is never shown as in force: say why
     // (the same reason the controller used), not the plan's old decisions.
@@ -5393,7 +5393,13 @@ function render(){
     g3.append(box(t('updated'),p.computed_utc?day(p.computed_utc):'—',reason));
   }
   const meter=d.meter||{};
-  g3.append(box(t('meter'),num(meter.watts)===null?'—':f(meter.watts,0)+' W',meter.scope==='HEAT_PUMP_ONLY'?t('scopeP'):t('scopeU')));
+  g3.append(box(t('meter'),num(meter.watts)===null?'—':f(meter.watts,0)+' W',meter.scope==='HEAT_PUMP_ONLY'?t('scopeP'):meter.scope==='WHOLE_HOUSE'?t('scopeH'):t('scopeU')));
+  const base=d.baseload||{};
+  if(meter.scope!=='HEAT_PUMP_ONLY' && d.baseload){
+    g3.append(box(t('baseLoad'),base.ready&&num(base.watts)!==null?f(base.watts,0)+' W':'—',base.ready?t('baseNote'):t('baseLearning')));
+    if(base.ready&&num(base.incremental_w)!==null)
+      g3.append(box(t('increment'),f(base.incremental_w,0)+' W',base.shared_meter_confirmed?null:t('scopeConfirm')));
+  }
   c.append(g3,node('p','tiny muted',t('sim')));
 }
 let mpcLoading=false;
