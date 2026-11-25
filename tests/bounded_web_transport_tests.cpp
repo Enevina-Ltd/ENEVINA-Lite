@@ -4,14 +4,18 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cassert>
+#include <cerrno>
 #include <string>
 #include <iostream>
 using namespace enevina::cottage;
-static std::string drain(int fd) {
+static std::string drain(int fd,bool allow_reset=false) {
     std::string result;
     char buf[4096];
     for(;;){
         const auto n=::read(fd,buf,sizeof(buf));
+        // Closing after a rejected peeked request may reset an unread
+        // socket. Only the explicit allocation-failure test permits it.
+        if(n<0 && allow_reset && errno==ECONNRESET)break;
         assert(n>=0);if(!n)break;result.append(buf,size_t(n));
     }
     close(fd);return result;
@@ -148,8 +152,9 @@ int main(){
     // PSRAM admission failure never falls back to internal memory.
     assert(socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0);
     web.attach(fd[0],[&](){assert(false);});
+    request(fd[1]);
     fail_ingress_allocation=true;web.handleClient();fail_ingress_allocation=false;
-    assert(drain(fd[1]).find("503 Service Unavailable")!=std::string::npos);
+    assert(drain(fd[1],true).find("503 Service Unavailable")!=std::string::npos);
     assert(web.requestRejects()==8 && ingress_allocations==0);
     // Next complete request is dispatched normally; old args do not survive.
     assert(socketpair(AF_UNIX,SOCK_STREAM,0,fd)==0);
@@ -158,5 +163,67 @@ int main(){
     request(fd[1]);web.handleClient();
     assert(drain(fd[1])=="recovered" && web.dispatches==before+2);
     assert(web.unbounded_parsers==0 && web.unbounded_finalizers==0 && ingress_allocations==0);
-    std::cout<<"PASS actual CottageWebServer ingress and output: fragmentation, form, timeout, rejection, recovery and chunk framing\n";
+    // An idle speculative connection consumes no PSRAM and cannot delay
+    // a complete request on another socket. Keep timeout counters honest.
+    int idle[2],fast[2],partial[2];
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,idle)==0);
+    web.attach(idle[0],[&](){assert(false);});
+    web.handleClient();assert(ingress_allocations==0);
+    auto idle_deadline=fake_clock;
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,fast)==0);
+    web.attach(fast[0],[&](){assert(web.header("FAST")==4);});
+    request(fast[1]);web.handleClient();
+    assert(drain(fast[1])=="FAST" && fake_clock-idle_deadline<100);
+    assert(web.idleTimeouts()==0 && ingress_allocations==0);
+    fake_clock+=web_request_budget_ms;web.handleClient();
+    assert(web.idleTimeouts()==1 && drain(idle[1]).empty());
+    // A partial request keeps its own buffer and can finish after a
+    // second client's response. Neither route sees the other's fields.
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,partial)==0);
+    web.attach(partial[0],[&](){assert(false);});
+    send_all(partial[1],"GET /api/slow?name=slow HTTP/1.1\r\nHost: lite\r\n");
+    web.handleClient();assert(ingress_allocations==1);
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,fast)==0);
+    web.attach(fast[0],[&](){
+        if(web.uri()==String("/api/slow")){
+            assert(web.arg("name")==String("slow"));assert(web.header("SLOW")==4);
+        } else {assert(web.uri()==String("/"));assert(web.args()==0);assert(web.header("FAST")==4);}
+    });
+    request(fast[1]);web.handleClient();assert(drain(fast[1])=="FAST" && ingress_allocations==1);
+    send_all(partial[1],"\r\n");web.handleClient();assert(drain(partial[1])=="SLOW" && ingress_allocations==0);
+    // Two idle connections cannot occupy both slots until their deadline
+    // when a useful client arrives. The oldest idle connection is evicted.
+    int idle2[2];assert(socketpair(AF_UNIX,SOCK_STREAM,0,idle)==0);
+    web.attach(idle[0],[&](){assert(false);});web.handleClient();fake_clock+=10;
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,idle2)==0);
+    web.attach(idle2[0],[&](){assert(false);});web.handleClient();
+    assert(ingress_allocations==0);
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,fast)==0);
+    web.attach(fast[0],[&](){assert(web.header("FAST")==4);});request(fast[1]);web.handleClient();
+    assert(web.idleEvictions()==1 && drain(idle[1]).empty() && drain(fast[1])=="FAST");
+    assert(ingress_allocations==0);
+    web.close();assert(drain(idle2[1]).empty());
+    // Do not evict partially received requests to make room for another.
+    int slow2[2];
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,partial)==0);
+    web.attach(partial[0],[&](){assert(web.header("OK")==2);});
+    send_all(partial[1],"GET /a HTTP/1.1\r\nHost: lite\r\n");web.handleClient();
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,slow2)==0);
+    web.attach(slow2[0],[&](){assert(web.header("OK")==2);});
+    send_all(slow2[1],"GET /b HTTP/1.1\r\nHost: lite\r\n");web.handleClient();
+    assert(ingress_allocations==2);
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,fast)==0);
+    web.attach(fast[0],[&](){assert(web.header("OK")==2);});
+    request(fast[1]);web.handleClient();
+    assert(web.idleEvictions()==1 && ingress_allocations==2);
+    send_all(partial[1],"\r\n");web.handleClient();assert(drain(partial[1])=="OK");
+    web.handleClient();assert(drain(fast[1])=="OK");
+    send_all(slow2[1],"\r\n");web.handleClient();assert(drain(slow2[1])=="OK");
+    assert(ingress_allocations==0);
+    // Empty peer close is distinguishable from malformed or partial HTTP.
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,idle)==0);
+    web.attach(idle[0],[&](){assert(false);});close(idle[1]);web.handleClient();
+    assert(web.idleCloses()==1 && web.partialTimeouts()==1 && web.partialCloses()==1);
+    assert(web.resourceRejects()==1 && web.invalidRequests()==5 && ingress_allocations==0);
+    std::cout<<"PASS actual CottageWebServer ingress and output: fairness, preconnect, bounded partial request, timeout categories, recovery and chunk framing\n";
 }

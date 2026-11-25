@@ -9,6 +9,7 @@ namespace {
 SemaphoreHandle_t gate=nullptr;
 // Count refusals rather than hiding failed allocations or heap minima.
 std::atomic<uint32_t> refusals{0};
+std::atomic<uint32_t> busy_refusals{0},memory_refusals{0};
 std::atomic<uint32_t> min_largest{std::numeric_limits<uint32_t>::max()};
 std::atomic<uint32_t> min_sampled_free{std::numeric_limits<uint32_t>::max()};
 }
@@ -21,7 +22,7 @@ bool network_budget_acquire(uint32_t wait_ms,size_t min_internal,
     if(detail)*detail=NetworkBudgetDiagnostic{};
     if(!gate || xSemaphoreTake(gate,pdMS_TO_TICKS(wait_ms))!=pdTRUE) {
         if(detail)detail->failure=NetworkBudgetFailure::MutexBusy;
-        refusals.fetch_add(1);return false;
+        refusals.fetch_add(1);busy_refusals.fetch_add(1);return false;
     }
     // MUST use internal 8-bit-capable RAM, not ESP.getFreeHeap() which may
     // include PSRAM. The TLS/BT stack requires internal allocations.
@@ -36,7 +37,7 @@ bool network_budget_acquire(uint32_t wait_ms,size_t min_internal,
     if(!enevina::cottage::internal_memory_admissible(free,largest,
                                                       min_internal,min_largest)) {
         if(detail)detail->failure=NetworkBudgetFailure::LowMemory;
-        refusals.fetch_add(1);
+        refusals.fetch_add(1);memory_refusals.fetch_add(1);
         xSemaphoreGive(gate);
         return false;
     }
@@ -67,4 +68,6 @@ uint32_t network_budget_min_sampled_free() {
     return v==std::numeric_limits<uint32_t>::max()?0:v;
 }
 uint32_t network_budget_denials() {return refusals.load();}
+uint32_t network_budget_busy_denials(){return busy_refusals.load();}
+uint32_t network_budget_low_memory_denials(){return memory_refusals.load();}
 }  // namespace enevina_firmware

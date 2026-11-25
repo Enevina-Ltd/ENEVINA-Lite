@@ -22,6 +22,8 @@ bool network_budget_acquire(uint32_t wait_ms, size_t min_internal_bytes,
                             NetworkBudgetDiagnostic* diagnostic=nullptr);
 void network_budget_release();
 uint32_t network_budget_denials();
+uint32_t network_budget_busy_denials();
+uint32_t network_budget_low_memory_denials();
 void network_budget_sample();
 uint32_t network_budget_min_largest_internal();
 uint32_t network_budget_min_sampled_free();

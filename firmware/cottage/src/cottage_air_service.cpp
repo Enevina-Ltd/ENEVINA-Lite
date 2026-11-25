@@ -62,6 +62,9 @@ uint32_t low_heap_skips=0;
 // Cross-task status counters are atomic; never hold the Ruuvi callback lock
 // while sampling heap or when acquiring the shared network memory mutex.
 std::atomic<uint32_t> ble_scan_attempts{0};
+std::atomic<uint32_t> ble_advertisements{0};
+std::atomic<uint32_t> ble_ruuvi_advertisements{0};
+std::atomic<uint32_t> ble_retained_results_max{0};
 std::atomic<uint32_t> ble_scan_completed{0};
 std::atomic<uint32_t> ble_scan_memory_denials{0};
 std::atomic<uint32_t> ble_scan_busy_denials{0};
@@ -134,12 +137,14 @@ void accept_indoor(const RuuviV5& r,uint64_t ms) {
 class OnAdvertisement : public NimBLEAdvertisedDeviceCallbacks {
 public:
     void onResult(NimBLEAdvertisedDevice* device) override {
+        ble_advertisements.fetch_add(1);
         if(!device->haveManufacturerData())return;
         const std::string raw=device->getManufacturerData();
         RuuviV5 parsed{};
         if(!decode_ruuvi_v5(
               reinterpret_cast<const uint8_t*>(raw.data()),
               raw.size(),device->getRSSI(),parsed))return;
+        ble_ruuvi_advertisements.fetch_add(1);
         if(!guard)return;
         lock();
         discovered=parsed;have_discovered=true;
@@ -542,6 +547,11 @@ void c23_ble_worker(void*) {
     }
     scan->setAdvertisedDeviceCallbacks(new OnAdvertisement(),true);
     scan->setActiveScan(false);
+    // Passive scanning consumes advertisements immediately in onResult.
+    // NimBLE 1.4.3's default 0xff retains every nearby device until scan
+    // end; zero is the documented callbacks-only mode. No Ruuvi address
+    // limit or duplicate filter is introduced.
+    scan->setMaxResults(0);
     ble_initialized.store(true);
     for(;;) {
         const auto internal_free=static_cast<uint32_t>(heap_caps_get_free_size(
@@ -560,7 +570,8 @@ void c23_ble_worker(void*) {
                 ble_scan_min_internal_bytes,ble_scan_min_contiguous_bytes);
             if(lease.held()) {
                 ble_scan_attempts.fetch_add(1);
-                scan->start(4,false);
+                const uint32_t retained=scan->start(4,false).getCount();
+                if(retained>ble_retained_results_max.load())ble_retained_results_max.store(retained);
                 enevina_firmware::network_budget_sample();
                 scan->clearResults();
                 ble_scan_completed.fetch_add(1);
@@ -748,6 +759,9 @@ void c23_append_status(cJSON* root) {
     cJSON_AddNumberToObject(air,"history_checkpoint_failures",history_checkpoint_failures);
     cJSON_AddNumberToObject(air,"low_heap_scan_skips",low_heap_skips);
     cJSON_AddNumberToObject(air,"ble_scan_attempts",ble_scan_attempts.load());
+    cJSON_AddNumberToObject(air,"ble_advertisements",ble_advertisements.load());
+    cJSON_AddNumberToObject(air,"ble_ruuvi_advertisements",ble_ruuvi_advertisements.load());
+    cJSON_AddNumberToObject(air,"ble_retained_results_max",ble_retained_results_max.load());
     cJSON_AddNumberToObject(air,"ble_scan_completed",ble_scan_completed.load());
     cJSON_AddNumberToObject(air,"ble_scan_memory_denials",
                             ble_scan_memory_denials.load());

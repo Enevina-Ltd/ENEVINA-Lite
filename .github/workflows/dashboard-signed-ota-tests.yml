@@ -27,6 +27,9 @@ on:
       - 'tests/bounded_web_transport_tests.cpp'
       - 'tests/support/bounded_web/**'
       - 'tests/test_bounded_web_source.py'
+      - 'tests/test_runtime_memory_evidence_source.py'
+      - 'tests/test_c24_ble_scan_liveness_source.py'
+      - 'tests/test_c24_ble_lease_scope.py'
       - 'tests/test_history_busy_source.py'
       - 'tests/test_air_history_background.py'
       - 'tests/test_c23_binding_commit_order.py'
@@ -118,6 +121,9 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_automatic_command_reconciliation_source.py' -v
           python3 -m unittest discover -s tests -p 'test_c2_heartbeat_plan_invalidation.py' -v
           python3 -m unittest discover -s tests -p 'test_bounded_web_source.py' -v
+          python3 -m unittest discover -s tests -p 'test_runtime_memory_evidence_source.py' -v
+          python3 -m unittest discover -s tests -p 'test_c24_ble_scan_liveness_source.py' -v
+          python3 -m unittest discover -s tests -p 'test_c24_ble_lease_scope.py' -v
           python3 -m unittest discover -s tests -p 'test_history_busy_source.py' -v
           python3 -m unittest discover -s tests -p 'test_air_history_background.py' -v
           python3 -m unittest discover -s tests -p 'test_c23_binding_commit_order.py' -v
