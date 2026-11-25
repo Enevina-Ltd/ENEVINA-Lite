@@ -174,12 +174,35 @@ void BuildingIdentifier::reset() {
     new(this) BuildingIdentifier(variable);
 }
 
-void BuildingIdentifier::select_electric_meter(uint32_t identity) {
-    if(identity==electric_meter_identity_)return;
+void BuildingIdentifier::select_electric_meter(uint32_t identity,bool incremental) {
+    incremental=identity!=0 && incremental;
+    if(identity==electric_meter_identity_ && incremental==electric_incremental_)return;
     electric_meter_identity_=identity;
+    electric_incremental_=incremental;
+    baseload_reference_w_=-1;
     rls_init(electric_,nullptr,prior_p);
     elec_err_sq_=0;elec_sq_=0;elec_on_=0;
     revision_++;
+}
+bool BuildingIdentifier::note_baseload_regime(double watts) {
+    if(!electric_incremental_ || !id_finite(watts) || watts<0 || watts>20000)return false;
+    if(baseload_reference_w_>=0 &&
+       std::fabs(watts-baseload_reference_w_)<=std::max(25.0,0.15*baseload_reference_w_))
+        return false;
+    baseload_reference_w_=watts;
+    // The constant gain is estimated from measured room response. A
+    // material shift in background load invalidates validation, not the
+    // already measured building time constant or heating response.
+    for(size_t i=0;i<thermal_n;++i)thermal_.p[5][i]=thermal_.p[i][5]=0;
+    thermal_.p[5][5]=prior_p;
+    ring_count_=ring_head_=window_count_=0;
+    window_active_=false;learning_ok_=false;was_calibrated_=false;
+    prev_heat_=-1;
+    rls_init(electric_,nullptr,prior_p);
+    elec_err_sq_=0;elec_sq_=0;elec_on_=0;
+    ++revision_;
+    refresh_state();
+    return true;
 }
 
 void BuildingIdentifier::set_prior(double tau_h,double lift_k,double weight) {
@@ -338,8 +361,11 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
         if(o.indoor_valid && id_finite(o.indoor_end_c))
             push_trend(o.slot_utc+900,o.indoor_end_c,nan,nan);
     }
-    // Electric fit: ONLY an owner-confirmed heat-pump-only meter.
-    if(!o.defrost_observed && o.meter_pump_only && o.electric_valid && contiguous && o.heat_valid &&
+    // Keep measured pump-only and estimated shared-meter fits separate.
+    const bool electrical_source=electric_incremental_?
+        (o.meter_incremental && !o.meter_pump_only && baseload_reference_w_>=0):
+        (o.meter_pump_only && !o.meter_incremental);
+    if(!o.defrost_observed && electrical_source && o.electric_valid && contiguous && o.heat_valid &&
        valid_fraction && transition_contiguous && (!transition || slot_ok) &&
        (!variable_setpoints_ || slot_ok) &&
        o.outdoor_valid && o.in_model_domain && id_finite(o.electric_kwh) &&
@@ -359,6 +385,8 @@ bool BuildingIdentifier::add(const SlotObservation& o) {
 
 ModelEstimate BuildingIdentifier::estimate() const {
     ModelEstimate m{};
+    m.electric_incremental=electric_incremental_;
+    m.baseload_reference_w=baseload_reference_w_;
     m.outdoor_min_c=samples_?outdoor_min_:0;
     m.outdoor_max_c=samples_?outdoor_max_:0;
     const double* t=thermal_.theta;
@@ -413,9 +441,10 @@ ModelEstimate BuildingIdentifier::estimate() const {
         m.electric_rel_error=elec_sq_>0?std::sqrt(elec_err_sq_/elec_sq_):1.0;
         const double plo=e[0]+e[1]*m.outdoor_min_c,phi=e[0]+e[1]*m.outdoor_max_c;
         m.electric_trusted=electric_.updates>=96 && elec_on_>=32 &&
-            m.electric_rel_error<=0.25 && std::min(plo,phi)>0.05 && std::max(plo,phi)<10.0;
+            m.electric_rel_error<=0.25 && std::min(plo,phi)>0.05 && std::max(plo,phi)<10.0 &&
+            (!electric_incremental_ || std::fabs(e[3])<=0.04);
     }
-    if(m.electric_trusted && m.plausible) {
+    if(m.electric_trusted && m.plausible && !electric_incremental_) {
         // COP >= 1 => Q(To) >= P(To) => UA >= P(To)/G(To) for every To.
         double ua=0;
         for(int i=0;i<=10;++i) {
@@ -523,7 +552,7 @@ CalibrationReport BuildingIdentifier::report(int64_t now_utc) const {
 
 ModelBuildError BuildingIdentifier::build_parameters(int64_t now_utc,
     const ComfortBand& band,bool meter_pump_only,double currency_scale,
-    Parameters& out,bool& energy_in_kwh) const {
+    Parameters& out,bool& energy_in_kwh,bool meter_incremental) const {
     out=Parameters{};
     energy_in_kwh=false;
     const CalibrationReport r=report(now_utc);
@@ -542,7 +571,10 @@ ModelBuildError BuildingIdentifier::build_parameters(int64_t now_utc,
     const double hi=std::min(45.0,m.outdoor_max_c+CalibrationLimits::outdoor_margin_c);
     const auto lift=[&](double to){return (thermal_.theta[1]+thermal_.theta[2]*to)/om;};
     const double* e=electric_.theta;
-    const bool meter=meter_pump_only && m.electric_trusted;
+    const bool meter=m.electric_trusted &&
+        (electric_incremental_?meter_incremental && !meter_pump_only:meter_pump_only);
+    // For incremental estimates this is only a numerical scale for the
+    // identified temperature model, not a measured physical UA or COP.
     constexpr int grid=10;
     double gmin=1e9,gmax=-1e9,ua=0;
     for(int i=0;i<=grid;++i) {
@@ -586,7 +618,7 @@ ModelBuildError BuildingIdentifier::build_parameters(int64_t now_utc,
         out.minimum_cop=std::max(1.0,cmin);
         out.maximum_cop=std::max(out.minimum_cop,cmax);
         if(!(out.cop_at_zero_c>0)) out.cop_at_zero_c=out.minimum_cop;
-        out.heat_standby_kw=out.off_standby_kw=m.electric_standby_kw;
+        out.heat_standby_kw=out.off_standby_kw=electric_incremental_?0:m.electric_standby_kw;
         out.startup_electric_kwh=m.electric_start_kwh;
     }
     out.startup_delay_minutes=std::clamp(m.start_delay_min,0.0,14.0);
@@ -635,13 +667,23 @@ struct MeterIdentifierImage {
     uint32_t crc;
 };
 static_assert(sizeof(MeterIdentifierImage)==sizeof(IdentifierImage)+8);
+// Preserve the exact legacy/direct-meter image. Only the shared-meter
+// format adds an explicitly tagged, CRC-protected source and gain regime.
+struct SharedMeterIdentifierImage {
+    MeterIdentifierImage base;
+    uint32_t kind;
+    float baseload_reference_w;
+    uint32_t crc;
+};
+constexpr uint32_t shared_meter_kind=0x53484D31u;
+static_assert(sizeof(SharedMeterIdentifierImage)<=BuildingIdentifier::blob_capacity);
 static_assert(sizeof(MeterIdentifierImage)<=BuildingIdentifier::blob_capacity,
               "identifier image must fit the NVS blob");
 constexpr uint32_t identifier_magic=0x454E4D31u; // "ENM1"
 
 bool BuildingIdentifier::save(uint32_t identity,uint8_t* out,size_t capacity,size_t& used) const {
     used=0;
-    if(!out || capacity<sizeof(MeterIdentifierImage)) return false;
+    if(!out || capacity<(electric_incremental_?sizeof(SharedMeterIdentifierImage):sizeof(MeterIdentifierImage))) return false;
     MeterIdentifierImage image;
     std::memset(static_cast<void*>(&image),0,sizeof(image));
     auto& b=image.model;
@@ -667,16 +709,41 @@ bool BuildingIdentifier::save(uint32_t identity,uint8_t* out,size_t capacity,siz
     image.meter_identity=electric_meter_identity_;
     image.crc=id_crc32(reinterpret_cast<const uint8_t*>(&image),
                         offsetof(MeterIdentifierImage,crc));
-    std::memcpy(out,&image,sizeof(image));
-    used=sizeof(image);
+    if(electric_incremental_) {
+        // Construct directly in the caller's buffer; no second large
+        // identifier image on the optimizer stack.
+        std::memset(out,0,sizeof(SharedMeterIdentifierImage));
+        std::memcpy(out,&image,sizeof(image));
+        const uint32_t kind=shared_meter_kind;
+        const float reference=static_cast<float>(baseload_reference_w_);
+        std::memcpy(out+offsetof(SharedMeterIdentifierImage,kind),&kind,sizeof(kind));
+        std::memcpy(out+offsetof(SharedMeterIdentifierImage,baseload_reference_w),&reference,sizeof(reference));
+        const uint32_t crc=id_crc32(out,offsetof(SharedMeterIdentifierImage,crc));
+        std::memcpy(out+offsetof(SharedMeterIdentifierImage,crc),&crc,sizeof(crc));
+        used=sizeof(SharedMeterIdentifierImage);
+    } else {
+        std::memcpy(out,&image,sizeof(image));
+        used=sizeof(image);
+    }
     return true;
 }
 
 bool BuildingIdentifier::load(uint32_t identity,const uint8_t* in,size_t size) {
-    const bool has_meter=size==sizeof(MeterIdentifierImage);
+    const bool shared=size==sizeof(SharedMeterIdentifierImage);
+    const bool has_meter=shared || size==sizeof(MeterIdentifierImage);
     if(!in || (!has_meter && size!=sizeof(IdentifierImage))) return false;
+    float reference=-1;
+    if(shared) {
+        uint32_t kind=0,crc=0;
+        std::memcpy(&kind,in+offsetof(SharedMeterIdentifierImage,kind),sizeof(kind));
+        std::memcpy(&reference,in+offsetof(SharedMeterIdentifierImage,baseload_reference_w),sizeof(reference));
+        std::memcpy(&crc,in+offsetof(SharedMeterIdentifierImage,crc),sizeof(crc));
+        if(kind!=shared_meter_kind || crc!=id_crc32(in,offsetof(SharedMeterIdentifierImage,crc)) ||
+           !id_finite(reference) || (reference!=-1 && (reference<0 || reference>20000)))return false;
+    }
     MeterIdentifierImage image{};
-    std::memcpy(&image,in,size);
+    std::memcpy(&image,in,has_meter?sizeof(image):size);
+    if(shared && !image.meter_identity)return false;
     const auto& b=image.model;
     if(has_meter && image.crc!=id_crc32(in,offsetof(MeterIdentifierImage,crc)))
         return false;
@@ -704,6 +771,8 @@ bool BuildingIdentifier::load(uint32_t identity,const uint8_t* in,size_t size) {
     x.thermal_=b.thermal;
     if(has_meter) {
         x.electric_meter_identity_=image.meter_identity;
+        x.electric_incremental_=shared;
+        x.baseload_reference_w_=reference;
         x.electric_=b.electric;
         x.elec_on_=b.elec_on;
         x.elec_err_sq_=b.elec_err_sq;x.elec_sq_=b.elec_sq;

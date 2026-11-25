@@ -51,6 +51,7 @@
 #include "cottage/supervisor.hpp"
 #include "cottage/forecast_bridge.hpp"
 #include "cottage/building_identification.hpp"
+#include "cottage/baseload_learning.hpp"
 #include "cottage/model_persistence.hpp"
 #include "cottage/learning_observation.hpp"
 #include "cottage/mpc_arbiter.hpp"
@@ -322,6 +323,8 @@ static MpcPlanRecord mpc_plan{};
 static CalibrationReport calibration_snapshot{};
 static ArbiterOutput last_arbiter{};
 static bool mpc_energy_in_kwh=false;
+static bool mpc_energy_incremental=false;
+static BaseloadEstimate baseload_snapshot{}; // protected by existing lock_data
 static double mpc_energy_kwh=0,mpc_cost=0,mpc_uncertainty_c=0;
 static size_t horizon_price_slots=0,horizon_weather_slots=0,horizon_slots=0;
 static HorizonLimit horizon_limit=HorizonLimit::None;
@@ -345,6 +348,11 @@ static uint32_t shelly_meter_identity() {
     return confirmed_shelly_meter_identity(site_settings_snapshot());
 }
 static bool shelly_meter_pump_only() {return shelly_meter_identity()!=0;}
+struct BaseloadMeterScope {uint32_t observed=0,shared=0;};
+static BaseloadMeterScope baseload_meter_scope() {
+    const auto site=site_settings_snapshot();
+    return {observed_shelly_meter_identity(site),confirmed_shared_meter_identity(site)};
+}
 // The owner's HARD comfort limits (0 = unset) from the profile settings. The
 // MPC band, plan and plan validity are bound to them; the price controller
 // applies the same limits through apply_profile() / mode_comfort_limits_fit().
@@ -810,7 +818,8 @@ static void shelly_worker(void*) {
                    number(cJSON_GetObjectItemCaseSensitive(root,"apower"),watts,0,20000) &&
                    number(cJSON_GetObjectItemCaseSensitive(energy,"total"),wh,0,1e12)) {
                     ShellyTelemetry next{true,time(nullptr),watts,wh,
-                                          confirmed_shelly_meter_identity(settings)};
+                                          confirmed_shelly_meter_identity(settings),
+                                          observed_shelly_meter_identity(settings)};
                     xSemaphoreTake(lock_data,portMAX_DELAY);consumption=next;
                     shelly_relay_on=cJSON_IsTrue(output);
                     xSemaphoreGive(lock_data);
@@ -2292,8 +2301,9 @@ struct LearningSlot {
     bool outdoor_ok=false;double outdoor_c=0;
     uint32_t commands_sent=0,commands_confirmed=0,commands_failed=0;
     uint32_t config_generation=0,site_generation=0;
-    bool energy_ok=false;double total_wh=0;int64_t energy_utc=0;
-    uint32_t energy_meter_identity=0;
+    bool energy_ok=false,energy_relay_on=false;double total_wh=0;int64_t energy_utc=0;
+    uint32_t energy_meter_identity=0,energy_source_identity=0;
+    BaseloadEstimate baseload{};
     enevina::PumpRoomState pump_start{};
     uint32_t defrost_reports=0;
     bool defrost_at_start=false;
@@ -2337,7 +2347,11 @@ static void optimizer_worker(void*) {
     const bool restored=id && epoch_known &&
         identifier_load(*id,model_store_identity(identity,model_epoch));
     bool reset_unpersisted=false,reset_by_owner=false;
-    if(id)id->select_electric_meter(shelly_meter_identity());
+    if(id) {
+        const auto site=site_settings_snapshot();
+        const auto shared=confirmed_shared_meter_identity(site);
+        id->select_electric_meter(shared?shared:confirmed_shelly_meter_identity(site),shared!=0);
+    }
     uint32_t last_reset_retry_ms=0;
     if(id) {
         xSemaphoreTake(lock_data,portMAX_DELAY);
@@ -2347,6 +2361,8 @@ static void optimizer_worker(void*) {
         xSemaphoreGive(lock_data);
     }
     LearningSlot slot{};
+    BaseloadLearner baseload_learner;
+    uint32_t baseload_building_identity=identity;
     int64_t last_boundary=0;
     uint32_t saved_revision=id?id->report(0).revision:0;
     LearningCheckpoint checkpoint;
@@ -2389,7 +2405,9 @@ static void optimizer_worker(void*) {
                 epoch_known=load_model_epoch(model_store,model_epoch);
                 const bool domain_restored=epoch_known && !owner_reset &&
                     identifier_load(*id,model_store_identity(identity,model_epoch));
-                id->select_electric_meter(shelly_meter_identity());
+                const auto site=site_settings_snapshot();
+                const auto shared=confirmed_shared_meter_identity(site);
+                id->select_electric_meter(shared?shared:confirmed_shelly_meter_identity(site),shared!=0);
                 reset_unpersisted=false;reset_by_owner=false;
                 slot=LearningSlot{};
                 saved_revision=id->report(now).revision;
@@ -2406,6 +2424,7 @@ static void optimizer_worker(void*) {
             if(owner_reset || (variable==id->variable_setpoints() && current_identity!=identity)) {
                 identity=current_identity;
                 id->reset();
+                baseload_learner=BaseloadLearner{};
                 reset_unpersisted=persist_model_reset(model_store,model_epoch,epoch_known)!=
                     ModelResetResult::Persisted;
                 slot=LearningSlot{};
@@ -2432,8 +2451,15 @@ static void optimizer_worker(void*) {
                 if(reset_by_owner) identifier_reset_state.store(reset_unpersisted?3:2);
             }
         }
-        const uint32_t meter_id=shelly_meter_identity();
-        if(id)id->select_electric_meter(meter_id);
+        const auto meter_site=site_settings_snapshot();
+        const uint32_t meter_id=confirmed_shelly_meter_identity(meter_site);
+        const uint32_t shared_id=confirmed_shared_meter_identity(meter_site);
+        const uint32_t observed_id=observed_shelly_meter_identity(meter_site);
+        if(id)id->select_electric_meter(shared_id?shared_id:meter_id,shared_id!=0);
+        if(identity!=baseload_building_identity) {
+            baseload_learner=BaseloadLearner{};
+            baseload_building_identity=identity;
+        }
         if(wifi_ok.load() && clock_ok() && prices && weather && aligned && hz && rows &&
            trend && id && id->variable_setpoints()==variable_setpoint_model_selected()) {
             // A fresh indoor measurement is not a forecast for an entire
@@ -2441,14 +2467,38 @@ static void optimizer_worker(void*) {
             boundary=(now-slot_start)<=60 && slot_start!=last_boundary;
         }
         CN105Telemetry cp;TemperatureSample ts;ShellyTelemetry meter;
+        bool meter_relay=false;
         xSemaphoreTake(lock_data,portMAX_DELAY);
-        cp=pump;meter=consumption;
+        cp=pump;meter=consumption;meter_relay=shelly_relay_on;
         xSemaphoreGive(lock_data);
         const uint32_t optimizer_site_generation=site_settings_generation();
         const uint32_t optimizer_config_generation=c23_config_generation();
         const bool midea=cottage_midea_selected();
-        const auto view=boundary?optimizer_pump_state(now,midea):enevina::PumpRoomState{};
+        // Poll the already-observed request even between quarter-hour
+        // boundaries. This uses the existing GET/adapter snapshot, never
+        // the stale SSE compressor display and never an additional command.
+        const auto request=optimizer_pump_state(now,midea);
+        const auto view=boundary?request:enevina::PumpRoomState{};
         const bool view_heat=view.mode==enevina::PumpRoomMode::Heat;
+        const bool current_meter_scope=
+            observed_shelly_meter_identity(site_settings_snapshot())==observed_id;
+        const bool observe_baseload=current_meter_scope && meter_id==0 &&
+            wifi_ok.load() && clock_ok() && !cottage_ota_network_maintenance();
+        const bool defrost=request.protocol==enevina::PumpRoomProtocol::Cn105EspHome &&
+            cn105_defrost_view().defer_write;
+        const auto base=baseload_learner.observe(observe_baseload?observed_id:0,
+            now,request,meter,meter_relay,defrost);
+        const bool gain_regime_changed=id && shared_id && base.ready &&
+            base.identity==shared_id && id->note_baseload_regime(base.watts);
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        baseload_snapshot=base;
+        if(gain_regime_changed || (mpc_energy_incremental && !base.ready)) {
+            mpc_plan=MpcPlanRecord{};plan_count=0;
+            last_plan.status=MpcStatus::InvalidInput;
+            mpc_energy_in_kwh=false;mpc_energy_incremental=false;
+            if(id)calibration_snapshot=id->report(now);
+        }
+        xSemaphoreGive(lock_data);
         ts=selected_room_sample(now);
         if(site_settings_generation()!=optimizer_site_generation ||
            c23_config_generation()!=optimizer_config_generation ||
@@ -2517,6 +2567,19 @@ static void optimizer_worker(void*) {
                     meter.total_wh>=slot.total_wh && dt>=600 && dt<=1200;
                 if(o.electric_valid)
                     o.electric_kwh=(meter.total_wh-slot.total_wh)/1000.0*900.0/double(dt);
+                // Shared meter: subtract the same robust, measured OFF
+                // load from both ends of the interval. This is estimated
+                // incremental consumption, not a pump-only measurement.
+                if(shared_id && current_meter_scope && meter.source_identity==shared_id &&
+                   slot.energy_source_identity==shared_id && slot.energy_ok && slot.energy_relay_on &&
+                   valid_shelly(meter,now,30) && meter_relay && o.heat_valid &&
+                   !o.defrost_observed && !gain_regime_changed &&
+                   incremental_slot_energy(slot.baseload,base,shared_id,
+                       slot.energy_utc,meter.captured_utc,slot.total_wh,meter.total_wh,
+                       o.heat_requested || o.transition_before_fraction>0,o.electric_kwh)) {
+                    o.meter_incremental=true;
+                    o.electric_valid=true;
+                }
                 id->add(o);
             }
             slot.open=false;
@@ -2558,6 +2621,7 @@ static void optimizer_worker(void*) {
             PlannerInput pi{};
             pi.now_utc=now;pi.identifier=id;
             pi.meter_pump_only=meter_id!=0;
+            pi.meter_incremental=shared_id!=0 && baseload_current(base,shared_id,now);
             pi.currency_scale=currency_limit_scale(ms.currency);
             pi.heating_allowed=heating_allowed;pi.target_valid=heating_allowed;
             pi.target_c=target_c;
@@ -2609,6 +2673,7 @@ static void optimizer_worker(void*) {
             mpc_plan=record;
             mpc_row_count=record.has_plan?po.rows:0;
             mpc_energy_in_kwh=po.energy_in_kwh;
+            mpc_energy_incremental=po.energy_incremental;
             mpc_energy_kwh=po.energy_kwh;mpc_cost=po.cost;
             mpc_uncertainty_c=po.params.planning_uncertainty_c;
             horizon_price_slots=hz->price_slots;horizon_weather_slots=hz->weather_slots;
@@ -2694,10 +2759,13 @@ static void optimizer_worker(void*) {
             }
             xSemaphoreTake(lock_data,portMAX_DELAY);
             meter=consumption;
+            slot.energy_relay_on=shelly_relay_on;
             xSemaphoreGive(lock_data);
             slot.energy_ok=valid_shelly(meter,time(nullptr),30);
             slot.total_wh=meter.total_wh;slot.energy_utc=meter.captured_utc;
             slot.energy_meter_identity=meter.meter_identity;
+            slot.energy_source_identity=meter.source_identity;
+            slot.baseload=base;
         }
         // Recompute on quarter-hour boundary, retries every minute when offline.
         const time_t t=time(nullptr);
@@ -2977,6 +3045,7 @@ static void status_endpoint() {
         const auto& mp=inputs.plan;
         xSemaphoreTake(lock_data,portMAX_DELAY);
         const auto cal=calibration_snapshot;
+        const auto base=baseload_snapshot;
         xSemaphoreGive(lock_data);
         const int64_t current_slot=(now/900)*900;
         cJSON_AddBoolToObject(root,"model_calibrated",cal.state==CalibrationState::Calibrated);
@@ -2998,6 +3067,27 @@ static void status_endpoint() {
             arb.source==ProposalSource::Mpc && mp.first_utc==current_slot &&
             mpc_state_read_back(inputs));
         cJSON_AddBoolToObject(root,"shelly_meter_pump_only",shelly_meter_pump_only());
+        const auto meter_scope=baseload_meter_scope();
+        const uint32_t source=meter_scope.observed;
+        const bool qualified=baseload_current(base,source,now);
+        if(auto* load=cJSON_AddObjectToObject(root,"baseload")) {
+            cJSON_AddBoolToObject(load,"ready",qualified);
+            cJSON_AddBoolToObject(load,"shared_meter_confirmed",meter_scope.shared!=0);
+            cJSON_AddStringToObject(load,"basis","OBSERVED_OFF_REQUEST_LOAD");
+            cJSON_AddNumberToObject(load,"samples",base.identity==source?base.samples:0);
+            if(qualified) {
+                cJSON_AddNumberToObject(load,"watts",base.watts);
+                cJSON_AddNumberToObject(load,"spread_w",base.spread_w);
+                cJSON_AddNumberToObject(load,"observed_utc",base.observed_utc);
+                if(valid_shelly(st,now,30) && st.source_identity==source && relay_on)
+                    cJSON_AddNumberToObject(load,"incremental_w",std::max(0.0,st.watts-base.watts));
+                else cJSON_AddNullToObject(load,"incremental_w");
+            } else {
+                cJSON_AddNullToObject(load,"watts");
+                cJSON_AddNullToObject(load,"incremental_w");
+            }
+            cJSON_AddBoolToObject(load,"heat_gain_learned_from_room",cal.samples>0);
+        }
         cJSON_AddBoolToObject(root,"mpc_pump_source_verified",
             valid_cn105(cp,now) && cp.evidence.source_time_verified);
         cJSON_AddBoolToObject(root,"mpc_pump_connection_ready",inputs.pump_state_known);
@@ -3181,6 +3271,7 @@ static void plan_endpoint() {
     if(n>0 && n<=max_horizon_slots) std::copy(mpc_rows,mpc_rows+n,rows_mem.get());
     const bool calibrated=calibration_snapshot.state==CalibrationState::Calibrated;
     const bool energy=mpc_energy_in_kwh;
+    const bool incremental=mpc_energy_incremental;
     const double cost=mpc_cost;
     xSemaphoreGive(lock_data);
     const int64_t current_utc=time(nullptr);
@@ -3208,8 +3299,9 @@ static void plan_endpoint() {
     if(ok && energy && std::isfinite(cost)) snprintf(cost_text,sizeof(cost_text),"%.8f",cost);
     else strlcpy(cost_text,"null",sizeof(cost_text));
     snprintf(buf,sizeof(buf),
-      "{\"valid\":%s,\"count\":%u,\"energy_valid\":%s,\"cost_eur\":%s,\"minimum_c\":%.5f,\"computed_utc\":%lld,\"slots\":[",
-      ok?"true":"false",static_cast<unsigned>(ok?n:0),ok&&energy?"true":"false",cost_text,
+      "{\"valid\":%s,\"count\":%u,\"energy_valid\":%s,\"energy_basis\":\"%s\",\"cost_eur\":%s,\"minimum_c\":%.5f,\"computed_utc\":%lld,\"slots\":[",
+      ok?"true":"false",static_cast<unsigned>(ok?n:0),ok&&energy?"true":"false",
+      ok&&energy?(incremental?"ESTIMATED_INCREMENTAL":"PUMP_ONLY"):"RELATIVE",cost_text,
       minimum_c,static_cast<long long>(ok?record.computed_utc:0));
     web.streamContent(buf);
     for(size_t i=0;ok&&i<n;i++) {
@@ -3258,6 +3350,8 @@ static void mpc_endpoint() {
     const size_t trend_count=mpc_trend?mpc_trend_count:0;
     if(mpc_trend) std::copy(mpc_trend,mpc_trend+trend_count,trend);
     const bool energy=mpc_energy_in_kwh;
+    const bool incremental=mpc_energy_incremental;
+    const auto base=baseload_snapshot;
     const double energy_kwh=mpc_energy_kwh,cost=mpc_cost,uncertainty=mpc_uncertainty_c;
     const size_t hp=horizon_price_slots,hw=horizon_weather_slots,hs=horizon_slots;
     const HorizonLimit hl=horizon_limit;
@@ -3271,6 +3365,7 @@ static void mpc_endpoint() {
     const int reset_state=identifier_reset_state.load();
     const uint32_t reset_failures=identifier_reset_failures.load();
     const ShellyTelemetry meter=consumption;
+    const bool meter_relay=shelly_relay_on;
     const CN105Telemetry cp=pump;
     xSemaphoreGive(lock_data);
     const bool pump_verified=valid_cn105(cp,now) && cp.evidence.source_time_verified;
@@ -3368,10 +3463,29 @@ static void mpc_endpoint() {
         "\"electric_trusted\":%s,\"electric_on_kw_at_0c\":%s,\"electric_on_kw_per_c\":%s,"
         "\"electric_standby_kw\":%s,\"electric_start_kwh\":%s,\"ua_lower_kw_per_c\":%s,"
         "\"capacity_lower_kwh_per_c\":%s}},"
-        "\"meter\":{\"scope\":\"%s\",\"watts\":%s,\"used_for_model\":%s},",
+        "\"meter\":{\"scope\":\"%s\",\"watts\":%s,\"used_for_model\":%s,\"incremental_model\":%s},",
         m.electric_trusted?"true":"false",a,b,c,d,e,f,
-        shelly_meter_pump_only()?"HEAT_PUMP_ONLY":"UNCONFIRMED",w,
-        shelly_meter_pump_only()&&m.electric_trusted?"true":"false");
+        shelly_meter_pump_only()?"HEAT_PUMP_ONLY":
+            confirmed_shared_meter_identity(site_settings_snapshot())?"WHOLE_HOUSE":"UNCONFIRMED",w,
+        (shelly_meter_pump_only() && m.electric_trusted && !m.electric_incremental)?"true":"false",
+        m.electric_trusted && m.electric_incremental &&
+            baseload_current(base,confirmed_shared_meter_identity(site_settings_snapshot()),now)?"true":"false");
+    web.streamContent(buf);
+    const auto base_scope=baseload_meter_scope();
+    const bool base_ok=baseload_current(base,base_scope.observed,now);
+    json_number_or_null(a,sizeof(a),base.watts,"%.1f",base_ok);
+    json_number_or_null(b,sizeof(b),base.spread_w,"%.1f",base_ok);
+    json_number_or_null(c,sizeof(c),std::max(0.0,meter.watts-base.watts),"%.1f",
+        base_ok && meter_relay && valid_shelly(meter,now,30) && meter.source_identity==base.identity);
+    snprintf(buf,buf_capacity,
+        "\"baseload\":{\"ready\":%s,\"watts\":%s,\"spread_w\":%s,\"incremental_w\":%s,"
+        "\"samples\":%u,\"observed_utc\":%lld,\"shared_meter_confirmed\":%s,"
+        "\"basis\":\"OBSERVED_OFF_REQUEST_LOAD\",\"heat_gain_learned_from_room\":%s},"
+        "\"energy_basis\":\"%s\",",
+        base_ok?"true":"false",a,b,c,base.identity==base_scope.observed?base.samples:0,
+        static_cast<long long>(base_ok?base.observed_utc:0),
+        base_scope.shared?"true":"false",cal.samples>0?"true":"false",
+        energy_ok?(incremental?"ESTIMATED_INCREMENTAL":"PUMP_ONLY"):"RELATIVE");
     web.streamContent(buf);
     json_number_or_null(a,sizeof(a),energy_kwh,"%.4f",energy_ok);
     json_number_or_null(b,sizeof(b),cost,"%.4f",energy_ok);

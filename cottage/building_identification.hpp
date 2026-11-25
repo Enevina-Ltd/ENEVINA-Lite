@@ -15,7 +15,9 @@
 //    absolute heat-output reference (a heat meter). A heat-pump-only electric
 //    meter gives the electric draw; combined with COP >= 1 it gives LOWER
 //    BOUNDS for C and UA, never a COP value. This module never reports a COP.
-//  * A whole-house / unconfirmed meter is never used for any of this.
+//  * A confirmed shared meter may estimate incremental electric consumption
+//    after stable OFF-load subtraction; no absolute bounds or COP follow.
+//    Unconfirmed meters provide baseline diagnostics only.
 //
 // Calibration is "trusted" only after a walk-forward (out-of-sample) test:
 // each 4-hour window is predicted open-loop with the parameters frozen at
@@ -73,6 +75,9 @@ struct SlotObservation {
     // No transition is inferred from a gap or an uncertain command.
     double transition_before_fraction=-1.0;
     bool defrost_observed=false; // explicit gateway report, including protected recovery
+    // Qualified whole-house increment above a learned OFF reference.
+    // Never assert that this is a direct pump-only meter.
+    bool meter_incremental=false;
 };
 
 template<size_t N> struct RlsState {
@@ -104,8 +109,10 @@ struct ModelEstimate {
     double one_step_sigma_c=0;
     double outdoor_min_c=0, outdoor_max_c=0; // range the data covers
     bool plausible=false;
-    // Electric model: only from a heat-pump-only meter.
+    // Electric model: direct pump-only or explicitly tagged incremental estimate.
     bool electric_trusted=false;
+    bool electric_incremental=false;
+    double baseload_reference_w=-1;
     double electric_on_kw_at_0c=0;          // above standby, steady HEAT
     double electric_on_kw_per_c=0;
     double electric_standby_kw=0;
@@ -183,7 +190,11 @@ public:
     bool variable_setpoints() const { return variable_setpoints_; }
     // Retain the electric fit only while it belongs to the selected meter.
     // Identity zero withdraws consent for the electric fit.
-    void select_electric_meter(uint32_t identity);
+    void select_electric_meter(uint32_t identity,bool incremental=false);
+    // A changed stable OFF regime means the learned constant heat gain
+    // must be revalidated. Do not add electrical watts to an already
+    // identified normalised thermal gain or invent UA/C.
+    bool note_baseload_regime(double watts);
     // Optional prior (e.g. a deliberately wrong guess in tests). Weight is the
     // inverse prior covariance scale: small = weak prior. Never marks the
     // model calibrated; only data + walk-forward validation can.
@@ -197,10 +208,11 @@ public:
     }
     // MPC parameters from the identified model and a comfort band.
     // `meter_pump_only` must be the CURRENT owner confirmation; the electric
-    // model is used only while it is still true.
+    // model is used only while it is still true. An incremental model
+    // requires current qualified shared-meter provenance instead.
     ModelBuildError build_parameters(int64_t now_utc, const ComfortBand& band,
         bool meter_pump_only, double currency_scale, Parameters& out,
-        bool& energy_in_kwh) const;
+        bool& energy_in_kwh,bool meter_incremental=false) const;
     // Room for the UI: measured vs predicted over the last 24 h.
     size_t trend(TrendPoint* out, size_t capacity) const;
 
@@ -224,6 +236,8 @@ private:
     RlsState<thermal_n> thermal_{};
     RlsState<electric_n> electric_{};
     uint32_t electric_meter_identity_=0;
+    bool electric_incremental_=false;
+    double baseload_reference_w_=-1;
     // Continuity of the HEAT/OFF request for start/stop regressors.
     int64_t prev_slot_utc_=0;
     int8_t prev_heat_=-1;

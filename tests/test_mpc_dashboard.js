@@ -151,6 +151,18 @@ const active={...learning,state:'ACTIVE',fallback:'NONE',source:'MPC',armed:true
   const metered={...active,plan:{...active.plan,energy_valid:true,energy_kwh:12.34,cost:2.5}};
   r=await run(metered,'en');
   assert.ok(r.card.textContent.includes('12.34 kWh'));
+  const shared={...metered,energy_basis:'ESTIMATED_INCREMENTAL',meter:{scope:'WHOLE_HOUSE',watts:1500},
+    baseload:{ready:true,watts:169,incremental_w:1331,shared_meter_confirmed:true}};
+  r=await run(shared,'fi');
+  assert.ok(r.card.textContent.includes('Opittu OFF-pohjakuorma'));
+  assert.ok(r.card.textContent.includes('169 W'));
+  assert.ok(r.card.textContent.includes('Arvioitu lämmityksen lisäsähkö'));
+  r=await run(shared,'en');
+  assert.ok(r.card.textContent.includes('Learned OFF baseload'));
+  assert.ok(r.card.textContent.includes('1,331 W'));
+  assert.ok(r.card.textContent.includes('Estimated incremental heating electricity'));
+  r=await run({...shared,baseload:{ready:false,watts:null}},'en');
+  assert.ok(r.card.textContent.includes('Waiting for a stable OFF interval'));
   // Fallback with a reason (degraded model).
   r=await run({...learning,state:'FALLBACK',fallback:'MODEL_DEGRADED'},'en');
   assert.ok(r.card.textContent.includes('Fallback: the model no longer predicts accurately enough'));

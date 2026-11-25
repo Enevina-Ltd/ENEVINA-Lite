@@ -84,7 +84,7 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     Parameters p{};
     bool kwh=false;
     switch(in.identifier->build_parameters(in.now_utc,band,in.meter_pump_only,
-                                           in.currency_scale,p,kwh)) {
+                                           in.currency_scale,p,kwh,in.meter_incremental)) {
     case ModelBuildError::None:break;
     case ModelBuildError::OutsideDomain:return no_plan(MpcFallback::TargetOutsideModel);
     case ModelBuildError::NotCalibrated:return no_plan(MpcFallback::ModelValidating);
@@ -100,10 +100,14 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     }
     out.params=p;
     out.energy_in_kwh=kwh;
+    out.energy_incremental=kwh && cal.model.electric_incremental;
     // The model may not extrapolate far beyond the outdoor range it learned.
     const ModelEstimate& m=cal.model;
     const double lo=m.outdoor_min_c-CalibrationLimits::outdoor_margin_c;
     const double hi=m.outdoor_max_c+CalibrationLimits::outdoor_margin_c;
+    // This gain is fitted to actual room response, including steady
+    // indoor equipment such as mining devices. Baseline electrical watts
+    // are NOT added a second time to this normalised thermal model.
     const double gain_kw=std::clamp(m.gain_rise_k*p.loss_kw_per_c,-29.0,29.0);
     // An uncertain weather tail does not invalidate today's supported
     // prefix. Never extrapolate through the first unsupported slot; retain

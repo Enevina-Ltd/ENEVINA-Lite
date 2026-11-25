@@ -21,6 +21,7 @@ struct PlannerInput {
     int64_t now_utc=0;
     const BuildingIdentifier* identifier=nullptr;
     bool meter_pump_only=false;      // CURRENT owner confirmation
+    bool meter_incremental=false;    // CURRENT qualified shared-meter OFF baseline
     double currency_scale=1.0;
     bool heating_allowed=false;      // user mode permits heat
     bool low_temperature_cycle=false; // scoped below-minimum CN105 maintenance
@@ -52,7 +53,7 @@ struct PlanRow {
     double indoor_c=0;       // model prediction at the slot END
     double outdoor_c=0;      // forecast used
     double price=0;          // total price per kWh, site currency
-    double energy_kwh=0;     // NaN unless a heat-pump-only meter calibrated it
+    double energy_kwh=0;     // NaN unless a qualified direct or incremental electric model calibrated it
     double cost=0;           // NaN likewise
     double setpoint_c=0;     // chosen by the model, zero for OFF
 };
@@ -62,6 +63,7 @@ struct PlannerOutput {
     MpcResult result{};
     Parameters params{};
     bool energy_in_kwh=false;
+    bool energy_incremental=false;
     double energy_kwh=0;     // NaN unless energy_in_kwh
     double cost=0;           // NaN unless energy_in_kwh
     size_t rows=0;

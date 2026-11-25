@@ -17,7 +17,8 @@ struct ShellyTelemetry {
     int64_t captured_utc=0;
     double watts=0;
     double total_wh=0;
-    uint32_t meter_identity=0; // Proven owner scope of the settings used for this read.
+    uint32_t meter_identity=0; // Proven pump-only owner scope of the settings used for this read.
+    uint32_t source_identity=0; // Actual configured meter URL + scope, even unconfirmed.
 };
 struct TemperatureSample {
     bool received=false;
