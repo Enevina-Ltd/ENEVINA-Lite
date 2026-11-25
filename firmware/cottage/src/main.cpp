@@ -350,10 +350,11 @@ static uint32_t shelly_meter_identity() {
     return confirmed_shelly_meter_identity(site_settings_snapshot());
 }
 static bool shelly_meter_pump_only() {return shelly_meter_identity()!=0;}
-struct BaseloadMeterScope {uint32_t observed=0,shared=0;};
+struct BaseloadMeterScope {uint32_t observed=0,shared=0,pump_only=0;};
 static BaseloadMeterScope baseload_meter_scope() {
     const auto site=site_settings_snapshot();
-    return {observed_shelly_meter_identity(site),confirmed_shared_meter_identity(site)};
+    return {observed_shelly_meter_identity(site),confirmed_shared_meter_identity(site),
+            confirmed_shelly_meter_identity(site)};
 }
 // The owner's HARD comfort limits (0 = unset) from the profile settings. The
 // MPC band, plan and plan validity are bound to them; the price controller
@@ -3428,10 +3429,22 @@ static void json_number_or_null(char* out,size_t n,double v,const char* f,bool o
 }
 static void mpc_endpoint() {
     const int64_t now=time(nullptr);
-    const ArbiterInput arb_in=build_arbiter_input(now,selected_room_sample(now));
-    const ArbiterOutput arb=arbitrate(arb_in);
-    const MpcFallback validity=plan_validity(arb_in);
+    // All large, request-lifetime snapshots belong in PSRAM, just like
+    // the rows and JSON output. Keep them alive through serialization
+    // without stacking them on top of the shared arbiter's call frames.
+    struct MpcWebScratch {
+        ArbiterInput input{};
+        CalibrationReport calibration{};
+        MpcPlanRecord record{};
+        BaseloadEstimate baseline{};
+        ShellyTelemetry meter{};
+        CN105Telemetry pump{};
+        char numeric[9][24]{};
+    };
+    static_assert(std::is_trivially_destructible<MpcWebScratch>::value,"POD web scratch");
     struct PsramFree {void operator()(void* p) const {heap_caps_free(p);}};
+    std::unique_ptr<MpcWebScratch,PsramFree> scratch(static_cast<MpcWebScratch*>(heap_caps_malloc(
+        sizeof(MpcWebScratch),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)));
     std::unique_ptr<PlanRow,PsramFree> rows_mem(static_cast<PlanRow*>(heap_caps_malloc(
         sizeof(PlanRow)*max_horizon_slots,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)));
     std::unique_ptr<TrendPoint,PsramFree> trend_mem(static_cast<TrendPoint*>(heap_caps_malloc(
@@ -3439,22 +3452,30 @@ static void mpc_endpoint() {
     constexpr size_t buf_capacity=704;
     std::unique_ptr<char,PsramFree> json_mem(static_cast<char*>(heap_caps_malloc(
         buf_capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)));
-    if(!rows_mem || !trend_mem || !json_mem) {
+    if(!scratch || !rows_mem || !trend_mem || !json_mem) {
         web.send(503,"application/json; charset=utf-8","{\"valid\":false}");
         return;
     }
+    new(scratch.get()) MpcWebScratch{};
+    new(&scratch->input) ArbiterInput(build_arbiter_input(now,selected_room_sample(now)));
+    const ArbiterInput& arb_in=scratch->input;
+    const ArbiterOutput arb=arbitrate(arb_in);
+    const MpcFallback validity=plan_validity(arb_in);
     PlanRow* rows=rows_mem.get();          // trivially copyable PODs
     TrendPoint* trend=trend_mem.get();
     xSemaphoreTake(lock_data,portMAX_DELAY);
-    const CalibrationReport cal=calibration_snapshot;
-    const MpcPlanRecord plan=mpc_plan;
+    scratch->calibration=calibration_snapshot;
+    scratch->record=mpc_plan;
+    const CalibrationReport& cal=scratch->calibration;
+    const MpcPlanRecord& plan=scratch->record;
     const size_t row_count=mpc_rows?mpc_row_count:0;
     if(mpc_rows) std::copy(mpc_rows,mpc_rows+row_count,rows);
     const size_t trend_count=mpc_trend?mpc_trend_count:0;
     if(mpc_trend) std::copy(mpc_trend,mpc_trend+trend_count,trend);
     const bool energy=mpc_energy_in_kwh;
     const bool incremental=mpc_energy_incremental;
-    const auto base=baseload_snapshot;
+    scratch->baseline=baseload_snapshot;
+    const auto& base=scratch->baseline;
     const double energy_kwh=mpc_energy_kwh,cost=mpc_cost,uncertainty=mpc_uncertainty_c;
     const size_t hp=horizon_price_slots,hw=horizon_weather_slots,hs=horizon_slots;
     const HorizonLimit hl=horizon_limit;
@@ -3467,9 +3488,11 @@ static void mpc_endpoint() {
     const int64_t last_saved_sample=identifier_last_saved_sample_utc;
     const int reset_state=identifier_reset_state.load();
     const uint32_t reset_failures=identifier_reset_failures.load();
-    const ShellyTelemetry meter=consumption;
+    scratch->meter=consumption;
+    const ShellyTelemetry& meter=scratch->meter;
     const bool meter_relay=shelly_relay_on;
-    const CN105Telemetry cp=pump;
+    scratch->pump=pump;
+    const CN105Telemetry& cp=scratch->pump;
     xSemaphoreGive(lock_data);
     const bool pump_verified=valid_cn105(cp,now) && cp.evidence.source_time_verified;
     const auto market=enevina_firmware::market_status();
@@ -3523,7 +3546,10 @@ static void mpc_endpoint() {
         CalibrationLimits::min_starts,CalibrationLimits::min_stops);
     web.streamContent(buf);
     const bool have_model=cal.samples>0 && m.tau_h>0;
-    char a[24],b[24],c[24],d[24],e[24],f[24],g[24],h[24];
+    auto& a=scratch->numeric[0];auto& b=scratch->numeric[1];
+    auto& c=scratch->numeric[2];auto& d=scratch->numeric[3];
+    auto& e=scratch->numeric[4];auto& f=scratch->numeric[5];
+    auto& g=scratch->numeric[6];auto& h=scratch->numeric[7];
     json_number_or_null(a,sizeof(a),cal.validation_rms_c,"%.4f",cal.windows>0);
     json_number_or_null(b,sizeof(b),cal.validation_bias_c,"%.4f",cal.windows>0);
     json_number_or_null(c,sizeof(c),cal.validation_max_abs_c,"%.4f",cal.windows>0);
@@ -3560,7 +3586,8 @@ static void mpc_endpoint() {
     json_number_or_null(d,sizeof(d),m.electric_start_kwh,"%.4f",m.electric_trusted);
     json_number_or_null(e,sizeof(e),m.ua_lower_kw_per_c,"%.4f",m.absolute_bounds);
     json_number_or_null(f,sizeof(f),m.capacity_lower_kwh_per_c,"%.3f",m.absolute_bounds);
-    char w[24];
+    auto& w=scratch->numeric[8];
+    const auto base_scope=baseload_meter_scope();
     json_number_or_null(w,sizeof(w),meter.watts,"%.1f",valid_shelly(meter,now));
     snprintf(buf,buf_capacity,
         "\"electric_trusted\":%s,\"electric_on_kw_at_0c\":%s,\"electric_on_kw_per_c\":%s,"
@@ -3568,13 +3595,11 @@ static void mpc_endpoint() {
         "\"capacity_lower_kwh_per_c\":%s}},"
         "\"meter\":{\"scope\":\"%s\",\"watts\":%s,\"used_for_model\":%s,\"incremental_model\":%s},",
         m.electric_trusted?"true":"false",a,b,c,d,e,f,
-        shelly_meter_pump_only()?"HEAT_PUMP_ONLY":
-            confirmed_shared_meter_identity(site_settings_snapshot())?"WHOLE_HOUSE":"UNCONFIRMED",w,
-        (shelly_meter_pump_only() && m.electric_trusted && !m.electric_incremental)?"true":"false",
+        base_scope.pump_only?"HEAT_PUMP_ONLY":base_scope.shared?"WHOLE_HOUSE":"UNCONFIRMED",w,
+        (base_scope.pump_only && m.electric_trusted && !m.electric_incremental)?"true":"false",
         m.electric_trusted && m.electric_incremental &&
-            baseload_current(base,confirmed_shared_meter_identity(site_settings_snapshot()),now)?"true":"false");
+            baseload_current(base,base_scope.shared,now)?"true":"false");
     web.streamContent(buf);
-    const auto base_scope=baseload_meter_scope();
     const bool base_ok=baseload_current(base,base_scope.observed,now);
     json_number_or_null(a,sizeof(a),base.watts,"%.1f",base_ok);
     json_number_or_null(b,sizeof(b),base.spread_w,"%.1f",base_ok);
