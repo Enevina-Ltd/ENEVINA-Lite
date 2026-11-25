@@ -922,7 +922,7 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     size_t n=0;
     while(n<window && n<have && n<kMaxSlots &&
           points[n].start_utc==start+static_cast<int64_t>(n)*900 &&
-          site_slot_total_price(points[n].start_utc,points[n].spot_eur_per_kwh,prices[n]))
+          site_region_total_price(site,points[n].start_utc,points[n].spot_eur_per_kwh,prices[n]))
         ++n;
     const bool valid_prices=eligible && n>=kMinSlots;
     input.next_total_prices=prices.data();
@@ -939,14 +939,17 @@ static BootstrapDecision bootstrap_preview(int64_t now,
     input.low_temperature_cycle=cn105_low_temperature_cycle_selected(site,mode.mode,input.desired_room_c);
     input.maintenance_storage=maintenance_economy_selected(site,mode.mode,input.desired_room_c);
     if(input.maintenance_storage) {
-        MaintenanceCycleReport cycle;
-        xSemaphoreTake(lock_data,portMAX_DELAY);cycle=maintenance_cycle_snapshot;xSemaphoreGive(lock_data);
-        const bool current=cycle.enabled && cycle.site_generation==site_settings_generation() &&
-            cycle.config_generation==c23_config_generation() &&
-            cycle.meter_identity==confirmed_shared_meter_identity(site) &&
-            cycle.target_c==input.desired_room_c;
+        const uint32_t sg=site_settings_generation(),cg=c23_config_generation();
+        const uint32_t meter=confirmed_shared_meter_identity(site);
+        unsigned candidate=2;
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        const auto& cycle=maintenance_cycle_snapshot;
+        if(cycle.enabled && cycle.site_generation==sg && cycle.config_generation==cg &&
+           cycle.meter_identity==meter && cycle.target_c==input.desired_room_c)
+            candidate=cycle.candidate;
+        xSemaphoreGive(lock_data);
         input.maintenance_ceiling_c=maintenance_cycle_ceiling(input.desired_room_c,
-            input.comfort_upper_c,current?cycle.candidate:2);
+            input.comfort_upper_c,candidate);
     }
     return bootstrap_price_decision(input);
 }
@@ -1049,8 +1052,11 @@ static bool mpc_state_read_back(const ArbiterInput& in) {
          std::fabs(in.pump_setpoint_c-in.plan.first_setpoint_c)<=0.001);
 }
 static BootstrapDecision active_control_proposal(int64_t now,const TemperatureSample& t,
-                                                 ArbiterOutput* detail=nullptr) {
-    const ArbiterOutput out=arbitrate(build_arbiter_input(now,t));
+                                                 ArbiterOutput* detail=nullptr,
+                                                 bool* fallback_price_valid=nullptr) {
+    const ArbiterInput input=build_arbiter_input(now,t);
+    if(fallback_price_valid)*fallback_price_valid=input.bootstrap.price_data_valid;
+    const ArbiterOutput out=arbitrate(input);
     if(detail) *detail=out;
     return out.proposal;
 }
@@ -3849,23 +3855,31 @@ static void timeline_endpoint() {
     auto* utc=static_cast<int64_t*>(heap_caps_malloc(sizeof(int64_t)*kMax,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     auto* total=static_cast<double*>(heap_caps_malloc(sizeof(double)*kMax,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     auto* timeline=static_cast<Timeline*>(heap_caps_malloc(sizeof(Timeline),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    // The HTTP loop task has an 8-KiB stack. Keep the large response
+    // buffer and the settings snapshot off it while calling the arbiter.
+    constexpr size_t kChunk=768;
+    auto* chunk=static_cast<char*>(heap_caps_malloc(kChunk,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    auto* site_mem=static_cast<SiteSettings*>(heap_caps_malloc(sizeof(SiteSettings),
+        MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     auto release=[&]() {
         heap_caps_free(points);heap_caps_free(utc);heap_caps_free(total);heap_caps_free(timeline);
+        heap_caps_free(chunk);heap_caps_free(site_mem);
     };
-    if(!points||!utc||!total||!timeline) {
+    if(!points||!utc||!total||!timeline||!chunk||!site_mem) {
         release();
         web.send(503,"application/json; charset=utf-8","{\"valid\":false,\"slots\":[],\"segments\":[]}");
         return;
     }
+    new(site_mem) SiteSettings(site_settings_snapshot());
+    const SiteSettings& site=*site_mem;
     const size_t have=enevina_firmware::future_prices(points,kMax,&market);
     size_t n=0;
     for(size_t i=0;i<have;++i) {
         double t=0;
         if(!std::isfinite(points[i].spot_eur_per_kwh) ||
-           !site_slot_total_price(points[i].start_utc,points[i].spot_eur_per_kwh,t)) break;
+           !site_region_total_price(site,points[i].start_utc,points[i].spot_eur_per_kwh,t)) break;
         utc[n]=points[i].start_utc;total[n]=t;++n;
     }
-    const SiteSettings site=site_settings_snapshot();
     const int64_t now=time(nullptr);
     const CottageModePlan plan=c23_current_mode_plan();
     const CottageModeConfig mode=c23_mode_config();
@@ -3882,7 +3896,8 @@ static void timeline_endpoint() {
     }
     const TemperatureSample indoor=selected_room_sample(now);
     ArbiterOutput active{};
-    const BootstrapDecision decision=active_control_proposal(now,indoor,&active);
+    bool fallback_price_valid=false;
+    const BootstrapDecision decision=active_control_proposal(now,indoor,&active,&fallback_price_valid);
     // The displayed "now" proposal must be identical to what the controller
     // arbitrates (MPC first, then price, then thermostat), never a standalone
     // price fallback when an MPC plan is active.
@@ -3899,16 +3914,15 @@ static void timeline_endpoint() {
     meta.decision_reason=bootstrap_reason_name(decision.reason);
     // MPC sets price_data_valid internally to make a proposal executable in
     // its own branch; the wire's price_valid means verified spot fallback.
-    meta.decision_price_valid=bootstrap_preview(now,indoor).price_data_valid;
+    meta.decision_price_valid=fallback_price_valid;
     meta.decision_setpoint_c=decision.action==BootstrapAction::HeatSetpoint?decision.heat_setpoint_c:-1;
     web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     web.send(200,"application/json; charset=utf-8","");
-    char chunk[768];
     size_t used=0;
     timeline_json(meta,*timeline,[&](const char* part) {
         const size_t len=strlen(part);
-        if(used+len>=sizeof(chunk)) {chunk[used]=0;web.streamContent(chunk);used=0;delay(1);}
-        if(len>=sizeof(chunk)) {web.streamContent(part);return;}
+        if(used+len>=kChunk) {chunk[used]=0;web.streamContent(chunk);used=0;delay(1);}
+        if(len>=kChunk) {web.streamContent(part);return;}
         memcpy(chunk+used,part,len);used+=len;
     });
     if(used) {chunk[used]=0;web.streamContent(chunk);}
