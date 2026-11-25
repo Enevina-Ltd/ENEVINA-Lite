@@ -18,6 +18,7 @@
 #include <ctime>
 #include "cottage_secure_ota.hpp"
 #include "cottage_network_budget.hpp"
+#include "cottage_tls_memory.hpp"
 #include "cottage/ota_runtime_policy.hpp"
 #include "cottage/ota_history_policy.hpp"
 #include "cottage/ota_image_staging.hpp"
@@ -275,6 +276,7 @@ void close_https(esp_http_client_handle_t client) {
     if(client){esp_http_client_close(client);esp_http_client_cleanup(client);}
 }
 bool fetch_manifest(Release& out) {
+    enevina_firmware::PublicTlsMemoryScope tls_memory(enevina_firmware::PublicTlsSource::Ota);
     // HTTP status/content-length and TLS certificate must all validate.
     esp_http_client_config_t cfg{};
     cfg.url=COTTAGE_OTA_MANIFEST_URL;
@@ -409,6 +411,7 @@ bool update_app(const Release& release) {
     }
     uint8_t data[enevina::cottage::ota_flash_chunk_bytes]{};
     const uint32_t started_ms=millis();
+    enevina_firmware::PublicTlsMemoryScope tls_memory(enevina_firmware::PublicTlsSource::Ota);
     auto client=open_https(COTTAGE_OTA_FIRMWARE_URL,static_cast<int>(release.size));
     if(!client) {
         ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::HttpOpen);
@@ -422,6 +425,7 @@ bool update_app(const Release& release) {
         ota::StageResult::HashError;
     mbedtls_sha256_free(&sha);
     close_https(client);
+    tls_memory.end();
     if(received!=ota::StageResult::Complete) {
         if(ota_problem_stage.load()==0)
             ota_record_problem(OtaProblemStage::Transport,stage_problem(received));

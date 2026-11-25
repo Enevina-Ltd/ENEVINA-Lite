@@ -28,6 +28,7 @@
 #include "cottage_dashboard_gzip.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
+#include "cottage_tls_memory.hpp"
 #include "cottage_secure_ota.hpp"
 #include "cottage_site_settings.hpp"
 #include "cottage_midea_service.hpp"
@@ -3059,6 +3060,12 @@ static void status_endpoint() {
                             heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(root,"min_free_internal_heap",
                             heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+    cJSON_AddBoolToObject(root,"tls_psram_enabled",enevina_firmware::cottage_tls_memory_enabled());
+    cJSON_AddNumberToObject(root,"tls_psram_record_bytes",enevina_firmware::cottage_tls_record_size());
+    cJSON_AddNumberToObject(root,"tls_psram_market_allocations",enevina_firmware::cottage_tls_psram_allocations(enevina_firmware::PublicTlsSource::Market));
+    cJSON_AddNumberToObject(root,"tls_psram_weather_allocations",enevina_firmware::cottage_tls_psram_allocations(enevina_firmware::PublicTlsSource::Weather));
+    cJSON_AddNumberToObject(root,"tls_psram_ota_allocations",enevina_firmware::cottage_tls_psram_allocations(enevina_firmware::PublicTlsSource::Ota));
+    cJSON_AddNumberToObject(root,"tls_psram_allocation_failures",enevina_firmware::cottage_tls_psram_failures());
     cJSON_AddNumberToObject(root,"min_free_psram",
                             heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
     cJSON_AddNumberToObject(root,"largest_free_internal_heap",
@@ -3787,6 +3794,8 @@ void setup() {
         while(true) delay(1000);
     }
     capture_boot_crash(); // preserve the previous crash evidence before network readers start
+    if(!enevina_firmware::cottage_tls_memory_init())
+        Serial.println("TLS_MEMORY: SDK allocator retained");
     cJSON_Hooks hooks{};
     hooks.malloc_fn=json_alloc_psram;
     hooks.free_fn=json_free_psram;

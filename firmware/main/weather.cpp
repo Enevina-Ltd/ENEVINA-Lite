@@ -3,6 +3,7 @@
 #include "esp_heap_caps.h"
 #ifdef COTTAGE_SHARED_MEMORY_GUARD
 #include "cottage_network_budget.hpp"
+#include "cottage_tls_memory.hpp"
 #endif
 #endif
 #include "weather.hpp"
@@ -120,6 +121,7 @@ bool fetch_weather(WeatherCache& next,double fetch_lat,double fetch_lon,
     // Do not overlap MET Norway TLS with BLE or Nord Pool. No internal-RAM fallback.
     NetworkBudgetLease network_lease(8000,78*1024,16*1024);
     if(!network_lease.held())return false;
+    PublicTlsMemoryScope tls_memory(PublicTlsSource::Weather);
 #endif
     // MET Norway Locationforecast is global. Max 4 decimal coordinate digits
     // are REQUIRED for server-side caching (and to avoid HTTP 403).

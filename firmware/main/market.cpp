@@ -3,6 +3,7 @@
 #include "esp_heap_caps.h"
 #ifdef COTTAGE_SHARED_MEMORY_GUARD
 #include "cottage_network_budget.hpp"
+#include "cottage_tls_memory.hpp"
 #endif
 #endif
 #include "market.hpp"
@@ -210,6 +211,7 @@ bool fetch_day(const char* date,const char* area,const char* currency,
     // discovery. Reject unsafe load rather than exhausting internal RAM.
     NetworkBudgetLease network_lease(8000, 78*1024, 16*1024);
     if(!network_lease.held()) {code=101;return false;}
+    PublicTlsMemoryScope tls_memory(PublicTlsSource::Market);
 #endif
     char url[220];
     if(!enevina::build_day_ahead_url(area,currency,date,url,sizeof(url))) {
