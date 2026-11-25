@@ -47,7 +47,8 @@ class HeartbeatGapTests(TestCase):
     def test_solver_result_cannot_resurrect_pretransition_mode(self):
         main=(ROOT/"firmware/cottage/src/main.cpp").read_text()
         self.assertIn("++observed_mode_generation;",main)
-        self.assertIn("const auto view=boundary?optimizer_pump_state(now,midea)",main)
+        self.assertIn("const auto request=optimizer_pump_state(now,midea);",main)
+        self.assertIn("const auto view=boundary?request:enevina::PumpRoomState{};",main)
         self.assertIn("const bool mode_changed=after.request_generation!=view.request_generation",main)
         self.assertIn("after.link_generation!=view.link_generation",main)
         self.assertIn("cn105_learning_request(cn105_gateway_requests,",main)
