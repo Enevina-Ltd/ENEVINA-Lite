@@ -150,9 +150,14 @@ for(const k of ['Profiili','Tavoite','Rajat','Säästö','Tasapainoinen','Mukavu
 // the source for "now". Guard the wiring as well as the pure UI format.
 const fw=fs.readFileSync(path.join(__dirname,'../firmware/cottage/src/main.cpp'),'utf8');
 const endpoint=fw.split('static void timeline_endpoint() {',2)[1].split('static void prices_endpoint()',1)[0];
-assert(endpoint.includes('active_control_proposal(now,indoor,&active)'));
+assert(endpoint.includes('active_control_proposal(now,indoor,&active,&fallback_price_valid)'));
 assert(endpoint.includes('meta.decision_source=proposal_source_name(active.source)'));
-assert(endpoint.includes('meta.decision_price_valid=bootstrap_preview(now,indoor).price_data_valid'));
+assert(endpoint.includes('meta.decision_price_valid=fallback_price_valid'));
+assert(endpoint.includes('heap_caps_malloc(kChunk,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)'));
+assert(endpoint.includes('heap_caps_malloc(sizeof(SiteSettings)'));
+assert(!endpoint.includes('char chunk[768]'));
+assert(!endpoint.includes('bootstrap_preview(now,indoor)'));
+assert(endpoint.includes('site_region_total_price(site,points[i].start_utc'));
 const refresh=header.split('let timelineRequestSequence=0;')[1].split('function showTimeline()',1)[0];
 const site=header.split('async function reloadSite(){')[1].split("document.getElementById('site-adapter')")[0];
 assert(refresh.includes('expectedMarket!==tlMarketKey(state.site&&state.site.region)'));
