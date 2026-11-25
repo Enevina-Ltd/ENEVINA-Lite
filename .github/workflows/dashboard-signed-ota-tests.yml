@@ -64,6 +64,9 @@ on:
       - 'tests/test_ota_runtime_source.py'
       - 'cottage/ota_image_staging.hpp'
       - 'cottage/ota_runtime_policy.hpp'
+      - 'cottage/tls_record_memory_policy.hpp'
+      - 'tests/tls_record_memory_policy_tests.cpp'
+      - 'tests/test_tls_memory_source.py'
       - 'tests/ota_image_staging_tests.cpp'
       - 'tests/test_ota_signing.py'
       - 'tests/test_cottage_install_package.py'
@@ -102,6 +105,9 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_ota_runtime_source.py' -v
           g++ -std=c++17 -UNDEBUG -Wall -Wextra -Wpedantic -I. tests/ota_image_staging_tests.cpp -o /tmp/ota_image_staging_tests
           /tmp/ota_image_staging_tests
+          python3 -m unittest discover -s tests -p 'test_tls_memory_source.py' -v
+          g++ -std=c++17 -UNDEBUG -Wall -Wextra -Wpedantic -I. tests/tls_record_memory_policy_tests.cpp -o /tmp/tls_record_memory_policy_tests
+          /tmp/tls_record_memory_policy_tests
           python3 -m unittest discover -s tests -p 'test_ota_signing.py' -v
           python3 -m unittest discover -s tests -p 'test_cottage_install_package.py' -v
           python3 -m unittest discover -s tests -p 'test_wifi_onboarding_source.py' -v

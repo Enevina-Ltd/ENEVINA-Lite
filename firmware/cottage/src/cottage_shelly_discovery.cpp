@@ -7,6 +7,8 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <cstring>
+#include <memory>
+#include <esp_heap_caps.h>
 #include "cottage_shelly_discovery.hpp"
 #include "cottage_network_budget.hpp"
 
@@ -52,14 +54,20 @@ void inspect(const char* host,const IPAddress& ip,ShellyScanSnapshot& out) {
         if(!std::strcmp(out.items[i].url,f.url)) return;          // already listed (two services)
     std::snprintf(f.host,sizeof(f.host),"%s",host);
     char path[64];
-    static char body[kBodyMax];   // single worker task: one shared scratch buffer
+    // No 4 KiB static internal-RAM reservation when discovery is idle.
+    // The worker owns this bounded external buffer for the current probe.
+    std::unique_ptr<char,decltype(&heap_caps_free)> body_mem(
+        static_cast<char*>(heap_caps_malloc(kBodyMax,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)),
+        &heap_caps_free);
+    if(!body_mem)return;
+    char* body=body_mem.get();
     if(!shelly_read_url(f.url,"/shelly",path,sizeof(path)))return;
-    if(!fetch(path,body,sizeof(body))) return;                      // not answering like a Shelly
+    if(!fetch(path,body,kBodyMax)) return;                      // not answering like a Shelly
     if(!parse_shelly_info(body,std::strlen(body),f.info)) return;   // some other web server
     if(f.info.support==ShellySupport::Supported) {
         if(!shelly_read_url(f.url,"/rpc/Switch.GetStatus?id=0",path,sizeof(path)))return;
         double w=0;
-        const bool verified=fetch(path,body,sizeof(body)) &&
+        const bool verified=fetch(path,body,kBodyMax) &&
             parse_shelly_power(body,std::strlen(body),w);
         f.has_power=shelly_complete_power_probe(f.info,verified);
         if(f.has_power)f.watts=w;
