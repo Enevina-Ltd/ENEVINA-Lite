@@ -90,6 +90,8 @@ struct BootstrapInput {
     // Opt in ONLY for the verified CN105 room-maintenance path, using
     // an independently selected room sensor and a below-device-minimum target.
     bool low_temperature_cycle=false;
+    bool maintenance_storage=false;
+    double maintenance_ceiling_c=0;
 };
 struct BootstrapDecision {
     BootstrapAction action=BootstrapAction::Unavailable;
@@ -102,6 +104,8 @@ struct BootstrapDecision {
     // Physical commands NEVER originate in this model-free module.
     bool executable=false;
     bool low_temperature_cycle=false; // scoped live room-maintenance policy
+    bool maintenance_storage=false;
+    double maintenance_ceiling_c=0;
 };
 inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     BootstrapDecision d{};
@@ -155,6 +159,31 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     const double coast=std::min(in.coast_c,std::max(0.0,in.desired_room_c-hard_lo-0.1));
     if(in.low_temperature_cycle && low_temperature_room_target(in.desired_room_c)) {
         d.low_temperature_cycle=true;
+        if(in.maintenance_storage) {
+            if(!std::isfinite(in.maintenance_ceiling_c) ||
+               in.maintenance_ceiling_c<in.desired_room_c ||
+               in.maintenance_ceiling_c>cn105_minimum_heat_setpoint_c)return {};
+            // The explicitly selected economy profile can store heat above
+            // the maintenance target, even at neutral prices. Explicit
+            // upper/lower limits and the native minimum setpoint still win.
+            const double ceiling=std::min(in.maintenance_ceiling_c,
+                in.comfort_upper_c>0?in.comfort_upper_c:cn105_minimum_heat_setpoint_c);
+            const double floor=std::max(5.0,narrow_lo);
+            if(ceiling<floor+0.5)return {};
+            d.maintenance_storage=true;d.maintenance_ceiling_c=ceiling;
+            if(in.indoor_c>=ceiling) {
+                d.action=BootstrapAction::Off;d.reason=BootstrapReason::LowTargetReached;
+            } else if(in.indoor_c<=floor) {
+                d.action=BootstrapAction::HeatSetpoint;
+                d.heat_setpoint_c=cn105_minimum_heat_setpoint_c;
+                d.reason=!price_valid?BootstrapReason::ThermostatWithoutPrices:
+                    cheap?BootstrapReason::CheapWindow:
+                    expensive?BootstrapReason::ExpensiveWindow:BootstrapReason::TemperatureLow;
+            } else {
+                d.action=BootstrapAction::Hold;d.reason=BootstrapReason::DeadbandHold;
+            }
+            return d;
+        }
         // A low target cannot be enforced by the pump's own 16 C thermostat.
         // Stop at the requested room target (with explicitly allowed price
         // headroom), not after a forced 30-minute heat pulse. Leave the

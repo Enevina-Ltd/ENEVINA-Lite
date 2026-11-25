@@ -2575,7 +2575,7 @@ function clExplain(s,timeline){
   if(s.control_source==='MPC')return clT('Rakennuksen lämpömalli sovittaa lämmityksen lämpötilarajoihin ja sähkön hintaan.','The building model plans heating around temperature limits and electricity prices.');
   const reason=s.bootstrap_reason;
   const plain={
-    LOW_TARGET_REACHED:clT('Ylläpitolämmön tavoite on saavutettu. Lämmityspyyntö voidaan päättää.','The maintenance-temperature target is reached. The heating request can end.'),
+    LOW_TARGET_REACHED:s.maintenance_storage?clT('Ylläpitolämpöjakson yläraja on saavutettu.','The maintenance cycle has reached its upper limit.'):clT('Ylläpitolämmön tavoite on saavutettu. Lämmityspyyntö voidaan päättää.','The maintenance-temperature target is reached. The heating request can end.'),
     BELOW_ROOM_TARGET:clT('Huone on tavoitetta kylmempi.','The room is below its target.'),
     ABOVE_ROOM_TARGET:clT('Huone on tavoitetta lämpimämpi.','The room is above its target.'),
     HOLD_IN_DEADBAND:clT('Huone on sallitulla lämpötila-alueella. Nykyinen tila pidetään.','The room is within its allowed band. The current mode is held.'),
@@ -5214,7 +5214,7 @@ fi:{NONE:'',MODEL_LEARNING:'malli oppii vielä mittauksista',MODEL_VALIDATING:'m
  PUMP_STATE_UNKNOWN:'pumpun tilaa ei ole luettu',TEMPERATURE_STALE:'sisälämpötila puuttuu tai on vanha',
  SOLVER_FAILED:'suunnitelmaa ei löytynyt rajoissa',SOLVER_TIMEOUT:'laskenta-aika ylittyi',PLAN_STALE:'suunnitelma on vanhentunut',
  PLAN_INPUTS_CHANGED:'tila tai asetukset muuttuivat',BELOW_COMFORT_FLOOR:'huone on mukavuusalueen alapuolella',
- LOW_TARGET_REACHED:'ylläpitolämmön tavoite saavutettu',LOW_TEMPERATURE_BAND:'odotetaan huoneen jäähtymistä käynnistysrajalle',ABOVE_COMFORT_CEILING:'huone on mukavuusalueen yläpuolella',RESOURCE_LIMIT:'muistiraja',SYNTHETIC_MODEL_ONLY:'vain testimalli',
+ MAINTENANCE_ELECTRIC_LEARNING:'ylläpitolämmön kulutusmalli oppii vielä',LOW_TARGET_REACHED:'ylläpitolämmön jakson yläraja saavutettu',LOW_TEMPERATURE_BAND:'odotetaan huoneen jäähtymistä käynnistysrajalle',ABOVE_COMFORT_CEILING:'huone on mukavuusalueen yläpuolella',RESOURCE_LIMIT:'muistiraja',SYNTHETIC_MODEL_ONLY:'vain testimalli',
  COMFORT_LIMITS_INVALID:'omat lämpötilarajat ovat ristiriitaiset tai liian lähellä tavoitetta',DEFROST_HOLD:'ohjaus odottaa ilmoitetun sulatuksen päättymistä'},
 en:{NONE:'',MODEL_LEARNING:'the model is still learning from measurements',MODEL_VALIDATING:'the model’s predictions are being tested',
  MODEL_DEGRADED:'the model no longer predicts accurately enough',NO_HEATING_MODE:'the selected mode does not heat',
@@ -5223,7 +5223,7 @@ en:{NONE:'',MODEL_LEARNING:'the model is still learning from measurements',MODEL
  PUMP_STATE_UNKNOWN:'pump state has not been read',TEMPERATURE_STALE:'indoor temperature missing or stale',
  SOLVER_FAILED:'no plan within the limits',SOLVER_TIMEOUT:'computation time exceeded',PLAN_STALE:'plan is stale',
  PLAN_INPUTS_CHANGED:'mode or settings changed',BELOW_COMFORT_FLOOR:'room is below the comfort band',
- LOW_TARGET_REACHED:'maintenance-temperature target reached',LOW_TEMPERATURE_BAND:'waiting for room temperature to reach the restart threshold',ABOVE_COMFORT_CEILING:'room is above the comfort band',RESOURCE_LIMIT:'memory limit',SYNTHETIC_MODEL_ONLY:'test model only',
+ MAINTENANCE_ELECTRIC_LEARNING:'the maintenance electricity model is still learning',LOW_TARGET_REACHED:'maintenance cycle upper limit reached',LOW_TEMPERATURE_BAND:'waiting for room temperature to reach the restart threshold',ABOVE_COMFORT_CEILING:'room is above the comfort band',RESOURCE_LIMIT:'memory limit',SYNTHETIC_MODEL_ONLY:'test model only',
  COMFORT_LIMITS_INVALID:'your temperature limits are contradictory or too close to the target',DEFROST_HOLD:'waiting for reported defrost to finish'}};
 const STATE={fi:{NO_DATA:'ei mittauksia',LEARNING:'oppii',VALIDATING:'testataan',CALIBRATED:'kalibroitu',DEGRADED:'heikentynyt'},
  en:{NO_DATA:'no measurements',LEARNING:'learning',VALIDATING:'testing',CALIBRATED:'calibrated',DEGRADED:'degraded'}};
