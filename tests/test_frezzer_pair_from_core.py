@@ -39,22 +39,49 @@ class FrezzerPairing(unittest.TestCase):
         calls = []
         def fake_request(host, method, path, fields=None):
             calls.append((host, method, path, fields))
+            if path == "/api/midea/status":
+                return {"selected": True, "pairing_id": 9, "pairing_pending": False,
+                        "pairing_succeeded": True, "fresh": True, "read_code": "ok"}
             return {
-                "/api/midea/status": {"selected": True},
                 "/api/status": {"air": {"config_token": "test-local-only"}},
-                "/api/midea/config": {"saved": True}
+                "/api/midea/discover": {"state": "done", "scan_id": 1, "devices": [
+                    {"device_id": "123456", "protocol": 3, "ip": "192.168.3.41"}]},
+                "/api/midea/config": {"queued": True, "pairing_id": 9}
             }[path]
         output = io.StringIO()
-        with patch.object(pairing, "local_request", side_effect=fake_request):
+        with patch.object(pairing, "local_request", side_effect=fake_request), patch.object(pairing.time, "sleep"):
             with contextlib.redirect_stdout(output):
                 pairing.pair("192.168.3.50", cfg)
         self.assertEqual([c[2] for c in calls],
-                         ["/api/midea/status", "/api/status", "/api/midea/config"])
-        self.assertEqual(calls[2][3]["v3_token"], "a" * 128)
-        self.assertEqual(calls[2][3]["protocol"], "3")
+                         ["/api/midea/status", "/api/status", "/api/midea/discover",
+                          "/api/midea/config", "/api/midea/status"])
+        self.assertEqual(calls[3][3]["v3_token"], "a" * 128)
+        self.assertEqual(calls[3][3]["protocol"], "3")
+        self.assertEqual(calls[3][3]["host"], "192.168.3.41")
         self.assertNotIn("a" * 128, output.getvalue())
         self.assertNotIn("test-local-only", output.getvalue())
         self.assertNotIn("192.168.3.40", output.getvalue())
+
+    def test_refuse_wrong_or_conflicted_identity_before_credentials(self):
+        cfg = {"device_id": "123456", "v3_token": "a" * 128, "v3_key": "b" * 64}
+        for candidate in ({"device_id":"123457","protocol":3,"ip":"192.168.3.41"},
+                          {"device_id":"123456","protocol":3,"ip":"192.168.3.41","conflicted":True}):
+            with patch.object(pairing, "local_request", side_effect=[
+                {"selected":True}, {"air":{"config_token":"test"}},
+                {"state":"done","scan_id":1,"devices":[candidate]}]) as req:
+                with self.assertRaises(RuntimeError):
+                    pairing.pair("192.168.3.50",cfg)
+                self.assertEqual(req.call_count,3)
+
+    def test_no_success_on_failed_authenticated_read(self):
+        cfg = {"device_id":"123456","v3_token":"a"*128,"v3_key":"b"*64}
+        with patch.object(pairing,"local_request",side_effect=[
+            {"selected":True},{"air":{"config_token":"test"}},
+            {"state":"done","scan_id":1,"devices":[{"device_id":"123456","protocol":3,"ip":"192.168.3.41"}]},
+            {"queued":True,"pairing_id":7},
+            {"pairing_id":7,"pairing_pending":False,"pairing_succeeded":False,"fresh":True,"read_code":"ok"}]), patch.object(pairing.time,"sleep"):
+            with self.assertRaises(RuntimeError):
+                pairing.pair("192.168.3.50",cfg)
 
     def test_refuse_pairing_if_not_selected(self):
         with patch.object(pairing, "local_request", return_value={"selected": False}) as req:

@@ -22,6 +22,7 @@ struct DiscoveryHit {
     uint8_t protocol=0;
     bool metadata_known=false;
     DiscoveryInfo info{};
+    bool conflicted=false; // same identity claimed by two LAN addresses
 };
 // Owned exclusively by the Arduino loop task. Time comparisons are wrap safe.
 // A scan is a read-only shortlist; its identity never authorizes a write.
@@ -69,6 +70,7 @@ public:
             auto& hit=hits_[i];
             if(hit.id!=candidate.id||hit.protocol!=candidate.protocol)continue;
             // A later, complete reply enriches only the same source.
+            if(hit.ip!=src)hit.conflicted=true;
             if(known&&hit.ip==src){hit.info=info;hit.metadata_known=true;}
             return;
         }

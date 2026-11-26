@@ -29,6 +29,7 @@ const commercial={...ac,ip:'10.0.0.3',device_id:'123457',device_type:204,model:'
 const hydronic={...ac,ip:'10.0.0.4',device_id:'123458',device_type:195,model:'00000001'};
 const legacy={ip:'10.0.0.5',protocol:2,device_id:'123459'};
 const reset=()=>{for(const name of ['ip','id','protocol','token','key'])$('midea-'+name).value='unchanged-'+name};
+const cleared=()=>{for(const name of ['ip','id','token','key'])assert.equal($('midea-'+name).value,'')};
 const unchanged=()=>{for(const name of ['ip','id','protocol','token','key'])assert.equal($('midea-'+name).value,'unchanged-'+name)};
 
 (async()=>{
@@ -51,7 +52,7 @@ const unchanged=()=>{for(const name of ['ip','id','protocol','token','key'])asse
 
   reset();devices=[ac,commercial,legacy];
   await $('midea-discover').handlers.click();
-  unchanged();
+  cleared();
   const options=$('midea-discover-select').children;
   assert.equal(options.length,4);
   assert.equal(options[1].disabled,false,'unlisted generic AC model remains selectable');
@@ -59,16 +60,18 @@ const unchanged=()=>{for(const name of ['ip','id','protocol','token','key'])asse
   assert.equal(options[3].disabled,false,'minimal legacy discovery remains selectable');
   assert.match(options[1].textContent,/NEW0OEM1/);
   assert.match(options[2].textContent,/171PNL01/);
-  assert.match(options[2].textContent,/0xCC/i);
+  assert.match(options[2].title,/0xCC/i);
+  assert.ok(!options[1].textContent.includes(ac.ip));
+  assert.ok(!options[1].textContent.includes(ac.device_id));
   assert.equal(calls.length,3);assert(calls.every(c=>c.url==='/api/midea/discover'));
   assert.equal(new URLSearchParams(calls[1].body).get('scan_id'),'1');
   assert.equal(new URLSearchParams(calls[0].body).get('token'),'existing-test-token');
 
-  $('midea-discover-select').value='1';$('midea-discover-select').handlers.change();unchanged();
+  $('midea-discover-select').value='1';$('midea-discover-select').handlers.change();cleared();
   $('midea-discover-select').value='0';$('midea-discover-select').handlers.change();
   assert.equal($('midea-id').value,'123456');
 
-  reset();devices=[hydronic];await $('midea-discover').handlers.click();unchanged();
+  reset();devices=[hydronic];await $('midea-discover').handlers.click();cleared();
   assert.equal($('midea-discover-select').hidden,false,'single unsupported device remains visible');
   assert.equal($('midea-discover-select').children[0].disabled,true);
   assert.match($('midea-feedback').textContent,/ei|not/i);
@@ -77,12 +80,14 @@ const unchanged=()=>{for(const name of ['ip','id','protocol','token','key'])asse
   assert.equal($('midea-id').value,'123456','single supported AC retains autofill');
   assert.equal($('midea-discover-select').hidden,false,'known single-device metadata must remain visible');
   const single=$('midea-discover-select').children[0].textContent;
-  assert.match(single,/NEW0OEM1/);assert.match(single,/0xAC/i);assert.match(single,/44204/);
+  assert.match(single,/NEW0OEM1/);
+  const details=$('midea-discover-select').children[0].title;
+  assert.match(details,/0xAC/i);assert.match(details,/44204/);
 
   reset();devices=[legacy];await $('midea-discover').handlers.click();
   assert.equal($('midea-id').value,'123459','single unknown-metadata device retains autofill');
   assert.equal($('midea-discover-select').hidden,true,'minimal legacy discovery retains its existing display');
-  reset();wrongScan=true;await $('midea-discover').handlers.click();unchanged();
+  reset();wrongScan=true;await $('midea-discover').handlers.click();cleared();
   assert.match($('midea-feedback').textContent,/SCAN_ID/);
   assert.equal($('midea-discover').disabled,false);
   console.log('PASS Midea discovery: asynchronous polling, typed AC selection, unsupported visibility and legacy fallback');

@@ -75,6 +75,15 @@ std::atomic<bool> control_pending{false};
 bool control_busy=false; // guarded by mutex
 uint32_t write_generation=0; // guarded by mutex
 std::atomic<bool> config_updating{false}; // held through NVS persistence
+// One bounded, read-only enrollment job, owned by the existing LAN worker.
+// The previously verified configuration stays intact until the new read succeeds.
+struct PairingJob {
+    Config candidate{};
+    uint32_t id=0,revision=0,link=0,endpoint=0,started=0;
+    bool pending=false,succeeded=false,recovering=false;
+    const char* code="not_tested";
+};
+PairingJob pairing{}; // guarded by mutex
 // Per-device, explicit, volatile physical-pilot approval. Never persisted
 // and never automatically inherited from read-only credentials or OTA.
 struct PilotApproval {
@@ -256,6 +265,21 @@ const char* read_code(int status) {
     }
     return "not_tested";
 }
+// An old DHCP address may have been reused by another appliance. A
+// transport/authentication failure can therefore require identity recovery
+// even when TCP connects. Never downgrade or discard the saved credentials.
+bool rediscovery_needed(int status) {
+    using R=enevina::midea::ReadStatus;
+    switch(static_cast<R>(status)) {
+        case R::ConnectionFailed:
+        case R::InvalidAddress:
+        case R::AuthenticationFailed:
+        case R::ProtocolFailed:
+        case R::UnsupportedState:
+            return true;
+        default:return false;
+    }
+}
 struct BooleanControl {
     const char* name;
     uint32_t field;
@@ -376,13 +400,13 @@ bool add_automatic_heat(const enevina::midea::State& state,enevina::midea::Contr
     return false;
 }
 bool pilot_current_locked(uint32_t endpoint) {
-    return pilot.enabled && pilot.config_revision==revision.load() &&
+    return !pairing.pending && pilot.enabled && pilot.config_revision==revision.load() &&
         pilot.endpoint_generation==endpoint && pilot.protocol==saved.protocol &&
         !std::strcmp(pilot.device_id,saved.device_id);
 }
 bool fresh_locked(int64_t now,uint32_t link,uint32_t endpoint) {
     const auto stamp=last_success.load();
-    return configured && !config_updating.load() && WiFi.status()==WL_CONNECTED &&
+    return configured && !pairing.pending && !config_updating.load() && WiFi.status()==WL_CONNECTED &&
         stamp>0 && now>=stamp && now-stamp<=90 &&
         observed_wifi_generation==link && observed_endpoint_generation==endpoint;
 }
@@ -549,6 +573,9 @@ void send_status(WebServer& web) {
     const bool selected=is_midea_selected();
     enevina::midea::State reading{};
     bool stored=false,busy=false,writing=false,pilot_ok=false;
+    uint32_t pairing_id=0;
+    bool pairing_pending=false,pairing_succeeded=false;
+    const char* pairing_code="not_tested";
     uint8_t selected_protocol=3;
     int64_t last=0,attempted=0,requested_utc=0,sent_utc=0,confirmed_utc=0;
     int status=-1,write_status=-1;
@@ -559,6 +586,8 @@ void send_status(WebServer& web) {
     // State, capability profile and their identity are one atomic snapshot.
     xSemaphoreTake(mutex,portMAX_DELAY);
     reading=observed;stored=configured;selected_protocol=saved.protocol;
+    pairing_id=pairing.id;pairing_pending=pairing.pending && !pairing.recovering;
+    pairing_succeeded=pairing.succeeded;pairing_code=pairing.code;
     last=last_success.load();status=last_result.load();attempted=last_attempt.load();
     busy=polling.load();writing=control_busy;
     requested=pending_patch;confirmed=confirmed_command;
@@ -580,6 +609,10 @@ void send_status(WebServer& web) {
     cJSON* root=cJSON_CreateObject();
     if(!root){web.send(503,"application/json","{}");return;}
     cJSON_AddBoolToObject(root,"selected",selected);
+    cJSON_AddNumberToObject(root,"pairing_id",pairing_id);
+    cJSON_AddBoolToObject(root,"pairing_pending",pairing_pending);
+    cJSON_AddBoolToObject(root,"pairing_succeeded",pairing_succeeded);
+    cJSON_AddStringToObject(root,"pairing_code",pairing_code);
     cJSON_AddBoolToObject(root,"configured",stored);
     cJSON_AddBoolToObject(root,"fresh",fresh);
     cJSON_AddNumberToObject(root,"protocol",selected_protocol);
@@ -720,7 +753,7 @@ uint32_t cottage_midea_calibration_identity() {
     uint32_t identity=0;
     if(configured) {
         identity=2166136261u^saved.protocol;
-        for(const char* field:{saved.device_id,saved.host}) {
+        for(const char* field:{saved.device_id}) {
             for(;*field;++field) {
                 identity^=static_cast<uint8_t>(*field);
                 identity*=16777619u;
@@ -824,12 +857,13 @@ void send_discovery_result(WebServer& web,uint32_t id){
         const auto& hit=discovery_job.hit(i);
         ok=add("%s{\"ip\":\"%u.%u.%u.%u\",\"protocol\":%u,\"device_id\":\"%llu\","
             "\"device_type_known\":%s,\"device_type\":%u,\"model_known\":%s,\"model\":\"%s\","
-            "\"subtype_known\":%s,\"subtype\":%u}",i?",":"",
+            "\"subtype_known\":%s,\"subtype\":%u,\"conflicted\":%s}",i?",":"",
             unsigned(hit.ip[0]),unsigned(hit.ip[1]),unsigned(hit.ip[2]),unsigned(hit.ip[3]),
             unsigned(hit.protocol),static_cast<unsigned long long>(hit.id),
             hit.metadata_known?"true":"false",unsigned(hit.info.device_type),
             hit.metadata_known?"true":"false",hit.info.model.data(),
-            hit.metadata_known&&hit.info.subtype_known?"true":"false",unsigned(hit.info.subtype));
+            hit.metadata_known&&hit.info.subtype_known?"true":"false",unsigned(hit.info.subtype),
+            hit.conflicted?"true":"false");
     }
     if(ok)ok=add("],\"count\":%u,\"truncated\":%s}",unsigned(discovery_job.count()),
         discovery_job.truncated()?"true":"false");
@@ -934,6 +968,7 @@ void cottage_midea_service_register_routes(WebServer& web) {
     web.on("/api/midea/config",HTTP_POST,[&web](){
         // This is a development-only LAN enrollment endpoint. Reject open
         // setup-AP requests; secrets must not travel on the open Wi-Fi.
+        if(!cottage_wifi_require_home_lan(web))return;
         if(WiFi.status()!=WL_CONNECTED || cottage_wifi_request_via_ap(web) ||
            !web.hasArg("token") ||
            !enevina::cottage::c23_authorize_local_setting(
@@ -974,53 +1009,35 @@ void cottage_midea_service_register_routes(WebServer& web) {
             web.send(400,"application/json","{\"saved\":false,\"error\":\"INVALID\"}");
             return;
         }
-        // Claim exclusive config transition BEFORE NVS I/O. No worker
-        // can consume pending control, nor can HTTP queue a new command,
-        // while these credentials are being committed.
+        // Do not replace a working configuration, or enable a write, on
+        // the strength of a discovery packet or untested credentials.
         xSemaphoreTake(mutex,portMAX_DELAY);
-        const bool writing=control_busy || config_updating;
+        const bool writing=control_busy || config_updating || pairing.pending ||
+                           control_pending.load() || pilot.enabled;
+        uint32_t job=0;
         if(!writing) {
-            config_updating=true;
-            control_pending.store(false);
-            pending_wifi_generation.store(0);
-            pending_endpoint_generation.store(0);
-            pilot={};
+            job=pairing.id+1;
+            if(!job)job=1;
+            pairing={};
+            pairing.candidate=next;
+            pairing.id=job;
+            pairing.revision=revision.load();
+            pairing.link=cottage_wifi_link_generation();
+            pairing.endpoint=site_settings_endpoint_generation();
+            pairing.started=millis();
+            pairing.pending=true;
+            pairing.code="pending";
         }
         xSemaphoreGive(mutex);
         if(writing) {
             web.send(409,"application/json","{\"saved\":false,\"error\":\"CONTROL_BUSY\"}");
             return;
         }
-        // Never print credentials or addresses to ESP logs or API responses.
-        const bool committed=persist_config(next);
-        xSemaphoreTake(mutex,portMAX_DELAY);
-        config_updating=false;
-        if(!committed) {
-            xSemaphoreGive(mutex);
-            web.send(507,"application/json","{\"saved\":false,\"error\":\"NVS\"}");
-            return;
-        }
-        if(is_midea_selected())cottage_midea_automatic_cancel();
-        saved=next;
-        configured=true;
-        pending_patch={};
-        confirmed_command={};
-        control_sent_utc.store(0);
-        control_success.store(0);
-        midea_mode_history.reset(millis());
-        observed={};
-        observed_wifi_generation=0;
-        observed_endpoint_generation=0;
-        last_success.store(0);
-        last_result.store(0);
-        revision.fetch_add(1);
-        last_attempt.store(0);
-        control_pending.store(false);
-        control_result.store(-1);
-        control_queued_utc.store(0);
-        xSemaphoreGive(mutex);
         if(auto task=poll_task.load())xTaskNotifyGive(task);
-        web.send(200,"application/json","{\"saved\":true,\"control_armed\":false}");
+        char response[80]{};
+        std::snprintf(response,sizeof(response),"{\"queued\":true,\"pairing_id\":%lu}",
+            static_cast<unsigned long>(job));
+        web.send(202,"application/json",response);
     });
     web.on("/api/midea/pilot",HTTP_POST,[&web](){
         // Volatile, explicit approval of this exact configured Midea device
@@ -1052,7 +1069,7 @@ void cottage_midea_service_register_routes(WebServer& web) {
             return;
         }
         xSemaphoreTake(mutex,portMAX_DELAY);
-        const bool busy=control_busy || config_updating ||
+        const bool busy=control_busy || config_updating || pairing.pending ||
                         control_pending.load();
         const bool same= configured && is_midea_selected() &&
             (!approve || web.arg("device_id")==String(saved.device_id));
@@ -1172,7 +1189,7 @@ void cottage_midea_service_register_routes(WebServer& web) {
               !std::strcmp(pilot.device_id,saved.device_id);
         const double requested=(patch.changed&enevina::midea::ControlTemperature)?
               patch.setpoint_c:observed.setpoint_c;
-        ready=configured && pilot_matches && !config_updating &&
+        ready=configured && pilot_matches && !config_updating && !pairing.pending &&
               !cottage_midea_automatic_enabled() && !control_busy && !control_pending.load() &&
               std::isfinite(requested) &&
               requested>=pilot.min_c && requested<=pilot.max_c &&
@@ -1226,16 +1243,133 @@ void cottage_midea_service_register_routes(WebServer& web) {
         web.send(202,"application/json","{\"queued\":true}");
     });
 }
-bool cottage_midea_service_needs_worker() {
-    if(!is_midea_selected() || !mutex)return false;
+// The job is read-only until the exact candidate has answered successfully.
+// The worker and all physical commands already share the network budget.
+static bool process_pairing() {
+    using namespace enevina::midea;
     xSemaphoreTake(mutex,portMAX_DELAY);
-    const bool ready=configured;
+    if(!pairing.pending){xSemaphoreGive(mutex);return false;}
+    const auto job=pairing;
+    xSemaphoreGive(mutex);
+    auto current=[&](){
+        return job.revision==revision.load() &&
+               job.link==cottage_wifi_link_generation() &&
+               job.endpoint==site_settings_endpoint_generation() &&
+               WiFi.status()==WL_CONNECTED && !cottage_ota_network_maintenance() &&
+               millis()-job.started<25000u;
+    };
+    State sample{};
+    auto result=ReadStatus::ResourceBusy;
+    bool attempted=false;
+    if(current()) {
+        enevina_firmware::NetworkBudgetLease lease(300u,60*1024,16*1024);
+        if(lease.held() && current()) {
+            attempted=true;
+            if(job.candidate.protocol==2) {
+                uint64_t id=0;
+                if(decode_device_id(job.candidate.device_id,id))
+                    result=read_device_v2(job.candidate.host,id,sample,job.revision);
+                else result=ReadStatus::InvalidCredentials;
+            } else {
+                Credential auth{};
+                if(decode_credentials(job.candidate.device_id,job.candidate.token_hex,
+                                      job.candidate.key_hex,auth))
+                    result=read_device(job.candidate.host,auth,sample,job.revision);
+                else result=ReadStatus::InvalidCredentials;
+            }
+        }
+    }
+    xSemaphoreTake(mutex,portMAX_DELAY);
+    if(!attempted && current()) {
+        xSemaphoreGive(mutex);
+        ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(500u));
+        return true;
+    }
+    const bool valid=attempted && result==ReadStatus::Ok && current() &&
+                     (job.recovering || !pilot.enabled) && !control_busy && !control_pending.load() &&
+                     (!job.recovering || (configured && is_midea_selected() &&
+                       saved.protocol==job.candidate.protocol &&
+                       !std::strcmp(saved.device_id,job.candidate.device_id)));
+    if(!valid) {
+        if(!job.recovering)
+            pairing.code=!current()?"network_changed_or_timeout":read_code(static_cast<int>(result));
+        pairing.pending=false;
+        pairing.recovering=false;
+        pairing.candidate={};
+        xSemaphoreGive(mutex);
+        return true;
+    }
+    config_updating=true;
+    const Config next=job.candidate;
+    xSemaphoreGive(mutex);
+    const bool committed=persist_config(next);
+    xSemaphoreTake(mutex,portMAX_DELAY);
+    config_updating=false;
+    pairing.pending=false;
+    pairing.recovering=false;
+    pairing.candidate={};
+    if(job.recovering) {
+        // Same authenticated appliance, only its DHCP address changed.
+        // Keep the existing model/authorization and unresolved write
+        // reconciliation. A new normal read must precede another command.
+        if(committed) {
+            saved=next;
+            last_success.store(0);
+            last_attempt.store(0);
+            observed={};
+            observed_wifi_generation=0;
+            observed_endpoint_generation=0;
+        }
+        xSemaphoreGive(mutex);
+        return true;
+    }
+    pairing.succeeded=committed;
+    pairing.code=committed?"ok":"nvs";
+    if(committed) {
+        if(is_midea_selected())cottage_midea_automatic_cancel();
+        saved=next;
+        configured=true;
+        pending_patch={};
+        confirmed_command={};
+        control_sent_utc.store(0);
+        control_success.store(0);
+        midea_mode_history.reset(millis());
+        observed={};
+        observed_wifi_generation=0;
+        observed_endpoint_generation=0;
+        last_success.store(0);
+        last_result.store(0);
+        revision.fetch_add(1);
+        last_attempt.store(0);
+        control_pending.store(false);
+        control_result.store(-1);
+        control_queued_utc.store(0);
+        // A sample from before a network/adapter change is not fresh.
+        if(job.link==cottage_wifi_link_generation() &&
+           job.endpoint==site_settings_endpoint_generation() &&
+           WiFi.status()==WL_CONNECTED && is_midea_selected()) {
+            observed=sample;
+            observed_wifi_generation=job.link;
+            observed_endpoint_generation=job.endpoint;
+            last_attempt.store(time(nullptr));
+            last_success.store(time(nullptr));
+            last_result.store(static_cast<int>(ReadStatus::Ok));
+        }
+    }
+    xSemaphoreGive(mutex);
+    return true;
+}
+bool cottage_midea_service_needs_worker() {
+    if(!mutex)return false;
+    xSemaphoreTake(mutex,portMAX_DELAY);
+    const bool ready=pairing.pending || (is_midea_selected() && configured);
     xSemaphoreGive(mutex);
     return ready;
 }
 void cottage_midea_service_worker(void*) {
     poll_task.store(xTaskGetCurrentTaskHandle());
     for(;;) {
+        if(process_pairing())continue;
         const uint32_t read_link=cottage_wifi_link_generation();
         const uint32_t read_endpoint=site_settings_endpoint_generation();
         const bool connected=WiFi.status()==WL_CONNECTED &&
@@ -1431,6 +1565,73 @@ void cottage_midea_service_worker(void*) {
         ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(
             deferred_for_budget?500u:30000u));
     }
+}
+
+void cottage_midea_recovery_tick() {
+    using namespace enevina::midea;
+    // This function and DiscoveryJob are owned by the existing loop task.
+    static uint32_t scan=0,scan_revision=0,last_scan=0,last_tick=0;
+    if(!mutex)return;
+    const uint32_t now=millis();
+    if(now-last_tick<250u)return;
+    last_tick=now;
+    // A deferred worker creation can exhaust the same enrollment deadline.
+    // Expire the queued request rather than leave credentials and UI pending.
+    if(!poll_task.load()) {
+        xSemaphoreTake(mutex,portMAX_DELAY);
+        if(pairing.pending && now-pairing.started>=25000u && !config_updating) {
+            pairing.pending=false;
+            pairing.recovering=false;
+            pairing.candidate={};
+            pairing.code="resource_busy";
+        }
+        xSemaphoreGive(mutex);
+    }
+    const auto link=discovery_live_link();
+    if(scan) {
+        if(discovery_job.active() && discovery_job.id()==scan)return;
+        const auto id=scan;scan=0;
+        if(discovery_job.id()!=id || !discovery_job.current(link) ||
+           discovery_job.phase()!=DiscoveryPhase::Done || discovery_job.truncated())return;
+        xSemaphoreTake(mutex,portMAX_DELAY);
+        uint64_t device_id=0;
+        if(configured && is_midea_selected() && revision.load()==scan_revision &&
+           !pairing.pending && !config_updating && !control_busy && !control_pending.load() &&
+           rediscovery_needed(last_result.load()) &&
+           decode_device_id(saved.device_id,device_id)) {
+            for(size_t i=0;i<discovery_job.count();++i) {
+                const auto& hit=discovery_job.hit(i);
+                if(hit.id!=device_id || hit.protocol!=saved.protocol || hit.conflicted ||
+                   (hit.metadata_known && hit.info.device_type!=0xac))continue;
+                Config candidate=saved;
+                std::snprintf(candidate.host,sizeof(candidate.host),"%u.%u.%u.%u",
+                    unsigned(hit.ip[0]),unsigned(hit.ip[1]),unsigned(hit.ip[2]),unsigned(hit.ip[3]));
+                if(!std::strcmp(candidate.host,saved.host)||!valid_config(candidate))break;
+                pairing.candidate=candidate;
+                pairing.revision=scan_revision;
+                pairing.link=link.wifi;
+                pairing.endpoint=link.endpoint;
+                pairing.started=now;
+                pairing.pending=true;
+                pairing.recovering=true;
+                if(auto task=poll_task.load())xTaskNotifyGive(task);
+                break;
+            }
+        }
+        xSemaphoreGive(mutex);
+        return;
+    }
+    if(WiFi.status()!=WL_CONNECTED || cottage_ota_network_maintenance() ||
+       discovery_job.active() ||
+       discovery_job.available(now,discovery_job.id()) ||
+       (last_scan && now-last_scan<60000u))return;
+    xSemaphoreTake(mutex,portMAX_DELAY);
+    const bool needed=configured && is_midea_selected() && !pairing.pending &&
+        !config_updating && !control_busy && !control_pending.load() &&
+        rediscovery_needed(last_result.load());
+    scan_revision=revision.load();
+    xSemaphoreGive(mutex);
+    if(needed){last_scan=now;scan=discovery_job.start(now,link);}
 }
 
 #endif

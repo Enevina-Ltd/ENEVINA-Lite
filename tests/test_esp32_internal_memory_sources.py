@@ -28,8 +28,14 @@ class TestInternalRam(unittest.TestCase):
         self.assertIn('xTaskCreate(poll_prices,"market_read",8192',MARKET)
     def test_no_phantom_midea_stack_when_other_pump_is_selected(self):
         self.assertIn("cottage_midea_service_needs_worker()",MAIN)
-        self.assertIn("!is_midea_selected() || !mutex",MIDEA)
-        self.assertIn("const bool ready=configured;",MIDEA)
+        # Explicitly submitted read-only enrollment may create the existing
+        # worker before the wizard commits the adapter selection. Ordinary
+        # boots on another adapter and discovery alone must not allocate it.
+        needs=MIDEA.split("bool cottage_midea_service_needs_worker()",1)[1].split("void cottage_midea_service_worker",1)[0]
+        self.assertIn("if(!mutex)return false;",needs)
+        self.assertIn("const bool ready=pairing.pending || (is_midea_selected() && configured);",needs)
+        discovery=MIDEA.split('web.on("/api/midea/discover"',1)[1].split('web.on("/api/midea/config"',1)[0]
+        self.assertNotIn("pairing.pending=true",discovery)
         self.assertIn("const bool start_midea=!task_midea &&",MAIN)
         self.assertIn("&task_midea,0)",MAIN)
         self.assertNotIn('nullptr,1,nullptr,0)',MAIN.split("cottage_midea_service_worker",1)[1].split("verify_new_ota_boot",1)[0])
