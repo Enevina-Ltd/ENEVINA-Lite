@@ -74,7 +74,7 @@ int main(int argc,char** argv) {
         for(int r=0;r<reps;++r) {
             HorizonResult hz=join_forecast_horizon(now,now-600,now-600,prices.data(),
                 prices.size(),weather.data(),weather.size(),sim_pricer,nullptr,slots,32);
-            PlannerInput pi{};
+            PlannerInput pi{};pi.pump_limits={16,26,0.5,true,true};
             pi.now_utc=now;pi.identifier=&id;pi.heating_allowed=true;pi.target_valid=true;
             pi.target_c=12.0;pi.temperature_fresh=true;pi.indoor_c=12.0;
             pi.pump_state_known=true;pi.pump_heat=false;pi.minutes_in_mode=120;

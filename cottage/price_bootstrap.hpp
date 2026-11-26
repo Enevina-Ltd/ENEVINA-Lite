@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include "pump/pump_adapter.hpp"
 
 namespace enevina::cottage {
 // How the slot at p[0] compares with the median of the window p[0..n). The
@@ -43,7 +44,7 @@ enum class BootstrapAction : uint8_t { Unavailable, HeatSetpoint, Off, Hold };
 enum class BootstrapReason : uint8_t {
     MissingTemperature, MissingPrices, NoHeatingRequested, TemperatureLow, TemperatureHigh,
     CheapWindow, ExpensiveWindow, ThermostatWithoutPrices, NeutralPriceWindow,
-    DeadbandHold, LowTargetReached
+    DeadbandHold, LowTargetReached, PumpCapabilitiesUnknown
 };
 // CN105 HEAT cannot request a setpoint below 16 C. A lower room target
 // requires an external room thermostat, not a continuous HEAT request.
@@ -57,6 +58,7 @@ inline bool low_temperature_room_target(double target_c) {
     return std::isfinite(target_c) && target_c>=5.0 && target_c<cn105_minimum_heat_setpoint_c;
 }
 struct BootstrapInput {
+    PumpHeatingLimits heating{}; // actual verified adapter limits, never a brand default
     double indoor_c=0;
     bool indoor_fresh=false;
     // User-selected room temperature, not necessarily the pump sensor temperature.
@@ -94,6 +96,8 @@ struct BootstrapInput {
     double maintenance_ceiling_c=0;
     bool maintenance_tariff_preheat=false;
     bool maintenance_tariff_coast=false;
+    bool maintenance_tariff_cost_priority=false;
+    bool maintenance_tariff_finish_storage=false;
 };
 struct BootstrapDecision {
     BootstrapAction action=BootstrapAction::Unavailable;
@@ -102,7 +106,7 @@ struct BootstrapDecision {
     double current_total_eur_per_kwh=0;
     bool price_data_valid=false;
     double requested_room_c=0;
-    double heat_setpoint_c=0; // only valid for HeatSetpoint, 16..26 in 0.5C steps
+    double heat_setpoint_c=0; // only valid for HeatSetpoint; on the adapter's grid
     // Physical commands NEVER originate in this model-free module.
     bool executable=false;
     bool low_temperature_cycle=false; // scoped live room-maintenance policy
@@ -116,6 +120,10 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
         !std::isfinite(in.desired_room_c) ||
         in.desired_room_c<5.0 || in.desired_room_c>26.0) return d;
     d.requested_room_c=in.desired_room_c;
+    const double device_min=in.heating.quantized(in.heating.minimum_c);
+    if(!std::isfinite(device_min)) {
+        d.reason=BootstrapReason::PumpCapabilitiesUnknown;return d;
+    }
     // Price data is OPTIONAL for maintaining a user-selected temperature.
     // A Nord Pool/network outage must not disable the local thermostat.
     bool price_valid=in.prices_contiguous_and_fresh && in.next_total_prices &&
@@ -159,30 +167,45 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     // Price room stays strictly inside the limits so the hard rules still fire.
     const double preheat=std::min(in.preheat_c,std::max(0.0,hard_hi-in.desired_room_c-0.1));
     const double coast=std::min(in.coast_c,std::max(0.0,in.desired_room_c-hard_lo-0.1));
-    if(in.low_temperature_cycle && low_temperature_room_target(in.desired_room_c)) {
+    if(in.low_temperature_cycle && in.desired_room_c<device_min && in.heating.off) {
         d.low_temperature_cycle=true;
         if(in.maintenance_storage) {
             if(!std::isfinite(in.maintenance_ceiling_c) ||
                in.maintenance_ceiling_c<in.desired_room_c ||
-               in.maintenance_ceiling_c>cn105_minimum_heat_setpoint_c)return {};
+               in.maintenance_ceiling_c>device_min)return {};
             // The explicitly selected economy profile can store heat above
             // the maintenance target, even at neutral prices. Explicit
             // upper/lower limits and the native minimum setpoint still win.
-            const double ceiling=std::min(in.maintenance_ceiling_c,
-                in.comfort_upper_c>0?in.comfort_upper_c:cn105_minimum_heat_setpoint_c);
-            const double floor=std::max(5.0,narrow_lo);
+            double ceiling=std::min(in.maintenance_ceiling_c,
+                in.comfort_upper_c>0?in.comfort_upper_c:device_min);
+            // A higher price alone never changes the owner's hard limit.
+            // The working lower bound includes the selected profile's
+            // reaction margin. With no explicit limit, preserve the old band.
+            const bool costly=price_valid &&
+                (expensive || in.maintenance_tariff_cost_priority || in.maintenance_tariff_coast);
+            const double floor=std::max(5.0,costly?hard_lo:narrow_lo);
+            const bool scheduled_storage=price_valid &&
+                (in.maintenance_tariff_preheat || (in.maintenance_tariff_finish_storage && !costly));
+            if(!price_valid)ceiling=std::min(ceiling,in.desired_room_c);
+            else if(costly && !scheduled_storage)
+                ceiling=std::min(ceiling,floor+0.5);
             if(ceiling<floor+0.5)return {};
             d.maintenance_storage=true;d.maintenance_ceiling_c=ceiling;
-            if(in.indoor_c>=ceiling) {
+            if(in.indoor_c>floor+0.2 && price_valid && in.maintenance_tariff_coast) {
+                // Both nominal and conservative schedules found a reachable
+                // cheaper start. This also prevents HOLD from continuing HEAT.
+                d.action=BootstrapAction::Off;
+                d.reason=BootstrapReason::ExpensiveWindow;
+            } else if(in.indoor_c>=ceiling) {
                 d.action=BootstrapAction::Off;
                 // Price-only stop obeys the normal scoped dwell. It must
                 // never inherit the physical temperature-ceiling exception.
-                d.reason=price_valid && in.maintenance_tariff_coast?
+                d.reason=costly && in.indoor_c<in.desired_room_c?
                     BootstrapReason::ExpensiveWindow:BootstrapReason::LowTargetReached;
             } else if(in.indoor_c<=floor ||
                       (price_valid && in.maintenance_tariff_preheat && ceiling-in.indoor_c>=1.0)) {
                 d.action=BootstrapAction::HeatSetpoint;
-                d.heat_setpoint_c=cn105_minimum_heat_setpoint_c;
+                d.heat_setpoint_c=device_min;
                 d.reason=!price_valid?BootstrapReason::ThermostatWithoutPrices:
                     (in.maintenance_tariff_preheat || cheap)?BootstrapReason::CheapWindow:
                     expensive?BootstrapReason::ExpensiveWindow:BootstrapReason::TemperatureLow;
@@ -201,7 +224,7 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
         if(price_valid && cheap)ceiling+=preheat;
         if(price_valid && expensive)ceiling-=coast;
         const double ceiling_min=hard_lo+0.5;
-        const double ceiling_max=std::min(hard_hi,cn105_minimum_heat_setpoint_c);
+        const double ceiling_max=std::min(hard_hi,device_min);
         if(ceiling_min>ceiling_max)return BootstrapDecision{};
         ceiling=std::clamp(ceiling,ceiling_min,ceiling_max);
         const double floor=std::max(hard_lo,
@@ -214,7 +237,7 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
                 BootstrapReason::LowTargetReached:BootstrapReason::ExpensiveWindow;
         } else if(in.indoor_c<=floor) {
             d.action=BootstrapAction::HeatSetpoint;
-            d.heat_setpoint_c=cn105_minimum_heat_setpoint_c;
+            d.heat_setpoint_c=device_min;
             d.reason=!price_valid?BootstrapReason::ThermostatWithoutPrices:
                 cheap?BootstrapReason::CheapWindow:
                 expensive?BootstrapReason::ExpensiveWindow:BootstrapReason::TemperatureLow;
@@ -290,8 +313,15 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
         // Device HEAT setpoint is not the room target below 16C.
         double lift=price_valid?(cheap?(below?2.0:1.0):0.5):0.5;
         if(price_valid && cheap && preheat>0) lift=std::max(lift,preheat+0.5);
-        const double raw=std::max(16.0,std::min(26.0,in.desired_room_c+lift));
-        d.heat_setpoint_c=std::round(raw*2.0)/2.0;
+        d.heat_setpoint_c=in.heating.quantized(in.desired_room_c+lift);
+        if(!std::isfinite(d.heat_setpoint_c)) {
+            d.action=BootstrapAction::Unavailable;
+            d.reason=BootstrapReason::PumpCapabilitiesUnknown;
+        }
+    }
+    if(d.action==BootstrapAction::Off && !in.heating.off) {
+        d.action=BootstrapAction::Unavailable;
+        d.reason=BootstrapReason::PumpCapabilitiesUnknown;
     }
     return d;
 }
@@ -308,6 +338,7 @@ inline const char* bootstrap_reason_name(BootstrapReason reason) {
     case BootstrapReason::NeutralPriceWindow:return "NEUTRAL_COST_WINDOW";
     case BootstrapReason::DeadbandHold:return "HOLD_IN_DEADBAND";
     case BootstrapReason::LowTargetReached:return "LOW_TARGET_REACHED";
+    case BootstrapReason::PumpCapabilitiesUnknown:return "PUMP_CAPABILITIES_UNKNOWN";
     }
     return "UNKNOWN";
 }

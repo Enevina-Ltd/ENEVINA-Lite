@@ -603,9 +603,6 @@ ControlBlock cottage_wf_rac_submit_automatic(const PumpRoomState& earlier,Contro
         const auto limits=state.approval.limits;
         if(mode==PumpRoomMode::Off || mode==PumpRoomMode::Heat) {
             const auto initial=proposal.proposal;
-            if(initial.action==BootstrapAction::HeatSetpoint && std::isfinite(initial.heat_setpoint_c))
-                proposal.proposal.heat_setpoint_c=std::clamp(std::round(initial.heat_setpoint_c*2)*.5,
-                    limits.minimum_c,limits.maximum_c);
             proposal.cn105_link_fresh=proposal.bridge_get_ok=true;
             proposal.current_heat=mode==PumpRoomMode::Heat;
             proposal.current_setpoint_c=reading.target_c.value_or(NAN);

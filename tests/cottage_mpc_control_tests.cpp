@@ -163,7 +163,7 @@ MpcPlanRecord good_plan(bool first_heat) {
     return p;
 }
 ArbiterInput base_input() {
-    ArbiterInput in{};
+    ArbiterInput in{};in.pump_limits={16,26,0.5,true,true};
     in.now_utc=now0+40;in.temperature_fresh=true;in.indoor_c=12.0;
     in.calibrated=true;in.calibration=CalibrationState::Calibrated;
     in.plan=good_plan(true);
@@ -369,7 +369,7 @@ BuildingIdentifier trained(bool meter=false) {
     return id;
 }
 PlannerInput planner_input(const BuildingIdentifier& id,HorizonResult& hz,int64_t now) {
-    PlannerInput pi{};
+    PlannerInput pi{};pi.pump_limits={16,26,0.5,true,true};
     pi.now_utc=now;pi.identifier=&id;pi.currency_scale=1.0;
     pi.heating_allowed=true;pi.target_valid=true;pi.target_c=12.0;
     pi.temperature_fresh=true;pi.indoor_c=12.0;

@@ -67,7 +67,7 @@ int main(int argc,char** argv) {
     const size_t n=s.per_mwh.size();
     for(size_t t=0;t+16<n;++t) {
         // controller proposal for this slot (Balanced, limits 19..23), as on the device
-        BootstrapInput in{};
+        BootstrapInput in{};in.heating={16,26,0.5,true,true};
         in.indoor_fresh=true;in.indoor_c=T;in.desired_room_c=b.target_c;
         size_t window=8;
         apply_profile(in,OptimizationProfile::Balanced,19,23,0.10,window);

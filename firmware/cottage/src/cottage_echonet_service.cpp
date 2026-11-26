@@ -657,8 +657,6 @@ ControlBlock cottage_echonet_submit_automatic(const PumpRoomState& earlier,Contr
        (mode==PumpRoomMode::Off || mode==PumpRoomMode::Heat)) {
         const auto initial=proposal.proposal;
         const auto limits=state.approval.modes.heating();
-        if(initial.action==BootstrapAction::HeatSetpoint && std::isfinite(initial.heat_setpoint_c))
-            proposal.proposal.heat_setpoint_c=std::clamp(std::round(initial.heat_setpoint_c),limits.minimum_c,limits.maximum_c);
         proposal.current_heat=mode==PumpRoomMode::Heat;
         proposal.current_setpoint_c=state.active.reading.setpoint_c?double(*state.active.reading.setpoint_c):NAN;
         proposal.cn105_link_fresh=proposal.bridge_get_ok=true;

@@ -73,7 +73,7 @@ inline Outcome simulate(const Series& s,double addon_per_kwh,OptimizationProfile
     double T=b.start_c,setpoint=b.target_c;
     bool on=false;
     for(size_t t=0;t+tail<n;++t) {
-        BootstrapInput in{};
+        BootstrapInput in{};in.heating={16,26,0.5,true,true};
         in.indoor_fresh=true;in.indoor_c=T;in.desired_room_c=b.target_c;
         size_t window=8;
         double totals[16];

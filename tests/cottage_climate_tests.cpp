@@ -231,7 +231,7 @@ int main() {
         auto near_target=calculate_air_moisture(11.51,75);
         auto plan=evaluate_cottage_mode(cfg,near_target,true,true,8,7ULL*3600000);
         assert(!plan.advisory_heat_needed && !drying_blocks_heat(plan));
-        BootstrapInput in{};
+        BootstrapInput in{};in.heating={16,26,0.5,true,true};
         in.indoor_fresh=true;in.desired_room_c=plan.target_c;
         const double seq[]={11.49,11.51,11.49,11.51};
         BootstrapAction last=BootstrapAction::Unavailable;
@@ -272,7 +272,7 @@ int main() {
     const auto measured=room_temperature_sample(
         {RoomTemperatureSource::Pump,0},{},verified_pump,now);
     assert(valid_temperature(measured,now));
-    BootstrapInput pump_input{};
+    BootstrapInput pump_input{};pump_input.heating={16,26,0.5,true,true};
     pump_input.indoor_fresh=valid_temperature(measured,now);
     pump_input.indoor_c=measured.indoor_c;
     pump_input.desired_room_c=unbound_hold.target_c;
@@ -306,7 +306,7 @@ int main() {
     assert(lived.advisory==ModeAdvisory::SensorUnavailable);
     auto pump_only=evaluate_cottage_mode(cfg,AirMoisture{},false,false,0,0);
     assert(pump_only.has_target && near(pump_only.target_c,21.0));
-    BootstrapInput living_input{};
+    BootstrapInput living_input{};living_input.heating={16,26,0.5,true,true};
     living_input.indoor_fresh=true;
     living_input.indoor_c=19.0;
     living_input.desired_room_c=pump_only.target_c;

@@ -36,9 +36,13 @@ struct Fixture {
     }
 };
 int main(){
-    BootstrapInput in{};in.indoor_fresh=true;in.desired_room_c=12;
+    BootstrapInput in{};in.heating={16,26,0.5,true,true};in.indoor_fresh=true;in.desired_room_c=12;
     in.low_temperature_cycle=true;in.maintenance_storage=true;in.maintenance_ceiling_c=15.8;
+    // Without price data, never charge the building to an unexplained 15.8 C.
     in.indoor_c=11.5;assert(bootstrap_price_decision(in).action==BootstrapAction::HeatSetpoint);
+    in.indoor_c=12;assert(low_temperature_stop(bootstrap_price_decision(in)));
+    const double neutral[8]={.2,.2,.2,.2,.2,.2,.2,.2};
+    in.next_total_prices=neutral;in.price_count=8;in.prices_contiguous_and_fresh=true;
     in.indoor_c=12.4;assert(bootstrap_price_decision(in).action==BootstrapAction::Hold);
     in.indoor_c=15.79;assert(bootstrap_price_decision(in).action==BootstrapAction::Hold);
     in.indoor_c=15.8;assert(low_temperature_stop(bootstrap_price_decision(in)));
@@ -51,13 +55,15 @@ int main(){
     assert(bootstrap_price_decision(in).action==BootstrapAction::Unavailable);
     ComfortBand band{};assert(mpc_comfort_band(12,band,{},false,true));
     assert(std::fabs(band.upper_c-15.8)<1e-8 && std::fabs(band.lower_c-11.5)<1e-8);
+    assert(mpc_comfort_band(12,band,{9,13},false,true));
+    assert(band.lower_c==9);
     assert(mpc_comfort_band(12,band,{0,13},false,true));
     assert(band.upper_c<=13);
     assert(mpc_comfort_band(12,band,{},false,false) && band.upper_c==13);
-    Fixture f;f.begin();assert(f.r.candidate==2);
-    f.complete();assert(f.r.completed==1 && f.r.candidate==0);
-    f.complete();assert(f.r.completed==2 && f.r.candidate==1);
-    f.complete();assert(f.r.completed==3 && f.r.candidate==2);
+    Fixture f;f.begin();assert(f.r.candidate==0);
+    f.complete();assert(f.r.completed==1 && f.r.candidate==1);
+    f.complete();assert(f.r.completed==2 && f.r.candidate==2);
+    f.complete();assert(f.r.completed==3 && f.r.candidate==0);
     f.complete();f.complete();f.complete();
     assert(f.r.completed==6 && f.r.candidate==2);
     assert(f.r.compared[0]==2 && f.r.compared[1]==2 && f.r.compared[2]==2);
@@ -75,19 +81,30 @@ int main(){
     regime.tick(true,12,1500);
     assert(regime.r.completed==0 && !regime.r.last.valid);
     for(auto n:regime.r.compared)assert(n==0);
-    assert(regime.r.candidate==2);
+    assert(regime.r.candidate==0);
     // Small changes within the same heat regime retain completed evidence.
     Fixture jitter;jitter.begin();jitter.complete();
     jitter.s.base_w=178;++jitter.s.base_revision;jitter.tick(true,12,1500);
-    assert(jitter.r.completed==1 && jitter.r.compared[2]==1);
+    assert(jitter.r.completed==1 && jitter.r.compared[0]==1);
     // An immediate material change without a missing sample also resets.
     jitter.s.base_w=1000;++jitter.s.base_revision;jitter.tick(true,12,1500);
-    assert(jitter.r.completed==0 && jitter.r.compared[2]==0);
+    assert(jitter.r.completed==0 && jitter.r.compared[0]==0);
     // A costly forecast is not permission to spend energy exploring short
-    // cycles. Keep the qualified wide candidate until cheaper evidence.
-    Fixture cost;cost.s.price_priority=true;cost.begin();
-    cost.complete();assert(cost.r.completed==1 && cost.r.candidate==2);
-    cost.complete();assert(cost.r.completed==2 && cost.r.candidate==2);
+    // cycles. Keep the ordinary target until wider storage has evidence.
+    Fixture cost;cost.s.price_priority=true;cost.s.tariff_adjusted=true;cost.begin();
+    cost.complete();assert(cost.r.tariff_completed==1 && cost.r.completed==0 && cost.r.candidate==0);
+    cost.complete();assert(cost.r.tariff_completed==2 && cost.r.completed==0 && cost.r.candidate==0);
+    assert(cost.r.last_tariff.valid && cost.r.last_tariff.energy_kwh>0);
+    for(auto n:cost.r.compared)assert(n==0);
+    // A tariff change during a cycle must not contaminate the ordinary
+    // candidate comparison or discard the measured incremental energy.
+    Fixture shifted;shifted.begin();shifted.s.tariff_adjusted=true;
+    shifted.tick(true,11.6,1500);shifted.s.tariff_adjusted=false;
+    shifted.complete();
+    assert(shifted.r.tariff_completed==1 && shifted.r.completed==0);
+    assert(shifted.r.last_tariff.start_room_c==11.5);
+    shifted.s.base_w=800;++shifted.s.base_revision;shifted.tick(true,12,1500);
+    assert(shifted.r.tariff_completed==0 && !shifted.r.last_tariff.valid);
     Fixture gaps;gaps.begin();gaps.s.utc+=180;gaps.tick(true,12,1500);
     assert(gaps.r.completed==0 && gaps.r.rejected==1);
     Fixture reset;reset.begin();++reset.s.base_revision;reset.tick(true,12,1500);

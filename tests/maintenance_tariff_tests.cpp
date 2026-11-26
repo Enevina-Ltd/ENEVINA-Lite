@@ -29,6 +29,13 @@ int main(){
     a=maintenance_tariff_decision(in);
     assert(a.action==MaintenanceTariffAction::Preheat && a.ceiling_c==15.8);
     assert(a.alternative_utc>now && a.alternative_price>a.current_price);
+    // A cheap slot alone cannot override the shorter ordinary cycle:
+    // wider storage must beat that cycle, not just be feasible on its own.
+    in.cycle_ceiling_c=12;
+    a=maintenance_tariff_decision(in);
+    assert(a.action==MaintenanceTariffAction::None && a.ceiling_c==12);
+    in.cycle_ceiling_c=15.8;
+
     set(.25,.50,8);
     assert(maintenance_tariff_decision(in).action==MaintenanceTariffAction::None);
     in.heating=true;in.room_c=14;
@@ -36,7 +43,7 @@ int main(){
     a=maintenance_tariff_decision(in);
     assert(a.action==MaintenanceTariffAction::Coast && a.ceiling_c>=12 && a.ceiling_c<=14);
     assert(a.avoid_exploration);
-    BootstrapInput b{};b.indoor_fresh=true;b.indoor_c=14;b.desired_room_c=12;
+    BootstrapInput b{};b.heating={16,26,0.5,true,true};b.indoor_fresh=true;b.indoor_c=14;b.desired_room_c=12;
     b.low_temperature_cycle=true;b.maintenance_storage=true;b.maintenance_ceiling_c=a.ceiling_c;
     b.maintenance_tariff_coast=true;
     double prices[8]={.5,.25,.25,.25,.25,.25,.25,.25};
@@ -52,6 +59,32 @@ int main(){
     in.room_c=11.49;assert(maintenance_tariff_decision(in).action==MaintenanceTariffAction::None);
     b.indoor_c=11.49;b.maintenance_tariff_coast=false;b.maintenance_ceiling_c=15.8;
     assert(bootstrap_price_decision(b).action==BootstrapAction::HeatSetpoint);
+    // A long high-price plateau is neutral in the short median window,
+    // but a cheaper future tariff must still prevent a 15.8 C charge.
+    double plateau[8]={.5,.5,.5,.5,.5,.5,.5,.5};
+    b.next_total_prices=plateau;b.maintenance_tariff_cost_priority=true;
+    b.indoor_c=12.0;b.maintenance_tariff_finish_storage=true;
+    assert(bootstrap_price_decision(b).action==BootstrapAction::Off);
+    b.maintenance_tariff_finish_storage=false;
+    b.indoor_c=11.49;
+    assert(bootstrap_price_decision(b).action==BootstrapAction::HeatSetpoint);
+    // The numeric minimum is a test fixture, not a new default. An
+    // explicit owner limit permits coasting below the 12 C nominal target.
+    b.comfort_lower_c=9.5;
+    b.indoor_c=11.49;
+    assert(bootstrap_price_decision(b).action==BootstrapAction::Off);
+    b.indoor_c=9.49;
+    assert(bootstrap_price_decision(b).action==BootstrapAction::HeatSetpoint);
+    b.indoor_c=10.4;b.maintenance_tariff_coast=true;
+    assert(bootstrap_price_decision(b).action==BootstrapAction::Off);
+    b.indoor_c=9.49;
+    assert(bootstrap_price_decision(b).action==BootstrapAction::HeatSetpoint);
+    // Price data loss restores the ordinary thermostat, not the wide floor.
+    b.prices_contiguous_and_fresh=false;b.indoor_c=11.49;
+    assert(bootstrap_price_decision(b).action==BootstrapAction::HeatSetpoint);
+    b.prices_contiguous_and_fresh=true;b.next_total_prices=prices;
+    b.maintenance_tariff_cost_priority=false;b.maintenance_tariff_coast=false;
+    b.comfort_lower_c=0;
     // A real headroom limit still wins over cheap-price preheat.
     b.indoor_c=13;b.maintenance_ceiling_c=13;b.maintenance_tariff_preheat=true;
     b.comfort_upper_c=13;

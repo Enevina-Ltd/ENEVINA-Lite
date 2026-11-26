@@ -15,7 +15,7 @@ static const double kDearNow[16]={0.40,0.41,0.39,0.38,0.20,0.21,0.22,0.23,0.24,0
 static const double kFlat[16]={0.20,0.20,0.20,0.20,0.20,0.20,0.20,0.20,0.20,0.20,0.20,0.20,0.20,0.20,0.20,0.20};
 
 static BootstrapInput base(double indoor,double desired,const double* prices,size_t n=8) {
-    BootstrapInput in{};
+    BootstrapInput in{};in.heating={16,26,0.5,true,true};
     in.indoor_fresh=true;in.indoor_c=indoor;in.desired_room_c=desired;
     in.next_total_prices=prices;in.price_count=n;in.prices_contiguous_and_fresh=true;
     return in;

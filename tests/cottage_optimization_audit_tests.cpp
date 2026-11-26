@@ -154,7 +154,7 @@ static void control_faults() {
     auto out=choose_mitsubishi_control(lost);
     assert(out.gate==ControlBlock::InputsUnverified && out.step==ControlStep::None);
     // Sensor outage: bootstrap is UNAVAILABLE, no command proposed.
-    BootstrapInput in{};
+    BootstrapInput in{};in.heating={16,26,0.5,true,true};
     in.indoor_fresh=false;
     const auto d=bootstrap_price_decision(in);
     assert(d.action==BootstrapAction::Unavailable);

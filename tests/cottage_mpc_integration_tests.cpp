@@ -23,7 +23,7 @@ constexpr int64_t now0=1768172400;
 // The price controller exactly as the firmware feeds it (flat prices: only the
 // hard limits and the thermostat band matter here).
 BootstrapDecision controller(OptimizationProfile profile,double target,double lo,double hi,double indoor) {
-    BootstrapInput in{};
+    BootstrapInput in{};in.heating={16,26,0.5,true,true};
     in.indoor_fresh=true;in.indoor_c=indoor;in.desired_room_c=target;
     size_t window=8;
     if(!apply_profile(in,profile,lo,hi,0.10,window)) return BootstrapDecision{};
@@ -92,7 +92,7 @@ void test_fallback_controller_obeys_the_same_limits() {
 // A plan the MPC made under the owner's limits; the arbiter then falls back
 // to exactly what the price controller says whenever the MPC is not allowed.
 ArbiterInput armed_input(const ComfortLimits& limits,bool first_heat,double indoor,double target=13.0) {
-    ArbiterInput in{};
+    ArbiterInput in{};in.pump_limits={16,26,0.5,true,true};
     in.now_utc=now0+40;in.temperature_fresh=true;in.indoor_c=indoor;
     in.calibrated=true;in.calibration=CalibrationState::Calibrated;
     MpcPlanRecord& p=in.plan;
