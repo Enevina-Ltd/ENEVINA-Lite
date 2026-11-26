@@ -10,6 +10,7 @@ import http.client
 import ipaddress
 import json
 import re
+import time
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -81,14 +82,46 @@ def pair(lite_host: str, config: dict[str, str]) -> None:
     token = ((status.get("air") or {}).get("config_token") or "")
     if not isinstance(token, str) or not token:
         raise RuntimeError("Lite has no current local settings token")
-    # This helper is specifically for the already Core-verified V3 Frezzer.
-    # Explicitly force V3 even if a caller passes an obsolete/mistyped mode.
+    # Rediscover the exact existing identity, not a stale stored address.
+    scan = local_request(lite_host, "POST", "/api/midea/discover", {"token": token})
+    scan_id = scan.get("scan_id")
+    if type(scan_id) is not int or not 0 < scan_id <= 0xffffffff:
+        raise RuntimeError("Invalid discovery job")
+    for _ in range(32):
+        if scan.get("state") != "pending":
+            break
+        time.sleep(0.3)
+        scan = local_request(lite_host, "POST", "/api/midea/discover",
+                             {"token": token, "scan_id": str(scan_id)})
+        if scan.get("scan_id") != scan_id:
+            raise RuntimeError("Discovery job changed")
+    if scan.get("state") != "done" or scan.get("truncated") is True:
+        raise RuntimeError("Discovery did not complete")
+    candidates = [d for d in scan.get("devices", []) if
+                  str(d.get("device_id")) == config["device_id"] and
+                  d.get("protocol") == 3 and d.get("conflicted") is not True and
+                  (not d.get("device_type_known") or d.get("device_type") == 172)]
+    if len(candidates) != 1:
+        raise RuntimeError("No unique matching V3 heat pump")
     response = local_request(lite_host, "POST", "/api/midea/config",
-                             {**config, "protocol": "3", "token": token})
-    if response.get("saved") is not True:
-        raise RuntimeError("Lite did not confirm pairing")
-    print("Midea V3 credentials stored in Lite; no secrets printed.")
-    print("Open Lite Settings > Testaa yhteys nyt; no physical commands are enabled.")
+                             {**config, "host": private_ip(candidates[0]["ip"]),
+                              "protocol": "3", "token": token})
+    job = response.get("pairing_id")
+    if response.get("queued") is not True or type(job) is not int or job <= 0:
+        raise RuntimeError("Lite firmware did not start verified pairing")
+    for _ in range(70):
+        time.sleep(0.5)
+        state = local_request(lite_host, "GET", "/api/midea/status")
+        if state.get("pairing_id") != job:
+            raise RuntimeError("Pairing job changed")
+        if state.get("pairing_pending") is True:
+            continue
+        if state.get("pairing_succeeded") is not True:
+            raise RuntimeError("Heat pump verification or storage failed")
+        if state.get("fresh") is True and state.get("read_code") == "ok":
+            print("Midea V3 connection verified and stored; no secrets printed.")
+            return
+    raise RuntimeError("No fresh verified heat pump state before timeout")
 
 
 def main() -> None:
@@ -107,7 +140,7 @@ def main() -> None:
         pair(private_ip(args.lite_ip), config)
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         # Errors are sanitized; never print config values.
-        raise SystemExit(f"Pairing failed: {type(exc).__name__}: {exc}") from None
+        raise SystemExit(f"Pairing failed: {type(exc).__name__}; check discovery and Lite connection status.") from None
 
 
 if __name__ == "__main__":

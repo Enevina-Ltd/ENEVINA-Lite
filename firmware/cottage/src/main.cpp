@@ -4655,6 +4655,7 @@ void loop() {
     web.handleClient();
     cottage_wifi_loop();
     cottage_midea_discovery_tick();
+    cottage_midea_recovery_tick();
     // This is a once-per-selection task creation, not a polling/watchdog.
     // A saved Midea enrollment must also start after switching adapters in UI.
     static uint32_t last_midea_check_ms=0;

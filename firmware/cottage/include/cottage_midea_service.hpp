@@ -20,8 +20,9 @@ void cottage_midea_service_register_routes(WebServer& web);
 void cottage_midea_service_worker(void*);
 // One bounded read-only discovery step on the existing loop task.
 void cottage_midea_discovery_tick();
-// True only for a selected Midea adapter with committed LAN credentials.
-// Config and status routes continue to work even before the worker starts.
+void cottage_midea_recovery_tick();
+// Start for a queued read-only enrollment, or a selected adapter with
+// committed LAN credentials. No physical writes from the setup AP.
 bool cottage_midea_service_needs_worker();
 // Nonblocking identity guards for the transport's cached negotiation and final
 // command gate. A transition in progress is never a current configuration.
