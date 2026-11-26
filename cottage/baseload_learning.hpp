@@ -116,7 +116,18 @@ public:
             ++estimate_.revision;
             count_=head_=0;
         }
+        // The seven samples must cover five minutes even if polling is
+        // faster than one minute (e.g. near a quarter-hour boundary).
+        // Inspect ALL fresh readings for changes, including those not
+        // retained in the downsampled qualification window.
+        if(count_ && meter.captured_utc-last_window_utc_<50) {
+            const double previous=window_[(head_+required_samples-1)%required_samples].watts;
+            if(std::fabs(meter.watts-previous)<=baseload_tolerance_w(previous))
+                return snapshot(identity,now);
+            count_=head_=0; // a fast intervening load change restarts qualification
+        }
         window_[head_]={meter.captured_utc,meter.watts};
+        last_window_utc_=meter.captured_utc;
         head_=(head_+1)%required_samples;
         if(count_<required_samples)++count_;
         if(count_==required_samples) {
@@ -153,12 +164,12 @@ public:
     }
 private:
     struct Point {int64_t utc=0;double watts=0;};
-    void reset_window(){have_window_=false;count_=head_=0;}
+    void reset_window(){have_window_=false;count_=head_=0;last_window_utc_=0;}
     std::array<Point,required_samples> window_{};
     BaseloadEstimate estimate_{};
     unsigned count_=0,head_=0;
     bool have_window_=false;
-    int64_t last_meter_utc_=0,last_request_utc_=0;
+    int64_t last_meter_utc_=0,last_request_utc_=0,last_window_utc_=0;
     double last_total_wh_=0;
     enevina::PumpRoomProtocol protocol_=enevina::PumpRoomProtocol::Unknown;
     enevina::PumpStateSource source_=enevina::PumpStateSource::None;

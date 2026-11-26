@@ -3,6 +3,7 @@
 #include "cottage/model_persistence.hpp"
 #include "cottage/learning_observation.hpp"
 #include "cottage/model_checkpoint.hpp"
+#include "cottage/maintenance_cycle.hpp"
 #include "tests/cottage_closed_loop.hpp"
 #include <cstdio>
 #include <cstring>
@@ -234,6 +235,40 @@ void test_atomic_model_checkpoint() {
     file.content.resize(sizeof(out)+1);
     CHECK(read_model_checkpoint(file,out,sizeof(out),n)==CheckpointRead::Error);
 }
+void test_atomic_maintenance_checkpoint() {
+    FakeCheckpointFile file;
+    MaintenanceCycleLearner learner,restored;
+    MaintenanceCycleSample sample{};
+    sample.valid=true;sample.utc=1800000000;sample.meter_id=3;
+    sample.room_c=12;sample.outdoor_c=-2;sample.total_wh=1000;sample.base_w=167;
+    MaintenanceCycleKey key{model_store_identity(base_identity,0),3,5,12,0,0};
+    learner.observe(true,3,1,1,12,sample);
+    MaintenanceCycleImage image{},out{};
+    CHECK(learner.save(key,image));
+    CHECK(write_model_checkpoint(file,reinterpret_cast<const uint8_t*>(&image),sizeof(image)));
+    const auto committed=file.content;
+    sample.utc+=60;sample.base_w=800;sample.total_wh+=15;
+    learner.observe(true,3,1,1,12,sample);
+    CHECK(learner.checkpoint_dirty() && learner.save(key,image));
+    for(int fail=0;fail<3;++fail) {
+        file.begin_fail=fail==0;file.write_fail=fail==1;file.commit_fail=fail==2;
+        CHECK(!write_model_checkpoint(file,reinterpret_cast<const uint8_t*>(&image),sizeof(image)));
+        CHECK(file.content==committed && !file.writing);
+    }
+    file.begin_fail=file.write_fail=file.commit_fail=false;
+    size_t used=0;
+    CHECK(read_model_checkpoint(file,reinterpret_cast<uint8_t*>(&out),sizeof(out),used)==CheckpointRead::Read);
+    CHECK(used==sizeof(out));
+    CHECK(!restored.restore(key,2,2,sample,out)); // old baseline not reusable
+    sample.base_w=167;
+    CHECK(restored.restore(key,2,2,sample,out));
+    auto reset_key=key;reset_key.identity=model_store_identity(base_identity,1);
+    CHECK(!restored.restore(reset_key,2,2,sample,out));
+    file.corrupt_commit=true;
+    CHECK(!write_model_checkpoint(file,reinterpret_cast<const uint8_t*>(&image),sizeof(image)));
+    CHECK(read_model_checkpoint(file,reinterpret_cast<uint8_t*>(&out),sizeof(out),used)==CheckpointRead::Read);
+    CHECK(!restored.restore(key,2,2,sample,out)); // CRC/magic
+}
 void test_learning_interval_and_checkpoint_policy() {
     const int64_t t=1800000000;
     CHECK(learning_room_boundary(t,t-15,t+1));
@@ -277,6 +312,7 @@ int main() {
     test_identity_binds_epoch_and_site();
     test_learning_interval_and_checkpoint_policy();
     test_atomic_model_checkpoint();
+    test_atomic_maintenance_checkpoint();
     if(failures) {std::printf("%d failure(s)\n",failures);return 1;}
     std::printf("cottage_model_persistence_tests: all passed\n");
     return 0;

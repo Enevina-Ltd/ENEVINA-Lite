@@ -91,6 +91,8 @@ EventLog events;
 LfsFile records_file(kRecordsPath),events_file(kEventsPath);
 constexpr char kFixedModelPath[]="/model1.bin",kVariableModelPath[]="/model2.bin";
 LfsFile fixed_model_file(kFixedModelPath),variable_model_file(kVariableModelPath);
+constexpr char kMaintenancePath[]="/maint1.bin";
+LfsFile maintenance_file(kMaintenancePath);
 HistoryPersistence* persistence=nullptr;
 HistoryRecorder recorder;
 bool persistent=false;
@@ -134,6 +136,7 @@ void history_initialize() {
     if(!persistent) {ESP_LOGE(tag,"history stays in RAM only (mount failed)");return;}
     records_file.remove_stale_temp();
     events_file.remove_stale_temp();
+    maintenance_file.remove_stale_temp();
     persistence=new(std::nothrow) HistoryPersistence(records_file,events_file);
     if(!persistence) {persistent=false;return;}
     const LoadResult r=persistence->load(*store,events);
@@ -235,13 +238,38 @@ bool history_model_erase(bool variable) {
     const char* path=variable?kVariableModelPath:kFixedModelPath;
     // A leftover temp is never loaded, but clean it before future writes.
     file.remove_stale_temp();
-    const bool ok=(!file.exists() || LittleFS.remove(path)) && !file.exists();
+    bool ok=(!file.exists() || LittleFS.remove(path)) && !file.exists();
+    if(!variable) {
+        maintenance_file.remove_stale_temp();
+        const bool cycle_erased=(!maintenance_file.exists() || LittleFS.remove(kMaintenancePath)) &&
+            !maintenance_file.exists();
+        ok=ok && cycle_erased;
+    }
     xSemaphoreGive(guard);return ok;
 }
 bool history_model_present(bool variable) {
     if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)return true;
     auto& file=variable?variable_model_file:fixed_model_file;
     const bool present=file.exists();
+    xSemaphoreGive(guard);return present;
+}
+
+CheckpointRead history_maintenance_read(uint8_t* data,size_t cap,size_t& used) {
+    used=0;
+    if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)
+        return CheckpointRead::Error;
+    const auto result=read_model_checkpoint(maintenance_file,data,cap,used);
+    xSemaphoreGive(guard);return result;
+}
+bool history_maintenance_write(const uint8_t* data,size_t used) {
+    if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)return false;
+    const bool ok=write_model_checkpoint(maintenance_file,data,used);
+    xSemaphoreGive(guard);return ok;
+}
+
+bool history_maintenance_present() {
+    if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)return true;
+    const bool present=maintenance_file.exists();
     xSemaphoreGive(guard);return present;
 }
 

@@ -25,4 +25,9 @@ enevina::cottage::CheckpointRead history_model_read(bool variable,uint8_t* data,
 bool history_model_write(bool variable,const uint8_t* data,size_t used);
 bool history_model_erase(bool variable);
 bool history_model_present(bool variable); // true also when absence cannot be verified
+// Completed maintenance observations, same atomic file/lock as model storage.
+// The fixed-model reset also erases this file or advances its bound epoch.
+enevina::cottage::CheckpointRead history_maintenance_read(uint8_t* data,size_t cap,size_t& used);
+bool history_maintenance_write(const uint8_t* data,size_t used);
+bool history_maintenance_present(); // true if absence cannot be verified
 }

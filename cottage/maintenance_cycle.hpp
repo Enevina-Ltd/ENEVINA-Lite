@@ -6,6 +6,10 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <cstddef>
+#include <new>
+#include "cottage/history_persist.hpp"
 #include "cottage/baseload_learning.hpp"
 
 namespace enevina::cottage {
@@ -27,20 +31,22 @@ struct MaintenanceCycleSample {
     uint32_t sent=0,confirmed=0,failed=0;
     int64_t ack_utc=0;
     bool heat=false,valid=false,price_valid=false,price_priority=false,tariff_adjusted=false;
+    bool measurement_gap_only=false; // no conflicting request, meter or baseline evidence
 };
 struct MaintenanceCycleObservation {
     bool valid=false;
     double energy_kwh=0,hours=0,outdoor_c=0,mean_room_c=0,peak_c=0,cost=0;
     bool cost_valid=false;
     double start_room_c=0,end_room_c=0;
+    int64_t end_utc=0;
     double rate_kw() const {return hours>0?energy_kwh/hours:0;}
 };
 struct MaintenanceCycleReport {
-    bool enabled=false;
+    bool enabled=false,restored=false,checkpoint_dirty=false,checkpoint_available=false;
     uint32_t site_generation=0,config_generation=0,meter_identity=0;
     double target_c=0;
     unsigned candidate=0;
-    uint32_t completed=0,rejected=0,tariff_completed=0;
+    uint32_t completed=0,rejected=0,tariff_completed=0,checkpoint_writes=0,checkpoint_failures=0,restore_failures=0;
     std::array<unsigned,maintenance_cycle_candidates> compared{};
     std::array<double,maintenance_cycle_candidates> rate_kw{};
     MaintenanceCycleObservation last{},last_tariff{};
@@ -50,18 +56,123 @@ struct MaintenanceCycleReport {
 // conditions (within 1.5 C); require two observations of each candidate
 // before selecting a winner. Explore least-observed candidates first,
 // and periodically revisit one alternative. Small differences (<5%) do
-// not justify keeping the hotter candidate. Counts are RAM-only; the
-// independently identified MPC thermal/electric model persists as before.
+// not justify keeping the hotter candidate. Only completed observations
+// are checkpointed; live requests, counters and partial cycles are never
+// restored across a reboot or OTA.
+// The key is stable across reboot but scoped to model epoch, meter, owner
+// settings and tariff. Volatile link/configuration generations are not saved.
+struct MaintenanceCycleKey {
+    uint32_t identity=0,meter=0,tariff=0;
+    double target=0,lower=0,upper=0;
+    bool valid() const {
+        return identity && meter && tariff && std::isfinite(target) &&
+            std::isfinite(lower) && std::isfinite(upper) && target>=5 &&
+            target<=26 && lower>=0 && upper>=0 && lower<=26 && upper<=26 &&
+            (lower==0 || lower<=target-0.5) && (upper==0 || upper>=target+0.5);
+    }
+    bool operator==(const MaintenanceCycleKey& b) const {
+        return identity==b.identity && meter==b.meter && tariff==b.tariff &&
+            target==b.target && lower==b.lower && upper==b.upper;
+    }
+};
+struct MaintenanceCycleDiskRecord {
+    int64_t end_utc=0;
+    double energy=0,hours=0,outdoor=0,mean=0,peak=0,cost=0,start=0,end=0;
+    uint8_t flags=0,reserved[7]{};
+};
+struct MaintenanceCycleImage {
+    uint32_t magic=0x31434D45u,version=1; // EMC1, little endian
+    uint32_t identity=0,meter=0,tariff=0,completed=0,tariff_completed=0,reserved=0;
+    double target=0,lower=0,upper=0,regime_w=0;
+    MaintenanceCycleDiskRecord records[3][3]{},last{},last_tariff{};
+    uint8_t next[3]{},pad[5]{};
+    uint16_t crc=0;
+    uint8_t tail[6]{};
+};
+static_assert(sizeof(MaintenanceCycleDiskRecord)==80,"cycle record layout");
+static_assert(offsetof(MaintenanceCycleImage,crc)==952 && sizeof(MaintenanceCycleImage)==960,
+              "cycle checkpoint layout");
 class MaintenanceCycleLearner {
 public:
+    void reset(){this->~MaintenanceCycleLearner();new(this) MaintenanceCycleLearner{};}
+    static constexpr size_t checkpoint_size=sizeof(MaintenanceCycleImage);
+    static constexpr int64_t record_max_age_s=30*86400;
+    bool checkpoint_dirty() const {return dirty_;}
+    bool can_restore() const {return !open_ && !dirty_;}
+    void checkpoint_saved(){dirty_=false;}
+    // Writes a versioned image to caller-owned memory. Never store a partial
+    // run, request generations, or a possibly unconfirmed pump command.
+    bool save(const MaintenanceCycleKey& key,MaintenanceCycleImage& image) const {
+        if(!enabled_ || !key.valid() || key.meter!=identity_ || key.target!=target_ ||
+           !std::isfinite(regime_w_) || regime_w_<0)return false;
+        new(&image) MaintenanceCycleImage{};
+        image.identity=key.identity;image.meter=key.meter;image.tariff=key.tariff;
+        image.target=key.target;image.lower=key.lower;image.upper=key.upper;
+        image.regime_w=regime_w_;image.completed=completed_;image.tariff_completed=tariff_completed_;
+        for(unsigned i=0;i<3;++i) {
+            image.next[i]=static_cast<uint8_t>(next_[i]%3);
+            for(unsigned j=0;j<3;++j)image.records[i][j]=encode(records_[i][j]);
+        }
+        image.last=encode(last_);image.last_tariff=encode(last_tariff_);
+        image.crc=history_crc16(reinterpret_cast<const uint8_t*>(&image),offsetof(MaintenanceCycleImage,crc));
+        return true;
+    }
+    // Restore only on a qualified fresh meter/room/pump observation and
+    // the same measured heat-gain regime. Failure leaves this learner alone.
+    bool restore(const MaintenanceCycleKey& key,uint32_t site_generation,uint32_t config_generation,
+                 const MaintenanceCycleSample& sample,const MaintenanceCycleImage& image) {
+        if(!key.valid() || !valid_sample(sample,key.meter) ||
+           image.magic!=0x31434D45u || image.version!=1 || image.reserved!=0 ||
+           image.crc!=history_crc16(reinterpret_cast<const uint8_t*>(&image),offsetof(MaintenanceCycleImage,crc)) ||
+           !(key==MaintenanceCycleKey{image.identity,image.meter,image.tariff,image.target,image.lower,image.upper}) ||
+           !std::isfinite(image.regime_w) || image.regime_w<0 || image.regime_w>20000 ||
+           std::fabs(sample.base_w-image.regime_w)>std::max(25.0,0.15*image.regime_w))return false;
+        for(unsigned i=0;i<3;++i) {
+            if(image.next[i]>=3)return false;
+            for(unsigned j=0;j<3;++j)if(!valid_record(image.records[i][j],sample.utc))return false;
+        }
+        if(!valid_record(image.last,sample.utc) || !valid_record(image.last_tariff,sample.utc))return false;
+        reset();
+        enabled_=true;identity_=key.meter;site_=site_generation;config_=config_generation;target_=key.target;
+        regime_w_=image.regime_w;completed_=image.completed;tariff_completed_=image.tariff_completed;
+        last_seen_utc_=sample.utc;
+        for(unsigned i=0;i<3;++i) {
+            next_[i]=image.next[i];
+            for(unsigned j=0;j<3;++j)records_[i][j]=decode(image.records[i][j],sample.utc);
+        }
+        last_=decode(image.last,sample.utc);last_tariff_=decode(image.last_tariff,sample.utc);
+        // Never resume an unfinished experiment at a high ceiling. Rechoose
+        // only from comparable, qualified completed cycles, or candidate 0.
+        candidate_=choose(sample.outdoor_c,true);restored_=true;
+        return true;
+    }
     MaintenanceCycleReport observe(bool enabled,uint32_t identity,uint32_t site_generation,
             uint32_t config_generation,double target,const MaintenanceCycleSample& s) {
         if(!enabled || identity!=identity_ || site_generation!=site_ || config_generation!=config_ ||
            target!=target_) {
-            *this=MaintenanceCycleLearner{};
+            reset();
             enabled_=enabled;identity_=identity;site_=site_generation;config_=config_generation;target_=target;
         }
         if(!enabled || !valid_sample(s,identity)) {
+            // A missed room/meter sample is not a foreign command. Keep
+            // the last qualified counter boundary only for a bounded gap
+            // and only while every identity/command/baseline remains equal.
+            // The next accepted interval still has to pass all normal checks.
+            const auto& p=previous_;
+            const bool bridge=enabled && have_previous_ && s.measurement_gap_only &&
+                s.utc>=p.utc && s.utc-p.utc<=150 && s.meter_id==identity &&
+                std::isfinite(s.total_wh) && s.total_wh>=p.total_wh &&
+                s.endpoint==p.endpoint && s.link==p.link && s.base_revision==p.base_revision &&
+                std::fabs(s.base_w-p.base_w)<0.01 && s.heat==p.heat &&
+                s.request_generation==p.request_generation && s.sent==p.sent &&
+                s.confirmed==p.confirmed && s.failed==p.failed;
+            if(bridge) {
+                if(open_) {
+                    tariff_adjusted_=tariff_adjusted_ || s.tariff_adjusted;
+                    price_ok_=price_ok_ && s.price_valid;
+                }
+                return report(s.outdoor_c);
+            }
             reject_open();
             have_previous_=false;
             return report(s.outdoor_c);
@@ -72,12 +183,13 @@ public:
         if(regime_w_>=0 &&
            std::fabs(s.base_w-regime_w_)>std::max(25.0,0.15*regime_w_)) {
             reject_open();
-            records_={};next_={};last_={};last_tariff_={};completed_=0;tariff_completed_=0;
+            records_={};next_={};last_={};last_tariff_={};completed_=0;tariff_completed_=0;dirty_=true;restored_=false;
             candidate_=0;
             have_previous_=false;
             regime_w_=-1;
         }
         if(regime_w_<0)regime_w_=s.base_w;
+        last_seen_utc_=s.utc;
         if(!have_previous_) {previous_=s;have_previous_=true;return report(s.outdoor_c);}
         const auto p=previous_;
         const int64_t dt=s.utc-p.utc;
@@ -133,12 +245,14 @@ public:
     }
     MaintenanceCycleReport report(double outdoor) const {
         MaintenanceCycleReport r{};
-        r.enabled=enabled_;r.candidate=candidate_;r.completed=completed_;r.rejected=rejected_;r.last=last_;
-        r.tariff_completed=tariff_completed_;r.last_tariff=last_tariff_;
+        r.enabled=enabled_;r.restored=restored_;r.checkpoint_dirty=dirty_;r.candidate=candidate_;r.completed=completed_;r.rejected=rejected_;
+        if(recent(last_,last_seen_utc_))r.last=last_;
+        r.tariff_completed=tariff_completed_;
+        if(recent(last_tariff_,last_seen_utc_))r.last_tariff=last_tariff_;
         r.site_generation=site_;r.config_generation=config_;r.meter_identity=identity_;r.target_c=target_;
         for(unsigned i=0;i<maintenance_cycle_candidates;++i) {
             double e=0,t=0;
-            for(const auto& x:records_[i])if(x.valid && std::isfinite(outdoor) &&
+            for(const auto& x:records_[i])if(recent(x,last_seen_utc_) && std::isfinite(outdoor) &&
                     std::fabs(x.outdoor_c-outdoor)<=1.5) {
                 ++r.compared[i];e+=x.energy_kwh;t+=x.hours;
             }
@@ -147,6 +261,34 @@ public:
         return r;
     }
 private:
+    static bool recent(const MaintenanceCycleObservation& x,int64_t now) {
+        return x.valid && x.end_utc>0 && now>=x.end_utc && now-x.end_utc<=record_max_age_s;
+    }
+    static MaintenanceCycleDiskRecord encode(const MaintenanceCycleObservation& x) {
+        if(!x.valid)return {};
+        MaintenanceCycleDiskRecord r{};
+        r.end_utc=x.end_utc;r.energy=x.energy_kwh;r.hours=x.hours;r.outdoor=x.outdoor_c;
+        r.mean=x.mean_room_c;r.peak=x.peak_c;r.cost=x.cost_valid?x.cost:0;
+        r.start=x.start_room_c;r.end=x.end_room_c;
+        r.flags=static_cast<uint8_t>(1|(x.cost_valid?2:0));return r;
+    }
+    static bool valid_record(const MaintenanceCycleDiskRecord& r,int64_t now) {
+        if(r.flags==0)return true;
+        if(r.flags!=1 && r.flags!=3)return false;
+        return r.end_utc>0 && r.end_utc<=now &&
+            std::isfinite(r.hours) && r.hours>=0.25 && r.hours<=24 &&
+            std::isfinite(r.energy) && r.energy>0 && r.energy<=20*r.hours &&
+            std::isfinite(r.outdoor) && r.outdoor>=-55 && r.outdoor<=45 &&
+            std::isfinite(r.mean) && r.mean>=-10 && r.mean<=40 &&
+            std::isfinite(r.peak) && r.peak>=-10 && r.peak<=40 &&
+            std::isfinite(r.start) && r.start>=-10 && r.start<=40 &&
+            std::isfinite(r.end) && r.end>=-10 && r.end<=40 && std::isfinite(r.cost);
+    }
+    static MaintenanceCycleObservation decode(const MaintenanceCycleDiskRecord& r,int64_t now) {
+        if(!r.flags || now-r.end_utc>record_max_age_s)return {};
+        return {true,r.energy,r.hours,r.outdoor,r.mean,r.peak,r.cost,
+            (r.flags&2)!=0,r.start,r.end,r.end_utc};
+    }
     static bool valid_sample(const MaintenanceCycleSample& s,uint32_t id) {
         return s.valid && id && s.meter_id==id && s.utc>0 &&
             std::isfinite(s.room_c) && s.room_c>=-10 && s.room_c<=40 &&
@@ -168,18 +310,18 @@ private:
             reject_open();return;
         }
         MaintenanceCycleObservation x{true,energy_,hours,outdoor_hours_/hours,
-            room_hours_/hours,peak_,cost_,price_ok_,start_room_,end.room_c};
+            room_hours_/hours,peak_,cost_,price_ok_,start_room_,end.room_c,end.utc};
         // Preserve observed shifted cycles, even with unequal thermal
         // endpoints. They are evidence, not a comparable saving experiment.
         if(tariff_adjusted_) {
-            last_tariff_=x;++tariff_completed_;open_=false;return;
+            last_tariff_=x;++tariff_completed_;dirty_=true;open_=false;return;
         }
         if(std::fabs(end.room_c-start_room_)>0.5 ||
            std::fabs(start_room_-target_)>1.25 || std::fabs(end.room_c-target_)>1.25) {
             reject_open();return;
         }
         records_[active_candidate_][next_[active_candidate_]++%3]=x;
-        last_=x;++completed_;open_=false;
+        last_=x;++completed_;dirty_=true;open_=false;
     }
     unsigned choose(double outdoor,bool price_priority) const {
         const auto r=report(outdoor);
@@ -188,9 +330,9 @@ private:
             // an unmeasured storage cycle. Exploit qualified local evidence,
             // or retain the shortest target cycle until there is evidence.
             unsigned best=0;
-            for(unsigned i: {2u,1u,0u})
-                if(r.compared[i]>=2 && (r.compared[best]<2 ||
-                   r.rate_kw[i]<r.rate_kw[best]*0.95))best=i;
+            if(r.compared[0]<2)return 0;
+            for(unsigned i: {1u,2u})
+                if(r.compared[i]>=2 && r.rate_kw[i]<r.rate_kw[best]*0.95)best=i;
             return best;
         }
         // Start at the user's ordinary target. Explore wider storage
@@ -203,12 +345,12 @@ private:
         if(completed_%8==0)return (best+1+((completed_/8)%2))%maintenance_cycle_candidates;
         return best;
     }
-    bool enabled_=false,open_=false,stopped_=false,have_previous_=false,price_ok_=false,tariff_adjusted_=false;
+    bool enabled_=false,open_=false,stopped_=false,have_previous_=false,price_ok_=false,tariff_adjusted_=false,dirty_=false,restored_=false;
     uint32_t identity_=0,site_=0,config_=0,completed_=0,rejected_=0,tariff_completed_=0;
     unsigned candidate_=0,active_candidate_=0;
     double target_=0,start_room_=0,peak_=0,energy_=0,outdoor_hours_=0,room_hours_=0,cost_=0;
     double regime_w_=-1;
-    int64_t start_utc_=0,stop_utc_=0;
+    int64_t start_utc_=0,stop_utc_=0,last_seen_utc_=0;
     MaintenanceCycleSample previous_{};
     MaintenanceCycleObservation last_{},last_tariff_{};
     std::array<std::array<MaintenanceCycleObservation,3>,maintenance_cycle_candidates> records_{};
