@@ -111,6 +111,7 @@ struct BootstrapDecision {
     double heat_setpoint_c=0; // only valid for HeatSetpoint; on the adapter's grid
     // Physical commands NEVER originate in this model-free module.
     bool executable=false;
+    uint32_t cycle_trial_revision=0;
     bool low_temperature_cycle=false; // scoped live room-maintenance policy
     bool below_native_minimum_cycle=false;
     bool maintenance_storage=false;

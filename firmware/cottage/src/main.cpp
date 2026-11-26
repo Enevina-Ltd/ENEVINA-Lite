@@ -1094,6 +1094,11 @@ static bool current_cycle_pump_proof(int64_t now,const enevina::PumpRoomState& s
           std::fabs(pump.setpoint_c-state.setpoint_c)<0.001) ||
          (pump.mode==ObservedPumpMode::Off && state.mode==enevina::PumpRoomMode::Off));
 }
+static bool current_bridge_phase_proof(int64_t now,Cn105LinkIdentity link) {
+    return verified_cn105_link.current() && verified_cn105_link.endpoint==link.endpoint &&
+        verified_cn105_link.wifi==link.wifi && valid_cn105(pump,now,90) &&
+        pump.evidence.source_time_verified;
+}
 static bool current_adapter_phase(int64_t now,const enevina::PumpRoomState& state) {
     return known_heating_mode(state) && (state.source==enevina::PumpStateSource::VerifiedBus || state.source==enevina::PumpStateSource::DirectLan) &&
         enevina::assess_measurement(state.evidence,now,90)==enevina::MeasurementQuality::VerifiedFresh;
@@ -1132,6 +1137,7 @@ static ArbiterInput build_arbiter_input(int64_t now,const TemperatureSample& t) 
     const bool trial_active=current_cycle_trial(now,state,in.settings_generation,in.config_generation);
     if(trial_active && known_heating_mode(state) && in.temperature_fresh &&
        in.bootstrap.below_native_minimum_cycle) {
+        in.cycle_trial_revision=cycle_trial.revision;
         const auto phase=verified_interruption?(verified_fault?HeatPhase::Fault:HeatPhase::Defrost):
             cycle_phase_utc==source_utc && cycle_phase_utc>0 &&
             now>=cycle_phase_utc && now-cycle_phase_utc<=90 &&
@@ -1190,7 +1196,8 @@ static BootstrapDecision active_control_proposal(int64_t now,const TemperatureSa
                                                  bool* fallback_price_valid=nullptr) {
     const ArbiterInput input=build_arbiter_input(now,t);
     if(fallback_price_valid)*fallback_price_valid=input.bootstrap.price_data_valid;
-    const ArbiterOutput out=arbitrate(input);
+    ArbiterOutput out=arbitrate(input);
+    out.proposal.cycle_trial_revision=input.cycle_trial_revision;
     if(detail) *detail=out;
     return out.proposal;
 }
@@ -1734,11 +1741,21 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     // authorization check uses that same tracker under the existing lock.
     const bool defrost_hold=cn105_defrost_defer_write(cn105_defrost.view(
         static_cast<uint64_t>(esp_timer_get_time()/1000),link.endpoint),bridge_heat);
-    const bool proven_interruption=bridge_heat && verified_cn105_link.current() &&
-        verified_cn105_link.endpoint==link.endpoint && verified_cn105_link.wifi==link.wifi &&
-        valid_cn105(pump,time(nullptr),90) && pump.evidence.source_time_verified &&
-        (pump.defrost==true || pump.fault==true);
-    const bool dispatch=!defrost_hold && !proven_interruption &&
+    const auto dispatch_utc=time(nullptr);
+    const bool proven=current_bridge_phase_proof(dispatch_utc,link);
+    const bool proven_interruption=proven && (pump.fault==true || (bridge_heat && pump.defrost==true));
+    const bool phase_stop=refreshed.reason==BootstrapReason::ThermostatCycleEnd ||
+        refreshed.reason==BootstrapReason::ModulationCycleEnd;
+    const bool live_trial=cycle_trial.current(dispatch_utc,cycle_monotonic_ms(),
+        site_generation,config_generation,authorization_generation) &&
+        cycle_trial.endpoint==link.endpoint && cycle_trial.link==link.wifi;
+    const bool same_trial=(live_trial?cycle_trial.revision:0)==refreshed.cycle_trial_revision;
+    const bool still_at_cycle_end=!phase_stop ||
+        (proven && pump.defrost==false && cycle_phase_utc==pump.evidence.source_utc &&
+         cycle_phase_endpoint==link.endpoint && cycle_phase_link==link.wifi &&
+         (cycle_phase==HeatPhase::ThermostatStop ||
+          (cycle_phase==HeatPhase::Modulating && refreshed.reason==BootstrapReason::ModulationCycleEnd)));
+    const bool dispatch=!defrost_hold && !proven_interruption && same_trial && still_at_cycle_end &&
         mode_change_allowed(step,control_ms_since_mode_change(),mitsubishi_min_mode_dwell_ms,refreshed,true) &&
         control_armed.load() && c23_config_storage_verified() &&
         control_permission_generation.load()==authorization_generation &&
@@ -1754,9 +1771,7 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
             step==ControlStep::SetOff?enevina::PumpRoomMode::Off:
             step==ControlStep::SetHeat || bridge_heat?enevina::PumpRoomMode::Heat:enevina::PumpRoomMode::Off,
             step!=ControlStep::SetOff,required_target);
-        control_last_dispatched_phase_stop.store(step==ControlStep::SetOff &&
-            (refreshed.reason==BootstrapReason::ThermostatCycleEnd ||
-             refreshed.reason==BootstrapReason::ModulationCycleEnd));
+        control_last_dispatched_phase_stop.store(step==ControlStep::SetOff && phase_stop);
         control_last_step.store(static_cast<int>(step));
         control_last_command_utc.store(sent_utc);
         control_commands_sent.fetch_add(1);
@@ -1767,7 +1782,7 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     xSemaphoreGive(lock_data);
     if(!dispatch) {
         req.end();
-        if(defrost_hold) {
+        if(defrost_hold || proven_interruption) {
             control_gate.store(static_cast<int>(ControlBlock::DefrostHold));
             control_post_stage.store(-9);
         }
