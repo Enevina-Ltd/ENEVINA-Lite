@@ -545,6 +545,10 @@ static bool parse_cn105_proof_event(const cJSON* root,int64_t now,
             static_cast<uint64_t>(esp_timer_get_time()/1000),continuous);
         pump=verified;
         verified_cn105_link=link;
+        if(link.current() && now-verified.evidence.source_utc<=90 && verified.defrost.has_value())
+            cn105_defrost.note(CN105DefrostSource::VerifiedPoll,
+                *verified.defrost?CN105DefrostSignal::Defrost:CN105DefrostSignal::Other,
+                static_cast<uint64_t>(esp_timer_get_time()/1000),link.endpoint);
         if(cn105_command_link.current() && cn105_command_link.endpoint==link.endpoint &&
            cn105_command_link.wifi==link.wifi)
             cn105_command_readback.observe(verified,now);
@@ -2936,7 +2940,8 @@ static void optimizer_worker(void*) {
         cycle_sample.tariff_adjusted=price_shift ||
             (costly && (old_candidate!=0 || working_floor<target-0.5-0.001)) ||
             (short_class==PriceClass::Unknown && old_candidate!=0);
-        const bool cycle_scope_ok=(economy || trial.strategy!=CycleStrategy::Existing) && current_meter_scope &&
+        const bool collect_cycles=economy || trial.strategy!=CycleStrategy::Existing;
+        const bool cycle_scope_ok=collect_cycles && current_meter_scope &&
             active_control_armed(midea) && meter.received && meter_relay && meter.source_identity==shared_id &&
             baseload_current(base,shared_id,now) && ws.available &&
             ws.fetched_utc>0 && ws.fetched_utc<=now && ws.valid_until_utc>now &&
@@ -2978,7 +2983,10 @@ static void optimizer_worker(void*) {
                     optimizer_config_generation,cycle_sample,*cycle_image))++cycle_restore_failures;
             else if(read==CheckpointRead::Read && used!=sizeof(*cycle_image))++cycle_restore_failures;
         }
-        auto cycle_report=maintenance_cycles?maintenance_cycles->observe(economy,shared_id,
+        // Retain completed trial observations between runs in the same
+        // configuration, even when the ordinary profile is not Saving.
+        const bool keep_trial_evidence=maintenance_cycles && maintenance_cycles->has_trial_results(now);
+        auto cycle_report=maintenance_cycles?maintenance_cycles->observe(collect_cycles || keep_trial_evidence,shared_id,
             optimizer_site_generation,optimizer_config_generation,cycle_mode.hold_target_c,cycle_sample):
             MaintenanceCycleReport{};
         // Write at most once per ten minutes, and only after new complete
@@ -3465,9 +3473,17 @@ static void status_endpoint() {
             }
             xSemaphoreGive(lock_data);
         }
+    } else cJSON_AddNullToObject(root,"maintenance_ceiling_c");
+    {
         MaintenanceCycleReport cycle;
         xSemaphoreTake(lock_data,portMAX_DELAY);cycle=maintenance_cycle_snapshot;xSemaphoreGive(lock_data);
-        if(auto* c=cJSON_AddObjectToObject(root,"maintenance_cycles")) {
+        const bool show_cycle_data=bootstrap.maintenance_storage ||
+            (cycle.site_generation==site_settings_generation() && cycle.config_generation==c23_config_generation() &&
+             (trial.strategy!=CycleStrategy::Existing ||
+              std::any_of(cycle.trials.begin(),cycle.trials.end(),
+                  [now](const auto& t){return t.cycle.valid && now>=t.cycle.end_utc &&
+                      now-t.cycle.end_utc<=MaintenanceCycleLearner::record_max_age_s;})));
+        if(auto* c=show_cycle_data?cJSON_AddObjectToObject(root,"maintenance_cycles"):nullptr) {
             if(auto* trials=cJSON_AddArrayToObject(c,"trial_results"))
                 for(size_t i=0;i<cycle.trials.size();++i)if(cycle.trials[i].cycle.valid) {
                     const auto& t=cycle.trials[i];
@@ -3539,7 +3555,7 @@ static void status_endpoint() {
                 if(cycle.last.cost_valid)cJSON_AddNumberToObject(c,"last_cost",cycle.last.cost);
             }
         }
-    } else cJSON_AddNullToObject(root,"maintenance_ceiling_c");
+    }
     cJSON_AddNumberToObject(root,"bootstrap_mode_dwell_minutes",
         low_temperature_cycle(bootstrap)?cn105_low_temperature_dwell_minutes:
             mitsubishi_min_mode_dwell_ms/60000u);
@@ -3609,7 +3625,7 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"cn105_defrost_action_starts",defrost.action_starts);
     cJSON_AddNumberToObject(root,"cn105_defrost_action_ends",defrost.action_ends);
     cJSON_AddNumberToObject(root,"cn105_defrost_action_last_duration_s",defrost.action_last_duration_s);
-    cJSON_AddBoolToObject(root,"cn105_defrost_uart_verified",false);
+    cJSON_AddBoolToObject(root,"cn105_defrost_uart_verified",defrost.source_verified);
     cJSON_AddBoolToObject(root,"cn105_sse_climate_received",observed_climate);
     cJSON_AddBoolToObject(root,"cn105_sse_compressor_received",observed_compressor);
     cJSON_AddBoolToObject(root,"cn105_sse_climate_recent",

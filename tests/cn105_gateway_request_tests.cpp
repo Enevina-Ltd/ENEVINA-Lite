@@ -62,6 +62,16 @@ static void test_defrost_guard() {
     CHECK(completed.submode_last_duration_s==2 && completed.action_last_duration_s==2);
     h.note(Source::SubMode,Signal::Unknown,t+794000,2);
     CHECK(!h.view(t+794000,2).ever_reported_defrost);
+
+    CN105DefrostHistory proven;
+    proven.note(Source::VerifiedPoll,Signal::Defrost,t,7);
+    CHECK(proven.view(t,7).source_verified && proven.view(t,7).defer_write);
+    proven.note(Source::ClimateAction,Signal::Other,t+1000,7);
+    CHECK(proven.view(t+1000,7).state==State::ReportedDefrost);
+    proven.note(Source::VerifiedPoll,Signal::Other,t+3000,7);
+    CHECK(proven.view(t+3000,7).state==State::Recovery);
+    CHECK(cn105_defrost_defer_write(proven.view(t+62999,7),true));
+    CHECK(!cn105_defrost_defer_write(proven.view(t+63000,7),true));
 }
 int main(){
     test_defrost_guard();

@@ -126,6 +126,11 @@ public:
     static constexpr size_t checkpoint_size=sizeof(MaintenanceCycleImage);
     static constexpr int64_t record_max_age_s=30*86400;
     bool checkpoint_dirty() const {return dirty_;}
+    bool has_trial_results(int64_t now) const {
+        return std::any_of(trials_.begin(),trials_.end(),[now](const auto& item) {
+            return recent(item.cycle,now);
+        });
+    }
     bool can_restore() const {return !open_ && !dirty_;}
     void checkpoint_saved(){dirty_=false;}
     // Writes a versioned image to caller-owned memory. Never store a partial
@@ -189,6 +194,7 @@ public:
             const auto& p=previous_;
             const bool bridge=enabled && have_previous_ && s.measurement_gap_only &&
                 s.utc>=p.utc && s.utc-p.utc<=150 && s.meter_id==identity &&
+                s.trial_revision==p.trial_revision && s.strategy==p.strategy &&
                 std::isfinite(s.total_wh) && s.total_wh>=p.total_wh &&
                 s.endpoint==p.endpoint && s.link==p.link && s.base_revision==p.base_revision &&
                 std::fabs(s.base_w-p.base_w)<0.01 && s.heat==p.heat &&
