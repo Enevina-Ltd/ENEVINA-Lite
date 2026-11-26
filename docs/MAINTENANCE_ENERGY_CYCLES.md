@@ -82,8 +82,11 @@ The existing supervisor and command readback govern dispatch.
 | Modulation | Also consider OFF when sustained pump-relative compressor and measured electrical demand drops agree with slowing room warming. |
 | Forecast | Use the existing price and thermal planner within the approved envelope; degrade to the temperature policy where those inputs are insufficient. |
 
-The phase-based strategies require fresh compressor and explicit defrost
-telemetry at activation. A CN105 ESPHome receiver accepts optional Boolean
+A standard bridge can heat through the pump's own setpoint and collect
+complete-cycle data under the approved room limit. When pump phase is
+unknown, the trial holds the native heat request until the approved working
+upper threshold. A limit-triggered stop is reported separately and provides
+no evidence of a thermostat or modulation stop. A CN105 ESPHome receiver accepts optional Boolean
 `defrost` and `fault` fields only in the proven UART poll envelope. The
 producer must tie each populated field to a decoded reply in that poll.
 A missing field remains unknown. A cached SSE value or climate GET cannot

@@ -2576,6 +2576,7 @@ function clExplain(s,timeline){
   const reason=s.cycle_strategy==='EXISTING'?s.bootstrap_reason:(s.control_proposal_reason||s.bootstrap_reason);
   const plain={
     PUMP_CAPABILITIES_UNKNOWN:clT('Pumpun ohjauskyvykkyyttä ei ole vahvistettu.','Pump control capability has not been verified.'),
+    TRIAL_ROOM_LIMIT:clT('Kokeen huonelämpötilaraja saavutettu.','The trial room-temperature threshold was reached.'),
     NATURAL_CYCLE_HOLD:clT('Lämmityspyyntö jatkuu hyväksytyn käyntijakson aikana.','The heating request continues during the approved cycle.'),
     THERMOSTAT_CYCLE_END:clT('Varmennettu kompressoripysähdys pumpun omalla tavoitelämpötilalla.','Verified compressor stop near the pump setpoint.'),
     MODULATION_CYCLE_END:clT('Taajuus, sähköteho ja lämpötilan nousu ovat laskeneet yhdessä.','Compressor frequency, electric power and temperature rise have fallen together.'),

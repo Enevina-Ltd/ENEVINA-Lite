@@ -45,7 +45,7 @@ enum class BootstrapReason : uint8_t {
     MissingTemperature, MissingPrices, NoHeatingRequested, TemperatureLow, TemperatureHigh,
     CheapWindow, ExpensiveWindow, ThermostatWithoutPrices, NeutralPriceWindow,
     DeadbandHold, LowTargetReached, PumpCapabilitiesUnknown,
-    NaturalCycleHold, ThermostatCycleEnd, ModulationCycleEnd
+    NaturalCycleHold, ThermostatCycleEnd, ModulationCycleEnd, TrialRoomLimit
 };
 // CN105 HEAT cannot request a setpoint below 16 C. A lower room target
 // requires an external room thermostat, not a continuous HEAT request.
@@ -345,6 +345,7 @@ inline const char* bootstrap_reason_name(BootstrapReason reason) {
     case BootstrapReason::NeutralPriceWindow:return "NEUTRAL_COST_WINDOW";
     case BootstrapReason::DeadbandHold:return "HOLD_IN_DEADBAND";
     case BootstrapReason::LowTargetReached:return "LOW_TARGET_REACHED";
+    case BootstrapReason::TrialRoomLimit:return "TRIAL_ROOM_LIMIT";
     case BootstrapReason::NaturalCycleHold:return "NATURAL_CYCLE_HOLD";
     case BootstrapReason::ThermostatCycleEnd:return "THERMOSTAT_CYCLE_END";
     case BootstrapReason::ModulationCycleEnd:return "MODULATION_CYCLE_END";
@@ -357,7 +358,7 @@ inline bool low_temperature_cycle(const BootstrapDecision& d) {
 }
 inline bool low_temperature_stop(const BootstrapDecision& d) {
     return low_temperature_cycle(d) && d.action==BootstrapAction::Off &&
-        d.reason==BootstrapReason::LowTargetReached;
+        (d.reason==BootstrapReason::LowTargetReached || d.reason==BootstrapReason::TrialRoomLimit);
 }
 inline const char* bootstrap_action_name(BootstrapAction action) {
     switch(action) {

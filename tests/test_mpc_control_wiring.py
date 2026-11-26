@@ -158,6 +158,13 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("maintenance_cycles->observe(collect_cycles || keep_trial_evidence", WORKER)
         self.assertIn('mitsubishi_min_mode_dwell_ms', POST)
 
+    def test_explicit_cycle_trial_accepts_a_standard_gateway(self):
+        route = MAIN.split('web.on("/api/control/cycle-trial"', 1)[1].split('web.on("/api/ota/install"', 1)[0]
+        self.assertIn('if(strategy=="automatic")', route)
+        self.assertNotIn('PUMP_PHASE_UNVERIFIED', route)
+        self.assertIn('valid_temperature(room,now)', route)
+        self.assertIn('const bool still_at_cycle_end=!phase_stop ||', POST)
+
     def test_panasonic_requires_explicit_pump_bus_evidence(self):
         source = (ROOT / "firmware/cottage/src/cottage_panasonic_service.cpp").read_text(encoding="utf-8")
         setup = source.split("static bool connect(const Link& link)", 1)[1].split("static bool fill(", 1)[0]

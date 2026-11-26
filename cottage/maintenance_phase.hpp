@@ -155,7 +155,8 @@ inline BootstrapDecision cycle_trial_proposal(BootstrapDecision fallback,const C
     } else if(room>=trial.upper ||
               (trial.strategy==CycleStrategy::Short && room>=fallback.requested_room_c)) {
         fallback.action=BootstrapAction::Off;
-        fallback.reason=BootstrapReason::LowTargetReached;
+        fallback.reason=trial.strategy==CycleStrategy::Short?
+            BootstrapReason::LowTargetReached:BootstrapReason::TrialRoomLimit;
     } else if(room<=std::max(trial.lower,fallback.requested_room_c-0.5)) {
         fallback.action=BootstrapAction::HeatSetpoint;
         fallback.heat_setpoint_c=native;

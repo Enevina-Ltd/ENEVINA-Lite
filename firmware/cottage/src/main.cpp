@@ -4780,27 +4780,16 @@ void setup() {
             web.send(409,"application/json","{\"saved\":false,\"error\":\"TRIAL_NOT_READY\"}");
             return;
         }
-        const bool phase_based=trial.strategy==CycleStrategy::Thermostat ||
-            trial.strategy==CycleStrategy::Modulation;
-        if(phase_based || strategy=="automatic") {
+        // Optional phase proof refines a stop during the trial. A standard
+        // bridge still supports the room-bounded heat request and metering.
+        if(strategy=="automatic") {
             xSemaphoreTake(lock_data,portMAX_DELAY);
-            const bool gateway_proof=state.protocol==enevina::PumpRoomProtocol::Cn105EspHome &&
-                verified_cn105_link.current() && verified_cn105_link.endpoint==state.endpoint_generation &&
-                verified_cn105_link.wifi==state.link_generation &&
-                valid_cn105(pump,now,90) && pump.evidence.source_time_verified && pump.defrost.has_value();
-            const bool direct_proof=enevina::verified_fresh(state.evidence,now,90) &&
-                state.compressor_hz.has_value() && state.defrosting.has_value();
-            if(strategy=="automatic") {
-                const auto& compare=maintenance_cycle_snapshot;
-                if(compare.site_generation==trial.site && compare.config_generation==trial.config)
-                    trial.strategy=select_observed_cycle_strategy(compare,trial.lower,
-                        trial.upper,gateway_proof || direct_proof);
-            }
+            const bool phase_supported=(current_cycle_pump_proof(now,state) && pump.defrost.has_value()) ||
+                (current_adapter_phase(now,state) && state.compressor_hz.has_value() && state.defrosting.has_value());
+            const auto& compare=maintenance_cycle_snapshot;
+            if(compare.site_generation==trial.site && compare.config_generation==trial.config)
+                trial.strategy=select_observed_cycle_strategy(compare,trial.lower,trial.upper,phase_supported);
             xSemaphoreGive(lock_data);
-            if(phase_based && !gateway_proof && !direct_proof) {
-                web.send(409,"application/json","{\"saved\":false,\"error\":\"PUMP_PHASE_UNVERIFIED\"}");
-                return;
-            }
         }
         trial.started_utc=now;
         trial.expires_utc=now+static_cast<int64_t>(minutes)*60;

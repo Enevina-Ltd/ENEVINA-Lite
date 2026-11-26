@@ -80,7 +80,9 @@ static void trial_control_regression() {
     const auto apply=[&](double room,HeatPhase phase){return cycle_trial_proposal(d,t,room,true,16,phase);};
     assert(apply(12.0,HeatPhase::Heating).action==BootstrapAction::Hold);
     assert(apply(12.0,HeatPhase::Unknown).action==BootstrapAction::Hold);
-    assert(apply(16.0,HeatPhase::Heating).action==BootstrapAction::Off);
+    const auto room_stop=apply(16.0,HeatPhase::Unknown);
+    assert(room_stop.action==BootstrapAction::Off &&
+           room_stop.reason==BootstrapReason::TrialRoomLimit && low_temperature_stop(room_stop));
     assert(apply(16.0,HeatPhase::Defrost).action==BootstrapAction::Hold);
     assert(apply(12.0,HeatPhase::ThermostatStop).reason==BootstrapReason::ThermostatCycleEnd);
     assert(apply(12.0,HeatPhase::Modulating).action==BootstrapAction::Hold);
