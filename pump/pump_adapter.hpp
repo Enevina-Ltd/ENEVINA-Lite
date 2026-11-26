@@ -68,6 +68,10 @@ struct PumpRoomState {
     // invalidate their own live control preflight or manufacture a quiet slot.
     uint32_t write_generation=0;
     bool write_in_progress=false;
+    // A directly observed UART sample can be locally fresh before NTP.
+    // This is not a trusted UTC timestamp or permission to learn a model.
+    bool local_bus_sample=false;
+    uint32_t local_capture_ms=0;
 };
 
 struct PumpDescriptor {

@@ -53,7 +53,7 @@ class ModeDwellWiring(unittest.TestCase):
         arm = MAIN.split('web.on("/api/control/arm"', 1)[1].split(
             "static uint64_t cottage_now_ms",1)[0]
         self.assertNotIn("control_reset_mode_history", arm)
-        self.assertIn("control_note_observed_mode(read_heating,", TICK)
+        self.assertIn("control_note_observed_mode(read_mode,", TICK)
 
     def test_post_requires_current_authorization_and_no_ota_maintenance(self):
         last_check = POST.split("const bool dispatch=", 1)[1].split("if(dispatch)", 1)[0]

@@ -36,6 +36,36 @@ static void shared_gate_respects_driver_limits_and_dwell() {
 int main() {
     shared_gate_respects_driver_limits_and_dwell();
     {
+        using enevina::PumpRoomMode;
+        assert(!automatic_mode_eligible(PumpRoomMode::Unknown,true));
+        assert(!automatic_mode_eligible(PumpRoomMode::Other,false));
+        assert(automatic_mode_eligible(PumpRoomMode::Other,true));
+        auto s=base();s.current_other=true;
+        assert(choose_mitsubishi_control(s).gate==ControlBlock::NotInHeatingMode);
+        s.proposal.action=BootstrapAction::Off;
+        s.proposal.reason=BootstrapReason::NoHeatingRequested;
+        assert(choose_mitsubishi_control(s).gate==ControlBlock::NotInHeatingMode);
+        s.explicit_cold=true;
+        assert(choose_mitsubishi_control(s).step==ControlStep::SetOff);
+        assert(choose_pump_control(s,{16,26,0.5,true,false},HeatTransition::Combined).gate==ControlBlock::UnsupportedCommand);
+        s.ms_since_mode_change=0;
+        assert(choose_mitsubishi_control(s).gate==ControlBlock::ModeDwell);
+        s.ms_since_mode_change=mitsubishi_min_mode_dwell_ms;
+        s.armed=false;
+        assert(choose_mitsubishi_control(s).gate==ControlBlock::Disabled);
+        s.armed=true;s.bridge_get_ok=false;
+        assert(choose_mitsubishi_control(s).gate==ControlBlock::InputsUnverified);
+        s.bridge_get_ok=true;s.proposal.reason=BootstrapReason::TemperatureHigh;
+        assert(choose_mitsubishi_control(s).gate==ControlBlock::NotInHeatingMode);
+        MitsubishiModeHistory history;
+        history.observe_bridge_mode(PumpRoomMode::Other,1000);
+        history.observe_bridge_mode(PumpRoomMode::Off,2000);
+        assert(history.since_change(2000)==0);
+        history.observe_bridge_mode(PumpRoomMode::Heat,3000);
+        assert(history.since_change(3000)==0);
+    }
+
+    {
         // Regression for a small room that reaches its maintenance target
         // before the default 30-minute HEAT request is over.
         constexpr uint32_t minute=60000;

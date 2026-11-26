@@ -679,9 +679,10 @@ enevina::cottage::ControlBlock cottage_midea_submit_automatic(
            current.mode!=expected.mode || current.request_generation!=expected.request_generation ||
            std::fabs(current.setpoint_c-expected.setpoint_c)>0.001 ||
            !pilot_current_locked(current.endpoint_generation) ||
-           (current.mode!=PumpRoomMode::Off && current.mode!=PumpRoomMode::Heat))
+           !automatic_mode_eligible(current.mode,decision.explicit_cold))
             return ControlBlock::InputsUnverified;
         decision.current_heat=current.mode==PumpRoomMode::Heat;
+        decision.current_other=current.mode==PumpRoomMode::Other;
         decision.current_setpoint_c=current.setpoint_c;
         decision.cn105_link_fresh=decision.bridge_get_ok=true;
         decision.ms_since_mode_change=midea_mode_history.since_change(millis());

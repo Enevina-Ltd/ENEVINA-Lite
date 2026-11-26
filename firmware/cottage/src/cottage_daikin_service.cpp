@@ -509,9 +509,10 @@ uint32_t cottage_daikin_calibration_identity() {
 }
 bool cottage_daikin_automatic_ready() {
     if(!gate || !cottage_daikin_selected())return false;
+    const bool cold=c23_mode_config().mode==CottageMode::Cold;
     xSemaphoreTake(gate,portMAX_DELAY);
     const auto mode=room_mode(state.active.reading);
-    const bool ready=available() && (mode==PumpRoomMode::Off || mode==PumpRoomMode::Heat);
+    const bool ready=available() && automatic_mode_eligible(mode,cold);
     xSemaphoreGive(gate);
     return ready;
 }
@@ -530,9 +531,10 @@ ControlBlock cottage_daikin_submit_automatic(const PumpRoomState& earlier,Contro
        earlier.request_generation==state.request_generation) {
         const auto& reading=state.active.reading;
         const auto mode=room_mode(reading);
-        if(mode==PumpRoomMode::Off || mode==PumpRoomMode::Heat) {
+        if(automatic_mode_eligible(mode,proposal.explicit_cold)) {
             const auto initial=proposal.proposal;
             proposal.current_heat=mode==PumpRoomMode::Heat;
+            proposal.current_other=mode==PumpRoomMode::Other;
             proposal.current_setpoint_c=reading.target_c.value_or(NAN);
             proposal.cn105_link_fresh=proposal.bridge_get_ok=true;
             proposal.ms_since_mode_change=state.dwell.since_change(millis());

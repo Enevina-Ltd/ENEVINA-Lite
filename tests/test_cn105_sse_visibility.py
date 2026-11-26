@@ -79,7 +79,7 @@ class Cn105SseVisibilityTests(unittest.TestCase):
         # the zero-length body header is kept next to the actual command.
         # GET acquires the nonrecursive network lease itself; it cannot be
         # called while the POST owns that same mutex.
-        self.assertLess(post.index('cn105_bridge_get(bridge_heat,bridge_setpoint)'),
+        self.assertLess(post.index('cn105_bridge_get(bridge_mode,bridge_setpoint)'),
                         post.index('NetworkBudgetLease lease'))
         self.assertIn('const auto refreshed=active_control_proposal',post)
         self.assertIn('const auto decision=choose_mitsubishi_control(candidate);',MAIN)
@@ -93,7 +93,7 @@ class Cn105SseVisibilityTests(unittest.TestCase):
         self.assertIn("c23_config_generation()!=config_generation", controller)
 
         self.assertIn("confirmed=decision.step==ControlStep::Setpoint",MAIN)
-        self.assertIn("if(!cn105_bridge_get(read_heating,read_setpoint))continue",MAIN)
+        self.assertIn("if(!cn105_bridge_get(read_mode,read_setpoint))continue",MAIN)
         self.assertNotRegex(MAIN,r'Switch\\.(?:Set|Toggle|SetConfig)')
 
 

@@ -32,7 +32,7 @@ class CommandReconciliationWiring(unittest.TestCase):
         self.assertIn('cn105_reconciliation.observe(cottage_control_authorization_generation(),true,',s)
         self.assertIn('if(bridge.command_unconfirmed)',s)
         self.assertIn('if(!sent && post_stage!=6 && post_stage!=-6)return;',s)
-        self.assertIn('read_heating==current_heat && std::fabs(read_setpoint-decision.target_c)',s)
+        self.assertIn('read_mode==bridge.mode && std::fabs(read_setpoint-decision.target_c)',s)
     def test_learning_rejects_unresolved_dispatches(self):
         main=(FW/'src/main.cpp').read_text()
         self.assertIn('!state.command_unconfirmed',main)
@@ -80,6 +80,30 @@ class CommandReconciliationWiring(unittest.TestCase):
         self.assertIn('readback_matches(request.patch,before,*after) && command_current(job)',s)
         self.assertIn('state.automatic_confirmed_utc=state.automatic_queued_utc=0;',s)
         self.assertIn('request.previous=*state.sample.reading;',s)
+    def test_wired_thermostat_does_not_require_wifi_or_utc(self):
+        main=(FW/'src/main.cpp').read_text()
+        serial=(FW/'include/cottage_serial_heating_service.hpp').read_text()
+        link=serial.split('struct Link {',1)[1].split('struct Sample',1)[0]
+        self.assertNotIn('cottage_wifi_link_generation',link)
+        self.assertIn('endpoint==site_settings_endpoint_generation()',link)
+        self.assertIn('sample.bus_generation!=cottage_pump_uart.generation()',serial)
+        self.assertIn('out.local_bus_sample=true;out.local_capture_ms=sample.received_ms;',serial)
+        self.assertIn('if(sample.received_utc>=1700000000)',serial)
+        self.assertIn('return wired_pump_selected() || (wifi_ok.load() && clock_ok());',main)
+        self.assertIn('wired_pump_selected() && valid_local_temperature(t,millis())',main)
+        self.assertIn('!wifi_ok.load() || !clock_ok() || c23_mode_config().mode==CottageMode::Drying)in.plan={};',main)
+        self.assertIn('pi.temperature_fresh=valid_temperature(ts,now)',main)
+    def test_explicit_cold_requires_verified_off_readback(self):
+        main=(FW/'src/main.cpp').read_text()
+        self.assertIn('candidate.explicit_cold=mode.mode==CottageMode::Cold;',main)
+        self.assertIn('automatic_mode_eligible(bridge.mode,candidate.explicit_cold)',main)
+        self.assertIn('bridge_mode==enevina::PumpRoomMode::Other && step!=ControlStep::SetOff',main)
+        self.assertIn('read_mode==enevina::PumpRoomMode::Off;',main)
+        for name in ('echonet','gree','daikin','wf_rac','midea'):
+            service=(FW/'src'/f'cottage_{name}_service.cpp').read_text()
+            self.assertIn('automatic_mode_eligible(',service)
+            self.assertIn('current_other=',service)
+        self.assertIn('automatic_mode_eligible(mode,proposal.explicit_cold)',(FW/'include/cottage_serial_heating_service.hpp').read_text())
     def test_user_can_see_unconfirmed_status(self):
         s=(FW/'include/cottage_premium_dashboard.hpp').read_text()
         self.assertIn("gate==='AWAITING_READBACK'",s)

@@ -11,6 +11,7 @@ bool c23_ble_initialized();
 void c23_tick();
 void c23_checkpoint_tick();
 TemperatureSample c23_temperature_sample();
+TemperatureSample c23_local_temperature_sample();
 // Fresh indoor humidity and a FRESH measured outdoor temperature (outdoor
 // RuuviTag), each with its own validity flag. Never returns a stale value.
 void c23_history_air(double& rh_pct,bool& rh_ok,double& outdoor_c,bool& outdoor_ok);

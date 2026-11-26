@@ -636,10 +636,11 @@ uint32_t cottage_echonet_calibration_identity() {
 }
 bool cottage_echonet_automatic_ready() {
     if(!gate || !cottage_echonet_selected())return false;
+    const bool cold=c23_mode_config().mode==CottageMode::Cold;
     xSemaphoreTake(gate,portMAX_DELAY);
     const auto mode=el::room_mode(state.active.reading);
     const bool ready=available() && state.approval.modes.heat.valid() &&
-        (mode==PumpRoomMode::Heat || mode==PumpRoomMode::Off);
+        automatic_mode_eligible(mode,cold);
     xSemaphoreGive(gate);return ready;
 }
 ControlBlock cottage_echonet_submit_automatic(const PumpRoomState& earlier,ControlSnapshot proposal,
@@ -654,10 +655,11 @@ ControlBlock cottage_echonet_submit_automatic(const PumpRoomState& earlier,Contr
     if(available() && state.approval.modes.heat.valid() &&
        earlier.configuration_generation==revision.load() && earlier.endpoint_generation==state.active.link.endpoint &&
        earlier.link_generation==state.active.link.wifi && earlier.request_generation==state.request_generation &&
-       (mode==PumpRoomMode::Off || mode==PumpRoomMode::Heat)) {
+       automatic_mode_eligible(mode,proposal.explicit_cold)) {
         const auto initial=proposal.proposal;
         const auto limits=state.approval.modes.heating();
         proposal.current_heat=mode==PumpRoomMode::Heat;
+        proposal.current_other=mode==PumpRoomMode::Other;
         proposal.current_setpoint_c=state.active.reading.setpoint_c?double(*state.active.reading.setpoint_c):NAN;
         proposal.cn105_link_fresh=proposal.bridge_get_ok=true;
         proposal.ms_since_mode_change=state.dwell.since_change(millis());

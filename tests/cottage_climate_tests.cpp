@@ -207,6 +207,27 @@ int main() {
            !cold.advisory_heat_needed && !cold.physical_writes_allowed);
     cfg.mode=CottageMode::Drying;
     auto dry=evaluate_cottage_mode(cfg,air,true,true,8,0);
+    {
+        const auto moist=calculate_air_moisture(12,72);
+        const auto advice=evaluate_cottage_mode(cfg,moist,true,true,16,7ULL*3600000);
+        assert(advice.has_target && advice.target_c>12 && advice.target_c<20);
+        assert(advice.drying.valid && near(advice.drying.estimated_rh_at_target_pct,65,0.001));
+        const auto same_vapour=calculate_air_moisture(20,relative_humidity_at_temperature(moist,20));
+        const auto exchange=estimate_ventilation(moist,same_vapour);
+        assert(exchange.available && !exchange.possible_drying && near(exchange.drying_equivalent_gm3,0));
+        assert(!assess_drying_heat(moist,20,0).valid);
+        BootstrapInput input{};input.heating={18,28,1,true,true};
+        input.desired_room_c=13;input.indoor_fresh=true;input.indoor_c=12;
+        input.below_native_minimum_cycle=true;
+        auto start=bootstrap_price_decision(input);
+        assert(start.action==BootstrapAction::HeatSetpoint && start.heat_setpoint_c==18);
+        assert(start.below_native_minimum_cycle && !start.low_temperature_cycle);
+        input.indoor_c=13;
+        assert(bootstrap_price_decision(input).action==BootstrapAction::Off);
+        input.heating.off=false;
+        assert(bootstrap_price_decision(input).action==BootstrapAction::Unavailable);
+    }
+
     assert(dry.has_target && near(dry.target_c,12,1e-8) &&
            !dry.advisory_heat_needed &&
            dry.advisory==ModeAdvisory::MonitoringHumidity);

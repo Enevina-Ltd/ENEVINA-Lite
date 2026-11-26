@@ -4,7 +4,7 @@ import unittest
 
 SOURCE=(Path(__file__).resolve().parents[1]/
         "firmware/cottage/src/main.cpp").read_text(encoding="utf-8")
-READ=SOURCE.split("static bool cn105_bridge_get(bool& heating,double& target) {",1)[1].split(
+READ=SOURCE.split("static bool cn105_bridge_get(enevina::PumpRoomMode& observed_mode,double& target) {",1)[1].split(
     "static bool cn105_bridge_post(",1)[0]
 POST=SOURCE.split("static bool cn105_bridge_post(",1)[1].split(
     "static bool control_current_image_sha256",1)[0]

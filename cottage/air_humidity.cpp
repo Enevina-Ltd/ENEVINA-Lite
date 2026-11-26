@@ -26,8 +26,34 @@ VentilationEstimate estimate_ventilation(const AirMoisture& in,
     v.available=true;v.inside_outside_c=in.temperature_c-out.temperature_c;
     v.inside_minus_outside_gm3=
         in.absolute_humidity_gm3-out.absolute_humidity_gm3;
-    v.possible_drying=v.inside_minus_outside_gm3>1.0;
+    // Compare moisture at equal temperature/approximately equal air
+    // pressure. Raw g/m3 at different temperatures is not sufficient:
+    // a cold air mass expands when warmed indoors.
+    v.inside_minus_outside_vapour_pa=in.vapour_pressure_pa-out.vapour_pressure_pa;
+    v.drying_equivalent_gm3=2.167*v.inside_minus_outside_vapour_pa/(in.temperature_c+273.15);
+    v.possible_drying=v.drying_equivalent_gm3>1.0;
     return v;
+}
+double relative_humidity_at_temperature(const AirMoisture& air,double target_c) {
+    if(!air.valid || !std::isfinite(air.vapour_pressure_pa) || air.vapour_pressure_pa<=0 ||
+       !std::isfinite(target_c) || target_c<-45 || target_c>75)
+        return std::numeric_limits<double>::quiet_NaN();
+    const double es_pa=611.2*std::exp(17.62*target_c/(243.12+target_c));
+    return 100.0*air.vapour_pressure_pa/es_pa; // >100 means saturation would intervene
+}
+DryingHeatAssessment assess_drying_heat(const AirMoisture& indoor,double target_c,double relief_rh_pct) {
+    DryingHeatAssessment a{};
+    if(!indoor.valid || !std::isfinite(relief_rh_pct) || relief_rh_pct<30 || relief_rh_pct>90 ||
+       !std::isfinite(indoor.vapour_pressure_pa) || indoor.vapour_pressure_pa<=0)return a;
+    const double x=std::log(indoor.vapour_pressure_pa/(611.2*relief_rh_pct/100.0));
+    const double relief=243.12*x/(17.62-x);
+    const double rh=relative_humidity_at_temperature(indoor,target_c);
+    if(!std::isfinite(relief) || !std::isfinite(rh) || !std::isfinite(indoor.dew_point_c))return a;
+    a.valid=true;a.relief_temperature_c=relief;
+    a.estimated_rh_at_target_pct=std::min(100.0,rh);
+    a.air_dewpoint_margin_c=indoor.temperature_c-indoor.dew_point_c;
+    a.air_near_saturation=a.air_dewpoint_margin_c<=2.0;
+    return a;
 }
 namespace {
 int16_t clamp_i16(double v) {
@@ -186,7 +212,7 @@ void MoistureMonitor::tick(uint64_t now,bool bound) {
 }
 CottageModePlan evaluate_cottage_mode(const CottageModeConfig& cfg,
        const AirMoisture& indoor,bool fresh,
-       bool outdoor_ok,double outside,uint64_t elevated_rh_ms) {
+       bool outdoor_ok,double outside,uint64_t elevated_rh_ms,double relief_rh_pct) {
     CottageModePlan p{};
     p.mode=cfg.mode;
     if(cfg.mode==CottageMode::Cold) {
@@ -210,7 +236,10 @@ CottageModePlan evaluate_cottage_mode(const CottageModeConfig& cfg,
            cfg.drying_delta_c<3||cfg.drying_delta_c>5) {
             p.advisory=ModeAdvisory::NoOutdoorTemperature;return p;
         }
-        p.target_c=std::clamp(outside+cfg.drying_delta_c,5.0,20.0);
+        const double offset_cap=std::clamp(outside+cfg.drying_delta_c,5.0,20.0);
+        p.target_c=offset_cap;
+        p.drying=assess_drying_heat(indoor,offset_cap,relief_rh_pct);
+        if(!p.drying.valid) {p.advisory=ModeAdvisory::SensorUnavailable;return p;}
         p.has_target=true;
         // elevated_rh_ms is already gated by MoistureMonitor's adjustable
         // RH threshold and 5 %-point clear hysteresis. Rechecking the
@@ -219,6 +248,12 @@ CottageModePlan evaluate_cottage_mode(const CottageModeConfig& cfg,
             p.advisory=ModeAdvisory::MonitoringHumidity;
             return p; // never heat on a single high RH sample.
         }
+        // Only heat as much as can reduce the persistent RH exposure,
+        // capped by the user's existing outside+delta policy. Do not
+        // mistake reduced RH or a predicted dew-point margin for drying
+        // of the building's materials.
+        p.target_c=std::clamp(std::min(offset_cap,p.drying.relief_temperature_c),5.0,20.0);
+        p.drying=assess_drying_heat(indoor,p.target_c,relief_rh_pct);
         p.advisory=ModeAdvisory::DryingSuggested;
     } else if(cfg.mode==CottageMode::Hold ||
               cfg.mode==CottageMode::Occupied) {

@@ -579,9 +579,10 @@ void cottage_wf_rac_register_routes(WebServer& web) {
 uint32_t cottage_wf_rac_configuration_generation() {return revision.load();}
 bool cottage_wf_rac_automatic_ready() {
     if(!lock || !cottage_wf_rac_selected())return false;
+    const bool cold=c23_mode_config().mode==CottageMode::Cold;
     xSemaphoreTake(lock,portMAX_DELAY);
     const auto mode=heating_mode(state.active.reading);
-    const bool result=can_queue() && (mode==PumpRoomMode::Off || mode==PumpRoomMode::Heat);
+    const bool result=can_queue() && automatic_mode_eligible(mode,cold);
     xSemaphoreGive(lock);
     return result;
 }
@@ -601,10 +602,11 @@ ControlBlock cottage_wf_rac_submit_automatic(const PumpRoomState& earlier,Contro
         const auto& reading=state.active.reading;
         const auto mode=heating_mode(reading);
         const auto limits=state.approval.limits;
-        if(mode==PumpRoomMode::Off || mode==PumpRoomMode::Heat) {
+        if(automatic_mode_eligible(mode,proposal.explicit_cold)) {
             const auto initial=proposal.proposal;
             proposal.cn105_link_fresh=proposal.bridge_get_ok=true;
             proposal.current_heat=mode==PumpRoomMode::Heat;
+            proposal.current_other=mode==PumpRoomMode::Other;
             proposal.current_setpoint_c=reading.target_c.value_or(NAN);
             proposal.ms_since_mode_change=state.dwell.since_change(millis());
             const auto decision=choose_pump_control(proposal,limits,HeatTransition::Combined);

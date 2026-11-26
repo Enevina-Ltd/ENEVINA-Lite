@@ -33,10 +33,12 @@ class SerialHeatingService {
     using Patch=typename Protocol::Patch;
     static constexpr uint32_t poll_interval=15000,valid_age=60000;
     struct Link {
-        uint32_t endpoint=0,wifi=0;
+        uint32_t endpoint=0;
         bool current() const {
-            return endpoint==site_settings_endpoint_generation() &&
-                wifi==cottage_wifi_link_generation();
+            // A UART is independent of Wi-Fi link generations. The pump
+            // endpoint, UART generation, configuration and fresh sample
+            // are checked separately before every read/write.
+            return endpoint==site_settings_endpoint_generation();
         }
     };
     struct Sample {
@@ -97,7 +99,7 @@ class SerialHeatingService {
     inline static std::atomic<uint32_t> revision{0};
     inline static Link active_link{};
 
-    static Link live_link() {return {site_settings_endpoint_generation(),cottage_wifi_link_generation()};}
+    static Link live_link() {return {site_settings_endpoint_generation()};}
     static bool fresh(const Sample& sample) {
         return sample.received && sample.link.current() && millis()-sample.received_ms<=valid_age;
     }
@@ -157,7 +159,7 @@ class SerialHeatingService {
     static Sample poll(uint32_t baud,const Link& link) {
         if(!Protocol::valid_baud(baud) || !link.current())return {};
         if(!cottage_pump_uart.owned_by(Protocol::owner) || baud!=active_baud ||
-           active_link.endpoint!=link.endpoint || active_link.wifi!=link.wifi) {
+           active_link.endpoint!=link.endpoint) {
             disconnect();
             cottage_pump_uart.begin(Protocol::owner,baud,Protocol::format);
             active_baud=baud;active_link=link;
@@ -447,9 +449,10 @@ public:
     static uint32_t bus_generation() {return cottage_pump_uart.generation();}
     static bool automatic_ready() {
         if(!gate || !selected())return false;
+        const bool cold=c23_mode_config().mode==CottageMode::Cold;
         xSemaphoreTake(gate,portMAX_DELAY);
         const auto mode=Protocol::heating_mode(state.active.climate);
-        const bool enabled=can_queue() && (mode==PumpRoomMode::Heat || mode==PumpRoomMode::Off);
+        const bool enabled=can_queue() && automatic_mode_eligible(mode,cold);
         xSemaphoreGive(gate);
         return enabled;
     }
@@ -468,11 +471,12 @@ public:
            earlier.endpoint_generation==state.active.link.endpoint) {
             const auto& reading=state.active.climate;
             const auto mode=Protocol::heating_mode(reading);
-            if(mode==PumpRoomMode::Off || mode==PumpRoomMode::Heat) {
+            if(automatic_mode_eligible(mode,proposal.explicit_cold)) {
                 const auto initial=proposal.proposal;
                 const auto limits=state.limits;
                 proposal.cn105_link_fresh=proposal.bridge_get_ok=true;
                 proposal.current_heat=mode==PumpRoomMode::Heat;
+                proposal.current_other=mode==PumpRoomMode::Other;
                 proposal.current_setpoint_c=reading.target_c.value_or(NAN);
                 proposal.ms_since_mode_change=state.dwell.since_change(millis());
                 const auto decision=choose_pump_control(proposal,limits,HeatTransition::Combined);
@@ -517,8 +521,7 @@ public:
         out.automatic_confirmed_utc=state.automatic_confirmed_utc;
         if(approved())out.heating=state.limits;
         xSemaphoreGive(gate);
-        if(!fresh(sample) || sample.bus_generation!=cottage_pump_uart.generation() ||
-           sample.received_utc<1700000000)return out;
+        if(!fresh(sample) || sample.bus_generation!=cottage_pump_uart.generation())return out;
         out.source=PumpStateSource::VerifiedBus;
         out.protocol=Protocol::protocol(sample.climate);
         out.type=HeatPumpType::AirToAir;
@@ -527,11 +530,13 @@ public:
         if(sample.climate.target_c)out.setpoint_c=*sample.climate.target_c;
         if(sample.temperature.indoor_c)out.indoor_c=*sample.temperature.indoor_c;
         if(sample.temperature.outdoor_c)out.outdoor_c=*sample.temperature.outdoor_c;
-        out.evidence={sample.received_utc,sample.received_utc,true};
+        out.local_bus_sample=true;out.local_capture_ms=sample.received_ms;
+        if(sample.received_utc>=1700000000)
+            out.evidence={sample.received_utc,sample.received_utc,true};
         return out;
     }
     static void tick() {
-        static uint32_t last=0,last_endpoint=0,last_wifi=0;
+        static uint32_t last=0,last_endpoint=0;
         if(cottage_ota_network_maintenance())return;
         const auto link=live_link();
         const bool is_selected=selected();
@@ -539,7 +544,7 @@ public:
         auto job=state.job;
         const bool explicit_test=job.baud!=0;
         if(!explicit_test && is_selected && Protocol::valid_baud(state.pair.baud) &&
-           (millis()-last>=poll_interval || link.endpoint!=last_endpoint || link.wifi!=last_wifi))
+           (millis()-last>=poll_interval || link.endpoint!=last_endpoint))
             job={state.pair.baud,link};
         const auto limits=state.limits;
         state.job={};
@@ -603,7 +608,7 @@ public:
             }
         }
         xSemaphoreGive(gate);
-        last=millis();last_endpoint=job.link.endpoint;last_wifi=job.link.wifi;
+        last=millis();last_endpoint=job.link.endpoint;
     }
 };
 }

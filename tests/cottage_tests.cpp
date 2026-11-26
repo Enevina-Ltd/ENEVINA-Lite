@@ -93,6 +93,22 @@ static void room_temperature_uses_the_selected_fresh_source() {
     pump.evidence.source_utc=now-8;
     const auto c=room_temperature_sample(selected,ruuvi,pump,now);
     check(valid_temperature(c,now) && c.captured_utc==now-8,"original verified UART time");
+    const TemperatureSample local_ruuvi{true,0,10.5,true,1000};
+    const auto local=local_room_temperature_sample({},local_ruuvi,{},2000);
+    check(valid_local_temperature(local,2000) && local.captured_utc==0 && local.indoor_c==10.5,
+          "clockless local Ruuvi, no invented UTC");
+    check(!valid_temperature(local,now),"boot-relative sample must not train UTC model");
+    check(!local_room_temperature_sample({},local_ruuvi,{},181001).received,"stale local Ruuvi");
+    pump.local_bus_sample=true;pump.local_capture_ms=1000;
+    const auto local_pump=local_room_temperature_sample(selected,{},pump,2000);
+    check(valid_local_temperature(local_pump,2000) && local_pump.indoor_c==21.0,"clockless verified UART");
+    pump.source=PumpStateSource::DirectLan;
+    check(!local_room_temperature_sample(selected,local_ruuvi,pump,2000).received,"no clockless LAN inference");
+    pump.source=PumpStateSource::VerifiedBus;pump.local_bus_sample=false;
+    check(!local_room_temperature_sample(selected,local_ruuvi,pump,2000).received,"missing local proof");
+    const TemperatureSample wrapped{true,0,10,true,UINT32_MAX-10};
+    check(valid_local_temperature(wrapped,50),"millis wrap");
+
 }
 
 static void optimize_residential_setpoint_schedule() {

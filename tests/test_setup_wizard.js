@@ -517,9 +517,16 @@ console.log('devices step helpers ok');
   await assert.rejects(A.wzFinish(),/MIDEA_NOT_READY/);
   assert.deepEqual(events,[],'keep the wizard open if automatic control is refused');
   ctx.state.site.pump_adapter='mitsubishi_cn105_esphome';
-  ctx.fetchJSON=async()=>({control_connection:'12/8/0',control_armed:false,air:{mode:1,config_token:'current'}});
-  await assert.rejects(A.wzFinish(),/Ylläpitolämpö/);
-  assert.deepEqual(events,[],'unsupported mode cannot request automatic heating');
+  ctx.requestControlPermission=async (enabled,token)=>events.push(['permission',enabled,token]);
+  for(const mode of [0,1,2,3]){
+    ctx.fetchJSON=async()=>({control_connection:'12/8/0',control_armed:false,air:{mode,config_token:'current'}});
+    await A.wzFinish();
+    assert.deepEqual(events,[['permission',true,'current'],['setup','true']],'all four valid modes use the same explicit arming endpoint');
+    events.length=0;
+  }
+  ctx.fetchJSON=async()=>({control_connection:'12/8/0',control_armed:false,air:{mode:99,config_token:'current'}});
+  await assert.rejects(A.wzFinish(),/Valitse ensin toimintatila/);
+  assert.deepEqual(events,[],'unknown mode cannot arm');
   A.WZ.controlBasis='12/7/0';
   await assert.rejects(A.wzFinish(),/yhteysasetukset ovat muuttuneet/);
   assert.deepEqual(events,[],'a changed pump connection cannot be armed by an older setup page');

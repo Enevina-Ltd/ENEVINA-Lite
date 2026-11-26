@@ -33,7 +33,11 @@ public:
     void reset(uint32_t now) { command_dispatched(now); seen_=-1; }
     void command_dispatched(uint32_t now) { last_change_=now; initial_observation_allowed_=false; }
     void observe(bool heating,uint32_t now,bool first_starts_dwell=false) {
-        const int seen=heating?1:0;
+        observe_mode(heating?PumpRoomMode::Heat:PumpRoomMode::Off,now,first_starts_dwell);
+    }
+    void observe_mode(PumpRoomMode mode,uint32_t now,bool first_starts_dwell=false) {
+        if(mode==PumpRoomMode::Unknown){reset(now);return;}
+        const int seen=static_cast<int>(mode);
         if(seen_<0?first_starts_dwell:
            (seen!=seen_ || static_cast<uint32_t>(now-last_observation_)>observation_gap_ms))
             last_change_=now;
@@ -46,7 +50,11 @@ public:
     void observe_bridge(bool heating,uint32_t now) {
         if(seen_<0 && initial_observation_allowed_)
             last_change_=now-mitsubishi_min_mode_dwell_ms;
-        observe(heating,now);
+        observe_mode(heating?PumpRoomMode::Heat:PumpRoomMode::Off,now);
+    }
+    void observe_bridge_mode(PumpRoomMode mode,uint32_t now) {
+        if(seen_<0 && initial_observation_allowed_)last_change_=now-mitsubishi_min_mode_dwell_ms;
+        observe_mode(mode,now);
     }
     uint32_t since_change(uint32_t now) const {
         return static_cast<uint32_t>(now-last_change_);
@@ -64,6 +72,8 @@ struct ControlSnapshot {
     bool cn105_link_fresh=false;
     bool bridge_get_ok=false; // fresh GET from device, not pump-UART proof
     bool current_heat=false;
+    bool current_other=false; // verified powered mode, not OFF
+    bool explicit_cold=false; // owner-selected Cold only, never inferred from temperature
     double current_setpoint_c=0;
     BootstrapDecision proposal{};
     // Time since the last HEAT<->OFF change that Lite sent OR observed via the
@@ -118,6 +128,12 @@ inline bool mode_change_allowed(ControlStep step,uint32_t since_ms,
     }
     return since_ms>=dwell_ms;
 }
+// A heating optimizer must not commandeer cooling/dry/auto. Only the
+// owner's explicit Cold request may stop a verified other powered mode.
+inline bool automatic_mode_eligible(PumpRoomMode mode,bool explicit_cold) {
+    return mode==PumpRoomMode::Off || mode==PumpRoomMode::Heat ||
+        (mode==PumpRoomMode::Other && explicit_cold);
+}
 inline ControlProposal choose_pump_control(const ControlSnapshot& s,
                                           const PumpHeatingLimits& limits,
                                           HeatTransition start,
@@ -132,6 +148,10 @@ inline ControlProposal choose_pump_control(const ControlSnapshot& s,
     if(s.proposal.action==BootstrapAction::Unavailable ||
        s.proposal.action==BootstrapAction::Hold) {
         out.gate=ControlBlock::NoProposal;return out;
+    }
+    if(s.current_other && (!s.explicit_cold || s.proposal.action!=BootstrapAction::Off ||
+                           s.proposal.reason!=BootstrapReason::NoHeatingRequested)) {
+        out.gate=ControlBlock::NotInHeatingMode;return out;
     }
     if(s.proposal.action==BootstrapAction::HeatSetpoint) {
         if(!limits.accepts(s.proposal.heat_setpoint_c)) {
@@ -149,7 +169,7 @@ inline ControlProposal choose_pump_control(const ControlSnapshot& s,
             out.gate=ControlBlock::AlreadyApplied;return out;
         }
     } else if(s.proposal.action==BootstrapAction::Off) {
-        if(!s.current_heat) {
+        if(!s.current_heat && !s.current_other) {
             out.gate=ControlBlock::AlreadyApplied;return out;
         }
         if(!limits.off) {out.gate=ControlBlock::UnsupportedCommand;return out;}

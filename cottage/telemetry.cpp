@@ -23,6 +23,24 @@ bool valid_temperature(const TemperatureSample& s,int64_t now,int64_t age) {
     return s.received && age_ok(s.captured_utc,now,age) &&
         std::isfinite(s.indoor_c) && s.indoor_c>=-10 && s.indoor_c<=45;
 }
+bool valid_local_temperature(const TemperatureSample& s,uint32_t now_ms,uint32_t age_ms) {
+    return s.received && s.monotonic_valid && age_ms>0 &&
+        static_cast<uint32_t>(now_ms-s.captured_ms)<=age_ms &&
+        std::isfinite(s.indoor_c) && s.indoor_c>=-10 && s.indoor_c<=45;
+}
+TemperatureSample local_room_temperature_sample(RoomTemperatureConfig config,
+        const TemperatureSample& ruuvi,const PumpRoomState& pump,uint32_t now_ms) {
+    if(!valid_room_temperature_config(config))return {};
+    TemperatureSample sample=ruuvi;
+    if(config.source==RoomTemperatureSource::Pump) {
+        if(pump.source!=PumpStateSource::VerifiedBus || !pump.local_bus_sample)return {};
+        sample={true,0,pump.indoor_c,true,pump.local_capture_ms};
+    }
+    if(!valid_local_temperature(sample,now_ms))return {};
+    sample.captured_utc=0; // the local path never creates UTC evidence
+    sample.indoor_c+=static_cast<double>(config.correction_c100)/100.0;
+    return valid_local_temperature(sample,now_ms)?sample:TemperatureSample{};
+}
 TemperatureSample room_temperature_sample(RoomTemperatureConfig config,
         const TemperatureSample& ruuvi,const PumpRoomState& pump,int64_t now_utc) {
     if(!valid_room_temperature_config(config))return {};
