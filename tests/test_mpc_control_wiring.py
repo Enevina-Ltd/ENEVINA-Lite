@@ -152,7 +152,10 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn('pi.defrost_reports=defrost.generation', WORKER)
         self.assertIn('in.pump_defrost_hold=cn105_defrost_defer_write', MAIN)
         self.assertIn('p.defrost_reports!=in.defrost_reports', ARB)
-        self.assertIn('cn105_defrost_uart_verified",false', MAIN)
+        self.assertIn('cn105_defrost_uart_verified",defrost.source_verified', MAIN)
+        self.assertIn('cn105_defrost.note(CN105DefrostSource::VerifiedPoll,', MAIN)
+        self.assertIn("verified.defrost.has_value()", MAIN)
+        self.assertIn("maintenance_cycles->observe(collect_cycles || keep_trial_evidence", WORKER)
         self.assertIn('mitsubishi_min_mode_dwell_ms', POST)
 
     def test_panasonic_requires_explicit_pump_bus_evidence(self):

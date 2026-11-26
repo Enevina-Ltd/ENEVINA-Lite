@@ -3474,9 +3474,14 @@ static void status_endpoint() {
             xSemaphoreGive(lock_data);
         }
     } else cJSON_AddNullToObject(root,"maintenance_ceiling_c");
-    {
-        MaintenanceCycleReport cycle;
-        xSemaphoreTake(lock_data,portMAX_DELAY);cycle=maintenance_cycle_snapshot;xSemaphoreGive(lock_data);
+    // Keep the expanded report off the bounded Arduino web-loop stack.
+    std::unique_ptr<MaintenanceCycleReport,decltype(&heap_caps_free)> cycle_copy(
+        static_cast<MaintenanceCycleReport*>(heap_caps_malloc(sizeof(MaintenanceCycleReport),
+            MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)),heap_caps_free);
+    if(cycle_copy) {
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        const auto& cycle=*new(cycle_copy.get()) MaintenanceCycleReport(maintenance_cycle_snapshot);
+        xSemaphoreGive(lock_data);
         const bool show_cycle_data=bootstrap.maintenance_storage ||
             (cycle.site_generation==site_settings_generation() && cycle.config_generation==c23_config_generation() &&
              (trial.strategy!=CycleStrategy::Existing ||
