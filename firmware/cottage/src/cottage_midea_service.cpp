@@ -265,6 +265,21 @@ const char* read_code(int status) {
     }
     return "not_tested";
 }
+// An old DHCP address may have been reused by another appliance. A
+// transport/authentication failure can therefore require identity recovery
+// even when TCP connects. Never downgrade or discard the saved credentials.
+bool rediscovery_needed(int status) {
+    using R=enevina::midea::ReadStatus;
+    switch(static_cast<R>(status)) {
+        case R::ConnectionFailed:
+        case R::InvalidAddress:
+        case R::AuthenticationFailed:
+        case R::ProtocolFailed:
+        case R::UnsupportedState:
+            return true;
+        default:return false;
+    }
+}
 struct BooleanControl {
     const char* name;
     uint32_t field;
@@ -1582,7 +1597,7 @@ void cottage_midea_recovery_tick() {
         uint64_t device_id=0;
         if(configured && is_midea_selected() && revision.load()==scan_revision &&
            !pairing.pending && !config_updating && !control_busy && !control_pending.load() &&
-           last_result.load()==static_cast<int>(ReadStatus::ConnectionFailed) &&
+           rediscovery_needed(last_result.load()) &&
            decode_device_id(saved.device_id,device_id)) {
             for(size_t i=0;i<discovery_job.count();++i) {
                 const auto& hit=discovery_job.hit(i);
@@ -1613,7 +1628,7 @@ void cottage_midea_recovery_tick() {
     xSemaphoreTake(mutex,portMAX_DELAY);
     const bool needed=configured && is_midea_selected() && !pairing.pending &&
         !config_updating && !control_busy && !control_pending.load() &&
-        last_result.load()==static_cast<int>(ReadStatus::ConnectionFailed);
+        rediscovery_needed(last_result.load());
     scan_revision=revision.load();
     xSemaphoreGive(mutex);
     if(needed){last_scan=now;scan=discovery_job.start(now,link);}

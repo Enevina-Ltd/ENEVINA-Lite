@@ -115,9 +115,14 @@ class MideaPairingWorker(unittest.TestCase):
         self.assertIn("pilot.enabled",route)
     def test_recovery_requires_same_unambiguous_identity(self):
         recovery=SERVICE.split("void cottage_midea_recovery_tick()",1)[1]
-        for item in ("hit.id!=device_id","hit.protocol!=saved.protocol","hit.conflicted","discovery_job.truncated()","revision.load()==scan_revision"):
+        for item in ("hit.id!=device_id","hit.protocol!=saved.protocol","hit.conflicted","discovery_job.truncated()","revision.load()==scan_revision","rediscovery_needed(last_result.load())"):
             self.assertIn(item,recovery)
         self.assertNotIn("write_device",recovery)
         self.assertNotIn("persist_config(",recovery)
+        policy=SERVICE.split("bool rediscovery_needed(int status)",1)[1].split("struct BooleanControl",1)[0]
+        for error in ("ConnectionFailed","AuthenticationFailed","InvalidAddress","ProtocolFailed","UnsupportedState"):
+            self.assertIn("case R::"+error+":",policy)
+        self.assertNotIn("case R::Ok:",policy)
+        self.assertNotIn("case R::ResourceBusy:",policy)
 
 if __name__=="__main__":unittest.main()
