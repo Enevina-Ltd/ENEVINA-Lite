@@ -21,6 +21,8 @@ struct CN105ProvenPoll {
     double setpoint_c=0;
     double compressor_hz=0;
     ObservedPumpMode mode=ObservedPumpMode::Unknown;
+    std::optional<bool> defrost;
+    std::optional<bool> fault;
 };
 class CN105SourceProofVerifier final {
 public:
@@ -66,6 +68,8 @@ public:
         validated.setpoint_c=in.setpoint_c;
         validated.compressor_hz=in.compressor_hz;
         validated.mode=in.mode;
+        validated.defrost=in.defrost;
+        validated.fault=in.fault;
         validated.evidence={in.received_utc,in.oldest_uart_read_utc,true};
         if(!valid_cn105(validated,in.received_utc)) {
             tracker_.invalidate();

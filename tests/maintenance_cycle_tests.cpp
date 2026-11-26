@@ -35,7 +35,88 @@ struct Fixture {
         begin();
     }
 };
+static void natural_phase_regression() {
+    HeatPhaseObserver observer;
+    HeatPhaseSample sample{};
+    sample.heat=true;sample.generation=1;sample.utc=100;sample.hz=38;
+    sample.pump_room=14;sample.room=12;sample.setpoint=16;sample.outdoor=-12;sample.watts=850;
+    assert(observer.observe(sample)==HeatPhase::Starting);
+    sample.utc+=30;sample.room=12.3;
+    assert(observer.observe(sample)==HeatPhase::Heating);
+    sample.utc+=30;sample.pump_room=16;sample.room=12.35;sample.hz=0;
+    assert(observer.observe(sample)==HeatPhase::Unknown);
+    assert(observer.observe(sample)==HeatPhase::Unknown); // duplicate cannot qualify
+    sample.clear_of_defrost=true;
+    sample.utc+=30;
+    assert(observer.observe(sample)==HeatPhase::Unknown);
+    sample.utc+=30;
+    assert(observer.observe(sample)==HeatPhase::ThermostatStop);
+    sample.defrost=true;sample.utc+=30;sample.hz=55;
+    assert(observer.observe(sample)==HeatPhase::Defrost);
+    sample.defrost=false;sample.utc+=30;sample.hz=0;
+    assert(observer.observe(sample)==HeatPhase::Recovery);
+    sample.hz=38;sample.utc+=30;
+    assert(observer.observe(sample)==HeatPhase::Recovery);
+    sample.utc+=30;sample.room=12.65;
+    assert(observer.observe(sample)==HeatPhase::Recovery);
+    sample.utc+=30;sample.room=12.7;sample.hz=18;sample.watts=300;
+    assert(observer.observe(sample)==HeatPhase::Heating);
+    sample.utc+=30;sample.room=12.75;
+    assert(observer.observe(sample)==HeatPhase::Modulating);
+    sample.outdoor=-20;sample.utc+=30;
+    assert(observer.observe(sample)==HeatPhase::Heating);
+    sample.fault=true;sample.utc+=30;
+    assert(observer.observe(sample)==HeatPhase::Fault);
+}
+
+static void trial_control_regression() {
+    CycleTrial t{};
+    t.strategy=CycleStrategy::Thermostat;t.lower=11.5;t.upper=16;t.started_utc=100;
+    t.expires_utc=200;t.expires_ms=1000;t.site=3;t.config=5;t.authorization=7;
+    assert(t.current(100,999,3,5,7) && !t.current(100,999,3,5,8));
+    assert(!t.current(200,999,3,5,7) && !t.current(199,1000,3,5,7));
+    BootstrapDecision d{};
+    d.action=BootstrapAction::Off;d.requested_room_c=12;d.low_temperature_cycle=true;
+    const auto apply=[&](double room,HeatPhase phase){return cycle_trial_proposal(d,t,room,true,16,phase);};
+    assert(apply(12.0,HeatPhase::Heating).action==BootstrapAction::Hold);
+    assert(apply(12.0,HeatPhase::Unknown).action==BootstrapAction::Hold);
+    assert(apply(16.0,HeatPhase::Heating).action==BootstrapAction::Off);
+    assert(apply(16.0,HeatPhase::Defrost).action==BootstrapAction::Hold);
+    assert(apply(12.0,HeatPhase::ThermostatStop).reason==BootstrapReason::ThermostatCycleEnd);
+    assert(apply(12.0,HeatPhase::Modulating).action==BootstrapAction::Hold);
+    assert(apply(11.4,HeatPhase::Modulating).heat_setpoint_c==16);
+    t.strategy=CycleStrategy::Modulation;
+    assert(apply(12.0,HeatPhase::Modulating).reason==BootstrapReason::ModulationCycleEnd);
+    assert(apply(11.9,HeatPhase::Modulating).action==BootstrapAction::Hold);
+
+    Fixture f;
+    f.s.strategy=CycleStrategy::Thermostat;f.s.trial_revision=1;
+    f.s.trial_lower=11;f.s.trial_upper=16.5;
+    f.tick(false,11.5);
+    f.s.phase=HeatPhase::Starting;
+    f.begin();
+    f.s.phase=HeatPhase::ThermostatStop;
+    f.tick(true,12.5,500);
+    f.s.phase_stop_command=true;
+    for(int i=0;i<17;++i)f.tick(false,12.5-i/16.0);
+    f.begin();
+    const auto& result=f.r.trials[1];
+    assert(result.cycle.valid && result.phase_end_seen && result.startup_seen);
+    assert(result.cycle.cost_valid && result.total_cost>result.cycle.cost);
+    assert(result.total_kwh>result.cycle.energy_kwh && result.loss_degree_hours>0);
+    assert(std::abs(result.total_kwh-result.cycle.energy_kwh-result.baseload_kwh)<1e-9);
+    assert(f.r.completed==0 && f.r.trial_counts[1]==1);
+    MaintenanceCycleReport evidence{};
+    evidence.trials[0].lower=11;evidence.trials[0].upper=16.5;
+    evidence.trial_matched={2,2,1,2};
+    evidence.trial_cost_per_hour={0.12,0.08,0.06,0.10};
+    assert(select_observed_cycle_strategy(evidence,11,16.5,true)==CycleStrategy::Thermostat);
+    assert(select_observed_cycle_strategy(evidence,11,16.5,false)==CycleStrategy::Forecast);
+    assert(select_observed_cycle_strategy(evidence,11,16,true)==CycleStrategy::Forecast);
+}
 int main(){
+    natural_phase_regression();
+    trial_control_regression();
     BootstrapInput in{};in.heating={16,26,0.5,true,true};in.indoor_fresh=true;in.desired_room_c=12;
     in.low_temperature_cycle=true;in.maintenance_storage=true;in.maintenance_ceiling_c=15.8;
     // Without price data, never charge the building to an unexplained 15.8 C.

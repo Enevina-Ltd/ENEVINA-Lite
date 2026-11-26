@@ -44,7 +44,8 @@ enum class BootstrapAction : uint8_t { Unavailable, HeatSetpoint, Off, Hold };
 enum class BootstrapReason : uint8_t {
     MissingTemperature, MissingPrices, NoHeatingRequested, TemperatureLow, TemperatureHigh,
     CheapWindow, ExpensiveWindow, ThermostatWithoutPrices, NeutralPriceWindow,
-    DeadbandHold, LowTargetReached, PumpCapabilitiesUnknown
+    DeadbandHold, LowTargetReached, PumpCapabilitiesUnknown,
+    NaturalCycleHold, ThermostatCycleEnd, ModulationCycleEnd
 };
 // CN105 HEAT cannot request a setpoint below 16 C. A lower room target
 // requires an external room thermostat, not a continuous HEAT request.
@@ -343,6 +344,9 @@ inline const char* bootstrap_reason_name(BootstrapReason reason) {
     case BootstrapReason::NeutralPriceWindow:return "NEUTRAL_COST_WINDOW";
     case BootstrapReason::DeadbandHold:return "HOLD_IN_DEADBAND";
     case BootstrapReason::LowTargetReached:return "LOW_TARGET_REACHED";
+    case BootstrapReason::NaturalCycleHold:return "NATURAL_CYCLE_HOLD";
+    case BootstrapReason::ThermostatCycleEnd:return "THERMOSTAT_CYCLE_END";
+    case BootstrapReason::ModulationCycleEnd:return "MODULATION_CYCLE_END";
     case BootstrapReason::PumpCapabilitiesUnknown:return "PUMP_CAPABILITIES_UNKNOWN";
     }
     return "UNKNOWN";

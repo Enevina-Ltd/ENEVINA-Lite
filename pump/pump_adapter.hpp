@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include "pump/measurement_quality.hpp"
 
 namespace enevina {
@@ -72,6 +73,11 @@ struct PumpRoomState {
     // This is not a trusted UTC timestamp or permission to learn a model.
     bool local_bus_sample=false;
     uint32_t local_capture_ms=0;
+    // Only set by an adapter with fresh pump-origin evidence. Missing
+    // defrost is not an observation of normal heating.
+    std::optional<double> compressor_hz;
+    std::optional<bool> defrosting;
+    std::optional<bool> fault;
 };
 
 struct PumpDescriptor {

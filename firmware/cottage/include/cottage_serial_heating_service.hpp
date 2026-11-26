@@ -530,6 +530,7 @@ public:
         if(sample.climate.target_c)out.setpoint_c=*sample.climate.target_c;
         if(sample.temperature.indoor_c)out.indoor_c=*sample.temperature.indoor_c;
         if(sample.temperature.outdoor_c)out.outdoor_c=*sample.temperature.outdoor_c;
+        if(sample.compressor_hz)out.compressor_hz=*sample.compressor_hz;
         out.local_bus_sample=true;out.local_capture_ms=sample.received_ms;
         if(sample.received_utc>=1700000000)
             out.evidence={sample.received_utc,sample.received_utc,true};

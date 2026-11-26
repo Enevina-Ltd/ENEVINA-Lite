@@ -234,7 +234,7 @@ button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:
       <article class="card cl-kpi cl-pump" id="cl-pump-card"><h2>Lämpöpumpun tila</h2><div class="metric" id="cl-pump">—</div><p class="cl-secondary" id="cl-pump-detail">Odotetaan tilatietoa.</p><p class="cl-secondary" id="cl-armed">—</p></article>
       <article class="card cl-kpi cl-cost"><h2>Sähkön kokonaishinta nyt</h2><div class="metric" id="home-total">—</div><p class="cl-secondary"><span>Spot-hinta</span> <strong id="home-price">—</strong></p><p class="cl-secondary" id="cl-price-class">—</p><p class="cl-secondary"><span>Ulkolämpötila / ennuste</span> <strong id="home-outside">—</strong></p></article>
     </div>
-    <article class="card cl-why"><span class="cl-mark" aria-hidden="true">i</span><div><h2>Miksi näin juuri nyt?</h2><p id="cl-reason">Odotetaan tietoja laitteelta.</p><p class="cl-note" id="cl-next">—</p></div></article>
+    <article class="card cl-why"><span class="cl-mark" aria-hidden="true">i</span><div><h2>Miksi näin juuri nyt?</h2><p id="cl-reason">Odotetaan tietoja laitteelta.</p><p class="cl-note" id="cl-next">—</p><p class="cl-note" id="cl-cycle-state" hidden></p><ul id="cl-cycle-results" hidden></ul></div></article>
     <div class="grid">
       <article class="card span6"><div class="cl-title"><div><h2>Sisälämpötila</h2><p>Viimeiset 24 tuntia · mitattu</p></div><button class="cl-link" data-view="history" type="button">Historia</button></div>
         <div class="cl-metrics"><div><small>Alin mitattu</small><strong id="cl-temp-min">—</strong></div><div><small>Ylin mitattu</small><strong id="cl-temp-max">—</strong></div></div><div id="cl-temperature-chart" class="chart"><div class="empty">Historiatietoja odotetaan</div></div><p class="cl-note" id="cl-temp-note"></p></article>
@@ -2573,9 +2573,12 @@ function clExplain(s,timeline){
   };
   if(fixed[gate])return fixed[gate];
   if(s.control_source==='MPC')return clT('Rakennuksen lämpömalli sovittaa lämmityksen lämpötilarajoihin ja sähkön hintaan.','The building model plans heating around temperature limits and electricity prices.');
-  const reason=s.bootstrap_reason;
+  const reason=s.cycle_strategy==='EXISTING'?s.bootstrap_reason:(s.control_proposal_reason||s.bootstrap_reason);
   const plain={
     PUMP_CAPABILITIES_UNKNOWN:clT('Pumpun ohjauskyvykkyyttä ei ole vahvistettu.','Pump control capability has not been verified.'),
+    NATURAL_CYCLE_HOLD:clT('Lämmityspyyntö jatkuu hyväksytyn käyntijakson aikana.','The heating request continues during the approved cycle.'),
+    THERMOSTAT_CYCLE_END:clT('Varmennettu kompressoripysähdys pumpun omalla tavoitelämpötilalla.','Verified compressor stop near the pump setpoint.'),
+    MODULATION_CYCLE_END:clT('Taajuus, sähköteho ja lämpötilan nousu ovat laskeneet yhdessä.','Compressor frequency, electric power and temperature rise have fallen together.'),
     LOW_TARGET_REACHED:s.maintenance_storage?clT('Ylläpitolämpöjakson yläraja on saavutettu.','The maintenance cycle has reached its upper limit.'):clT('Ylläpitolämmön tavoite on saavutettu. Lämmityspyyntö voidaan päättää.','The maintenance-temperature target is reached. The heating request can end.'),
     BELOW_ROOM_TARGET:clT('Huone on tavoitetta kylmempi.','The room is below its target.'),
     ABOVE_ROOM_TARGET:clT('Huone on tavoitetta lämpimämpi.','The room is above its target.'),
@@ -2611,6 +2614,36 @@ function clRenderStatus(){
   text('cl-pump-detail',detail+(hz!==null?' · '+clT('Sillan kompressoritieto: ','Gateway compressor reading: ')+fmt(hz,0)+' Hz':''));
   text('cl-armed',s?.control_armed===true?clT('Automaattiohjaus sallittu','Automatic control authorised'):s?clT('Automaattiohjaus pois','Automatic control off'):'—');
   text('cl-reason',clExplain(s,clCurrentTimeline(now)));
+  const labels={SHORT:clT('Lyhyt käyntijakso','Short cycle'),
+    THERMOSTAT:clT('Pumpun termostaatti','Pump thermostat'),MODULATION:clT('Tehon lasku','Modulation'),
+    FORECAST:clT('Hinta ja lämpömalli','Price and thermal model')};
+  const phases={OFF:clT('Pois','Off'),STARTING:clT('Käynnistyy','Starting'),HEATING:clT('Lämmittää','Heating'),
+    MODULATING:clT('Pienentää tehoa','Modulating'),THERMOSTAT_STOP:clT('Termostaattipysähdys','Thermostat stop'),
+    DEFROST:clT('Sulattaa','Defrosting'),RECOVERY:clT('Palautuu sulatuksesta','Recovering'),FAULT:clT('Häiriö','Fault')};
+  const trialLabel=labels[s?.cycle_strategy];
+  const cycleState=$('cl-cycle-state');
+  if(cycleState)cycleState.hidden=!trialLabel;
+  if(trialLabel){
+    const phase=defrost?phases.DEFROST:phases[s.cycle_phase]||clT('Käyntivaihe vahvistamatta','Heat phase unverified');
+    const verifiedHz=clNum(s.cycle_compressor_hz??s.compressor_hz);
+    const watts=clNum(s.shelly_w);
+    const live=[trialLabel,phase];
+    if(verifiedHz!==null)live.push(fmt(verifiedHz,0)+' Hz');
+    if(watts!==null)live.push(fmt(watts,0)+' W '+(s.shelly_meter_pump_only?clT('pumppu','pump'):clT('mittari','meter')));
+    text('cl-cycle-state',live.join(' · '));
+  }
+  const results=$('cl-cycle-results');
+  const cycles=s?.maintenance_cycles?.trial_results||[];
+  if(results){
+    results.hidden=cycles.length===0;
+    results.replaceChildren(...cycles.map(x=>{
+      const cost=clNum(x.whole_building_estimated_cost);
+      return clNode('li','',labels[x.strategy]+' · '+x.cycles+' '+clT('jaksoa','cycles')+' · '+
+        clT('viimeisin','last')+' '+fmt(x.pump_kwh,3)+' kWh '+clT('pumppu','pump')+' / '+
+        fmt(x.whole_building_kwh,3)+' kWh '+clT('rakennus','building')+
+        (cost===null?'':' · '+clT('arvio','estimate')+' '+fmt(cost,2)+' '+(s.price_currency||'')));
+    }));
+  }
   text('cl-price-class',clCurrentTimeline(now)?clPriceClass(clCurrentTimeline(now).slots[0].class):clT('Hintaluokka ei tiedossa','Price class unknown'));
   text('cl-power-scope',s?.shelly_meter_pump_only===true?clT('Pumpun mittari nyt','Pump meter now'):s?.shelly_scope==='whole_house'?clT('Koko talon mittari nyt','Whole-home meter now'):clT('Mittauskohdetta ei ole varmistettu','Meter scope unconfirmed'));
   const tkey=JSON.stringify([s?.bootstrap_room_target_c,s?.comfort_min_c,s?.comfort_max_c,uiLanguage]);
@@ -2629,7 +2662,15 @@ function clRenderPlan(){
   clLane($('cl-plan-chart'),rows.map(p=>({t:p.utc,kind:p.heat?'on':'off',label:p.heat?clT('Suunniteltu lämmitys','Planned heating'):clT('Suunniteltu tauko','Planned pause')})),900,clT('Tuleva lämmityssuunnitelma','Future heating plan'));
   if(rows.length)clLegend($('cl-plan-chart'),[['cl-heat-on',clT('Suunniteltu lämmitys','Planned heating')],['cl-heat-off',clT('Suunniteltu tauko','Planned pause')]]);
   const active=s?.control_armed===true&&s.control_source==='MPC';
-  text('cl-next',next?(active?clT('Seuraava suunniteltu lämmitys: ','Next planned heating: '):clT('Laskennallinen ehdotus: ','Calculated suggestion: '))+clTime(next.start,true)+' – '+clTime(next.end,true):rows.length?clT('Laskettu suunnitelma ei pyydä lämmitystä tällä aikavälillä.','The calculated plan has no heating in this period.'):clT('Tulevan lämmityksen tarkkaa ajankohtaa ei vielä tiedetä.','The next heating time is not yet known.'));
+  const tariff=s?.maintenance_tariff;
+  const coast=!next&&tariff?.valid===true&&clValidTime(tariff.cooling_deadline_utc)?tariff.cooling_deadline_utc:null;
+  const planned=!next&&tariff?.valid===true&&clValidTime(tariff.next_planned_start_utc)?tariff.next_planned_start_utc:null;
+  if(planned||coast){
+    const info=[];
+    if(planned)info.push(clT('Arvio seuraavasta käynnistyksestä ','Estimated next start ')+clTime(planned,true));
+    if(coast)info.push(clT('Jäähtymisrajan arvio ','Estimated cooling deadline ')+clTime(coast,true));
+    text('cl-next',info.join(' · '));
+  }else text('cl-next',next?(active?clT('Seuraava suunniteltu lämmitys: ','Next planned heating: '):clT('Laskennallinen ehdotus: ','Calculated suggestion: '))+clTime(next.start,true)+' – '+clTime(next.end,true):rows.length?clT('Laskettu suunnitelma ei pyydä lämmitystä tällä aikavälillä.','The calculated plan has no heating in this period.'):clT('Tulevan lämmityksen tarkkaa ajankohtaa ei vielä tiedetä.','The next heating time is not yet known.'));
   text('cl-plan-note',rows.length?(active?clT('Koko näkyvän suunnitelman jaksot, myös meneillään oleva vartti. Suunnitelma voi muuttua uusista mittauksista.','Slots in the displayed plan, including the current quarter-hour. The plan may change with new readings.'):clT('Vain laskennallinen ehdotus; ei aktiivinen ohjaussuunnitelma.','Calculated suggestion only; not an active control plan.')):clT('Ei voimassa olevaa lämpömallin suunnitelmaa. Hinta- tai termostaattiohjaus voi silti toimia.','No valid thermal-model plan. Price or thermostat control may still operate.'));
 }
 function clEnergy(d){
