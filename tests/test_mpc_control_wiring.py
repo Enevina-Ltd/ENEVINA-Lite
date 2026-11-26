@@ -30,7 +30,7 @@ class MpcControlWiring(unittest.TestCase):
         self.assertNotIn("bootstrap_preview(", POST)
         # The arbiter falls back to the existing price/thermostat decision.
         self.assertIn("out.proposal=in.bootstrap;", ARB)
-        self.assertIn("in.bootstrap=bootstrap_preview(now,t);", MAIN)
+        self.assertIn("in.bootstrap=bootstrap_preview(now,t,state.heating);", MAIN)
 
     def test_direct_lan_history_and_freshness_use_the_selected_adapter(self):
         pump = MAIN.split("static enevina::PumpRoomState optimizer_pump_state(", 1)[1].split("\n}\n", 1)[0]

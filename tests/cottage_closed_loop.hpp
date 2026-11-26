@@ -194,7 +194,7 @@ public:
             const bool weather_ok=!in(i,s_.weather_out_begin,s_.weather_out_end);
             const bool prices_ok=!in(i,s_.price_out_begin,s_.price_out_end);
             // --- price controller inputs (next 8 slots) ---
-            BootstrapInput bi{};
+            BootstrapInput bi{};bi.heating={16,26,0.5,true,true};
             bi.indoor_fresh=sensor_ok;
             bi.indoor_c=t_meas;
             bi.desired_room_c=s_.target_c;
@@ -311,7 +311,7 @@ private:
             hz=join_forecast_horizon(now,now-600,slot_utc(issue),prices.data(),
                 prices.size(),weather.data(),weather.size(),sim_pricer,nullptr,192,
                 mpc_min_horizon_slots);
-        PlannerInput pi{};
+        PlannerInput pi{};pi.pump_limits={16,26,0.5,true,true};
         pi.now_utc=now;pi.identifier=&id;pi.meter_pump_only=s_.meter_pump_only;
         pi.currency_scale=1.0;
         pi.heating_allowed=true;pi.target_valid=true;pi.target_c=s_.target_c;
@@ -341,7 +341,7 @@ private:
                 }
             }
         }
-        ArbiterInput ai{};
+        ArbiterInput ai{};ai.pump_limits={16,26,0.5,true,true};
         ai.now_utc=now;ai.temperature_fresh=sensor_ok;ai.indoor_c=t_meas;
         const auto rep=id.report(now);
         ai.calibrated=rep.state==CalibrationState::Calibrated;

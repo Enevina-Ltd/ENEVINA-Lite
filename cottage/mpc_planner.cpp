@@ -11,15 +11,12 @@ bool choose_setpoints(const PumpHeatingLimits& limits,const ComfortBand& band,
        !std::isfinite(limits.minimum_c) || !std::isfinite(limits.maximum_c) ||
        limits.minimum_c<5 || limits.maximum_c>35 || limits.minimum_c>limits.maximum_c)
         return false;
-    const double lo=std::ceil(limits.minimum_c/limits.step_c)*limits.step_c;
-    const double hi=std::floor(limits.maximum_c/limits.step_c)*limits.step_c;
-    if(lo>hi)return false;
     const double candidates[]={band.lower_c,band.target_c,
         band.target_c+thermostat_band,band.upper_c+thermostat_band};
     controls.heat_setpoint_count=0;
     controls.permit_off=limits.off;
     for(const auto raw:candidates) {
-        const double setpoint=std::clamp(std::round(raw/limits.step_c)*limits.step_c,lo,hi);
+        const double setpoint=limits.quantized(raw);
         if(!limits.accepts(setpoint))return false;
         if(controls.heat_setpoint_count==0 ||
            setpoint>controls.heat_setpoints_c[controls.heat_setpoint_count-1])
@@ -72,6 +69,9 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
     if(!in.temperature_fresh || !std::isfinite(in.indoor_c))
         return no_plan(MpcFallback::TemperatureStale);
     if(!in.pump_state_known) return no_plan(MpcFallback::PumpStateUnknown);
+    if(!rec.variable_setpoints &&
+       (!in.pump_limits.accepts(cn105_minimum_heat_setpoint_c) || !in.pump_limits.off))
+        return no_plan(MpcFallback::PumpStateUnknown);
     if(in.indoor_c>band.upper_c) return no_plan(MpcFallback::AboveComfortCeiling);
     if(!in.horizon || in.horizon->bridge.status!=BridgeStatus::Ready)
         return no_plan(in.horizon && (in.horizon->bridge.status==BridgeStatus::Gap ||
@@ -136,10 +136,11 @@ PlannerOutput plan_mpc(const PlannerInput& in,PlanRow* rows) {
         if(!choose_setpoints(in.pump_limits,band,p.thermostat_band_c,controls))
             return no_plan(MpcFallback::PumpStateUnknown);
         if(rec.low_temperature_cycle) {
-            if(!in.pump_limits.accepts(cn105_minimum_heat_setpoint_c))
+            const double native_min=in.pump_limits.quantized(in.pump_limits.minimum_c);
+            if(!std::isfinite(native_min))
                 return no_plan(MpcFallback::PumpStateUnknown);
             controls.heat_setpoint_count=1;
-            controls.heat_setpoints_c[0]=cn105_minimum_heat_setpoint_c;
+            controls.heat_setpoints_c[0]=native_min;
         }
     }
     // Receding horizon: end at the room target (inside the band), never

@@ -79,7 +79,7 @@ inline BaselineResult simulate_baseline(BaselinePolicy policy,const Parameters& 
             std::array<double,N> next{};
             const bool full=t+N<=count;
             for(size_t k=0;full && k<N;++k) next[k]=periods[t+k].total_price_eur_per_kwh;
-            BootstrapInput in{};
+            BootstrapInput in{};in.heating={16,26,0.5,true,true};
             in.indoor_c=s.indoor_c;
             in.indoor_fresh=true;
             in.desired_room_c=o.target_c;

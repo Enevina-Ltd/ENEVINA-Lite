@@ -632,9 +632,6 @@ ControlBlock cottage_gree_submit_automatic(const PumpRoomState& earlier,ControlS
         const auto& reading=*state.sample.reading;
         if(!reading.power || reading.mode==Mode::Heat) {
             const auto initial=proposal.proposal;
-            if(initial.action==BootstrapAction::HeatSetpoint)
-                proposal.proposal.heat_setpoint_c=std::clamp(std::round(initial.heat_setpoint_c),
-                    state.limits.minimum_c,state.limits.maximum_c);
             proposal.current_heat=heating(reading);
             proposal.current_setpoint_c=*reading.setpoint_c;
             proposal.cn105_link_fresh=proposal.bridge_get_ok=true;

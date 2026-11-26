@@ -27,7 +27,7 @@ static bool load(const char* name,std::vector<int64_t>& utc,std::vector<double>&
 // so that only the price class can decide between heat/off.
 static BootstrapReason controller_reason(const std::vector<double>& total,size_t i,size_t window,
                                          double fraction,double indoor,double target) {
-    BootstrapInput in{};
+    BootstrapInput in{};in.heating={16,26,0.5,true,true};
     in.indoor_fresh=true;in.indoor_c=indoor;in.desired_room_c=target;
     const size_t n=std::min(window,total.size()-i);
     in.next_total_prices=total.data()+i;in.price_count=n;in.prices_contiguous_and_fresh=true;

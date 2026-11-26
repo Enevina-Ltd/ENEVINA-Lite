@@ -6,12 +6,34 @@
 using namespace enevina::cottage;
 static bool near(double a,double b){return std::fabs(a-b)<1e-8;}
 int main() {
+    {
+        BootstrapInput generic{};
+        generic.indoor_fresh=true;generic.indoor_c=8;generic.desired_room_c=10;
+        assert(bootstrap_price_decision(generic).reason==BootstrapReason::PumpCapabilitiesUnknown);
+        for(const enevina::PumpHeatingLimits limits:{
+            enevina::PumpHeatingLimits{8,30,1,true,true},
+            enevina::PumpHeatingLimits{10,28,0.5,true,true},
+            enevina::PumpHeatingLimits{18,30,1,true,true},
+            enevina::PumpHeatingLimits{20,32,2,true,true}}) {
+            generic.heating=limits;
+            auto d=bootstrap_price_decision(generic);
+            assert(d.action==BootstrapAction::HeatSetpoint);
+            assert(limits.accepts(d.heat_setpoint_c));
+            assert(d.heat_setpoint_c==limits.quantized(10.5));
+        }
+        generic.heating={8,30,1,true,false};generic.indoor_c=15;
+        assert(bootstrap_price_decision(generic).action==BootstrapAction::Unavailable);
+        generic.heating={8,30,1,true,true};
+        assert(bootstrap_price_decision(generic).action==BootstrapAction::Off);
+        generic.indoor_c=8;generic.heating.step_c=0;
+        assert(bootstrap_price_decision(generic).action==BootstrapAction::Unavailable);
+    }
     const double cheap[]={0.10,0.20,0.30,0.40,0.50,0.60,0.70,0.80};
     const double expensive[]={0.80,0.10,0.20,0.30,0.40,0.50,0.60,0.70};
     {
         // Below-minimum CN105 room thermostat: do not start on a tiny
         // price-induced temperature fluctuation, and end at the room target.
-        BootstrapInput low{};
+        BootstrapInput low{};low.heating={16,26,0.5,true,true};
         low.indoor_fresh=true;low.desired_room_c=12;
         low.low_temperature_cycle=true;
         const double neutral[]={.2,.2,.2,.2,.2,.2,.2,.2};
@@ -59,7 +81,7 @@ int main() {
         assert(!low_temperature_stop(bootstrap_price_decision(low)));
     }
 
-    BootstrapInput in{};
+    BootstrapInput in{};in.heating={16,26,0.5,true,true};
     assert(bootstrap_price_decision(in).reason==BootstrapReason::MissingTemperature);
     in.indoor_fresh=true;in.indoor_c=15.0;
     auto no_prices=bootstrap_price_decision(in);
@@ -70,7 +92,7 @@ int main() {
     // Swedish/Norwegian amounts are in major local currency units/kWh.
     // They must not be rejected using the old EUR-only [-1,10] guard.
     const double sek_prices[]={-1.5,-1.2,1.2,1.3,1.4,1.5,1.6,1.7};
-    BootstrapInput sek{};
+    BootstrapInput sek{};sek.heating={16,26,0.5,true,true};
     sek.indoor_fresh=true;sek.indoor_c=12;sek.desired_room_c=13;
     sek.next_total_prices=sek_prices;sek.price_count=8;sek.prices_contiguous_and_fresh=true;
     sek.price_limit_scale=12;sek.min_price_advantage_eur_per_kwh=0.06;
@@ -112,7 +134,7 @@ int main() {
     // 11.49 -> 11.51 -> 11.49 -> 11.51 must not toggle the pump mode; the
     // same holds with a cheap current slot near the upper edge.
     for(const double* prices:{expensive,cheap}) {
-        BootstrapInput w{};
+        BootstrapInput w{};w.heating={16,26,0.5,true,true};
         w.indoor_fresh=true;w.desired_room_c=12;
         w.next_total_prices=prices;w.price_count=8;w.prices_contiguous_and_fresh=true;
         const double lower[]={11.49,11.51,11.49,11.51,11.49};

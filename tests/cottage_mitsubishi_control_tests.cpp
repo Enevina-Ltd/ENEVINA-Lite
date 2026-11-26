@@ -39,7 +39,7 @@ int main() {
         // Regression for a small room that reaches its maintenance target
         // before the default 30-minute HEAT request is over.
         constexpr uint32_t minute=60000;
-        BootstrapInput low{};low.indoor_fresh=true;low.desired_room_c=12;
+        BootstrapInput low{};low.heating={16,26,0.5,true,true};low.indoor_fresh=true;low.desired_room_c=12;
         low.low_temperature_cycle=true;
         auto s=base();s.current_setpoint_c=16;s.current_heat=true;
         s.ms_since_mode_change=8*minute;
@@ -82,7 +82,7 @@ int main() {
     {
         constexpr uint32_t minute=60u*1000u;
         auto start=base();
-        BootstrapInput room{};
+        BootstrapInput room{};room.heating={16,26,0.5,true,true};
         room.indoor_fresh=true;
         room.indoor_c=7.2;
         room.desired_room_c=12;
@@ -225,7 +225,7 @@ int main() {
         uint32_t since=mitsubishi_min_mode_dwell_ms,last_change_slot=0;
         unsigned changes=0;
         for(unsigned slot=0;slot<16;++slot) {
-            BootstrapInput in{};
+            BootstrapInput in{};in.heating={16,26,0.5,true,true};
             in.indoor_fresh=true;in.desired_room_c=12;
             in.indoor_c=slot%2?12.00:11.99;
             in.next_total_prices=slot%2?dearp:cheapp;in.price_count=8;
@@ -296,7 +296,7 @@ int main() {
     // the executable sequence is valid SETPOINT -> HEAT, with fresh CN105
     // HTTP GET verified at runtime and the owner's 30-min mode dwell.
     {
-        BootstrapInput in{};
+        BootstrapInput in{};in.heating={16,26,0.5,true,true};
         in.indoor_fresh=true;
         in.desired_room_c=12.0;
         in.indoor_c=11.585;

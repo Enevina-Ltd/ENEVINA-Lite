@@ -30,7 +30,7 @@ static BootstrapDecision controller(const FreshnessInputs& in) {
         d.reason=BootstrapReason::NoHeatingRequested;
         return d;
     }
-    BootstrapInput b{};
+    BootstrapInput b{};b.heating={16,26,0.5,true,true};
     b.indoor_fresh=in.sensor_fresh;b.indoor_c=20.0;b.desired_room_c=21.0;
     static const double prices[8]={0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1};
     const bool eligible=in.clock_trusted&&in.price_current_valid&&in.price_last_fetch<=in.now&&

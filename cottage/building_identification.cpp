@@ -147,7 +147,9 @@ bool mpc_comfort_band(double target_c,ComfortBand& out,const ComfortLimits& limi
     // thermostat deadband) is contradictory, not a limit to be ignored.
     if(limits.min_c>0) {
         if(limits.min_c>target_c-0.5+1e-9) return false;
-        lower=variable_setpoints?limits.min_c:std::max(lower,limits.min_c);
+        // A low-temperature maintenance target is not its hard floor.
+        // Use an explicitly configured minimum in the monetary MPC too.
+        lower=(variable_setpoints || maintenance_storage)?limits.min_c:std::max(lower,limits.min_c);
     }
     if(limits.max_c>0) {
         if(limits.max_c<target_c+0.5-1e-9) return false;

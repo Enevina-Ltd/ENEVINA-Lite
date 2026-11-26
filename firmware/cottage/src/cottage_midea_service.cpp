@@ -686,17 +686,6 @@ enevina::cottage::ControlBlock cottage_midea_submit_automatic(
         decision.cn105_link_fresh=decision.bridge_get_ok=true;
         decision.ms_since_mode_change=midea_mode_history.since_change(millis());
         const auto proposed=decision.proposal;
-        if(decision.proposal.action==BootstrapAction::HeatSetpoint) {
-            const auto& caps=current.heating;
-            const double lo=std::ceil(caps.minimum_c/caps.step_c)*caps.step_c;
-            const double hi=std::floor(caps.maximum_c/caps.step_c)*caps.step_c;
-            if(!std::isfinite(lo) || !std::isfinite(hi) || lo>hi)
-                return ControlBlock::UnsupportedCommand;
-            const double wanted=decision.proposal.heat_setpoint_c;
-            if(!std::isfinite(wanted))return ControlBlock::UnsupportedCommand;
-            decision.proposal.heat_setpoint_c=std::clamp(
-                std::round(wanted/caps.step_c)*caps.step_c,lo,hi);
-        }
         const auto command=choose_pump_control(decision,current.heating,HeatTransition::Combined);
         if(command.step==ControlStep::None)return command.gate;
         ControlPatch patch{};

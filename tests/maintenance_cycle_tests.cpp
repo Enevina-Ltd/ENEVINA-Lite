@@ -36,9 +36,13 @@ struct Fixture {
     }
 };
 int main(){
-    BootstrapInput in{};in.indoor_fresh=true;in.desired_room_c=12;
+    BootstrapInput in{};in.heating={16,26,0.5,true,true};in.indoor_fresh=true;in.desired_room_c=12;
     in.low_temperature_cycle=true;in.maintenance_storage=true;in.maintenance_ceiling_c=15.8;
+    // Without price data, never charge the building to an unexplained 15.8 C.
     in.indoor_c=11.5;assert(bootstrap_price_decision(in).action==BootstrapAction::HeatSetpoint);
+    in.indoor_c=12;assert(low_temperature_stop(bootstrap_price_decision(in)));
+    const double neutral[8]={.2,.2,.2,.2,.2,.2,.2,.2};
+    in.next_total_prices=neutral;in.price_count=8;in.prices_contiguous_and_fresh=true;
     in.indoor_c=12.4;assert(bootstrap_price_decision(in).action==BootstrapAction::Hold);
     in.indoor_c=15.79;assert(bootstrap_price_decision(in).action==BootstrapAction::Hold);
     in.indoor_c=15.8;assert(low_temperature_stop(bootstrap_price_decision(in)));
@@ -51,13 +55,15 @@ int main(){
     assert(bootstrap_price_decision(in).action==BootstrapAction::Unavailable);
     ComfortBand band{};assert(mpc_comfort_band(12,band,{},false,true));
     assert(std::fabs(band.upper_c-15.8)<1e-8 && std::fabs(band.lower_c-11.5)<1e-8);
+    assert(mpc_comfort_band(12,band,{9,13},false,true));
+    assert(band.lower_c==9);
     assert(mpc_comfort_band(12,band,{0,13},false,true));
     assert(band.upper_c<=13);
     assert(mpc_comfort_band(12,band,{},false,false) && band.upper_c==13);
-    Fixture f;f.begin();assert(f.r.candidate==2);
-    f.complete();assert(f.r.completed==1 && f.r.candidate==0);
-    f.complete();assert(f.r.completed==2 && f.r.candidate==1);
-    f.complete();assert(f.r.completed==3 && f.r.candidate==2);
+    Fixture f;f.begin();assert(f.r.candidate==0);
+    f.complete();assert(f.r.completed==1 && f.r.candidate==1);
+    f.complete();assert(f.r.completed==2 && f.r.candidate==2);
+    f.complete();assert(f.r.completed==3 && f.r.candidate==0);
     f.complete();f.complete();f.complete();
     assert(f.r.completed==6 && f.r.candidate==2);
     assert(f.r.compared[0]==2 && f.r.compared[1]==2 && f.r.compared[2]==2);
@@ -75,19 +81,102 @@ int main(){
     regime.tick(true,12,1500);
     assert(regime.r.completed==0 && !regime.r.last.valid);
     for(auto n:regime.r.compared)assert(n==0);
-    assert(regime.r.candidate==2);
+    assert(regime.r.candidate==0);
     // Small changes within the same heat regime retain completed evidence.
     Fixture jitter;jitter.begin();jitter.complete();
     jitter.s.base_w=178;++jitter.s.base_revision;jitter.tick(true,12,1500);
-    assert(jitter.r.completed==1 && jitter.r.compared[2]==1);
+    assert(jitter.r.completed==1 && jitter.r.compared[0]==1);
     // An immediate material change without a missing sample also resets.
     jitter.s.base_w=1000;++jitter.s.base_revision;jitter.tick(true,12,1500);
-    assert(jitter.r.completed==0 && jitter.r.compared[2]==0);
+    assert(jitter.r.completed==0 && jitter.r.compared[0]==0);
     // A costly forecast is not permission to spend energy exploring short
-    // cycles. Keep the qualified wide candidate until cheaper evidence.
-    Fixture cost;cost.s.price_priority=true;cost.begin();
-    cost.complete();assert(cost.r.completed==1 && cost.r.candidate==2);
-    cost.complete();assert(cost.r.completed==2 && cost.r.candidate==2);
+    // cycles. Keep the ordinary target until wider storage has evidence.
+    Fixture cost;cost.s.price_priority=true;cost.s.tariff_adjusted=true;cost.begin();
+    cost.complete();assert(cost.r.tariff_completed==1 && cost.r.completed==0 && cost.r.candidate==0);
+    cost.complete();assert(cost.r.tariff_completed==2 && cost.r.completed==0 && cost.r.candidate==0);
+    assert(cost.r.last_tariff.valid && cost.r.last_tariff.energy_kwh>0);
+    for(auto n:cost.r.compared)assert(n==0);
+    // A tariff change during a cycle must not contaminate the ordinary
+    // candidate comparison or discard the measured incremental energy.
+    Fixture shifted;shifted.begin();shifted.s.tariff_adjusted=true;
+    shifted.tick(true,11.6,1500);shifted.s.tariff_adjusted=false;
+    shifted.complete();
+    assert(shifted.r.tariff_completed==1 && shifted.r.completed==0);
+    assert(shifted.r.last_tariff.start_room_c==11.5);
+    shifted.s.base_w=800;++shifted.s.base_revision;shifted.tick(true,12,1500);
+    assert(shifted.r.tariff_completed==0 && !shifted.r.last_tariff.valid);
+    // Reboot and OTA restore only complete, CRC-checked records with a
+    // stable identity and a newly observed compatible background load.
+    MaintenanceCycleKey key{11,3,27,12,0,0};
+    MaintenanceCycleImage image{};
+    assert(f.learner.checkpoint_dirty() && f.learner.save(key,image));
+    f.learner.checkpoint_saved();assert(!f.learner.checkpoint_dirty());
+    auto sample=f.s;
+    sample.utc+=60;sample.heat=false;sample.request_generation=0;
+    sample.sent=sample.confirmed=sample.failed=0;
+    MaintenanceCycleLearner reboot;
+    assert(reboot.restore(key,42,73,sample,image));
+    auto resumed=reboot.observe(true,3,42,73,12,sample);
+    assert(resumed.restored && !resumed.checkpoint_dirty && resumed.completed==6);
+    assert(resumed.site_generation==42 && resumed.config_generation==73);
+    assert(resumed.candidate==2 && resumed.compared==f.r.compared);
+    // The interrupted HEAT request was not restored.
+    sample.utc+=60;
+    resumed=reboot.observe(true,3,42,73,12,sample);
+    assert(resumed.completed==6 && resumed.rejected==0);
+    auto wrong=key;wrong.identity++;
+    assert(!reboot.restore(wrong,42,73,sample,image));
+    wrong=key;wrong.tariff++;
+    assert(!reboot.restore(wrong,42,73,sample,image));
+    wrong=key;wrong.lower=9;
+    assert(!reboot.restore(wrong,42,73,sample,image));
+    auto foreign_load=sample;foreign_load.base_w=800;
+    assert(!reboot.restore(key,42,73,foreign_load,image));
+    auto stale=sample;stale.valid=false;
+    assert(!reboot.restore(key,42,73,stale,image));
+    auto corrupt=image;corrupt.records[0][0].energy+=1;
+    assert(!reboot.restore(key,42,73,sample,corrupt));
+    // An internally CRC-consistent but impossible record also fails.
+    corrupt=image;corrupt.records[0][0].flags=255;
+    corrupt.crc=history_crc16(reinterpret_cast<const uint8_t*>(&corrupt),offsetof(MaintenanceCycleImage,crc));
+    assert(!reboot.restore(key,42,73,sample,corrupt));
+    auto future=sample;future.utc=image.last.end_utc-1;
+    assert(!reboot.restore(key,42,73,future,image));
+    auto aged=sample;aged.utc+=31*86400;
+    assert(reboot.restore(key,42,73,aged,image));
+    resumed=reboot.report(aged.outdoor_c);
+    assert(resumed.candidate==0 && !resumed.last.valid);
+    for(auto n:resumed.compared)assert(n==0);
+    // Price-directed evidence survives reboot but is not a matched-cycle
+    // comparison or a reason to resume a previous heating command.
+    assert(cost.learner.save(key,image));
+    auto tariff_sample=cost.s;tariff_sample.utc+=60;
+    assert(reboot.restore(key,4,5,tariff_sample,image));
+    resumed=reboot.report(tariff_sample.outdoor_c);
+    assert(resumed.tariff_completed==2 && resumed.last_tariff.valid);
+    assert(resumed.completed==0 && resumed.candidate==0);
+    // A material base-load change dirties the checkpoint immediately.
+    reboot.observe(true,3,4,5,12,tariff_sample);
+    tariff_sample.base_w=900;tariff_sample.utc+=60;++tariff_sample.base_revision;
+    resumed=reboot.observe(true,3,4,5,12,tariff_sample);
+    assert(resumed.checkpoint_dirty && !resumed.restored && resumed.tariff_completed==0);
+    assert(reboot.save(key,image));
+    assert(image.tariff_completed==0 && image.last_tariff.flags==0);
+    Fixture missed;missed.begin();
+    missed.s.valid=false;missed.s.measurement_gap_only=true;
+    missed.tick(true,11.55,1500);
+    assert(missed.r.rejected==0);
+    missed.s.valid=true;missed.s.measurement_gap_only=false;
+    missed.tick(true,11.6,1500);missed.complete();
+    assert(missed.r.completed==1 && missed.r.rejected==0);
+    Fixture unverified;unverified.begin();
+    unverified.s.valid=false;unverified.s.measurement_gap_only=true;
+    ++unverified.s.request_generation;unverified.tick(true,11.6,1500);
+    assert(unverified.r.rejected==1);
+    Fixture missing_long;missing_long.begin();
+    missing_long.s.valid=false;missing_long.s.measurement_gap_only=true;
+    missing_long.s.utc+=180;missing_long.tick(true,11.6,1500);
+    assert(missing_long.r.rejected==1);
     Fixture gaps;gaps.begin();gaps.s.utc+=180;gaps.tick(true,12,1500);
     assert(gaps.r.completed==0 && gaps.r.rejected==1);
     Fixture reset;reset.begin();++reset.s.base_revision;reset.tick(true,12,1500);

@@ -32,7 +32,7 @@ int main(int argc,char** argv) {
     }
     meta.currency=argv[9];meta.area=argv[10];
     // the real controller, fed exactly like the firmware feeds it
-    BootstrapInput in{};
+    BootstrapInput in{};in.heating={16,26,0.5,true,true};
     size_t window=8;
     in.indoor_fresh=true;in.indoor_c=indoor;in.desired_room_c=target>=5?target:21;
     if(!apply_profile(in,profile,target>=5?cmin:0,target>=5?cmax:0,base_fraction,window)) return 2;

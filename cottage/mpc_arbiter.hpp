@@ -69,6 +69,7 @@ struct ArbiterInput {
     bool pump_defrost_hold=false;
     uint32_t defrost_reports=0;
     double pump_setpoint_c=0;
+    PumpHeatingLimits pump_limits{};
     // The pump readback confirmed THIS plan's first decision in its own slot
     // (set by the control path only after a matching readback).
     bool own_transition_confirmed=false;
@@ -141,6 +142,10 @@ inline MpcFallback plan_validity(const ArbiterInput& in) {
        p.defrost_reports!=in.defrost_reports)
         return MpcFallback::PlanInputsChanged;
     if(!in.pump_state_known) return MpcFallback::PumpStateUnknown;
+    if(in.bootstrap.reason==BootstrapReason::PumpCapabilitiesUnknown ||
+       (p.first_heat && !in.pump_limits.accepts(p.first_setpoint_c)) ||
+       (!p.first_heat && !in.pump_limits.off))
+        return MpcFallback::PumpStateUnknown;
     if(p.low_temperature_cycle!=
        (in.pump_gateway_request && low_temperature_cycle(in.bootstrap)) ||
        p.maintenance_storage!=(p.low_temperature_cycle && in.bootstrap.maintenance_storage))

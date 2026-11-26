@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -26,6 +27,17 @@ struct PumpHeatingLimits {
     double minimum_c=0,maximum_c=0,step_c=0;
     bool heating=false,off=false;
 
+    double quantized(double requested) const {
+        if(!heating || !std::isfinite(requested) ||
+           !std::isfinite(minimum_c) || !std::isfinite(maximum_c) ||
+           !std::isfinite(step_c) || step_c<=0 || minimum_c<=0 ||
+           maximum_c<minimum_c)return std::numeric_limits<double>::quiet_NaN();
+        const double lo=std::ceil(minimum_c/step_c-1e-9)*step_c;
+        const double hi=std::floor(maximum_c/step_c+1e-9)*step_c;
+        if(lo>hi)return std::numeric_limits<double>::quiet_NaN();
+        const double result=std::clamp(std::round(requested/step_c)*step_c,lo,hi);
+        return accepts(result)?result:std::numeric_limits<double>::quiet_NaN();
+    }
     bool accepts(double c) const {
         return heating && std::isfinite(c) && std::isfinite(step_c) && step_c>0 &&
             c>=minimum_c && c<=maximum_c &&

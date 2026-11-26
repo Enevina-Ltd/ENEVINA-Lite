@@ -84,6 +84,20 @@ int main() {
     replay.request.command_unconfirmed=false;
     for(int i=0;i<6;++i)assert(!replay.step(170).ready);
     replay.request.link_generation++;assert(!replay.step(170).ready);
+    // Real polling cadence may be much faster than one minute. The old
+    // fixed seven-entry ring never reached a five-minute span at 15 s.
+    Fixture fast;
+    for(int i=0;i<20;++i)assert(!fast.step(167,true,false,15).ready);
+    for(int i=0;i<8;++i)b=fast.step(167,true,false,15);
+    assert(b.ready && b.samples==7 && b.watts==167);
+    b=fast.step(800,true,false,15);assert(!b.ready);
+    Fixture interrupted;
+    for(int i=0;i<16;++i)assert(!interrupted.step(167,true,false,15).ready);
+    // An intervening high load must not be hidden by decimation.
+    assert(!interrupted.step(800,true,false,15).ready);
+    for(int i=0;i<20;++i)assert(!interrupted.step(167,true,false,15).ready);
+    for(int i=0;i<8;++i)b=interrupted.step(167,true,false,15);
+    assert(b.ready && b.watts==167);
     Fixture changes;
     for(int i=0;i<7;++i)b=changes.step(170);
     assert(b.ready);

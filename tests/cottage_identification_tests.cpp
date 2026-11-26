@@ -350,7 +350,7 @@ ResidentialRun residential_run(const Sim& sim,const BuildingIdentifier& id,
         mean_price+=actual.total_price_eur_per_kwh/count;
         double prices[16]{};
         for(size_t j=0;j<16;++j)prices[j]=period(i+j).total_price_eur_per_kwh;
-        BootstrapInput boot{};
+        BootstrapInput boot{};boot.heating={16,26,0.5,true,true};
         boot.indoor_fresh=true;boot.indoor_c=state.indoor_c;boot.desired_room_c=21;
         size_t window=8;
         CHECK(apply_profile(boot,OptimizationProfile::Balanced,limits.min_c,limits.max_c,0.10,window));
@@ -361,14 +361,14 @@ ResidentialRun residential_run(const Sim& sim,const BuildingIdentifier& id,
             forecast.bridge.first_utc=now;
             forecast.bridge.count=count;
             for(size_t j=0;j<count;++j)forecast.bridge.periods[j]=period(i+j);
-            PlannerInput input{};
+            PlannerInput input{};input.pump_limits={16,26,0.5,true,true};
             input.now_utc=now;input.identifier=&id;input.horizon=&forecast;
             input.heating_allowed=input.target_valid=input.temperature_fresh=input.pump_state_known=true;
             input.target_c=21;input.limits=limits;input.indoor_c=state.indoor_c;
             input.pump_heat=state.heat_requested;input.pump_setpoint_c=setpoint;
             input.minutes_in_mode=state.minutes_in_mode;input.pump_limits={16,26,0.5,true,true};
             const auto plan=plan_mpc(input,nullptr);
-            ArbiterInput current{};
+            ArbiterInput current{};current.pump_limits={16,26,0.5,true,true};
             current.now_utc=now;current.plan=plan.record;current.limits=limits;
             current.calibrated=id.calibrated(now);
             current.temperature_fresh=current.pump_state_known=true;
@@ -447,7 +447,7 @@ void test_residential_identification_and_planning() {
     forecast.bridge.count=96;
     for(size_t i=0;i<forecast.bridge.count;++i)
         forecast.bridge.periods[i]={8.0,i>=28 && i<64?0.48:0.08,0,1};
-    PlannerInput input{};
+    PlannerInput input{};input.pump_limits={16,26,0.5,true,true};
     input.now_utc=sim.utc;input.identifier=&restored;input.horizon=&forecast;
     input.heating_allowed=input.target_valid=input.temperature_fresh=input.pump_state_known=true;
     input.target_c=21;input.limits={19,23};input.indoor_c=21;
@@ -461,12 +461,15 @@ void test_residential_identification_and_planning() {
         CHECK(!rows[i].heat || input.pump_limits.accepts(rows[i].setpoint_c));
         CHECK(std::isnan(rows[i].energy_kwh) && std::isnan(rows[i].cost));
     }
-    ArbiterInput current{};
-    current.now_utc=sim.utc;current.plan=plan.record;current.limits=input.limits;
+    ArbiterInput current{};current.pump_limits={16,26,0.5,true,true};
+    current.now_utc=sim.utc;current.plan=plan.record;current.limits=input.limits;current.pump_limits=input.pump_limits;
     current.calibrated=current.temperature_fresh=current.pump_state_known=current.pump_heat=true;
     current.pump_setpoint_c=21;current.indoor_c=21;
     current.bootstrap.requested_room_c=21;
     CHECK(arbitrate(current).source==ProposalSource::Mpc);
+    current.pump_limits={};
+    CHECK(plan_validity(current)==MpcFallback::PumpStateUnknown);
+    current.pump_limits=input.pump_limits;
     current.pump_setpoint_c=24;
     CHECK(plan_validity(current)==MpcFallback::PlanInputsChanged);
 
@@ -606,7 +609,7 @@ void test_shared_meter_incremental_model() {
     horizon.bridge.first_utc=sim.utc;horizon.bridge.count=48;
     for(size_t i=0;i<horizon.bridge.count;++i)
         horizon.bridge.periods[i]={r.model.lift_ref_outdoor_c,i<24?0.12:0.30,0,1};
-    PlannerInput input{};input.now_utc=sim.utc;input.identifier=&id;input.horizon=&horizon;
+    PlannerInput input{};input.pump_limits={16,26,0.5,true,true};input.now_utc=sim.utc;input.identifier=&id;input.horizon=&horizon;
     input.heating_allowed=input.target_valid=input.temperature_fresh=input.pump_state_known=true;
     input.target_c=12;input.indoor_c=12;input.pump_heat=false;input.minutes_in_mode=120;
     input.meter_incremental=true;

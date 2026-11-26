@@ -172,7 +172,7 @@ class TimelineWiring(unittest.TestCase):
         self.assertIn("timeline_setup(site.profile", self.MAIN)
         self.assertIn("build_timeline(utc,total,n,params,*timeline)", self.MAIN)
         self.assertIn("active_control_proposal(now,indoor,&active,&fallback_price_valid)", self.MAIN)
-        self.assertIn("in.bootstrap=bootstrap_preview(now,t);", self.MAIN)
+        self.assertIn("in.bootstrap=bootstrap_preview(now,t,state.heating);", self.MAIN)
         # one classifier: the controller and the timeline share it
         self.assertIn("classify_price(in.next_total_prices", self.BOOT)
         self.assertIn("classify_price(total+i", self.TL)

@@ -532,11 +532,6 @@ ControlBlock cottage_daikin_submit_automatic(const PumpRoomState& earlier,Contro
         const auto mode=room_mode(reading);
         if(mode==PumpRoomMode::Off || mode==PumpRoomMode::Heat) {
             const auto initial=proposal.proposal;
-            if(initial.action==BootstrapAction::HeatSetpoint && std::isfinite(initial.heat_setpoint_c)) {
-                const double step=state.limits.step_c;
-                proposal.proposal.heat_setpoint_c=std::clamp(std::round(initial.heat_setpoint_c/step)*step,
-                    state.limits.minimum_c,state.limits.maximum_c);
-            }
             proposal.current_heat=mode==PumpRoomMode::Heat;
             proposal.current_setpoint_c=reading.target_c.value_or(NAN);
             proposal.cn105_link_fresh=proposal.bridge_get_ok=true;

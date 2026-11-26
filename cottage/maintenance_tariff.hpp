@@ -194,7 +194,8 @@ struct TariffCycleSolver {
 };
 inline bool tariff_schedule(const MaintenanceTariffInput& in,size_t count,
         bool conservative,MaintenanceTariffAction& action,int64_t& next_start,
-        double& advantage) {
+        double& advantage,double* proxy=nullptr) {
+    if(proxy)*proxy=INFINITY;
     action=MaintenanceTariffAction::None;next_start=0;advantage=0;
     if(!in.scratch)return false;
     auto& w=*in.scratch;
@@ -227,8 +228,13 @@ inline bool tariff_schedule(const MaintenanceTariffInput& in,size_t count,
     if(!in.heating) {
         const auto best=solver.off(0,static_cast<float>(in.room_c),remaining);
         if(!std::isfinite(best.best))return false;
+        if(proxy)*proxy=best.best;
         if(best.start<n)next_start=in.now+int64_t(best.start)*60*tariff_step_minutes;
-        if(best.start==0 && remaining==0 &&
+        if(best.start>0 && best.start<n && in.room_c>in.lower_c+0.2 &&
+           w.price[best.start]+.002*in.price_scale<w.price[0]) {
+            action=MaintenanceTariffAction::Coast;
+            advantage=0;
+        } else if(best.start==0 && remaining==0 &&
            in.room_c<=in.cycle_ceiling_c-1.0 && in.room_c>in.lower_c) {
             const float margin=std::max(.001f,float(.002*in.price_scale));
             if(!std::isfinite(best.later) || best.later-best.best>margin) {
@@ -236,7 +242,7 @@ inline bool tariff_schedule(const MaintenanceTariffInput& in,size_t count,
                 advantage=std::isfinite(best.later)?best.later-best.best:0;
             }
         }
-    } else if(remaining==0 && in.room_c>=in.target_c &&
+    } else if(remaining==0 && in.room_c>in.lower_c+0.2 &&
               in.room_c<in.cycle_ceiling_c) {
         const auto full=solver.charge(0,static_cast<float>(in.room_c),true);
         const auto stop=solver.off(0,static_cast<float>(in.room_c)+solver.afterheat,3);
@@ -313,8 +319,8 @@ inline MaintenanceTariffAdvice maintenance_tariff_decision(const MaintenanceTari
     // window, or an early stop if stored heat can bridge a cheaper window.
     MaintenanceTariffAction candidate=MaintenanceTariffAction::None;
     int64_t alternative=0;double alternative_price=0;
-    if(in.heating && in.minutes_in_mode>=cn105_low_temperature_dwell_minutes &&
-       in.room_c>=in.target_c) {
+    if((!in.heating || in.minutes_in_mode>=cn105_low_temperature_dwell_minutes) &&
+       in.room_c>floor+0.2) {
         for(size_t i=1;i+1<n && p[i].utc<=deadline;++i) {
             if(p[i].eur_per_kwh+margin<out.current_price &&
                p[i+1].eur_per_kwh+margin<out.current_price) {
@@ -322,8 +328,9 @@ inline MaintenanceTariffAdvice maintenance_tariff_decision(const MaintenanceTari
                 alternative_price=(p[i].eur_per_kwh+p[i+1].eur_per_kwh)/2;break;
             }
         }
-    } else if(!in.heating && in.minutes_in_mode>=cn105_low_temperature_dwell_minutes &&
-              max_c-in.room_c>=1.0) {
+    }
+    if(candidate==MaintenanceTariffAction::None && !in.heating &&
+       in.minutes_in_mode>=cn105_low_temperature_dwell_minutes && max_c-in.room_c>=1.0) {
         const int64_t latest=in.now+static_cast<int64_t>(
             std::max(0.25,std::min(max_coast,4.0))*3600);
         for(size_t i=1;i<n && p[i].utc<=latest;++i) {
@@ -334,35 +341,45 @@ inline MaintenanceTariffAdvice maintenance_tariff_decision(const MaintenanceTari
         }
     }
     if(candidate==MaintenanceTariffAction::None)return out;
-    if(!model) {
-        // Before room-response evidence exists, do not gamble on hours of
-        // stored heat. Only a next-quarter rise near the ordinary target
-        // can justify an early full charge; never shorten an unknown cycle.
-        if(candidate==MaintenanceTariffAction::Preheat &&
-           alternative==p[0].utc+900 && in.room_c<=in.target_c+0.5) {
-            const double before=maintenance_tariff_mean(p,n,in.now,in.now+1800);
-            const double later=maintenance_tariff_mean(p,n,alternative,alternative+1800);
-            if(std::isfinite(before)&&std::isfinite(later)&&
-               later>maintenance_loss_adjusted_price(before,double(alternative-in.now)/3600,1.0)+margin) {
-                out.action=candidate;out.avoid_exploration=true;
-                out.ceiling_c=max_c;out.alternative_utc=alternative;out.alternative_price=alternative_price;
-            }
-        }
-        return out;
-    }
+    // Do not spend energy on an unvalidated full-storage experiment.
+    // A valid price alone cannot prove the building's thermal response.
+    if(!model)return out;
     MaintenanceTariffAction nominal=MaintenanceTariffAction::None,robust=MaintenanceTariffAction::None;
     int64_t nominal_start=0,robust_start=0;double nominal_adv=0,robust_adv=0;
-    const bool first_ok=tariff_schedule(in,n,false,nominal,nominal_start,nominal_adv);
-    const bool second_ok=tariff_schedule(in,n,true,robust,robust_start,robust_adv);
+    double nominal_proxy=INFINITY,robust_proxy=INFINITY;
+    bool first_ok=tariff_schedule(in,n,false,nominal,nominal_start,nominal_adv,&nominal_proxy);
+    bool second_ok=tariff_schedule(in,n,true,robust,robust_start,robust_adv,&robust_proxy);
+    double selected_ceiling=in.cycle_ceiling_c;
+    // The learned ordinary cycle can be short. Also evaluate the allowed
+    // storage alternative when a price rise is actually reachable. Compare
+    // equal horizons and restoration targets (or reject an infeasible
+    // narrow schedule) using the existing thermal
+    // runtime-price proxy, not invented kWh or euro savings.
+    if(candidate==MaintenanceTariffAction::Preheat && max_c-in.cycle_ceiling_c>=0.5) {
+        auto storage=in;storage.cycle_ceiling_c=max_c;
+        MaintenanceTariffAction alt_nominal=MaintenanceTariffAction::None,alt_robust=MaintenanceTariffAction::None;
+        int64_t alt_start=0,alt_robust_start=0;
+        double alt_adv=0,alt_robust_adv=0,alt_proxy=INFINITY,alt_robust_proxy=INFINITY;
+        const bool alt_ok=tariff_schedule(storage,n,false,alt_nominal,alt_start,alt_adv,&alt_proxy);
+        const bool alt_robust_ok=tariff_schedule(storage,n,true,alt_robust,alt_robust_start,alt_robust_adv,&alt_robust_proxy);
+        const double proxy_margin=0.002*in.price_scale;
+        if(alt_ok && alt_robust_ok && alt_nominal==candidate && alt_robust==candidate &&
+           (!first_ok || alt_proxy+proxy_margin<nominal_proxy) &&
+           (!second_ok || alt_robust_proxy+proxy_margin<robust_proxy)) {
+            nominal=alt_nominal;robust=alt_robust;
+            nominal_start=alt_start;robust_start=alt_robust_start;
+            selected_ceiling=max_c;first_ok=second_ok=true;
+        }
+    }
     if(first_ok && second_ok && nominal_start>0 && robust_start>0)
-        out.next_start_utc=std::max(nominal_start,robust_start);
+        out.next_start_utc=std::min(nominal_start,robust_start);
     if(first_ok && second_ok && nominal==candidate && robust==candidate) {
         out.action=candidate;out.avoid_exploration=true;
         out.alternative_utc=alternative;out.alternative_price=alternative_price;
         // Full-charge scheduling uses the learned economical cycle ceiling.
         // The live temperature rule still decides the physical stop.
-        out.ceiling_c=candidate==MaintenanceTariffAction::Preheat?in.cycle_ceiling_c:
-            std::clamp(in.room_c,in.target_c,in.cycle_ceiling_c);
+        out.ceiling_c=candidate==MaintenanceTariffAction::Preheat?selected_ceiling:
+            std::clamp(in.room_c,in.lower_c+0.5,in.cycle_ceiling_c);
         out.required_room_c=out.ceiling_c;
     }
     return out;
