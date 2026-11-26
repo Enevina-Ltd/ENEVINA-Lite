@@ -24,10 +24,15 @@ struct TemperatureSample {
     bool received=false;
     int64_t captured_utc=0;
     double indoor_c=0;
+    // Boot-local evidence for a wired thermostat before clock sync.
+    // Never used by price alignment, learning, or UTC history.
+    bool monotonic_valid=false;
+    uint32_t captured_ms=0;
 };
 bool valid_cn105(const CN105Telemetry& sample,int64_t now_utc,int64_t max_age_s=180);
 bool valid_shelly(const ShellyTelemetry& sample,int64_t now_utc,int64_t max_age_s=180);
 bool valid_temperature(const TemperatureSample& sample,int64_t now_utc,int64_t max_age_s=180);
+bool valid_local_temperature(const TemperatureSample& sample,uint32_t now_ms,uint32_t max_age_ms=180000);
 enum class RoomTemperatureSource : uint8_t { Ruuvi, Pump };
 struct RoomTemperatureConfig {
     RoomTemperatureSource source=RoomTemperatureSource::Ruuvi;
@@ -39,6 +44,8 @@ inline bool valid_room_temperature_config(RoomTemperatureConfig c) {
 }
 // No implicit source fallback. Correction always applies to the selected
 // sensor. The sample retains its measurement time for the age checks.
+TemperatureSample local_room_temperature_sample(RoomTemperatureConfig config,
+        const TemperatureSample& ruuvi,const PumpRoomState& pump,uint32_t now_ms);
 TemperatureSample room_temperature_sample(RoomTemperatureConfig config,
     const TemperatureSample& ruuvi,const PumpRoomState& pump,int64_t now_utc);
 // Read-only observable state. This adapter has NO transport writer.

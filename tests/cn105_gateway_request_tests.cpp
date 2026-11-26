@@ -65,6 +65,26 @@ static void test_defrost_guard() {
 }
 int main(){
     test_defrost_guard();
+    {
+        CHECK(cn105_gateway_mode("OFF")==PumpRoomMode::Off);
+        CHECK(cn105_gateway_mode("HEAT")==PumpRoomMode::Heat);
+        for(const char* m:{"COOL","DRY","AUTO","HEAT_COOL","FAN_ONLY"})
+            CHECK(cn105_gateway_mode(m)==PumpRoomMode::Other);
+        CHECK(cn105_gateway_mode("bad")==PumpRoomMode::Unknown);
+        CHECK(cn105_gateway_mode(nullptr)==PumpRoomMode::Unknown);
+        CN105GatewayRequestHistory history;
+        constexpr int64_t utc=1800000000;
+        CHECK(history.note_mode(PumpRoomMode::Other,0,utc,10000,1,1));
+        const auto other=history.snapshot(utc,10000,1,1);
+        CHECK(other.mode==PumpRoomMode::Other);
+        CHECK(history.note_mode(PumpRoomMode::Off,0,utc+60,70000,1,1));
+        const auto off=history.snapshot(utc+60,70000,1,1);
+        CHECK(off.mode==PumpRoomMode::Off);
+        CHECK(!same_cn105_gateway_request(other,off));
+        CHECK(!history.note_mode(PumpRoomMode::Unknown,0,utc+61,71000,1,1));
+        CHECK(history.snapshot(utc+61,71000,1,1).source==PumpStateSource::None);
+    }
+
     CN105GatewayRequestHistory h;
     constexpr int64_t t=1800000000;
     constexpr uint64_t ms=100000;

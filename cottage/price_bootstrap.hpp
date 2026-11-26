@@ -92,6 +92,7 @@ struct BootstrapInput {
     // Opt in ONLY for the verified CN105 room-maintenance path, using
     // an independently selected room sensor and a below-device-minimum target.
     bool low_temperature_cycle=false;
+    bool below_native_minimum_cycle=false; // any verified HEAT/OFF adapter
     bool maintenance_storage=false;
     double maintenance_ceiling_c=0;
     bool maintenance_tariff_preheat=false;
@@ -110,6 +111,7 @@ struct BootstrapDecision {
     // Physical commands NEVER originate in this model-free module.
     bool executable=false;
     bool low_temperature_cycle=false; // scoped live room-maintenance policy
+    bool below_native_minimum_cycle=false;
     bool maintenance_storage=false;
     double maintenance_ceiling_c=0;
 };
@@ -121,7 +123,8 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
         in.desired_room_c<5.0 || in.desired_room_c>26.0) return d;
     d.requested_room_c=in.desired_room_c;
     const double device_min=in.heating.quantized(in.heating.minimum_c);
-    if(!std::isfinite(device_min)) {
+    if(!std::isfinite(device_min) ||
+       (in.desired_room_c<device_min && !in.heating.off)) {
         d.reason=BootstrapReason::PumpCapabilitiesUnknown;return d;
     }
     // Price data is OPTIONAL for maintaining a user-selected temperature.
@@ -167,8 +170,10 @@ inline BootstrapDecision bootstrap_price_decision(const BootstrapInput& in) {
     // Price room stays strictly inside the limits so the hard rules still fire.
     const double preheat=std::min(in.preheat_c,std::max(0.0,hard_hi-in.desired_room_c-0.1));
     const double coast=std::min(in.coast_c,std::max(0.0,in.desired_room_c-hard_lo-0.1));
-    if(in.low_temperature_cycle && in.desired_room_c<device_min && in.heating.off) {
-        d.low_temperature_cycle=true;
+    if((in.low_temperature_cycle || in.below_native_minimum_cycle) &&
+       in.desired_room_c<device_min && in.heating.off) {
+        d.low_temperature_cycle=in.low_temperature_cycle;
+        d.below_native_minimum_cycle=true;
         if(in.maintenance_storage) {
             if(!std::isfinite(in.maintenance_ceiling_c) ||
                in.maintenance_ceiling_c<in.desired_room_c ||

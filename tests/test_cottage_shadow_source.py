@@ -31,7 +31,7 @@ class ShadowSurfaceTests(unittest.TestCase):
         self.assertIn('control_intent_restorable(saved,site_settings_snapshot()',reg)
         self.assertIn('control_armed.store(restore && !must_revoke)',reg)
         self.assertIn('mode.mode==CottageMode::Drying',self.main)
-        self.assertIn('valid_temperature(sample,now)',self.main)
+        self.assertIn('control_temperature_fresh(sample,now)',self.main)
         self.assertIn('control_last_bridge_read_utc',self.main)
 
 

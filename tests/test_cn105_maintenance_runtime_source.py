@@ -12,7 +12,7 @@ class CN105Maintenance(unittest.TestCase):
         marker="if(proposal.action==BootstrapAction::Hold) {"
         self.assertIn(marker,body)
         earlier=body[:body.index(marker)]
-        self.assertIn("valid_temperature(sample,now)",earlier)
+        self.assertIn("control_temperature_fresh(sample,now)",earlier)
         self.assertIn("proposal.action==BootstrapAction::Unavailable",earlier)
         later=body[body.index(marker):]
         self.assertIn("ControlBlock::NoProposal",later)
@@ -24,8 +24,8 @@ class CN105Maintenance(unittest.TestCase):
                         later.index("if(bridge.source!=enevina::PumpStateSource::Gateway"))
         room=SRC.split("static enevina::PumpRoomState cn105_room_state() {",1)[1].split(
             "void cottage_midea_automatic_cancel()",1)[0]
-        self.assertIn("if(!cn105_bridge_get(heat,setpoint)",room)
-        self.assertIn("control_note_observed_mode(heat,{endpoint,link});",room)
+        self.assertIn("if(!cn105_bridge_get(observed_mode,setpoint)",room)
+        self.assertIn("control_note_observed_mode(observed_mode,{endpoint,link});",room)
         self.assertIn("PumpStateSource::Gateway",room)
         self.assertIn("ControlBlock::InputsUnverified",later)
         self.assertIn("choose_mitsubishi_control(candidate)",later)

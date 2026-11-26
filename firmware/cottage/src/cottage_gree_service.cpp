@@ -630,9 +630,10 @@ ControlBlock cottage_gree_submit_automatic(const PumpRoomState& earlier,ControlS
        earlier.endpoint_generation==state.sample.link.endpoint &&
        earlier.link_generation==state.sample.link.wifi) {
         const auto& reading=*state.sample.reading;
-        if(!reading.power || reading.mode==Mode::Heat) {
+        if(automatic_mode_eligible(heating_room_mode(reading),proposal.explicit_cold)) {
             const auto initial=proposal.proposal;
             proposal.current_heat=heating(reading);
+            proposal.current_other=heating_room_mode(reading)==PumpRoomMode::Other;
             proposal.current_setpoint_c=*reading.setpoint_c;
             proposal.cn105_link_fresh=proposal.bridge_get_ok=true;
             proposal.ms_since_mode_change=dwell_elapsed();

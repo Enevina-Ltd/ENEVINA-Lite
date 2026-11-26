@@ -17,7 +17,9 @@ AirMoisture calculate_air_moisture(double temperature_c,double rh_pct);
 struct VentilationEstimate {
     bool available=false;
     double inside_outside_c=0;
-    double inside_minus_outside_gm3=0;
+    double inside_minus_outside_gm3=0; // raw density difference (at respective temperatures)
+    double inside_minus_outside_vapour_pa=0;
+    double drying_equivalent_gm3=0; // both air masses at indoor temperature
     // A positive difference suggests drying potential, NOT an instruction
     // to ventilate a particular structure or a wall-condensation prediction.
     bool possible_drying=false;
@@ -116,12 +118,25 @@ enum class ModeAdvisory : uint8_t {
     NoHeating, SensorUnavailable, MonitoringHumidity, DryingSuggested,
     BelowTemperatureTarget, UnsupportedBelow16, NoOutdoorTemperature
 };
+struct DryingHeatAssessment {
+    bool valid=false;
+    double relief_temperature_c=0;
+    double estimated_rh_at_target_pct=0;
+    double air_dewpoint_margin_c=0;
+    bool air_near_saturation=false; // NOT a measured surface-condensation diagnosis
+};
+// Sensible heating changes RH but does not remove water. Approximate
+// constant vapour pressure (same humidity ratio, near-constant pressure).
+double relative_humidity_at_temperature(const AirMoisture& air,double target_c);
+DryingHeatAssessment assess_drying_heat(const AirMoisture& indoor,double target_c,
+                                         double relief_rh_pct);
 struct CottageModePlan {
     CottageMode mode=CottageMode::Cold;
     bool has_target=false,advisory_heat_needed=false;
     bool direct_setpoint_below_mitsubishi_min=false;
     bool physical_writes_allowed=false; // C2.3 NEVER writes to a pump.
     double target_c=0;
+    DryingHeatAssessment drying{};
     ModeAdvisory advisory=ModeAdvisory::NoHeating;
 };
 // Kuivanapito may heat only once the RH-duration condition holds. After that
@@ -137,5 +152,5 @@ inline bool drying_blocks_heat(const CottageModePlan& p) {
 CottageModePlan evaluate_cottage_mode(const CottageModeConfig& config,
       const AirMoisture& indoor,bool indoor_fresh,
       bool have_outdoor_temperature,double outdoor_c,
-      uint64_t high70_duration_ms);
+      uint64_t high70_duration_ms,double relief_rh_pct=65.0);
 }

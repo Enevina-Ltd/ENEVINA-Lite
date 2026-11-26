@@ -76,7 +76,7 @@ class MpcControlWiring(unittest.TestCase):
         self.assertGreater(stores[0], TICK and MAIN.index("decision.gate==ControlBlock::AlreadyApplied"))
         confirmed = MAIN.index("control_commands_confirmed.fetch_add(1);")
         self.assertGreater(stores[1], confirmed)
-        self.assertIn("planned_heat?(last_heating && std::fabs(last_setpoint-proposal.heat_setpoint_c)<0.01):!last_heating", MAIN)
+        self.assertIn("planned_heat?(last_mode==enevina::PumpRoomMode::Heat && std::fabs(last_setpoint-proposal.heat_setpoint_c)<0.01):last_mode==enevina::PumpRoomMode::Off", MAIN)
 
     def test_plan_bound_to_its_slot_and_calibration(self):
         self.assertIn("record.first_utc+900", MAIN)
@@ -107,7 +107,7 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn("commands.failed=control_commands_failed.load()-slot.commands_failed", WORKER)
         self.assertIn("commands.ack_utc=cn105_history_ack.utc", WORKER)
         self.assertIn("cn105-gateway-request-v2", MAIN)
-        self.assertIn("cn105_gateway_requests.note(heating,target,utc,ms,link.endpoint,link.wifi)", MAIN)
+        self.assertIn("cn105_gateway_requests.note_mode(observed_mode,target,utc,ms,link.endpoint,link.wifi)", MAIN)
         self.assertIn("cn105_gateway_requests.invalidate()", MAIN)
         self.assertIn("slot.pump_start=optimizer_pump_state(time(nullptr),false)", WORKER)
         self.assertLess(WORKER.index("cn105_room_state()"),WORKER.index("const auto request=optimizer_pump_state(now,midea)"))

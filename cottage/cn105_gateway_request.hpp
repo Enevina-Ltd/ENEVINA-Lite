@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include "pump/pump_adapter.hpp"
 #include "cottage/mitsubishi_control_policy.hpp"
 
@@ -23,6 +24,16 @@ struct CN105LearningRequest {
     bool valid=false;
     double before_fraction=-1.0; // unchanged request if -1, otherwise one switch
 };
+// Only recognized ESPHome climate modes. An unknown/missing response is
+// neither OFF nor evidence of another powered mode.
+inline PumpRoomMode cn105_gateway_mode(const char* mode) {
+    if(!mode)return PumpRoomMode::Unknown;
+    if(!std::strcmp(mode,"HEAT"))return PumpRoomMode::Heat;
+    if(!std::strcmp(mode,"OFF"))return PumpRoomMode::Off;
+    for(const char* other: {"COOL","DRY","AUTO","HEAT_COOL","FAN_ONLY"})
+        if(!std::strcmp(mode,other))return PumpRoomMode::Other;
+    return PumpRoomMode::Unknown;
+}
 class CN105GatewayRequestHistory {
 public:
     static constexpr uint64_t max_gap_ms=180000;
@@ -32,19 +43,27 @@ public:
     }
     bool note(bool heat,double target,int64_t utc,uint64_t ms,
               uint32_t endpoint,uint32_t link) {
-        if(utc<=0 || !mitsubishi_heating_limits.accepts(target)) {
+        return note_mode(heat?PumpRoomMode::Heat:PumpRoomMode::Off,target,utc,ms,endpoint,link);
+    }
+    bool note_mode(PumpRoomMode mode,double target,int64_t utc,uint64_t ms,
+                   uint32_t endpoint,uint32_t link) {
+        const bool heat=mode==PumpRoomMode::Heat;
+        if(utc<=0 || mode==PumpRoomMode::Unknown ||
+           (heat?!mitsubishi_heating_limits.accepts(target):
+                 (!std::isfinite(target) || (target!=0 && (target<5 || target>35))))) {
             invalidate();return false;
         }
         const bool continuous=valid_ && endpoint==endpoint_ && link==link_ &&
             utc>=received_utc_ && utc-received_utc_<=180 &&
             ms>=received_ms_ && ms-received_ms_<=max_gap_ms;
-        const bool mode_changed=!continuous || heat_!=heat;
+        const bool mode_changed=!continuous || mode_!=mode;
         const bool request_changed=mode_changed ||
             (heat && std::fabs(target-target_)>0.001);
         if(request_changed) {
             // Keep only a continuously bracketed single mode change; a gap,
             // reset or setpoint-only change cannot manufacture a transition.
-            transition_valid_=continuous && heat_!=heat;
+            transition_valid_=continuous && mode_!=PumpRoomMode::Other &&
+                mode!=PumpRoomMode::Other && mode_!=mode;
             transition_before_utc_=received_utc_;
             transition_after_utc_=utc;
             transition_before_ms_=received_ms_;
@@ -56,7 +75,7 @@ public:
             request_since_ms_=ms;
             ++generation_;
         }
-        valid_=true;heat_=heat;target_=target;received_utc_=utc;received_ms_=ms;
+        valid_=true;mode_=mode;target_=target;received_utc_=utc;received_ms_=ms;
         endpoint_=endpoint;link_=link;
         return true;
     }
@@ -68,7 +87,7 @@ public:
         s.type=HeatPumpType::AirToAir;
         s.protocol=PumpRoomProtocol::Cn105EspHome;
         s.source=PumpStateSource::Gateway;
-        s.mode=heat_?PumpRoomMode::Heat:PumpRoomMode::Off;
+        s.mode=mode_;
         s.setpoint_c=target_;
         s.heating=mitsubishi_heating_limits;
         s.request_generation=generation_;
@@ -85,7 +104,7 @@ public:
             end.protocol==PumpRoomProtocol::Cn105EspHome &&
             end.endpoint_generation==endpoint_ && end.link_generation==link_ &&
             end.request_generation==generation_ && end.evidence.received_utc==received_utc_ &&
-            end.mode==(heat_?PumpRoomMode::Heat:PumpRoomMode::Off) &&
+            end.mode==mode_ &&
             std::isfinite(end.setpoint_c) && std::fabs(end.setpoint_c-target_)<=0.001;
     }
     // Approximate the transition time by the midpoint of its observed GET
@@ -104,7 +123,7 @@ public:
            begin.mode==end.mode ||
            (begin.mode!=PumpRoomMode::Heat && begin.mode!=PumpRoomMode::Off) ||
            (end.mode!=PumpRoomMode::Heat && end.mode!=PumpRoomMode::Off) ||
-           end.mode!=(heat_?PumpRoomMode::Heat:PumpRoomMode::Off) ||
+           end.mode!=mode_ ||
            end.evidence.received_utc!=received_utc_)return false;
         const int64_t start=begin.evidence.received_utc,finish=end.evidence.received_utc;
         if(start<=0 || finish-start<840 || finish-start>960 ||
@@ -151,7 +170,8 @@ private:
     uint32_t transition_generation_=0;
     int64_t transition_before_utc_=0,transition_after_utc_=0;
     uint64_t transition_before_ms_=0,transition_after_ms_=0;
-    bool valid_=false,heat_=false;
+    bool valid_=false;
+    PumpRoomMode mode_=PumpRoomMode::Unknown;
     double target_=0;
     uint32_t generation_=0,endpoint_=0,link_=0;
     int64_t received_utc_=0;

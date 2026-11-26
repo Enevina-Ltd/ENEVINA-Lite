@@ -153,7 +153,11 @@ inline MpcFallback plan_validity(const ArbiterInput& in) {
     // The full-slot model cannot insist on a heating request beyond a
     // below-device-minimum room ceiling. The same plan_validity predicate
     // is used for dispatch and every published plan. Defrost wins above.
-    if((p.first_heat || in.pump_heat) && in.pump_gateway_request && low_temperature_stop(in.bootstrap) &&
+    if((p.first_heat || in.pump_heat) &&
+       (in.bootstrap.below_native_minimum_cycle || in.pump_gateway_request) &&
+       (low_temperature_stop(in.bootstrap) ||
+        (in.bootstrap.below_native_minimum_cycle && in.bootstrap.action==BootstrapAction::Off &&
+         in.bootstrap.reason==BootstrapReason::LowTargetReached)) &&
        (!p.maintenance_storage || in.indoor_c>=p.band.upper_c))
         return MpcFallback::LowTargetReached;
     // Do not start a brief, inefficient 16 C pulse merely because the

@@ -609,6 +609,18 @@ TemperatureSample c23_temperature_sample() {
     unlock();
     return out;
 }
+TemperatureSample c23_local_temperature_sample() {
+    TemperatureSample out{};
+    if(!guard)return out;
+    lock();
+    const uint64_t ms=uptime_ms();
+    if(has_indoor && indoor_binding.valid(ms) && indoor_air.valid &&
+       ms>=indoor_mono_ms && ms-indoor_mono_ms<=180000) {
+        out={true,0,indoor_air.temperature_c,true,static_cast<uint32_t>(indoor_mono_ms)};
+    }
+    unlock();
+    return out;
+}
 void c23_history_air(double& rh_pct,bool& rh_ok,double& outdoor_c,bool& outdoor_ok) {
     rh_ok=outdoor_ok=false;
     if(!guard)return;
@@ -653,7 +665,7 @@ CottageModePlan c23_current_mode_plan() {
                             weather.next_temperature_c;
     const CottageModePlan plan=evaluate_cottage_mode(
         config,indoor_air,fresh,outside_ok,outside_c,
-        alarm_engine.high70_duration_ms(ms));
+        alarm_engine.high70_duration_ms(ms),warning_limits.monitor_rh-warning_limits.clear_hysteresis_rh);
     unlock();
     return plan;
 }
@@ -722,7 +734,8 @@ void c23_append_status(cJSON* root) {
     const double exterior_c=outside_valid?outdoor_air.temperature_c:
                             weather.next_temperature_c;
     const auto plan=evaluate_cottage_mode(config,indoor_air,valid,
-        have_out_t,exterior_c,alarm_engine.high70_duration_ms(ms));
+        have_out_t,exterior_c,alarm_engine.high70_duration_ms(ms),
+        warning_limits.monitor_rh-warning_limits.clear_hysteresis_rh);
     cJSON_AddNumberToObject(air,"mode",static_cast<int>(config.mode));
     cJSON_AddNumberToObject(air,"hold_target_c",config.hold_target_c);
     cJSON_AddNumberToObject(air,"occupied_target_c",config.occupied_target_c);
@@ -804,6 +817,14 @@ void c23_append_status(cJSON* root) {
                         vent.inside_minus_outside_gm3);
     cJSON_AddBoolToObject(air,"possible_ventilation_drying",
                           vent.available && vent.possible_drying);
+    json_number_or_null(air,"inside_minus_outside_vapour_pa",vent.available,vent.inside_minus_outside_vapour_pa);
+    json_number_or_null(air,"ventilation_drying_equivalent_gm3",vent.available,vent.drying_equivalent_gm3);
+    json_number_or_null(air,"drying_relief_temperature_c",plan.drying.valid,plan.drying.relief_temperature_c);
+    json_number_or_null(air,"drying_estimated_rh_at_target_pct",plan.drying.valid,plan.drying.estimated_rh_at_target_pct);
+    json_number_or_null(air,"air_dewpoint_margin_c",valid,indoor_air.temperature_c-indoor_air.dew_point_c);
+    cJSON_AddBoolToObject(air,"air_near_saturation",valid && indoor_air.temperature_c-indoor_air.dew_point_c<=2.0);
+    cJSON_AddBoolToObject(air,"surface_condensation_known",false);
+    cJSON_AddBoolToObject(air,"heating_removes_moisture",false);
     cJSON_AddBoolToObject(air,"target_available",plan.has_target);
     json_number_or_null(air,"target_c",plan.has_target,plan.target_c);
     cJSON_AddBoolToObject(air,"target_below_16",
