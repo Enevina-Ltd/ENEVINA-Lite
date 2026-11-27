@@ -43,6 +43,17 @@ int main(){
     a=maintenance_tariff_decision(in);
     assert(a.action==MaintenanceTariffAction::Coast && a.ceiling_c>=12 && a.ceiling_c<=14);
     assert(a.avoid_exploration);
+    in.natural_cycle_start_only=true;
+    assert(maintenance_tariff_decision(in).action==MaintenanceTariffAction::None);
+    in.heating=false;in.room_c=13.5;
+    set(.15,.55,1);
+    a=maintenance_tariff_decision(in);
+    assert(a.valid && a.model_based && a.action==MaintenanceTariffAction::Preheat);
+    in.storage_ceiling_c=18.0;in.cycle_ceiling_c=18.0;
+    assert(maintenance_tariff_decision(in).valid);
+    in.room_c=11.0;assert(maintenance_tariff_decision(in).action==MaintenanceTariffAction::None);
+    in.natural_cycle_start_only=false;in.storage_ceiling_c=15.8;in.cycle_ceiling_c=15.8;
+    in.heating=true;in.room_c=14;set(.55,.15,1);a=maintenance_tariff_decision(in);
     BootstrapInput b{};b.heating={16,26,0.5,true,true};b.indoor_fresh=true;b.indoor_c=14;b.desired_room_c=12;
     b.low_temperature_cycle=true;b.maintenance_storage=true;b.maintenance_ceiling_c=a.ceiling_c;
     b.maintenance_tariff_coast=true;

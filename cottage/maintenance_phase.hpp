@@ -144,8 +144,13 @@ struct CycleTrial {
     }
 };
 
+enum class TrialStartTiming : uint8_t { Normal, Preheat, Coast };
+inline bool natural_trial_strategy(CycleStrategy s) {
+    return s==CycleStrategy::Thermostat || s==CycleStrategy::Modulation;
+}
 inline BootstrapDecision cycle_trial_proposal(BootstrapDecision fallback,const CycleTrial& trial,
-        double room,bool heat,double native,HeatPhase phase) {
+        double room,bool heat,double native,HeatPhase phase,
+        TrialStartTiming timing=TrialStartTiming::Normal) {
     if(fallback.action==BootstrapAction::Unavailable || !std::isfinite(room) ||
        !std::isfinite(native) || trial.strategy==CycleStrategy::Existing)return fallback;
     fallback.heat_setpoint_c=0;
@@ -157,6 +162,15 @@ inline BootstrapDecision cycle_trial_proposal(BootstrapDecision fallback,const C
         fallback.action=BootstrapAction::Off;
         fallback.reason=trial.strategy==CycleStrategy::Short?
             BootstrapReason::LowTargetReached:BootstrapReason::TrialRoomLimit;
+    } else if(!heat && natural_trial_strategy(trial.strategy) && fallback.price_data_valid &&
+              timing==TrialStartTiming::Coast && room>trial.lower+0.2) {
+        fallback.action=BootstrapAction::Hold;
+        fallback.reason=BootstrapReason::ExpensiveWindow;
+    } else if(!heat && natural_trial_strategy(trial.strategy) && fallback.price_data_valid &&
+              timing==TrialStartTiming::Preheat && room<trial.upper-1.0) {
+        fallback.action=BootstrapAction::HeatSetpoint;
+        fallback.heat_setpoint_c=native;
+        fallback.reason=BootstrapReason::CheapWindow;
     } else if(room<=std::max(trial.lower,fallback.requested_room_c-0.5)) {
         fallback.action=BootstrapAction::HeatSetpoint;
         fallback.heat_setpoint_c=native;

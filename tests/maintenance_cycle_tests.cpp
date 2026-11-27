@@ -87,6 +87,17 @@ static void trial_control_regression() {
     assert(apply(12.0,HeatPhase::ThermostatStop).reason==BootstrapReason::ThermostatCycleEnd);
     assert(apply(12.0,HeatPhase::Modulating).action==BootstrapAction::Hold);
     assert(apply(11.4,HeatPhase::Modulating).heat_setpoint_c==16);
+    d.price_data_valid=true;t.lower=11.0;t.upper=18.0;
+    // Only shift the beginning of an OFF cycle. No price-based interruption.
+    const auto timed=[&](double room,bool heat,TrialStartTiming timing){return cycle_trial_proposal(d,t,room,heat,16,HeatPhase::Unknown,timing);};
+    assert(timed(11.4,false,TrialStartTiming::Coast).action==BootstrapAction::Hold);
+    assert(timed(11.15,false,TrialStartTiming::Coast).action==BootstrapAction::HeatSetpoint);
+    assert(timed(13.5,false,TrialStartTiming::Preheat).reason==BootstrapReason::CheapWindow);
+    assert(timed(14.0,true,TrialStartTiming::Coast).reason==BootstrapReason::NaturalCycleHold);
+    assert(timed(18.0,true,TrialStartTiming::Coast).reason==BootstrapReason::TrialRoomLimit);
+    d.price_data_valid=false;
+    assert(timed(11.4,false,TrialStartTiming::Coast).action==BootstrapAction::HeatSetpoint);
+    assert(timed(13.5,false,TrialStartTiming::Preheat).action==BootstrapAction::Hold);
     t.strategy=CycleStrategy::Modulation;
     assert(apply(12.0,HeatPhase::Modulating).reason==BootstrapReason::ModulationCycleEnd);
     assert(apply(11.9,HeatPhase::Modulating).action==BootstrapAction::Hold);
@@ -103,11 +114,22 @@ static void trial_control_regression() {
     for(int i=0;i<17;++i)f.tick(false,12.5-i/16.0);
     f.begin();
     const auto& result=f.r.trials[1];
-    assert(result.cycle.valid && result.phase_end_seen && result.startup_seen);
+    assert(result.cycle.valid && result.phase_end_seen && result.startup_seen && result.equal_thermal_endpoints);
     assert(result.cycle.cost_valid && result.total_cost>result.cycle.cost);
     assert(result.total_kwh>result.cycle.energy_kwh && result.loss_degree_hours>0);
     assert(std::abs(result.total_kwh-result.cycle.energy_kwh-result.baseload_kwh)<1e-9);
     assert(f.r.completed==0 && f.r.trial_counts[1]==1);
+    // Keep a complete measured cycle even if price-driven start occurs at
+    // a different room temperature; it must not become matched evidence.
+    Fixture shifted;
+    shifted.s.strategy=CycleStrategy::Thermostat;shifted.s.trial_revision=1;
+    shifted.s.trial_lower=11;shifted.s.trial_upper=18;
+    shifted.tick(false,11.5);shifted.begin();shifted.tick(true,15,1500);
+    for(int i=0;i<18;++i)shifted.tick(false,15-i*2.5/17);
+    shifted.s.tariff_adjusted=true;
+    shifted.tick(true,12.5,1500);
+    assert(shifted.r.trials[1].cycle.valid && shifted.r.trial_counts[1]==1);
+    assert(!shifted.r.trials[1].equal_thermal_endpoints && shifted.r.trial_matched[1]==0);
     MaintenanceCycleReport evidence{};
     evidence.trials[0].lower=11;evidence.trials[0].upper=16.5;
     evidence.trial_matched={2,2,1,2};
@@ -245,6 +267,30 @@ int main(){
     assert(resumed.checkpoint_dirty && !resumed.restored && resumed.tariff_completed==0);
     assert(reboot.save(key,image));
     assert(image.tariff_completed==0 && image.last_tariff.flags==0);
+    // A gateway GET can acknowledge a new mode before the next meter poll.
+    // Do not overwrite the last paired boundary or lose the entire run.
+    Fixture asynchronous;asynchronous.begin();
+    asynchronous.tick(true,12.1,1500);
+    auto& delayed=asynchronous.s;
+    delayed.heat=false;++delayed.request_generation;++delayed.sent;++delayed.confirmed;
+    delayed.ack_utc=delayed.utc+20;
+    asynchronous.r=asynchronous.learner.observe(true,3,1,1,12,delayed);
+    assert(asynchronous.r.rejected==0 && asynchronous.r.transition_waits==1);
+    // The meter may be fresh only on the following tick, or a temperature
+    // sample may be missing while the single confirmed command is known.
+    delayed.valid=false;delayed.measurement_gap_only=true;
+    asynchronous.tick(false,12.1);
+    assert(asynchronous.r.rejected==0);
+    delayed.valid=true;delayed.measurement_gap_only=false;
+    asynchronous.tick(false,12.0);
+    for(int i=0;i<16;++i)asynchronous.tick(false,12.0-(i+1)*0.5/16);
+    asynchronous.begin();
+    assert(asynchronous.r.completed==1 && asynchronous.r.rejected==0);
+    Fixture bad_ack;bad_ack.begin();bad_ack.tick(true,12,1500);
+    bad_ack.s.heat=false;++bad_ack.s.request_generation;++bad_ack.s.sent; // missing confirmation
+    bad_ack.s.ack_utc=bad_ack.s.utc+20;
+    bad_ack.r=bad_ack.learner.observe(true,3,1,1,12,bad_ack.s);
+    assert(bad_ack.r.rejected==1 && bad_ack.r.transition_waits==0);
     Fixture missed;missed.begin();
     missed.s.valid=false;missed.s.measurement_gap_only=true;
     missed.tick(true,11.55,1500);

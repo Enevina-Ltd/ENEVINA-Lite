@@ -996,7 +996,7 @@ static BootstrapDecision bootstrap_preview(int64_t now,
            cycle.meter_identity==meter && cycle.target_c==input.desired_room_c)
             candidate=cycle.candidate;
         const auto& tariff=maintenance_tariff_snapshot;
-        if(tariff.valid && tariff.site_generation==sg && tariff.config_generation==cg &&
+        if(tariff.valid && tariff.trial_revision==0 && tariff.site_generation==sg && tariff.config_generation==cg &&
            tariff.price_revision==market.cache_revision &&
            tariff.region_generation==market.region_generation &&
            tariff.computed_utc>0 && now>=tariff.computed_utc &&
@@ -1128,6 +1128,7 @@ static ArbiterInput build_arbiter_input(int64_t now,const TemperatureSample& t) 
     const bool midea=cottage_midea_selected();
     const auto state=optimizer_pump_state(now,midea);
     in.bootstrap=bootstrap_preview(now,t,state.heating);
+    const auto trial_market=enevina_firmware::market_status();
     xSemaphoreTake(lock_data,portMAX_DELAY);
     in.calibration=calibration_snapshot.state;
     in.calibrated=calibration_snapshot.state==CalibrationState::Calibrated;
@@ -1153,8 +1154,23 @@ static ArbiterInput build_arbiter_input(int64_t now,const TemperatureSample& t) 
            t.indoor_c<=cycle_trial.lower || in.bootstrap.maintenance_ceiling_c>cycle_trial.upper) {
             auto selected=cycle_trial;
             if(selected.strategy==CycleStrategy::Forecast)selected.strategy=CycleStrategy::Short;
+            TrialStartTiming timing=TrialStartTiming::Normal;
+            const auto& tariff=maintenance_tariff_snapshot;
+            // Only the start of an OFF natural cycle may be price-shifted.
+            // Recheck freshness and the same authorized trial at dispatch.
+            if(natural_trial_strategy(selected.strategy) && tariff.valid && tariff.model_based &&
+               tariff.trial_revision==cycle_trial.revision &&
+               tariff.site_generation==in.settings_generation && tariff.config_generation==in.config_generation &&
+               tariff.price_revision==trial_market.cache_revision && tariff.region_generation==trial_market.region_generation &&
+               now>=tariff.computed_utc && now-tariff.computed_utc<=90 &&
+               now/900==tariff.computed_utc/900 && now<tariff.price_end_utc &&
+               baseload_current(baseload_snapshot,tariff.meter_identity,now)) {
+                if(tariff.action==MaintenanceTariffAction::Preheat)timing=TrialStartTiming::Preheat;
+                if(tariff.action==MaintenanceTariffAction::Coast && now<tariff.deadline_utc &&
+                   tariff.next_start_utc>now)timing=TrialStartTiming::Coast;
+            }
             in.bootstrap=cycle_trial_proposal(in.bootstrap,selected,t.indoor_c,
-                state.mode==enevina::PumpRoomMode::Heat,native,phase);
+                state.mode==enevina::PumpRoomMode::Heat,native,phase,timing);
             in.plan={};
         } else if(in.plan.band.upper_c>cycle_trial.upper || in.plan.band.lower_c<cycle_trial.lower) {
             in.plan={};
@@ -2772,13 +2788,14 @@ static void optimizer_worker(void*) {
             cycle_trial:CycleTrial{};
         xSemaphoreGive(lock_data);
         const bool economy=maintenance_economy_selected(meter_site,cycle_mode.mode,cycle_mode.hold_target_c);
+        const bool natural_trial=natural_trial_strategy(trial.strategy);
         // Reuse the optimizer's existing price and weather scratch. Unlike
         // the short median classifier, read the full available 24h tariff
         // horizon at each economy-control tick (no extra network requests).
-        const size_t pc=(boundary || economy) && prices && aligned &&
+        const size_t pc=(boundary || economy || natural_trial) && prices && aligned &&
             market_matches_site(ms,meter_site)?
             enevina_firmware::future_prices(prices,200,&ms):0;
-        const size_t wc=(boundary || economy) && weather?
+        const size_t wc=(boundary || economy || natural_trial) && weather?
             enevina_firmware::future_weather(weather,64):0;
         MaintenanceTariffAdvice tariff{};
         size_t tariff_n=0;
@@ -2799,7 +2816,7 @@ static void optimizer_worker(void*) {
                 tariff_input->model.plausible=false;
         }
         xSemaphoreGive(lock_data);
-        if(economy && tariff_input && pc && aligned && valid_temperature(ts,now) &&
+        if((economy || natural_trial) && tariff_input && pc && aligned && valid_temperature(ts,now) &&
            known_heating_mode(request) && ms.clock_trusted && ms.current_price_valid &&
            ms.last_fetch_utc<=now && ms.last_fetch_utc>=now-36*3600 &&
            ms.valid_until_utc>now && mode_comfort_limits_fit(meter_site,cycle_mode)) {
@@ -2835,6 +2852,14 @@ static void optimizer_worker(void*) {
             tariff_input->target_c=target;tariff_input->lower_c=std::max(5.0,owner_lo);
             tariff_input->storage_ceiling_c=maintenance_cycle_ceiling(target,owner_hi,2);
             tariff_input->cycle_ceiling_c=maintenance_cycle_ceiling(target,owner_hi,old_candidate);
+            tariff_input->natural_cycle_start_only=natural_trial;
+            if(natural_trial) {
+                tariff_input->lower_c=trial.lower;
+                // Model the approved independent-room limit, not a short
+                // 12 C charge or a change to the pump's native setpoint.
+                tariff_input->storage_ceiling_c=trial.upper;
+                tariff_input->cycle_ceiling_c=trial.upper;
+            }
             tariff_input->outside_c=outside;tariff_input->price_scale=currency_limit_scale(ms.currency);
             tariff_input->heating=request.mode==enevina::PumpRoomMode::Heat;
             tariff_input->minutes_in_mode=request.mode_minutes;
@@ -2937,7 +2962,8 @@ static void optimizer_worker(void*) {
         const double working_floor=meter_site.comfort_min_c>0?
             std::min(target-0.5,meter_site.comfort_min_c+
                 profile_tuning(meter_site.profile).limit_margin_c):target-0.5;
-        cycle_sample.tariff_adjusted=price_shift ||
+        cycle_sample.tariff_adjusted=natural_trial?
+            (tariff.action!=MaintenanceTariffAction::None || previous_tariff_shift):price_shift ||
             (costly && (old_candidate!=0 || working_floor<target-0.5-0.001)) ||
             (short_class==PriceClass::Unknown && old_candidate!=0);
         const bool collect_cycles=economy || trial.strategy!=CycleStrategy::Existing;
@@ -2949,12 +2975,11 @@ static void optimizer_worker(void*) {
             request.protocol==enevina::PumpRoomProtocol::Cn105EspHome &&
             known_heating_mode(request) && !request.write_in_progress &&
             request.evidence.received_utc>0 && now>=request.evidence.received_utc &&
-            now-request.evidence.received_utc<=30 &&
             (!cycle_sample.heat || std::fabs(request.setpoint_c-16.0)<=0.001) &&
             site_settings_generation()==optimizer_site_generation &&
             c23_config_generation()==optimizer_config_generation;
         const bool cycle_measurements_ok=valid_temperature(ts,now) && valid_shelly(meter,now,30) &&
-            std::llabs(meter.captured_utc-request.evidence.received_utc)<=30;
+            now-request.evidence.received_utc<=30 && std::llabs(meter.captured_utc-request.evidence.received_utc)<=30;
         cycle_sample.valid=cycle_scope_ok && cycle_measurements_ok;
         cycle_sample.measurement_gap_only=cycle_scope_ok && !cycle_measurements_ok;
         const MaintenanceCycleKey cycle_key{
@@ -3007,7 +3032,7 @@ static void optimizer_worker(void*) {
         cycle_report.restore_failures=cycle_restore_failures;
         cycle_report.checkpoint_writes=cycle_checkpoint_writes;
         cycle_report.checkpoint_failures=cycle_checkpoint_failures;
-        if(tariff.valid && tariff_input && cycle_report.candidate!=old_candidate) {
+        if(!natural_trial && tariff.valid && tariff_input && cycle_report.candidate!=old_candidate) {
             tariff_input->cycle_ceiling_c=maintenance_cycle_ceiling(cycle_mode.hold_target_c,
                 tariff_input->storage_ceiling_c,cycle_report.candidate);
             tariff=maintenance_tariff_decision(*tariff_input);
@@ -3018,12 +3043,12 @@ static void optimizer_worker(void*) {
         // start is inferred from a failed/unconfirmed command.
         const bool heating_now=known_heating_mode(request) &&
             request.mode==enevina::PumpRoomMode::Heat;
-        if(!economy || !tariff.valid || preheat_site!=optimizer_site_generation ||
+        if(natural_trial || !economy || !tariff.valid || preheat_site!=optimizer_site_generation ||
            preheat_config!=optimizer_config_generation) {
             previous_preheat=false;preheat_latched=false;
         }
         if(!heating_now)preheat_latched=false;
-        if(heating_now && tariff.valid && previous_preheat) {
+        if(!natural_trial && heating_now && tariff.valid && previous_preheat) {
             preheat_latched=true;
             preheat_latched_ceiling=previous_preheat_ceiling;
         }
@@ -3033,12 +3058,14 @@ static void optimizer_worker(void*) {
             tariff.ceiling_c=std::clamp(preheat_latched_ceiling,
                 tariff_input->target_c,tariff_input->storage_ceiling_c);
         }
-        previous_preheat=tariff.action==MaintenanceTariffAction::Preheat;
+        previous_preheat=!natural_trial && tariff.action==MaintenanceTariffAction::Preheat;
         previous_preheat_ceiling=tariff.ceiling_c;
         preheat_site=optimizer_site_generation;preheat_config=optimizer_config_generation;
         tariff.site_generation=optimizer_site_generation;
         tariff.config_generation=optimizer_config_generation;
         tariff.price_revision=ms.cache_revision;tariff.region_generation=ms.region_generation;
+        tariff.trial_revision=natural_trial?trial.revision:0;
+        tariff.meter_identity=shared_id;
         previous_tariff_shift=tariff.action!=MaintenanceTariffAction::None;
         xSemaphoreTake(lock_data,portMAX_DELAY);
         maintenance_cycle_snapshot=cycle_report;
@@ -3452,13 +3479,15 @@ static void status_endpoint() {
             const uint32_t sg=site_settings_generation(),cg=c23_config_generation();
             xSemaphoreTake(lock_data,portMAX_DELAY);
             const auto& v=maintenance_tariff_snapshot;
-            const bool fresh=v.valid && v.site_generation==sg && v.config_generation==cg &&
+            const bool fresh=v.valid && v.trial_revision==(natural_trial_strategy(trial.strategy)?trial.revision:0) &&
+                v.site_generation==sg && v.config_generation==cg &&
                 v.price_revision==price.cache_revision && v.region_generation==price.region_generation &&
                 now>=v.computed_utc && now-v.computed_utc<=90 && now/900==v.computed_utc/900 &&
                 now<v.price_end_utc;
             cJSON_AddBoolToObject(a,"valid",fresh);
             cJSON_AddStringToObject(a,"action",maintenance_tariff_name(fresh?v.action:MaintenanceTariffAction::None));
             cJSON_AddBoolToObject(a,"model_based",fresh&&v.model_based);
+            cJSON_AddBoolToObject(a,"natural_cycle_start_only",fresh&&v.trial_revision!=0);
             cJSON_AddBoolToObject(a,"cost_priority",true);
             cJSON_AddBoolToObject(a,"exploration_deferred",fresh&&v.avoid_exploration);
             if(fresh) {
@@ -3521,6 +3550,8 @@ static void status_endpoint() {
                     if(t.startup_seen)cJSON_AddNumberToObject(v,"observed_startup_kwh",t.startup_kwh);
                     if(t.defrost_seen)cJSON_AddNumberToObject(v,"reported_defrost_kwh",t.reported_defrost_kwh);
                     cJSON_AddBoolToObject(v,"phase_end_seen",t.phase_end_seen);
+                    cJSON_AddBoolToObject(v,"equal_thermal_endpoints",t.equal_thermal_endpoints);
+                    cJSON_AddBoolToObject(v,"tariff_advice_seen",t.tariff_advice_seen);
                 }
             cJSON_AddNumberToObject(c,"candidate",cycle.candidate);
             cJSON_AddNumberToObject(c,"completed",cycle.completed);
@@ -3541,6 +3572,7 @@ static void status_endpoint() {
                 if(cycle.last_tariff.cost_valid)cJSON_AddNumberToObject(v,"estimated_cost",cycle.last_tariff.cost);
             }
             cJSON_AddNumberToObject(c,"rejected",cycle.rejected);
+            cJSON_AddNumberToObject(c,"transition_waits",cycle.transition_waits);
             if(auto* a=cJSON_AddArrayToObject(c,"comparison"))for(unsigned i=0;i<maintenance_cycle_candidates;++i) {
                 if(auto* r=cJSON_CreateObject()) {
                     cJSON_AddItemToArray(a,r);

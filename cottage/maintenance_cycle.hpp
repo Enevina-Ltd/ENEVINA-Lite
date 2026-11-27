@@ -53,6 +53,7 @@ struct TrialCycleObservation {
     double startup_kwh=0,reported_defrost_kwh=0,baseload_kwh=0,loss_degree_hours=0;
     double lower=0,upper=0,mean_tariff=0;
     bool startup_seen=false,defrost_seen=false,phase_end_seen=false;
+    bool equal_thermal_endpoints=false,tariff_advice_seen=false;
 };
 struct MaintenanceCycleReport {
     bool enabled=false,restored=false,checkpoint_dirty=false,checkpoint_available=false;
@@ -60,6 +61,7 @@ struct MaintenanceCycleReport {
     double target_c=0;
     unsigned candidate=0;
     uint32_t completed=0,rejected=0,tariff_completed=0,checkpoint_writes=0,checkpoint_failures=0,restore_failures=0;
+    uint32_t transition_waits=0;
     std::array<unsigned,maintenance_cycle_candidates> compared{};
     std::array<double,maintenance_cycle_candidates> rate_kw{};
     MaintenanceCycleObservation last{},last_tariff{};
@@ -197,9 +199,12 @@ public:
                 s.trial_revision==p.trial_revision && s.strategy==p.strategy &&
                 std::isfinite(s.total_wh) && s.total_wh>=p.total_wh &&
                 s.endpoint==p.endpoint && s.link==p.link && s.base_revision==p.base_revision &&
-                std::fabs(s.base_w-p.base_w)<0.01 && s.heat==p.heat &&
-                s.request_generation==p.request_generation && s.sent==p.sent &&
-                s.confirmed==p.confirmed && s.failed==p.failed;
+                std::fabs(s.base_w-p.base_w)<0.01 && s.failed==p.failed &&
+                ((s.heat==p.heat && s.request_generation==p.request_generation &&
+                  s.sent==p.sent && s.confirmed==p.confirmed) ||
+                 (s.heat!=p.heat && s.request_generation==p.request_generation+1 &&
+                  s.sent==p.sent+1 && s.confirmed==p.confirmed+1 &&
+                  s.ack_utc>=p.utc-15 && s.ack_utc-p.utc<=150));
             if(bridge) {
                 if(open_) {
                     tariff_adjusted_=tariff_adjusted_ || s.tariff_adjusted;
@@ -230,15 +235,26 @@ public:
         if(dt==0 && s.request_generation==p.request_generation && s.total_wh==p.total_wh &&
            s.sent==p.sent && s.confirmed==p.confirmed && s.failed==p.failed)
             return report(s.outdoor_c);
-        previous_=s;
         const bool transition=s.heat!=p.heat;
-        const bool same=s.trial_revision==p.trial_revision && s.strategy==p.strategy &&
+        const bool same_identity=s.trial_revision==p.trial_revision && s.strategy==p.strategy &&
             s.endpoint==p.endpoint && s.link==p.link && s.meter_id==p.meter_id &&
             s.base_revision==p.base_revision && std::fabs(s.base_w-p.base_w)<0.01 &&
-            s.failed==p.failed && dt>0 && dt<=150 && s.total_wh>=p.total_wh;
-        const bool command=transition &&
-            s.request_generation==p.request_generation+1 && s.sent==p.sent+1 &&
-            s.confirmed==p.confirmed+1 && s.ack_utc>=p.utc-15 && s.ack_utc<=s.utc+15;
+            s.failed==p.failed && s.total_wh>=p.total_wh;
+        const bool single_ack=transition && s.request_generation==p.request_generation+1 &&
+            s.sent==p.sent+1 && s.confirmed==p.confirmed+1 && s.ack_utc>=p.utc-15;
+        // The optimizer may read a new acknowledged gateway mode together
+        // with the previous Shelly counter. It is not a new energy boundary.
+        // Wait for a genuinely post-ack counter, without relaxing identity,
+        // monotonicity, the single-command rule or the 150 s gap limit.
+        if(same_identity && single_ack && dt>=0 && dt<=150 &&
+           (dt>0 || s.total_wh==p.total_wh) &&
+           s.ack_utc>=s.utc && s.ack_utc-p.utc<=150) {
+            ++transition_waits_;
+            return report(s.outdoor_c);
+        }
+        previous_=s;
+        const bool same=same_identity && dt>0 && dt<=150;
+        const bool command=single_ack && s.ack_utc<=s.utc;
         const bool quiet=!transition && s.request_generation==p.request_generation &&
             s.sent==p.sent && s.confirmed==p.confirmed;
         if(!same || !(command||quiet)) {
@@ -314,7 +330,7 @@ public:
         MaintenanceCycleReport r{};
         r.enabled=enabled_;r.restored=restored_;r.checkpoint_dirty=dirty_;r.candidate=candidate_;r.completed=completed_;r.rejected=rejected_;
         if(recent(last_,last_seen_utc_))r.last=last_;
-        r.tariff_completed=tariff_completed_;
+        r.tariff_completed=tariff_completed_;r.transition_waits=transition_waits_;
         for(size_t i=0;i<trials_.size();++i)if(recent(trials_[i].cycle,last_seen_utc_)) {
             r.trials[i]=trials_[i];r.trial_counts[i]=trial_counts_[i];
             const auto& baseline=trials_[0];
@@ -346,7 +362,9 @@ private:
     // Require the same owner envelope and thermal endpoints, comparable
     // weather and a comparable mean tariff before ranking measured costs.
     static bool comparable(const TrialCycleObservation& a,const TrialCycleObservation& b) {
-        return a.cycle.cost_valid && b.cycle.cost_valid && a.lower==b.lower && a.upper==b.upper &&
+        return a.cycle.cost_valid && b.cycle.cost_valid && a.equal_thermal_endpoints &&
+            b.equal_thermal_endpoints && a.tariff_advice_seen==b.tariff_advice_seen &&
+            a.lower==b.lower && a.upper==b.upper &&
             std::abs(a.cycle.start_room_c-b.cycle.start_room_c)<=0.5 &&
             std::abs(a.cycle.end_room_c-b.cycle.end_room_c)<=0.5 &&
             std::abs(a.cycle.outdoor_c-b.cycle.outdoor_c)<=1.5 &&
@@ -403,12 +421,16 @@ private:
         MaintenanceCycleObservation x{true,energy_,hours,outdoor_hours_/hours,
             room_hours_/hours,peak_,cost_,price_ok_,start_room_,end.room_c,end.utc};
         if(active_trial_!=CycleStrategy::Existing) {
-            if(std::fabs(end.room_c-start_room_)>0.5 ||
-               trial_stats_.min_room_c<trial_stats_.lower || peak_>trial_stats_.upper) {
+            if(trial_stats_.min_room_c<trial_stats_.lower || peak_>trial_stats_.upper) {
                 reject_open();return;
             }
             const size_t i=static_cast<size_t>(active_trial_)-1;
+            // Keep measured price-shifted/unequal endpoint observations, but
+            // never let heat stored or depleted at the boundary qualify as
+            // a like-for-like saving in the automatic ranking.
             trial_stats_.cycle=x;
+            trial_stats_.equal_thermal_endpoints=std::fabs(end.room_c-start_room_)<=0.5;
+            trial_stats_.tariff_advice_seen=tariff_adjusted_;
             trial_stats_.mean_tariff=price_ok_?trial_tariff_hours_/hours:0;
             previous_trials_[i]=trials_[i];
             trials_[i]=trial_stats_;
@@ -428,6 +450,7 @@ private:
         records_[active_candidate_][next_[active_candidate_]++%3]=x;
         last_=x;++completed_;dirty_=true;open_=false;
     }
+    uint32_t transition_waits_=0;
     unsigned choose(double outdoor,bool price_priority) const {
         const auto r=report(outdoor);
         if(price_priority) {
