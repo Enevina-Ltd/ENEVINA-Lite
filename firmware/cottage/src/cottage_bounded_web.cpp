@@ -257,8 +257,10 @@ size_t CottageWebServer::_currentClientWrite_P(PGM_P data,size_t size) {
     return writeBounded(data,size);
 }
 bool CottageWebServer::streamContent(const char* data) {
+    return data && streamContent(data,std::strlen(data));
+}
+bool CottageWebServer::streamContent(const char* data,size_t size) {
     if(aborted_ || !data)return false;
-    const size_t size=std::strlen(data);
     if(!_chunked)return writeBounded(data,size)==size;
     const bool ok=bounded_http_chunk(data,size,[this](const char* bytes,size_t count){
         return writeBounded(bytes,count);

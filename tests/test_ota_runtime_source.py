@@ -52,18 +52,27 @@ class OtaRuntimeRegression(unittest.TestCase):
         self.assertIn("ota_image_min_internal_bytes",OTA)
         self.assertIn("ota_min_contiguous_internal_bytes",WORKER)
         self.assertIn("ota_readers_release_ms",UPLOAD)
-        self.assertIn('last_status.store(applied?6:4)',WORKER)
-    def test_attempt_marker_prevents_unattended_retry_even_after_reset(self):
+        self.assertIn('last_status.store(applied?6:(transient?2:4))',WORKER)
+    def test_attempt_marker_only_permits_exact_durable_retry_after_reset(self):
         self.assertIn("ota_manual_pending.exchange(false)",WORKER)
         self.assertLess(WORKER.index("read_attempted_version(attempted)"),
                         WORKER.index("ota::image_attempt_allowed"))
         self.assertLess(WORKER.index("ota::signed_version_eligible"),
                         WORKER.index("ota::image_attempt_allowed"))
-        self.assertLess(WORKER.index("remember_image_attempt(r.version,explicit_request)"),
+        self.assertLess(WORKER.index("remember_image_attempt(identity,explicit_request||retry)"),
                         WORKER.index("applied=update_app(r)"))
         self.assertIn("nvs_set_u32(h,kAttemptedVersionKey,version)",OTA)
         self.assertIn("nvs_commit(h)==ESP_OK",OTA)
         self.assertIn("RetryRequiresRequest",WORKER)
+        self.assertIn("retry_identity_matches(attempted,identity)",WORKER)
+        self.assertIn("ota::image_attempt_allowed(r.version,attempted,explicit_request||retry)",WORKER)
+        self.assertLess(OTA.index("nvs_set_blob(h,kRetryIdentityKey"),OTA.index("nvs_set_u32(h,kAttemptedVersionKey"))
+        self.assertIn("transient=!applied&&retryable_image_failure()",WORKER)
+        self.assertIn("clear_retry_identity()",WORKER)
+        self.assertLess(UPLOAD.index("history_ota_spool_read"),UPLOAD.index("download_range"))
+        self.assertLess(UPLOAD.index("download_range"),UPLOAD.index("history_ota_spool_store"))
+        self.assertLess(UPLOAD.index("history_ota_spool_store"),UPLOAD.index("mbedtls_sha256_starts_ret"))
+        self.assertLess(UPLOAD.index("esp_ota_set_boot_partition(target)"),UPLOAD.index("history_ota_spool_discard"))
     def test_telemetry_and_control_separate(self):
         self.assertIn('"ota_downloaded_bytes"',APP)
         self.assertIn('"ota_idle_yields"',APP)

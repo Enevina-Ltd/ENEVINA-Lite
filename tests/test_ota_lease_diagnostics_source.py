@@ -40,7 +40,7 @@ class OTARecoverySource(unittest.TestCase):
                        "ota::Transaction tx", "ota_readers_release_ms",
                        "pause_readers.store(false)"):
             self.assertIn(marker,SOURCE)
-        self.assertIn("last_status.store(applied?6:4)",SOURCE)
+        self.assertIn("last_status.store(applied?6:(transient?2:4))",SOURCE)
 
 
 if __name__=="__main__":

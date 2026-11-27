@@ -1,6 +1,7 @@
 #ifndef COTTAGE_BENCH_MODE
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <esp_littlefs.h>
 #include "cottage_bounded_web.hpp"
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -138,6 +139,46 @@ constexpr uint32_t kRetryIntervalMs=10UL*60*1000;
 uint64_t events_total_at_flush=0;
 size_t last_load_records=0;
 std::atomic<uint32_t> history_busy_reads{0};
+constexpr char kOtaSpoolPath[]="/ota-stage1.bin";
+using ota::SpoolIdentity;
+using ota::SpoolBlock;
+class SpoolLock {
+public:
+    SpoolLock():held_(persistent && guard && xSemaphoreTake(guard,pdMS_TO_TICKS(1000))==pdTRUE){}
+    ~SpoolLock(){if(held_)xSemaphoreGive(guard);}
+    explicit operator bool()const{return held_;}
+private:
+    bool held_;
+};
+bool spool_header(File& file,const SpoolIdentity& id) {
+    SpoolIdentity actual{};
+    return file && file.seek(0) && file.read(reinterpret_cast<uint8_t*>(&actual),sizeof(actual))==sizeof(actual) &&
+        ota::spool_matches(actual,id);
+}
+bool spool_has_space(size_t extra) {
+    size_t total=0,used=0;
+    if(esp_littlefs_info("spiffs",&total,&used)!=ESP_OK)return false;
+    // Leave room for the bounded history compaction, model files, events
+    // and LittleFS metadata even when a large release cannot fit in full.
+    return total>=used && total-used>=ota::spool_history_reserve+extra+8192u;
+}
+bool spool_read_locked(const SpoolIdentity& id,uint32_t offset,uint8_t* data,const uint32_t* expected_crc=nullptr) {
+    File file=LittleFS.open(kOtaSpoolPath,"r");
+    SpoolBlock block{};
+    if(!spool_header(file,id)||!file.seek(ota::spool_position(offset))||
+       file.read(reinterpret_cast<uint8_t*>(&block),sizeof(block))!=sizeof(block)||
+       !ota::spool_block_matches(id,block,offset))return false;
+    uint8_t scratch[1024];uint32_t crc=0xffffffffu;
+    for(size_t pos=0;pos<block.size;) {
+        const size_t n=std::min(sizeof(scratch),size_t(block.size)-pos);
+        if(file.read(scratch,n)!=n)return false;
+        crc=ota::spool_crc_update(crc,scratch,n);
+        if(data)std::memcpy(data+pos,scratch,n);
+        pos+=n;
+    }
+    return ~crc==block.crc && (!expected_crc||block.crc==*expected_crc);
+}
+
 } // namespace
 
 void history_initialize() {
@@ -201,6 +242,53 @@ void history_initialize() {
     events_total_at_flush=events.total();
     ESP_LOGI(tag,"history loaded: %u records, %u events%s",static_cast<unsigned>(r.records),
              static_cast<unsigned>(r.events),r.record_tail_cut?" (torn tail will be repaired)":"");
+}
+
+bool history_ota_spool_prepare(const SpoolIdentity& id) {
+    if(!ota::spool_valid(id))return false;
+    SpoolLock lock;if(!lock)return false;
+    File existing=LittleFS.open(kOtaSpoolPath,"r");
+    const bool same=spool_header(existing,id);existing.close();
+    if(same)return true;
+    // A new signed identity must never inherit an old prefix.
+    if(LittleFS.exists(kOtaSpoolPath)&&!LittleFS.remove(kOtaSpoolPath))return false;
+    if(!spool_has_space(sizeof(id)))return false;
+    File file=LittleFS.open(kOtaSpoolPath,"w");
+    if(!file)return false;
+    const bool ok=file.write(reinterpret_cast<const uint8_t*>(&id),sizeof(id))==sizeof(id);
+    file.flush();file.close();
+    File readback=LittleFS.open(kOtaSpoolPath,"r");
+    return ok&&spool_header(readback,id);
+}
+bool history_ota_spool_read(const SpoolIdentity& id,uint32_t offset,uint8_t* data) {
+    SpoolLock lock;
+    return lock&&data&&spool_read_locked(id,offset,data);
+}
+bool history_ota_spool_store(const SpoolIdentity& id,uint32_t offset,const uint8_t* data) {
+    SpoolLock lock;
+    const size_t count=ota::spool_payload(id,offset);
+    if(!lock||!data||!count||!spool_has_space(count+sizeof(SpoolBlock)))return false;
+    const uint32_t crc=ota::spool_crc(data,count);
+    const SpoolBlock block{offset,static_cast<uint32_t>(count),crc};
+    // Overwrite a torn tail at its deterministic offset. No truncate or
+    // filesystem-wide cleanup; old blocks remain reusable for this identity.
+    File file=LittleFS.open(kOtaSpoolPath,"r+");
+    if(!spool_header(file,id)||!file.seek(ota::spool_position(offset))||
+       file.write(reinterpret_cast<const uint8_t*>(&block),sizeof(block))!=sizeof(block))return false;
+    uint8_t scratch[1024];
+    for(size_t pos=0;pos<count;) {
+        const size_t n=std::min(sizeof(scratch),count-pos);
+        // Never supply PSRAM to a flash-writing driver with cache disabled.
+        std::memcpy(scratch,data+pos,n);
+        if(file.write(scratch,n)!=n)return false;
+        pos+=n;
+    }
+    file.flush();file.close();
+    return spool_read_locked(id,offset,nullptr,&crc);
+}
+void history_ota_spool_discard() {
+    SpoolLock lock;
+    if(lock && LittleFS.exists(kOtaSpoolPath))LittleFS.remove(kOtaSpoolPath);
 }
 
 void history_observe(const HistoryInputs& inputs) {

@@ -13,7 +13,8 @@ UI = (ROOT / "firmware/cottage/include/cottage_premium_dashboard.hpp").read_text
 class PremiumDashboardSourceTests(unittest.TestCase):
     def test_flash_backed_local_dashboard(self):
         self.assertIn("premium_dashboard_html[] PROGMEM", UI)
-        self.assertIn('web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html)', MAIN)
+        self.assertIn('cottage_send_dashboard(web)',MAIN)
+        self.assertNotIn('premium_dashboard_html',MAIN)
         self.assertNotIn('web.on("/diagnostics"', MAIN)
         self.assertNotIn('static const char html[] PROGMEM', MAIN)
         self.assertNotIn('web.send(200,"text/html; charset=utf-8",html)', MAIN)

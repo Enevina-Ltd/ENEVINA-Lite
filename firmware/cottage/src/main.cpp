@@ -24,8 +24,7 @@
 #include <cstring>
 #include <string>
 #include "cottage_config.hpp"
-#include "cottage_premium_dashboard.hpp"
-#include "cottage_dashboard_gzip.hpp"
+#include "cottage_dashboard_transport.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
 #include "cottage_tls_memory.hpp"
@@ -3971,6 +3970,7 @@ static void status_endpoint() {
                             cottage_ota_downloaded_bytes());
     cJSON_AddNumberToObject(root,"ota_expected_bytes",cottage_ota_expected_bytes());
     cJSON_AddNumberToObject(root,"ota_resume_count",cottage_ota_resume_count());
+    cJSON_AddNumberToObject(root,"ota_durable_bytes",cottage_ota_durable_bytes());
     cJSON_AddBoolToObject(root,"ota_reconnecting",cottage_ota_reconnecting());
     cJSON_AddNumberToObject(root,"ota_programmed_bytes",
                             cottage_ota_programmed_bytes());
@@ -4825,16 +4825,9 @@ void setup() {
             "default-src 'self'; connect-src 'self'; img-src 'self' data:; "
             "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
             "frame-ancestors 'none'; base-uri 'none'");
-        // Compression happens at build time. Same HTML and bounded writer,
-        // no runtime compressor, allocation or additional route.
-        web.sendHeader("Vary","Accept-Encoding");
-        if(web.acceptsGzip()) {
-            web.sendHeader("Content-Encoding","gzip");
-            web.send_P(200,"text/html; charset=utf-8",
-                reinterpret_cast<PGM_P>(premium_dashboard_gzip),sizeof(premium_dashboard_gzip));
-        } else {
-        web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html);
-        }
+        // One compressed flash asset; identity-only clients receive its
+        // bounded streaming decompression without a second embedded page.
+        cottage_send_dashboard(web);
     });
     web.on("/api/status",HTTP_GET,[](){
         if(cottage_wifi_require_home_lan(web))status_endpoint();

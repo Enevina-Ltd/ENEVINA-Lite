@@ -11,7 +11,8 @@ class SingleDashboardTests(unittest.TestCase):
     def test_legacy_ui_and_route_are_gone(self):
         self.assertNotIn('static const char html[] PROGMEM',MAIN)
         self.assertNotIn('id="air-panel"',MAIN)
-        self.assertIn('web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html)',MAIN)
+        self.assertIn('cottage_send_dashboard(web)',MAIN)
+        self.assertNotIn('premium_dashboard_html',MAIN)
         self.assertNotIn('web.on("/diagnostics"',MAIN)
         self.assertNotIn('web.sendHeader("Location","/#settings")',MAIN)
         self.assertNotIn('href="/diagnostics"',UI)

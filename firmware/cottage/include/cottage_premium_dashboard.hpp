@@ -2815,7 +2815,8 @@ function otaSummary(s,fmt){
     detail:FT('Ladattu ')+fmt.kib(s.ota_downloaded_bytes||0)+(s.ota_expected_bytes?' / '+fmt.kib(s.ota_expected_bytes):'')+
       FT('. Allekirjoitus ja tarkistussumma varmistetaan ennen asennusta; edellinen toimiva versio säilyy.')};
   case 6:return {kind:'busy',headline:FT('Päivitys asennettu'),detail:FT('Laite käynnistyy uudelleen ja vahvistaa uuden version vasta, kun käynnistystarkistukset ovat läpi.')};
-  case 2:return {kind:'warn',headline:FT('Odottaa verkkoa tai kellonaikaa'),detail:FT('Päivityksiä ei voi tarkistaa nyt. Laite toimii normaalisti ilman niitä.')};
+  case 2:if(s.ota_reconnecting)return {kind:'warn',headline:FT('Yhteys katkennut – latausta jatketaan'),detail:FT('Ladattu ')+fmt.kib(s.ota_durable_bytes||0)+(s.ota_expected_bytes?' / '+fmt.kib(s.ota_expected_bytes):'')};
+    return {kind:'warn',headline:FT('Odottaa verkkoa tai kellonaikaa'),detail:FT('Päivityksiä ei voi tarkistaa nyt. Laite toimii normaalisti ilman niitä.')};
   case 3:return {kind:'warn',headline:FT('Tilapäinen resurssi- tai tallennusvirhe'),detail:FT('Tarkistus yritetään myöhemmin uudelleen. Mitään ei ole asennettu.')};
   case 4:if(s.ota_problem_reason==='retry_requires_request')return {kind:'warn',
     headline:FT('Aiempi päivitysyritys keskeytyi'),

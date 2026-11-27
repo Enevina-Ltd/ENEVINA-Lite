@@ -25,6 +25,8 @@ public:
     uint32_t resourceRejects()const{return resource_rejects_;}
     uint32_t completedRequests()const{return completed_requests_;}
     bool streamContent(const char* data);
+    bool streamContent(const char* data,size_t size);
+    void abortStream(){abortResponse();}
     bool responseAborted()const{return aborted_;}
     bool acceptsGzip()const {
         return enevina::cottage::accepts_gzip(ingress_.head().headers);

@@ -52,6 +52,40 @@ int main(){
         assert(!image.reserve(13)&&live==0);
     }
     assert(live==0);
+    // A durable prefix is bound to exact authenticated version, size and
+    // SHA-256. A torn payload or a mismatched offset never advances it.
+    uint8_t digest[32]{};
+    digest[0]=17;
+    auto identity=spool_identity(2026112707,spool_block_bytes+111,digest);
+    assert(spool_valid(identity) && spool_matches(identity,identity));
+    assert(spool_retry_allowed(identity.version,identity,identity));
+    assert(!spool_retry_allowed(identity.version+1,identity,identity));
+    auto different=spool_identity(identity.version+1,identity.size,digest);
+    assert(!spool_matches(identity,different));
+    digest[0]^=1;
+    different=spool_identity(identity.version,identity.size,digest);
+    assert(!spool_retry_allowed(identity.version,identity,different));
+    different=identity;different.size++;
+    assert(!spool_valid(different));
+    assert(spool_payload(identity,0)==spool_block_bytes);
+    assert(spool_payload(identity,spool_block_bytes)==111);
+    assert(!spool_payload(identity,spool_block_bytes+1));
+    assert(!spool_payload(identity,2*spool_block_bytes));
+    assert(spool_position(0)==sizeof(SpoolIdentity));
+    assert(spool_position(spool_block_bytes)==sizeof(SpoolIdentity)+sizeof(SpoolBlock)+spool_block_bytes);
+    std::vector<uint8_t> data(spool_block_bytes,42);
+    SpoolBlock block{0,spool_block_bytes,spool_crc(data.data(),data.size())};
+    assert(spool_block_matches(identity,block,0));
+    assert(!spool_block_matches(identity,block,spool_block_bytes));
+    uint32_t crc=spool_crc_update(0xffffffffu,data.data(),8192);
+    crc=spool_crc_update(crc,data.data()+8192,data.size()-8192);
+    assert(~crc==block.crc);
+    data[17]^=1;
+    assert(spool_crc(data.data(),data.size())!=block.crc);
+    block.size--;
+    assert(!spool_block_matches(identity,block,0));
+    const uint8_t check[]={'1','2','3','4','5','6','7','8','9'};
+    assert(spool_crc(check,sizeof(check))==0xcbf43926u);
     std::array<uint8_t,11> storage{};
     uint8_t scratch[4]{};
     auto run=[&](Source& src,size_t n=9,size_t cap=9){

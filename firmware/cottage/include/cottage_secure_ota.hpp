@@ -42,6 +42,7 @@ bool cottage_ota_checkpoint_learning();
 uint32_t cottage_ota_downloaded_bytes();
 uint32_t cottage_ota_expected_bytes();
 uint32_t cottage_ota_resume_count();
+uint32_t cottage_ota_durable_bytes();
 bool cottage_ota_reconnecting();
 uint32_t cottage_ota_programmed_bytes();
 uint32_t cottage_ota_chunk_count();
