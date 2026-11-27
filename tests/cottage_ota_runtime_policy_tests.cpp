@@ -9,4 +9,10 @@ int main() {
     assert(ota_readers_release_ms>=1500u);
     assert(ota_flash_idle_delay_ticks>=1u);
     assert(ota_download_progress_step_bytes==64u*1024u);
+    assert(!ota_progress_expired(600000u,599000u)); // slow but advancing
+    assert(!ota_progress_expired(ota_no_progress_ms-1,0));
+    assert(ota_progress_expired(ota_no_progress_ms,0));
+    assert(!ota_progress_expired(50,0xfffffff0u)); // millis wrap
+    assert(ota_progress_expired(ota_no_progress_ms,0xfffffff0u));
+    assert(ota_range_bytes==32768u);
 }

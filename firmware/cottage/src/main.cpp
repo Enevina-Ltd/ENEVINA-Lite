@@ -229,6 +229,22 @@ static std::atomic<int> cn105_source_proof_status{0};
 static std::atomic<uint32_t> cn105_source_proof_good{0};
 static TaskHandle_t task_sse=nullptr,task_shelly=nullptr;
 static TaskHandle_t task_ruuvi=nullptr,task_optimizer=nullptr;
+// The optimizer owns its live models. OTA asks that task for a verified
+// checkpoint; it never races a raw model pointer from the OTA task.
+static std::atomic<uint32_t> ota_learning_request{0},ota_learning_reply{0};
+static std::atomic<bool> ota_learning_saved{false};
+bool cottage_ota_checkpoint_learning() {
+    if(!task_optimizer)return false;
+    const uint32_t request=ota_learning_request.fetch_add(1)+1;
+    xTaskNotifyGive(task_optimizer);
+    const uint32_t started=millis();
+    while(ota_learning_reply.load()!=request) {
+        if(static_cast<uint32_t>(millis()-started)>=90000u)return false;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    return ota_learning_saved.load();
+}
+
 static TaskHandle_t task_ota=nullptr;
 static TaskHandle_t task_history=nullptr,task_midea=nullptr,task_local_lan=nullptr;
 // Small, loop-owned boot trace. SDK minima aggregate region low-water marks;
@@ -2610,6 +2626,9 @@ static void optimizer_worker(void*) {
     }
     LearningSlot slot{};
     BaseloadLearner baseload_learner;
+    BaseloadCheckpoint pending_base{};
+    bool base_restore_pending=false,base_restore_read=false;
+    uint32_t base_restore_last_ms=0;
     HeatPhaseObserver phase_observer{};
     auto* maintenance_cycles=static_cast<MaintenanceCycleLearner*>(heap_caps_malloc(
         sizeof(MaintenanceCycleLearner),scratch_caps));
@@ -2760,8 +2779,24 @@ static void optimizer_worker(void*) {
         const bool defrost=defrost_view.defer_write ||
             (current_cycle_pump_proof(now,request) && pump.defrost==true);
         xSemaphoreGive(lock_data);
-        const auto base=baseload_learner.observe(observe_baseload?observed_id:0,
-            now,request,meter,meter_relay,defrost);
+        const bool ota_installing=cottage_ota_network_maintenance();
+        auto base=ota_installing?baseload_learner.snapshot(observed_id,now):
+            baseload_learner.observe(observe_baseload?observed_id:0,
+                now,request,meter,meter_relay,defrost);
+        if(!base_restore_read && !ota_installing &&
+           (base_restore_last_ms==0 || static_cast<uint32_t>(millis()-base_restore_last_ms)>=60000u)) {
+            base_restore_last_ms=millis();size_t used=0;
+            const auto read=enevina_firmware::history_baseload_read(
+                reinterpret_cast<uint8_t*>(&pending_base),sizeof(pending_base),used);
+            base_restore_read=read!=CheckpointRead::Error;
+            base_restore_pending=read==CheckpointRead::Read && used==sizeof(pending_base);
+        }
+        if(base_restore_pending && !ota_installing && clock_ok() && epoch_known && observe_baseload) {
+            const auto restored_base=baseload_learner.restore_checkpoint(pending_base,
+                model_store_identity(identity,model_epoch),observed_id,now);
+            if(restored_base!=BaseloadRestore::Pending)base_restore_pending=false;
+            if(restored_base==BaseloadRestore::Restored)base=baseload_learner.snapshot(observed_id,now);
+        }
         const bool gain_regime_changed=id && shared_id && base.ready &&
             base.identity==shared_id && id->note_baseload_regime(base.watts);
         xSemaphoreTake(lock_data,portMAX_DELAY);
@@ -3011,8 +3046,10 @@ static void optimizer_worker(void*) {
         // Retain completed trial observations between runs in the same
         // configuration, even when the ordinary profile is not Saving.
         const bool keep_trial_evidence=maintenance_cycles && maintenance_cycles->has_trial_results(now);
-        auto cycle_report=maintenance_cycles?maintenance_cycles->observe(collect_cycles || keep_trial_evidence,shared_id,
-            optimizer_site_generation,optimizer_config_generation,cycle_mode.hold_target_c,cycle_sample):
+        auto cycle_report=maintenance_cycles?(ota_installing?
+            maintenance_cycles->report(cycle_sample.outdoor_c):
+            maintenance_cycles->observe(collect_cycles || keep_trial_evidence,shared_id,
+                optimizer_site_generation,optimizer_config_generation,cycle_mode.hold_target_c,cycle_sample)):
             MaintenanceCycleReport{};
         // Write at most once per ten minutes, and only after new complete
         // evidence or a material background-regime invalidation. Failure is
@@ -3337,11 +3374,53 @@ static void optimizer_worker(void*) {
             slot.energy_source_identity=meter.source_identity;
             slot.baseload=base;
         }
+        const uint32_t ota_request=ota_learning_request.load();
+        if(ota_request!=ota_learning_reply.load()) {
+            bool saved=!reset_unpersisted &&
+                site_settings_generation()==optimizer_site_generation &&
+                c23_config_generation()==optimizer_config_generation;
+            if(id && saved) {
+                const auto learned=id->report(now);
+                if(learned.samples && learned.revision!=saved_revision) {
+                    if(!epoch_known)epoch_known=load_model_epoch(model_store,model_epoch);
+                    const auto stored=epoch_known?identifier_store(*id,
+                        model_store_identity(identity,model_epoch)):ModelStore::Failed;
+                    saved=stored==ModelStore::Stored || stored==ModelStore::StoredFile;
+                    if(saved)saved_revision=learned.revision;
+                }
+            }
+            if(saved && maintenance_cycles && maintenance_cycles->checkpoint_dirty()) {
+                saved=cycle_image && !reset_unpersisted && cycle_key.valid() &&
+                    maintenance_cycles->save(cycle_key,*cycle_image) &&
+                    enevina_firmware::history_maintenance_write(
+                        reinterpret_cast<const uint8_t*>(cycle_image),sizeof(*cycle_image));
+                if(saved){maintenance_cycles->checkpoint_saved();++cycle_checkpoint_writes;}
+                else ++cycle_checkpoint_failures;
+            }
+            if(saved) {
+                BaseloadCheckpoint durable{};
+                const uint32_t model_key=epoch_known?model_store_identity(identity,model_epoch):0;
+                baseload_learner.checkpoint(model_key,now,durable);
+                // If no fresh OFF reading has arrived since last boot, do
+                // not overwrite the previously saved qualified regime.
+                if(!durable.meter && base_restore_pending &&
+                   pending_base.model_key==model_key && pending_base.meter==observed_id &&
+                   pending_base.schema==1 && pending_base.observed_utc>0 &&
+                   now>=pending_base.observed_utc && now-pending_base.observed_utc<=7200 &&
+                   pending_base.crc==history_crc16(reinterpret_cast<const uint8_t*>(&pending_base),
+                       offsetof(BaseloadCheckpoint,crc)))
+                    durable=pending_base;
+                saved=enevina_firmware::history_baseload_write(
+                    reinterpret_cast<const uint8_t*>(&durable),sizeof(durable));
+            }
+            ota_learning_saved.store(saved);
+            ota_learning_reply.store(ota_request);
+        }
         // Recompute on quarter-hour boundary, retries every minute when offline.
         const time_t t=time(nullptr);
         int sleep_s=clock_ok()?static_cast<int>(900-(t%900)):60;
         if(sleep_s>60)sleep_s=60; // Allows freshness monitoring during long slots.
-        vTaskDelay(pdMS_TO_TICKS(std::max(5,sleep_s)*1000));
+        ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(std::max(5,sleep_s)*1000));
     }
 }
 static void add_control_phase(cJSON* root,const char* key,const MitsubishiCommandPhase& phase) {
@@ -3890,6 +3969,9 @@ static void status_endpoint() {
                            cottage_ota_network_maintenance());
     cJSON_AddNumberToObject(root,"ota_downloaded_bytes",
                             cottage_ota_downloaded_bytes());
+    cJSON_AddNumberToObject(root,"ota_expected_bytes",cottage_ota_expected_bytes());
+    cJSON_AddNumberToObject(root,"ota_resume_count",cottage_ota_resume_count());
+    cJSON_AddBoolToObject(root,"ota_reconnecting",cottage_ota_reconnecting());
     cJSON_AddNumberToObject(root,"ota_programmed_bytes",
                             cottage_ota_programmed_bytes());
     cJSON_AddNumberToObject(root,"ota_chunk_count",

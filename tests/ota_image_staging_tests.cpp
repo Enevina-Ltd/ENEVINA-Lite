@@ -2,6 +2,7 @@
 #include <array>
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 using namespace enevina::cottage::ota;
 struct Source {
@@ -28,7 +29,29 @@ struct Source {
     void progress(size_t done){assert(done>observed);observed=done;}
     void wait(){++waits;}
 };
+static unsigned allocations=0,live=0,fail_at=0;
+static void* allocate(size_t n){
+    if(++allocations==fail_at)return nullptr;
+    auto* p=std::malloc(n);if(p)++live;return p;
+}
+static void release(void* p){if(p){--live;std::free(p);}}
 int main(){
+    {
+        SegmentedImage<4,3> image(allocate,release);
+        const uint8_t bytes[]={0,1,2,3,4,5,6,7,8};
+        uint8_t out[9]{};
+        assert(image.reserve(9)&&live==3);
+        assert(image.write(0,bytes,3)); // interrupted in the middle of a block
+        assert(image.write(3,bytes+3,6)); // resume across two block boundaries
+        assert(image.read(0,out,9)&&std::memcmp(out,bytes,9)==0);
+        assert(!image.write(8,bytes,2)&&!image.read(8,out,2));
+        size_t span=9;assert(image.span(3,span)&&span==1);
+        image.reset();assert(live==0);
+        allocations=0;fail_at=2;
+        assert(!image.reserve(9)&&live==0);
+        assert(!image.reserve(13)&&live==0);
+    }
+    assert(live==0);
     std::array<uint8_t,11> storage{};
     uint8_t scratch[4]{};
     auto run=[&](Source& src,size_t n=9,size_t cap=9){
@@ -37,6 +60,14 @@ int main(){
         assert(storage.front()==0xa5 && storage.back()==0xa5);
         return result;
     };
+    const char* tag="\"abc\"";
+    const char* range="bytes 3-8/9";
+    assert(range_response_matches(206,false,tag,tag,range,range,6,6));
+    assert(!range_response_matches(200,false,tag,tag,range,range,6,6));
+    assert(!range_response_matches(206,true,tag,tag,range,range,6,6));
+    assert(!range_response_matches(206,false,"wrong",tag,range,range,6,6));
+    assert(!range_response_matches(206,false,tag,tag,"bytes 0-5/9",range,6,6));
+    assert(!range_response_matches(206,false,tag,tag,range,range,5,6));
     Source good; assert(run(good)==StageResult::Complete);
     assert(std::equal(good.bytes.begin(),good.bytes.end(),storage.begin()+1));
     assert(good.observed==9);

@@ -10,7 +10,7 @@
 //  * Only a trusted clock records. A clock that moves backwards is ignored
 //    until it passes the last finalized slot.
 //  * Flash writes are bounded: records are appended in batches (the firmware
-//    flushes hourly), the file is compacted rarely (after kHistoryCompactSlack
+//    flushes on each completed quarter hour), the file is compacted rarely (after kHistoryCompactSlack
 //    extra records), every record carries a CRC and a torn tail is cut at the
 //    first bad record on load.
 //  * Pump-side values keep their provenance flags (forecast outdoor value,
@@ -206,6 +206,18 @@ struct HistoryInputs {
     uint32_t ota_upgrade_event_version=0; // signed OTA proof, not just a new observed number
 };
 
+// Explicit versioned open-quarter checkpoint. No task state, event counters,
+ // pointers or C++ bool representation cross a firmware boundary.
+struct HistoryOpenSlot {
+    uint32_t schema,slot,samples,flags;
+    uint64_t indoor_source_id;
+    int64_t last_power_sample_utc;
+    double sums[5],setpoint,verified_watt_seconds;
+    uint32_t counts[5],verified_power_seconds;
+    int16_t indoor_correction_c100;
+    uint8_t action,power_scope,price_currency,reserved;
+};
+
 class HistoryRecorder {
 public:
     static constexpr int64_t kDebounceS=60;      // a state must hold this long to become an event
@@ -262,8 +274,52 @@ public:
         add(in);
         return finalized;
     }
-    // On shutdown/flush time the open slot is NOT finalized: partial slots are
-    // never stored as if complete.
+    // Save only observed samples, not an invented complete interval. On
+    // restore the first new sample may continue the same slot, but energy
+    // integration must not bridge an unobserved reboot interval.
+    void snapshot_open(HistoryOpenSlot& o) const {
+        std::memset(&o,0,sizeof(o));o.schema=1;o.slot=acc_slot_;o.samples=samples_;
+        o.flags=(indoor_source_known_?1u:0u)|(indoor_mixed_?2u:0u)|
+            (indoor_from_pump_?4u:0u)|(have_setpoint_?8u:0u)|(armed_?16u:0u)|
+            (outdoor_forecast_?32u:0u)|(outdoor_measured_?64u:0u)|
+            (pump_online_?128u:0u)|(wifi_ok_?256u:0u)|(power_scope_set_?512u:0u)|
+            (power_mixed_?1024u:0u)|(price_currency_seen_?2048u:0u)|(price_mixed_?4096u:0u);
+        o.indoor_source_id=indoor_source_id_;o.indoor_correction_c100=indoor_correction_c100_;
+        const Sum sums[]={indoor_,rh_,outdoor_,power_,price_};
+        for(unsigned i=0;i<5;++i){o.sums[i]=sums[i].sum;o.counts[i]=sums[i].n;}
+        o.setpoint=setpoint_;o.action=action_;o.power_scope=power_scope_;o.price_currency=price_currency_;
+        o.verified_watt_seconds=verified_watt_seconds_;o.verified_power_seconds=verified_power_seconds_;
+        o.last_power_sample_utc=last_power_sample_utc_;
+    }
+    bool restore_open(const HistoryOpenSlot& o,const HistoryStore& store) {
+        if(acc_slot_ || o.schema!=1 || !o.samples || o.samples>10000 ||
+           o.slot<=store.newest_slot() || o.slot<=1700000000u/kHistoryStepS ||
+           (o.flags&~8191u) || o.action>3 || o.power_scope>2 || o.price_currency>5 ||
+           o.reserved || !std::isfinite(o.setpoint) || o.setpoint<0 || o.setpoint>40 ||
+           !std::isfinite(o.verified_watt_seconds) || o.verified_watt_seconds<0 ||
+           o.verified_power_seconds>kHistoryStepS ||
+           o.verified_watt_seconds>65000.0*o.verified_power_seconds ||
+           (o.last_power_sample_utc!=0 && (o.last_power_sample_utc<=0 ||
+             o.last_power_sample_utc/kHistoryStepS!=o.slot)))return false;
+        const double lo[]={-40,0,-60,0,-20000},hi[]={60,100,60,65000,20000};
+        for(unsigned i=0;i<5;++i)
+            if(o.counts[i]>o.samples || !std::isfinite(o.sums[i]) ||
+               o.sums[i]<lo[i]*o.counts[i] || o.sums[i]>hi[i]*o.counts[i])return false;
+        reset(o.slot);samples_=o.samples;
+        Sum* sums[]={&indoor_,&rh_,&outdoor_,&power_,&price_};
+        for(unsigned i=0;i<5;++i){sums[i]->sum=o.sums[i];sums[i]->n=o.counts[i];}
+        indoor_source_known_=o.flags&1u;indoor_mixed_=o.flags&2u;indoor_from_pump_=o.flags&4u;
+        have_setpoint_=o.flags&8u;armed_=o.flags&16u;outdoor_forecast_=o.flags&32u;
+        outdoor_measured_=o.flags&64u;pump_online_=o.flags&128u;wifi_ok_=o.flags&256u;
+        power_scope_set_=o.flags&512u;power_mixed_=o.flags&1024u;
+        price_currency_seen_=o.flags&2048u;price_mixed_=o.flags&4096u;
+        indoor_source_id_=o.indoor_source_id;indoor_correction_c100_=o.indoor_correction_c100;
+        setpoint_=o.setpoint;action_=o.action;power_scope_=o.power_scope;price_currency_=o.price_currency;
+        verified_watt_seconds_=o.verified_watt_seconds;verified_power_seconds_=o.verified_power_seconds;
+        last_power_sample_utc_=o.last_power_sample_utc;last_power_valid_=false;
+        return true;
+    }
+    // Never finalize an open slot just because shutdown is requested.
 private:
     struct Sum {double sum=0;uint32_t n=0;void add(double v){sum+=v;++n;}
                 bool any()const{return n>0;} double avg()const{return sum/n;}};
@@ -348,7 +404,7 @@ private:
             const uint8_t scope=in.power_scope<=2?in.power_scope:0;
             // Re-reading the SAME Shelly capture from RAM is not another
             // physical observation, even if the HTTP history loop ran again.
-            if(!last_power_valid_ || capture>last_power_sample_utc_) {
+            if(capture>last_power_sample_utc_) {
                 if(!power_scope_set_) {power_scope_=scope;power_scope_set_=true;}
                 else if(power_scope_!=scope) power_mixed_=true;
                 if(last_power_valid_ && last_power_scope_==scope &&

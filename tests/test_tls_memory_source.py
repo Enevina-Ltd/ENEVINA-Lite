@@ -29,10 +29,13 @@ class TlsMemoryWiring(unittest.TestCase):
             self.assertNotIn("skip_cert_common_name_check",data)
     def test_ota_transport_scope_ends_before_flash(self):
         fn=OTA.split("bool update_app(const Release& release) {",1)[1].split("#endif // ENABLED",1)[0]
-        self.assertIn("PublicTlsSource::Ota",fn)
-        self.assertLess(fn.index("PublicTlsMemoryScope tls_memory"),fn.index("open_https("))
-        self.assertLess(fn.index("close_https(client)"),fn.index("tls_memory.end()"))
-        self.assertLess(fn.index("tls_memory.end()"),fn.index("esp_ota_begin"))
+        transport=OTA.split("RangeResult download_range(",1)[1].split("bool update_app(",1)[0]
+        self.assertIn("PublicTlsSource::Ota",transport)
+        self.assertLess(transport.index("PublicTlsMemoryScope tls_memory"),transport.index("esp_http_client_init(&cfg)"))
+        self.assertIn("~Close(){close_https(client);}",transport)
+        self.assertLess(transport.index("PublicTlsMemoryScope tls_memory"),transport.index("struct Close"))
+        self.assertLess(fn.index("download_range("),fn.index("esp_ota_begin"))
+        self.assertNotIn("PublicTlsMemoryScope",fn)
         self.assertIn("cfg.cert_pem=COTTAGE_OTA_LOCAL_ROOT_CA",OTA)
     def test_shelly_scratch_is_not_reserved_at_boot(self):
         self.assertNotIn("static char body[kBodyMax]",SHELLY)

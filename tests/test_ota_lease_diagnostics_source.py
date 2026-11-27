@@ -16,15 +16,13 @@ class OTARecoverySource(unittest.TestCase):
         self.assertIn("ota_flash_idle_delay_ticks=2u", POLICY)
 
     def test_image_stage_has_bounded_retries_with_unmodified_guards(self):
-        self.assertIn("ota_image_lease_max_attempts=12u", POLICY)
-        self.assertIn("ota_image_lease_retry_delay_ms=400u", POLICY)
-        self.assertIn("attempt<=enevina::cottage::ota_image_lease_max_attempts", SOURCE)
-        self.assertIn("ota_image_attempts.store(attempt);", SOURCE)
-        self.assertIn("enevina::cottage::ota_image_min_internal_bytes,", SOURCE)
-        self.assertIn("enevina::cottage::ota_min_contiguous_internal_bytes,", SOURCE)
-        self.assertIn("&image_diag))", SOURCE)
-        self.assertIn("if(!image_lease)", SOURCE)
-        self.assertIn("if(attempt<enevina::cottage::ota_image_lease_max_attempts)", SOURCE)
+        self.assertIn("ota_progress_expired(millis(),last_progress)",SOURCE)
+        self.assertIn("ota_image_attempts.fetch_add(1)",SOURCE)
+        self.assertIn("NetworkBudgetLease lease(1200,ota_image_min_internal_bytes",SOURCE)
+        self.assertIn("ota_min_contiguous_internal_bytes",SOURCE)
+        self.assertIn("lease.diagnostic()",SOURCE)
+        self.assertIn("ota_retry_delay_ms",SOURCE)
+        self.assertIn("ota_reader_window_ms",SOURCE)
         self.assertNotIn("setInsecure(",SOURCE)
 
     def test_stage_diagnostic_not_inferred_from_late_heap_sampling(self):

@@ -34,10 +34,15 @@ uint32_t cottage_ota_problem_free_internal();
 uint32_t cottage_ota_problem_largest_internal();
 uint32_t cottage_ota_image_lease_attempts();
 uint32_t cottage_ota_inflight_memory_waits();
-// Temporary read-only worker pause during eligible signed-image download.
+// Temporary read-only worker pause during final verified-image installation.
 // Never persists user settings and never changes an automation authorization.
 bool cottage_ota_network_maintenance();
+// Owner-task verified persistence of all learned state before activation.
+bool cottage_ota_checkpoint_learning();
 uint32_t cottage_ota_downloaded_bytes();
+uint32_t cottage_ota_expected_bytes();
+uint32_t cottage_ota_resume_count();
+bool cottage_ota_reconnecting();
 uint32_t cottage_ota_programmed_bytes();
 uint32_t cottage_ota_chunk_count();
 uint32_t cottage_ota_idle_yields();

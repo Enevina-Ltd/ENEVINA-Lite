@@ -25,7 +25,7 @@ using namespace enevina::cottage;
 constexpr char tag[]="enevina_hist";
 constexpr char kRecordsPath[]="/hist.bin";
 constexpr char kEventsPath[]="/events.bin";
-constexpr uint32_t kFlushIntervalMs=60UL*60*1000;      // hourly: bounded flash wear
+constexpr uint32_t kFlushIntervalMs=60UL*60*1000;      // hourly fallback for event/repair work
 constexpr uint32_t kEventFlushMinMs=10UL*60*1000;       // new events: at most every 10 min
 
 // LittleFS-backed file with a streamed atomic replace (temp file + rename).
@@ -50,25 +50,52 @@ public:
     bool append(const void* data,size_t n) override {
         File f=LittleFS.open(path_,"a");
         if(!f) return false;
+        const size_t offset=f.size();
         const bool ok=f.write(static_cast<const uint8_t*>(data),n)==n;
-        f.close();
-        return ok;
+        f.flush();f.close();
+        if(!ok || size()!=offset+n)return false;
+        // Arduino File::close/flush cannot report all lower-layer errors.
+        uint8_t check[128];
+        const auto* bytes=static_cast<const uint8_t*>(data);
+        for(size_t i=0;i<n;) {
+            const size_t k=std::min(sizeof(check),n-i);
+            if(!read(offset+i,check,k)||std::memcmp(check,bytes+i,k)!=0)return false;
+            i+=k;
+        }
+        return true;
     }
     bool replace_begin() override {
         if(open_) abort_file();
         LittleFS.remove(tmp_);                       // stale temp from an earlier power cut
         tmpf_=LittleFS.open(tmp_,"w");
         open_=static_cast<bool>(tmpf_);
+        replace_size_=0;replace_hash_=14695981039346656037ULL;
         return open_;
     }
     bool replace_write(const void* data,size_t n) override {
-        return open_ && tmpf_.write(static_cast<const uint8_t*>(data),n)==n;
+        if(!open_ || tmpf_.write(static_cast<const uint8_t*>(data),n)!=n)return false;
+        hash_bytes(replace_hash_,static_cast<const uint8_t*>(data),n);
+        replace_size_+=n;return true;
     }
     bool replace_commit() override {
         if(!open_) return false;
-        tmpf_.close();open_=false;
+        tmpf_.flush();tmpf_.close();open_=false;
+        // Verify the closed temporary file before replacing the old file.
+        File verify=LittleFS.open(tmp_,"r");
+        bool ok=verify && verify.size()==replace_size_;
+        uint8_t chunk[128];
+        uint64_t hash=14695981039346656037ULL;
+        size_t remaining=replace_size_;
+        while(ok&&remaining) {
+            const size_t n=std::min(remaining,sizeof(chunk));
+            ok=verify.read(chunk,n)==n;
+            if(ok)hash_bytes(hash,chunk,n);
+            remaining-=n;
+        }
+        verify.close();
         // littlefs rename over an existing file is atomic: old or new, never half.
-        if(LittleFS.rename(tmp_,path_)) return true;
+        if(ok && hash==replace_hash_ && LittleFS.rename(tmp_,path_))
+            return size()==replace_size_;
         LittleFS.remove(tmp_);
         return false;
     }
@@ -79,6 +106,11 @@ private:
         if(open_) {tmpf_.close();open_=false;}
         LittleFS.remove(tmp_);
     }
+    static void hash_bytes(uint64_t& hash,const uint8_t* p,size_t n) {
+        for(size_t i=0;i<n;++i){hash^=p[i];hash*=1099511628211ULL;}
+    }
+    size_t replace_size_=0;
+    uint64_t replace_hash_=0;
     const char* path_;
     char tmp_[24];
     File tmpf_;
@@ -93,6 +125,9 @@ constexpr char kFixedModelPath[]="/model1.bin",kVariableModelPath[]="/model2.bin
 LfsFile fixed_model_file(kFixedModelPath),variable_model_file(kVariableModelPath);
 constexpr char kMaintenancePath[]="/maint1.bin";
 LfsFile maintenance_file(kMaintenancePath);
+LfsFile open_slot_file("/histopen1.bin"),baseload_file("/base1.bin");
+struct OpenSlotFile {HistoryOpenSlot slot;uint16_t crc;};
+bool ota_history_frozen=false; // protected by guard
 HistoryPersistence* persistence=nullptr;
 HistoryRecorder recorder;
 bool persistent=false;
@@ -137,10 +172,16 @@ void history_initialize() {
     records_file.remove_stale_temp();
     events_file.remove_stale_temp();
     maintenance_file.remove_stale_temp();
+    open_slot_file.remove_stale_temp();
+    baseload_file.remove_stale_temp();
     persistence=new(std::nothrow) HistoryPersistence(records_file,events_file);
     if(!persistence) {persistent=false;return;}
     const LoadResult r=persistence->load(*store,events);
     last_load_records=r.records;
+    OpenSlotFile open{};
+    if(open_slot_file.size()==sizeof(open) && open_slot_file.read(0,&open,sizeof(open)) &&
+       open.crc==history_crc16(reinterpret_cast<const uint8_t*>(&open.slot),sizeof(open.slot)))
+        recorder.restore_open(open.slot,*store); // stale or already finalized is rejected
     // Migrate an already-durable UpdateConfirmed event into the independent
     // NVS summary. This includes legacy installs where hist_done was written
     // before hist_last existed: pending_ota is then zero, but the event is
@@ -165,11 +206,12 @@ void history_initialize() {
 void history_observe(const HistoryInputs& inputs) {
     if(!guard||!store) return;
     xSemaphoreTake(guard,portMAX_DELAY);
-    recorder.observe(inputs,*store,events);
+    if(ota_history_frozen){xSemaphoreGive(guard);return;}
+    const bool finalized=recorder.observe(inputs,*store,events);
     const uint32_t now=millis();
     const bool hourly=now-last_flush_ms>=kFlushIntervalMs;
     const bool new_events=events.total()!=events_total_at_flush && now-last_flush_ms>=kEventFlushMinMs;
-    if(persistent&&persistence&&(hourly||new_events)&&
+    if(persistent&&persistence&&(finalized||hourly||new_events)&&
        (persistence_healthy||now-last_attempt_ms>=kRetryIntervalMs)) {
         // Keep retrying (at most every 10 min after failure), but do NOT mark
         // history durable or advance success bookkeeping on a failed write.
@@ -200,6 +242,34 @@ void history_observe(const HistoryInputs& inputs) {
     xSemaphoreGive(guard);
 }
 
+// OTA must never select a new boot partition while completed records are
+// known to be RAM-only. Same mutex and persistence transaction as recorder.
+bool history_flush_for_ota() {
+    if(!guard||!store||!persistent||!persistence)return false;
+    if(xSemaphoreTake(guard,pdMS_TO_TICKS(10000))!=pdTRUE)return false;
+    bool ok=persistence->flush(*store,events);
+    OpenSlotFile open{};
+    recorder.snapshot_open(open.slot);
+    open.crc=history_crc16(reinterpret_cast<const uint8_t*>(&open.slot),sizeof(open.slot));
+    if(ok)ok=write_model_checkpoint(open_slot_file,reinterpret_cast<const uint8_t*>(&open),sizeof(open));
+    persistence_healthy=ok;
+    last_attempt_ms=millis();
+    if(ok){
+        last_flush_ms=last_attempt_ms;events_total_at_flush=events.total();
+        // Stop new history observations only for the short activation/reboot
+        // interval. The stored accumulator carries the unfinished quarter.
+        ota_history_frozen=true;
+    }
+    xSemaphoreGive(guard);
+    return ok;
+}
+
+void history_resume_after_ota() {
+    if(!guard)return;
+    xSemaphoreTake(guard,portMAX_DELAY);
+    ota_history_frozen=false;
+    xSemaphoreGive(guard);
+}
 bool history_last_event(uint8_t kind,uint32_t& utc,uint32_t& arg) {
     if(!guard||!store) return false;
     bool found=false;
@@ -267,6 +337,18 @@ bool history_maintenance_write(const uint8_t* data,size_t used) {
     xSemaphoreGive(guard);return ok;
 }
 
+CheckpointRead history_baseload_read(uint8_t* data,size_t cap,size_t& used) {
+    used=0;
+    if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)
+        return CheckpointRead::Error;
+    const auto result=read_model_checkpoint(baseload_file,data,cap,used);
+    xSemaphoreGive(guard);return result;
+}
+bool history_baseload_write(const uint8_t* data,size_t used) {
+    if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)return false;
+    const bool ok=write_model_checkpoint(baseload_file,data,used);
+    xSemaphoreGive(guard);return ok;
+}
 bool history_maintenance_present() {
     if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)return true;
     const bool present=maintenance_file.exists();
