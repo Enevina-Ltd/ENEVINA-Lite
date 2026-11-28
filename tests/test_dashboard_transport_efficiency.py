@@ -28,11 +28,12 @@ class DashboardTransportEfficiency(unittest.TestCase):
         self.assertIn('cottage_send_dashboard(web)',MAIN)
         self.assertNotIn('premium_dashboard_html',MAIN+TRANSPORT)
         self.assertIn('MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT',TRANSPORT)
-        self.assertIn('TINFL_LZ_DICT_SIZE',TRANSPORT)
+        self.assertIn('TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF',TRANSPORT)
         self.assertIn('TINFL_STATUS_DONE',TRANSPORT)
         self.assertIn('mz_crc32',TRANSPORT)
-        self.assertIn('web.abortStream()',TRANSPORT)
-        self.assertIn('web.streamContent(reinterpret_cast<const char*>(dict.get()),out)',TRANSPORT)
+        self.assertIn('web.deferAsset',TRANSPORT)
+        self.assertIn('web.assetBusy()',TRANSPORT)
+        self.assertIn('page.release()',TRANSPORT)
     def test_polling_is_serial_and_selected(self):
         poll=UI.split("async function periodicRefresh(){",1)[1].split("</script>",1)[0]
         self.assertIn("state.periodicBusy||document.hidden===true",poll)

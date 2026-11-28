@@ -23,50 +23,34 @@ void send_identity(CottageWebServer& web) {
        total==0||total>1024u*1024u) {
         web.send(500,"text/plain","Dashboard data invalid");return;
     }
-    // ROM miniz's state and 32 KiB wrapping dictionary belong in PSRAM,
-    // never on the 8 KiB web task stack or in the internal TLS heap.
+    // Inflate once into bounded external memory. The exact fixed-length
+    // body is then sent nonblocking over subsequent web-loop iterations.
+    // Avoid a 3.5-second synchronous response timeout on weak Wi-Fi.
     std::unique_ptr<tinfl_decompressor,decltype(&heap_caps_free)> state(
         static_cast<tinfl_decompressor*>(heap_caps_calloc(1,sizeof(tinfl_decompressor),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)),heap_caps_free);
-    std::unique_ptr<uint8_t,decltype(&heap_caps_free)> dict(
-        static_cast<uint8_t*>(heap_caps_malloc(TINFL_LZ_DICT_SIZE,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)),heap_caps_free);
-    if(!state||!dict){web.send(503,"text/plain","Dashboard temporarily busy");return;}
+    std::unique_ptr<uint8_t,decltype(&heap_caps_free)> page(
+        static_cast<uint8_t*>(heap_caps_malloc(total,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)),heap_caps_free);
+    if(!state||!page){web.send(503,"text/plain","Dashboard temporarily busy");return;}
     tinfl_init(state.get());
     constexpr size_t input_size=length-18;
-    size_t consumed=0,produced=0;
-    mz_ulong crc=0;
-    // Chunked transport uses the same absolute nonblocking write budget.
-    // No success terminator is sent if decompression/CRC validation fails.
-    web.setContentLength(CONTENT_LENGTH_UNKNOWN);
-    web.send(200,"text/html; charset=utf-8","");
-    for(;;) {
-        size_t in=input_size-consumed,out=TINFL_LZ_DICT_SIZE;
-        const auto status=tinfl_decompress(state.get(),gzip+10+consumed,&in,
-            dict.get(),dict.get(),&out,0);
-        if(in>input_size-consumed||out>TINFL_LZ_DICT_SIZE||out>total-produced||
-           (status!=TINFL_STATUS_DONE&&status!=TINFL_STATUS_HAS_MORE_OUTPUT)||
-           (status==TINFL_STATUS_HAS_MORE_OUTPUT&&out!=TINFL_LZ_DICT_SIZE)) {
-            web.abortStream();return;
-        }
-        consumed+=in;produced+=out;
-        crc=mz_crc32(crc,dict.get(),out);
-        if(status==TINFL_STATUS_DONE &&
-           (consumed!=input_size||produced!=total||uint32_t(crc)!=le32(gzip+length-8))) {
-            web.abortStream();return;
-        }
-        if(out&&!web.streamContent(reinterpret_cast<const char*>(dict.get()),out))return;
-        if(status==TINFL_STATUS_DONE) {
-            web.streamContent("");return;
-        }
-        delay(1);
+    size_t in=input_size,out=total;
+    const auto status=tinfl_decompress(state.get(),gzip+10,&in,
+        page.get(),page.get(),&out,TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+    if(status!=TINFL_STATUS_DONE || in!=input_size || out!=total ||
+       uint32_t(mz_crc32(0,page.get(),out))!=le32(gzip+length-8)) {
+        web.send(500,"text/plain","Dashboard data invalid");return;
     }
+    auto* data=page.release();
+    web.deferAsset("text/html; charset=utf-8",data,total,data);
 }
 }
 void cottage_send_dashboard(CottageWebServer& web) {
     web.sendHeader("Vary","Accept-Encoding");
+    if(web.assetBusy()){web.send(503,"text/plain","Dashboard temporarily busy");return;}
     if(web.acceptsGzip()) {
         web.sendHeader("Content-Encoding","gzip");
-        web.send_P(200,"text/html; charset=utf-8",
-            reinterpret_cast<PGM_P>(premium_dashboard_gzip),sizeof(premium_dashboard_gzip));
+        web.deferAsset("text/html; charset=utf-8",
+            premium_dashboard_gzip,sizeof(premium_dashboard_gzip));
     } else send_identity(web);
 }
 #endif

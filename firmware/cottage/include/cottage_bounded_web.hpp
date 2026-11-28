@@ -27,6 +27,10 @@ public:
     bool streamContent(const char* data);
     bool streamContent(const char* data,size_t size);
     void abortStream(){abortResponse();}
+    // Large read-only assets are sent incrementally between ordinary
+    // requests. Optional PSRAM ownership transfers even on failure.
+    bool assetBusy()const{return asset_.data!=nullptr;}
+    bool deferAsset(const char* type,const uint8_t* data,size_t size,uint8_t* owned=nullptr);
     bool responseAborted()const{return aborted_;}
     bool acceptsGzip()const {
         return enevina::cottage::accepts_gzip(ingress_.head().headers);
@@ -45,6 +49,15 @@ private:
         char* buffer=nullptr;
         uint32_t started=0;
     };
+    struct DeferredAsset {
+        WiFiClient client;
+        const uint8_t* data=nullptr;
+        uint8_t* owned=nullptr;
+        size_t size=0,sent=0;
+        uint32_t started=0,last_progress=0;
+    } asset_{};
+    void pollAsset();
+    void closeAsset(bool aborted);
     void finishRequest();
     void finishAllRequests();
     void closePending(Pending&);

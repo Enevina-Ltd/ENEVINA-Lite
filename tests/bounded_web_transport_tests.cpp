@@ -225,5 +225,68 @@ int main(){
     web.attach(idle[0],[&](){assert(false);});close(idle[1]);web.handleClient();
     assert(web.idleCloses()==1 && web.partialTimeouts()==1 && web.partialCloses()==1);
     assert(web.resourceRejects()==1 && web.invalidRequests()==5 && ingress_allocations==0);
+    // Reproduce a 508 KiB identity page on a slow connection. Each
+    // iteration accepts at most 1 KiB per 200 ms (~5 KiB/s). No loop
+    // waits for socket backpressure; ordinary status requests still run.
+    int slow_asset[2];assert(socketpair(AF_UNIX,SOCK_STREAM,0,slow_asset)==0);
+    assert(setsockopt(slow_asset[0],SOL_SOCKET,SO_SNDBUF,&buf,sizeof(buf))==0);
+    std::string expected_page(508456,'x');
+    for(size_t i=0;i<expected_page.size();++i)expected_page[i]=char(i%251);
+    auto* owned=static_cast<uint8_t*>(heap_caps_malloc(expected_page.size(),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    assert(owned);std::memcpy(owned,expected_page.data(),expected_page.size());
+    fake_clock=100;const auto asset_start=fake_clock;
+    web.attach(slow_asset[0],[&](){assert(web.deferAsset("text/html",owned,expected_page.size(),owned));});
+    request(slow_asset[1]);web.handleClient();
+    assert(web.assetBusy() && ingress_allocations==1);
+    // A concurrent asset is rejected, and its owned memory is released.
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,fast)==0);
+    web.attach(fast[0],[&](){
+        auto* extra=static_cast<uint8_t*>(heap_caps_malloc(2,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+        assert(extra);extra[0]=extra[1]=0;assert(!web.deferAsset("text/html",extra,2,extra));
+    });
+    request(fast[1]);web.handleClient();assert(drain(fast[1]).find("503 Response")!=std::string::npos);
+    assert(web.assetBusy() && ingress_allocations==1);
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,fast)==0);
+    web.attach(fast[0],[&](){assert(web.header("STATUS")==6);});
+    request(fast[1]);web.handleClient();assert(drain(fast[1])=="STATUS");
+    std::string received;
+    bool done=false;
+    for(int turns=0;turns<800 && !done;++turns) {
+        fake_clock+=200;const auto tick=fake_clock;
+        web.handleClient();
+        assert(fake_clock-tick<=1); // only the existing idle-loop delay
+        char bytes[1024];const auto n=recv(slow_asset[1],bytes,sizeof(bytes),MSG_DONTWAIT);
+        if(n>0)received.append(bytes,size_t(n));
+        else if(n==0)done=true;
+        else assert(errno==EAGAIN || errno==EWOULDBLOCK);
+    }
+    assert(done && !web.assetBusy() && ingress_allocations==0);
+    assert(fake_clock-asset_start>web_response_budget_ms);
+    const auto body_at=received.find("\r\n\r\n");
+    assert(body_at!=std::string::npos && received.substr(body_at+4)==expected_page);
+    assert(received.find("Content-Length: 508456\r\n")!=std::string::npos);
+    close(slow_asset[1]);
+    // A stalled asset is still finite and cannot keep PSRAM or the only
+    // transfer slot forever. Closing the server also releases ownership.
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,slow_asset)==0);
+    assert(setsockopt(slow_asset[0],SOL_SOCKET,SO_SNDBUF,&buf,sizeof(buf))==0);
+    const auto abort_before=web.responseAborts();
+    web.attach(slow_asset[0],[&](){
+        auto* extra=static_cast<uint8_t*>(heap_caps_malloc(expected_page.size(),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+        assert(extra);std::memcpy(extra,expected_page.data(),expected_page.size());
+        assert(web.deferAsset("text/html",extra,expected_page.size(),extra));
+    });
+    request(slow_asset[1]);web.handleClient();web.handleClient();
+    fake_clock+=web_asset_idle_ms;web.handleClient();
+    assert(!web.assetBusy() && ingress_allocations==0 && web.responseAborts()==abort_before+1);
+    assert(drain(slow_asset[1]).size()<expected_page.size());
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,slow_asset)==0);
+    web.attach(slow_asset[0],[&](){
+        auto* extra=static_cast<uint8_t*>(heap_caps_malloc(8,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+        assert(extra);std::memset(extra,0,8);assert(web.deferAsset("text/html",extra,8,extra));
+    });
+    request(slow_asset[1]);web.handleClient();assert(web.assetBusy());
+    web.close();assert(!web.assetBusy() && ingress_allocations==0);
+    assert(drain(slow_asset[1]).find("Content-Length: 8")!=std::string::npos);
     std::cout<<"PASS actual CottageWebServer ingress and output: fairness, preconnect, bounded partial request, timeout categories, recovery and chunk framing\n";
 }

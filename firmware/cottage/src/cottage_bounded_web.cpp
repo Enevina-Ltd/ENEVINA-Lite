@@ -52,6 +52,7 @@ void CottageWebServer::closePending(Pending& p) {
 }
 void CottageWebServer::finishAllRequests() {
     finishRequest();
+    closeAsset(false);
     for(auto& p:pending_)closePending(p);
 }
 void CottageWebServer::close() {
@@ -189,7 +190,53 @@ bool CottageWebServer::pollPending(Pending& p) {
     finishRequest();
     return true;
 }
+void CottageWebServer::closeAsset(bool aborted) {
+    if(aborted && assetBusy())++aborts_;
+    asset_.client.stop();
+    if(asset_.owned)heap_caps_free(asset_.owned);
+    asset_.data=nullptr;asset_.owned=nullptr;
+    asset_.size=asset_.sent=0;
+}
+bool CottageWebServer::deferAsset(const char* type,const uint8_t* data,size_t size,uint8_t* owned) {
+    if(assetBusy() || !data || !size || size>1024u*1024u) {
+        if(owned)heap_caps_free(owned);
+        // A caller may already have supplied Content-Encoding. Never
+        // label an uncompressed error as a gzip asset.
+        _responseHeaders="";
+        send(503,"text/plain","Dashboard temporarily busy");return false;
+    }
+    setContentLength(size);
+    send(200,type,""); // headers only; fixed length, no SDK chunk finalizer
+    if(aborted_ || _currentClient.fd()<0) {
+        if(owned)heap_caps_free(owned);
+        return false;
+    }
+    asset_.client=std::move(_currentClient);
+    _currentClient.stop();
+    asset_.data=data;asset_.owned=owned;asset_.size=size;asset_.sent=0;
+    asset_.started=asset_.last_progress=millis();
+    return true;
+}
+void CottageWebServer::pollAsset() {
+    if(!assetBusy())return;
+    if(web_asset_expired(millis(),asset_.started,asset_.last_progress) ||
+       asset_.client.fd()<0){closeAsset(true);return;}
+    // No sleeps, no waiting on a congested socket, and no extra task.
+    // A slow dashboard reader cannot prevent the next control-loop turn.
+    for(unsigned i=0;i<web_asset_writes_per_poll;++i) {
+        const size_t count=std::min(asset_.size-asset_.sent,web_write_block);
+        const int n=::send(asset_.client.fd(),asset_.data+asset_.sent,count,MSG_DONTWAIT);
+        if(n<=0) {
+            if(n<0 && !retryable_socket_error())closeAsset(true);
+            return;
+        }
+        if(size_t(n)>count){closeAsset(true);return;}
+        asset_.sent+=size_t(n);asset_.last_progress=millis();
+        if(asset_.sent==asset_.size){closeAsset(false);return;}
+    }
+}
 void CottageWebServer::handleClient() {
+    pollAsset();
     // First give both established connections a nonblocking turn.
     // A ready request is dispatched even when the other socket is idle.
     for(size_t offset=0;offset<pending_.size();++offset) {

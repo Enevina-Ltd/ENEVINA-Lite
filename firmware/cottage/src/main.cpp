@@ -4826,7 +4826,7 @@ void setup() {
             "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
             "frame-ancestors 'none'; base-uri 'none'");
         // One compressed flash asset; identity-only clients receive its
-        // bounded streaming decompression without a second embedded page.
+        // bounded PSRAM decompression and nonblocking deferred delivery.
         cottage_send_dashboard(web);
     });
     web.on("/api/status",HTTP_GET,[](){
