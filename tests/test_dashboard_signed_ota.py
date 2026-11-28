@@ -50,13 +50,15 @@ class DashboardSignedOTA(unittest.TestCase):
         # while maintenance still rejects new dashboard requests.
         self.assertEqual(worker_start.split("while(true)",1)[0].count("ulTaskNotifyTake(pdTRUE,0)"),1)
         self.assertEqual(worker_start.count("ulTaskNotifyTake(pdTRUE,0)"),2)
-        post_attempt=worker_start.split("last_status.store(applied?6:4)",1)[1]
+        post_attempt=worker_start.split("applied=update_app(r)",1)[1]
         self.assertLess(post_attempt.index("ota_manual_pending.exchange(false)"),
                         post_attempt.index("ulTaskNotifyTake(pdTRUE,0)"))
         self.assertLess(post_attempt.index("ulTaskNotifyTake(pdTRUE,0)"),
+                        post_attempt.index("last_status.store(applied?6:(transient?2:4))"))
+        self.assertLess(post_attempt.index("last_status.store(applied?6:(transient?2:4))"),
                         post_attempt.index("pause_readers.store(false)"))
         # Manual button must also wake the ten-minute post-failure wait.
-        self.assertIn("ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(10*60*1000))", OTA)
+        self.assertIn("ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(transient?60000u:10*60*1000u))", OTA)
         self.assertNotIn("vTaskDelay(pdMS_TO_TICKS(10*60*1000))", OTA)
         worker = OTA.split("void cottage_ota_worker(void*) {", 1)[1]
         self.assertIn("fetch_manifest(r)", worker)

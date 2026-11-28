@@ -50,7 +50,7 @@ class TestInternalRam(unittest.TestCase):
             self.assertIn(v,OTA)
         self.assertIn("64u*1024u",MEMORY)
         self.assertIn("NetworkBudgetLease network_lease(8000, 78*1024, 16*1024)",MARKET)
-        self.assertIn("if(!enevina_firmware::network_budget_acquire(200,", (ROOT/"firmware/cottage/src/cottage_secure_ota.cpp").read_text())
+        self.assertIn("if(!enevina_firmware::network_budget_acquire(5000,", (ROOT/"firmware/cottage/src/cottage_secure_ota.cpp").read_text())
 
     def test_observable_headroom_including_ota_and_history(self):
         for name in ("ota_stack_free","history_stack_free","midea_stack_free",

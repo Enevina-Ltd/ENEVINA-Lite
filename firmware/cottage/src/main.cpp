@@ -24,8 +24,7 @@
 #include <cstring>
 #include <string>
 #include "cottage_config.hpp"
-#include "cottage_premium_dashboard.hpp"
-#include "cottage_dashboard_gzip.hpp"
+#include "cottage_dashboard_transport.hpp"
 #include "cottage_air_service.hpp"
 #include "cottage_network_budget.hpp"
 #include "cottage_tls_memory.hpp"
@@ -53,6 +52,7 @@
 #include "cottage/building_identification.hpp"
 #include "cottage/baseload_learning.hpp"
 #include "cottage/maintenance_cycle.hpp"
+#include "cottage/maintenance_phase.hpp"
 #include "cottage/maintenance_tariff.hpp"
 #include "cottage/model_persistence.hpp"
 #include "cottage/learning_observation.hpp"
@@ -228,6 +228,22 @@ static std::atomic<int> cn105_source_proof_status{0};
 static std::atomic<uint32_t> cn105_source_proof_good{0};
 static TaskHandle_t task_sse=nullptr,task_shelly=nullptr;
 static TaskHandle_t task_ruuvi=nullptr,task_optimizer=nullptr;
+// The optimizer owns its live models. OTA asks that task for a verified
+// checkpoint; it never races a raw model pointer from the OTA task.
+static std::atomic<uint32_t> ota_learning_request{0},ota_learning_reply{0};
+static std::atomic<bool> ota_learning_saved{false};
+bool cottage_ota_checkpoint_learning() {
+    if(!task_optimizer)return false;
+    const uint32_t request=ota_learning_request.fetch_add(1)+1;
+    xTaskNotifyGive(task_optimizer);
+    const uint32_t started=millis();
+    while(ota_learning_reply.load()!=request) {
+        if(static_cast<uint32_t>(millis()-started)>=90000u)return false;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    return ota_learning_saved.load();
+}
+
 static TaskHandle_t task_ota=nullptr;
 static TaskHandle_t task_history=nullptr,task_midea=nullptr,task_local_lan=nullptr;
 // Small, loop-owned boot trace. SDK minima aggregate region low-water marks;
@@ -289,6 +305,7 @@ static std::atomic<int> control_gate{static_cast<int>(ControlBlock::Disabled)};
 static std::atomic<int> control_last_step{static_cast<int>(ControlStep::None)};
 static std::atomic<uint32_t> control_commands_sent{0};
 static std::atomic<uint32_t> control_commands_confirmed{0};
+static std::atomic<bool> control_last_dispatched_phase_stop{false};
 static std::atomic<uint32_t> control_commands_failed{0};
 static std::atomic<int64_t> control_last_command_utc{0};
 static std::atomic<int64_t> control_last_ack_utc{0};
@@ -328,6 +345,11 @@ static bool mpc_energy_in_kwh=false;
 static bool mpc_energy_incremental=false;
 static BaseloadEstimate baseload_snapshot{}; // protected by existing lock_data
 static MaintenanceCycleReport maintenance_cycle_snapshot{}; // same existing lock
+static CycleTrial cycle_trial{}; // RAM-only, protected by lock_data
+static uint32_t next_cycle_trial_revision=0;
+static HeatPhase cycle_phase=HeatPhase::Unknown;
+static int64_t cycle_phase_utc=0;
+static uint32_t cycle_phase_request=0,cycle_phase_endpoint=0,cycle_phase_link=0;
 static MaintenanceTariffAdvice maintenance_tariff_snapshot{}; // same existing lock
 static double mpc_energy_kwh=0,mpc_cost=0,mpc_uncertainty_c=0;
 static size_t horizon_price_slots=0,horizon_weather_slots=0,horizon_slots=0;
@@ -507,6 +529,10 @@ static bool parse_cn105_proof_event(const cJSON* root,int64_t now,
         p.boot_epoch=boot;p.completed_poll_sequence=seq;
         p.uart_connected=cJSON_IsTrue(uart);
         p.complete_decoded_poll=cJSON_IsTrue(complete);
+        const auto* defrost=cJSON_GetObjectItemCaseSensitive(doc,"defrost");
+        const auto* fault=cJSON_GetObjectItemCaseSensitive(doc,"fault");
+        if(cJSON_IsBool(defrost))p.defrost=cJSON_IsTrue(defrost);
+        if(cJSON_IsBool(fault))p.fault=cJSON_IsTrue(fault);
         if(strcmp(mode->valuestring,"HEAT")==0) p.mode=ObservedPumpMode::Heat;
         else if(strcmp(mode->valuestring,"OFF")==0) p.mode=ObservedPumpMode::Off;
         else if(strcmp(mode->valuestring,"OTHER")==0) p.mode=ObservedPumpMode::Other;
@@ -534,6 +560,10 @@ static bool parse_cn105_proof_event(const cJSON* root,int64_t now,
             static_cast<uint64_t>(esp_timer_get_time()/1000),continuous);
         pump=verified;
         verified_cn105_link=link;
+        if(link.current() && now-verified.evidence.source_utc<=90 && verified.defrost.has_value())
+            cn105_defrost.note(CN105DefrostSource::VerifiedPoll,
+                *verified.defrost?CN105DefrostSignal::Defrost:CN105DefrostSignal::Other,
+                static_cast<uint64_t>(esp_timer_get_time()/1000),link.endpoint);
         if(cn105_command_link.current() && cn105_command_link.endpoint==link.endpoint &&
            cn105_command_link.wifi==link.wifi)
             cn105_command_readback.observe(verified,now);
@@ -981,7 +1011,7 @@ static BootstrapDecision bootstrap_preview(int64_t now,
            cycle.meter_identity==meter && cycle.target_c==input.desired_room_c)
             candidate=cycle.candidate;
         const auto& tariff=maintenance_tariff_snapshot;
-        if(tariff.valid && tariff.site_generation==sg && tariff.config_generation==cg &&
+        if(tariff.valid && tariff.trial_revision==0 && tariff.site_generation==sg && tariff.config_generation==cg &&
            tariff.price_revision==market.cache_revision &&
            tariff.region_generation==market.region_generation &&
            tariff.computed_utc>0 && now>=tariff.computed_utc &&
@@ -1072,6 +1102,33 @@ static bool known_heating_mode(const enevina::PumpRoomState& state) {
     return !state.command_unconfirmed && (state.mode==enevina::PumpRoomMode::Off ||
         (state.mode==enevina::PumpRoomMode::Heat && std::isfinite(state.setpoint_c)));
 }
+// Caller holds lock_data. This includes proof freshness and the current link,
+// independently of how long the browser has had a status page open.
+static bool current_cycle_pump_proof(int64_t now,const enevina::PumpRoomState& state) {
+    return state.protocol==enevina::PumpRoomProtocol::Cn105EspHome &&
+        verified_cn105_link.current() && verified_cn105_link.endpoint==state.endpoint_generation &&
+        verified_cn105_link.wifi==state.link_generation && valid_cn105(pump,now,90) &&
+        pump.evidence.source_time_verified &&
+        ((pump.mode==ObservedPumpMode::Heat && state.mode==enevina::PumpRoomMode::Heat &&
+          std::fabs(pump.setpoint_c-state.setpoint_c)<0.001) ||
+         (pump.mode==ObservedPumpMode::Off && state.mode==enevina::PumpRoomMode::Off));
+}
+static bool current_bridge_phase_proof(int64_t now,Cn105LinkIdentity link) {
+    return verified_cn105_link.current() && verified_cn105_link.endpoint==link.endpoint &&
+        verified_cn105_link.wifi==link.wifi && valid_cn105(pump,now,90) &&
+        pump.evidence.source_time_verified;
+}
+static bool current_adapter_phase(int64_t now,const enevina::PumpRoomState& state) {
+    return known_heating_mode(state) && (state.source==enevina::PumpStateSource::VerifiedBus || state.source==enevina::PumpStateSource::DirectLan) &&
+        enevina::assess_measurement(state.evidence,now,90)==enevina::MeasurementQuality::VerifiedFresh;
+}
+static uint64_t cycle_monotonic_ms() {return static_cast<uint64_t>(esp_timer_get_time()/1000);}
+static bool current_cycle_trial(int64_t now,const enevina::PumpRoomState& state,
+        uint32_t site,uint32_t config) {
+    return clock_ok() && cycle_trial.current(now,cycle_monotonic_ms(),site,config,
+            control_permission_generation.load()) &&
+        state.endpoint_generation==cycle_trial.endpoint && state.link_generation==cycle_trial.link;
+}
 // ONE proposal for the physical control path: a calibrated, current MPC
 // plan's first decision, otherwise the price controller, which itself falls
 // back to a thermostat without prices. Never authorises a write by itself.
@@ -1086,10 +1143,59 @@ static ArbiterInput build_arbiter_input(int64_t now,const TemperatureSample& t) 
     const bool midea=cottage_midea_selected();
     const auto state=optimizer_pump_state(now,midea);
     in.bootstrap=bootstrap_preview(now,t,state.heating);
+    const auto trial_market=enevina_firmware::market_status();
     xSemaphoreTake(lock_data,portMAX_DELAY);
     in.calibration=calibration_snapshot.state;
     in.calibrated=calibration_snapshot.state==CalibrationState::Calibrated;
     in.plan=mpc_plan;
+    const bool verified_pump=current_cycle_pump_proof(now,state);
+    const bool adapter_phase=current_adapter_phase(now,state);
+    const bool verified_fault=verified_pump?pump.fault==true:adapter_phase && state.fault==true;
+    const bool verified_interruption=verified_fault ||
+        (verified_pump?pump.defrost==true:adapter_phase && state.defrosting==true);
+    const int64_t source_utc=verified_pump?pump.evidence.source_utc:adapter_phase?state.evidence.source_utc:0;
+    const bool trial_active=current_cycle_trial(now,state,in.settings_generation,in.config_generation);
+    if(trial_active && known_heating_mode(state) && in.temperature_fresh &&
+       in.bootstrap.below_native_minimum_cycle) {
+        in.cycle_trial_revision=cycle_trial.revision;
+        const auto phase=verified_interruption?(verified_fault?HeatPhase::Fault:HeatPhase::Defrost):
+            cycle_phase_utc==source_utc && cycle_phase_utc>0 &&
+            now>=cycle_phase_utc && now-cycle_phase_utc<=90 &&
+            cycle_phase_request==state.request_generation &&
+            cycle_phase_endpoint==state.endpoint_generation && cycle_phase_link==state.link_generation?
+                cycle_phase:HeatPhase::Unknown;
+        const auto native=state.heating.quantized(state.heating.minimum_c);
+        if(cycle_trial.strategy!=CycleStrategy::Forecast || t.indoor_c>=cycle_trial.upper ||
+           t.indoor_c<=cycle_trial.lower || in.bootstrap.maintenance_ceiling_c>cycle_trial.upper) {
+            auto selected=cycle_trial;
+            if(selected.strategy==CycleStrategy::Forecast)selected.strategy=CycleStrategy::Short;
+            TrialStartTiming timing=TrialStartTiming::Normal;
+            const auto& tariff=maintenance_tariff_snapshot;
+            // Only the start of an OFF natural cycle may be price-shifted.
+            // Recheck freshness and the same authorized trial at dispatch.
+            if(natural_trial_strategy(selected.strategy) && tariff.valid && tariff.model_based &&
+               tariff.trial_revision==cycle_trial.revision &&
+               tariff.site_generation==in.settings_generation && tariff.config_generation==in.config_generation &&
+               tariff.price_revision==trial_market.cache_revision && tariff.region_generation==trial_market.region_generation &&
+               now>=tariff.computed_utc && now-tariff.computed_utc<=90 &&
+               now/900==tariff.computed_utc/900 && now<tariff.price_end_utc &&
+               baseload_current(baseload_snapshot,tariff.meter_identity,now)) {
+                if(tariff.action==MaintenanceTariffAction::Preheat)timing=TrialStartTiming::Preheat;
+                if(tariff.action==MaintenanceTariffAction::Coast && now<tariff.deadline_utc &&
+                   tariff.next_start_utc>now)timing=TrialStartTiming::Coast;
+            }
+            in.bootstrap=cycle_trial_proposal(in.bootstrap,selected,t.indoor_c,
+                state.mode==enevina::PumpRoomMode::Heat,native,phase,timing);
+            in.plan={};
+        } else if(in.plan.band.upper_c>cycle_trial.upper || in.plan.band.lower_c<cycle_trial.lower) {
+            in.plan={};
+        }
+    }
+    if(verified_fault) {
+        in.bootstrap.action=BootstrapAction::Hold;
+        in.bootstrap.heat_setpoint_c=0;
+        in.plan={};
+    }
     xSemaphoreGive(lock_data);
     if(!wifi_ok.load() || !clock_ok() || c23_mode_config().mode==CottageMode::Drying)in.plan={};
     in.mode_generation=state.request_generation;
@@ -1102,6 +1208,7 @@ static ArbiterInput build_arbiter_input(int64_t now,const TemperatureSample& t) 
         in.defrost_reports=defrost.generation;
         in.pump_defrost_hold=cn105_defrost_defer_write(defrost,in.pump_heat);
     }
+    in.pump_defrost_hold=in.pump_defrost_hold || verified_interruption;
     in.pump_setpoint_c=state.setpoint_c;
     in.pump_limits=state.heating;
     in.own_transition_confirmed=in.plan.has_plan && (uses_common_pump_state()?
@@ -1124,7 +1231,8 @@ static BootstrapDecision active_control_proposal(int64_t now,const TemperatureSa
                                                  bool* fallback_price_valid=nullptr) {
     const ArbiterInput input=build_arbiter_input(now,t);
     if(fallback_price_valid)*fallback_price_valid=input.bootstrap.price_data_valid;
-    const ArbiterOutput out=arbitrate(input);
+    ArbiterOutput out=arbitrate(input);
+    out.proposal.cycle_trial_revision=input.cycle_trial_revision;
     if(detail) *detail=out;
     return out.proposal;
 }
@@ -1668,7 +1776,21 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     // authorization check uses that same tracker under the existing lock.
     const bool defrost_hold=cn105_defrost_defer_write(cn105_defrost.view(
         static_cast<uint64_t>(esp_timer_get_time()/1000),link.endpoint),bridge_heat);
-    const bool dispatch=!defrost_hold &&
+    const auto dispatch_utc=time(nullptr);
+    const bool proven=current_bridge_phase_proof(dispatch_utc,link);
+    const bool proven_interruption=proven && (pump.fault==true || (bridge_heat && pump.defrost==true));
+    const bool phase_stop=refreshed.reason==BootstrapReason::ThermostatCycleEnd ||
+        refreshed.reason==BootstrapReason::ModulationCycleEnd;
+    const bool live_trial=cycle_trial.current(dispatch_utc,cycle_monotonic_ms(),
+        site_generation,config_generation,authorization_generation) &&
+        cycle_trial.endpoint==link.endpoint && cycle_trial.link==link.wifi;
+    const bool same_trial=(live_trial?cycle_trial.revision:0)==refreshed.cycle_trial_revision;
+    const bool still_at_cycle_end=!phase_stop ||
+        (proven && pump.defrost==false && cycle_phase_utc==pump.evidence.source_utc &&
+         cycle_phase_endpoint==link.endpoint && cycle_phase_link==link.wifi &&
+         (cycle_phase==HeatPhase::ThermostatStop ||
+          (cycle_phase==HeatPhase::Modulating && refreshed.reason==BootstrapReason::ModulationCycleEnd)));
+    const bool dispatch=!defrost_hold && !proven_interruption && same_trial && still_at_cycle_end &&
         mode_change_allowed(step,control_ms_since_mode_change(),mitsubishi_min_mode_dwell_ms,refreshed,true) &&
         control_armed.load() && c23_config_storage_verified() &&
         control_permission_generation.load()==authorization_generation &&
@@ -1684,6 +1806,7 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
             step==ControlStep::SetOff?enevina::PumpRoomMode::Off:
             step==ControlStep::SetHeat || bridge_heat?enevina::PumpRoomMode::Heat:enevina::PumpRoomMode::Off,
             step!=ControlStep::SetOff,required_target);
+        control_last_dispatched_phase_stop.store(step==ControlStep::SetOff && phase_stop);
         control_last_step.store(static_cast<int>(step));
         control_last_command_utc.store(sent_utc);
         control_commands_sent.fetch_add(1);
@@ -1694,7 +1817,7 @@ static bool cn105_bridge_post(const MitsubishiHttpRequest& command,
     xSemaphoreGive(lock_data);
     if(!dispatch) {
         req.end();
-        if(defrost_hold) {
+        if(defrost_hold || proven_interruption) {
             control_gate.store(static_cast<int>(ControlBlock::DefrostHold));
             control_post_stage.store(-9);
         }
@@ -2502,6 +2625,10 @@ static void optimizer_worker(void*) {
     }
     LearningSlot slot{};
     BaseloadLearner baseload_learner;
+    BaseloadCheckpoint pending_base{};
+    bool base_restore_pending=false,base_restore_read=false;
+    uint32_t base_restore_last_ms=0;
+    HeatPhaseObserver phase_observer{};
     auto* maintenance_cycles=static_cast<MaintenanceCycleLearner*>(heap_caps_malloc(
         sizeof(MaintenanceCycleLearner),scratch_caps));
     if(maintenance_cycles)new(maintenance_cycles) MaintenanceCycleLearner{};
@@ -2645,10 +2772,30 @@ static void optimizer_worker(void*) {
             observed_shelly_meter_identity(site_settings_snapshot())==observed_id;
         const bool observe_baseload=current_meter_scope && meter_id==0 &&
             wifi_ok.load() && clock_ok() && !cottage_ota_network_maintenance();
-        const bool defrost=request.protocol==enevina::PumpRoomProtocol::Cn105EspHome &&
-            cn105_defrost_view().defer_write;
-        const auto base=baseload_learner.observe(observe_baseload?observed_id:0,
-            now,request,meter,meter_relay,defrost);
+        const auto defrost_view=request.protocol==enevina::PumpRoomProtocol::Cn105EspHome?
+            cn105_defrost_view():CN105DefrostView{};
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        const bool defrost=defrost_view.defer_write ||
+            (current_cycle_pump_proof(now,request) && pump.defrost==true);
+        xSemaphoreGive(lock_data);
+        const bool ota_installing=cottage_ota_network_maintenance();
+        auto base=ota_installing?baseload_learner.snapshot(observed_id,now):
+            baseload_learner.observe(observe_baseload?observed_id:0,
+                now,request,meter,meter_relay,defrost);
+        if(!base_restore_read && !ota_installing &&
+           (base_restore_last_ms==0 || static_cast<uint32_t>(millis()-base_restore_last_ms)>=60000u)) {
+            base_restore_last_ms=millis();size_t used=0;
+            const auto read=enevina_firmware::history_baseload_read(
+                reinterpret_cast<uint8_t*>(&pending_base),sizeof(pending_base),used);
+            base_restore_read=read!=CheckpointRead::Error;
+            base_restore_pending=read==CheckpointRead::Read && used==sizeof(pending_base);
+        }
+        if(base_restore_pending && !ota_installing && clock_ok() && epoch_known && observe_baseload) {
+            const auto restored_base=baseload_learner.restore_checkpoint(pending_base,
+                model_store_identity(identity,model_epoch),observed_id,now);
+            if(restored_base!=BaseloadRestore::Pending)base_restore_pending=false;
+            if(restored_base==BaseloadRestore::Restored)base=baseload_learner.snapshot(observed_id,now);
+        }
         const bool gain_regime_changed=id && shared_id && base.ready &&
             base.identity==shared_id && id->note_baseload_regime(base.watts);
         xSemaphoreTake(lock_data,portMAX_DELAY);
@@ -2670,14 +2817,19 @@ static void optimizer_worker(void*) {
         // is not active. A meter sample must belong to the same known
         // request interval and baseline regime. No new polling task.
         const auto cycle_mode=c23_mode_config();
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        const auto trial=current_cycle_trial(now,request,optimizer_site_generation,optimizer_config_generation)?
+            cycle_trial:CycleTrial{};
+        xSemaphoreGive(lock_data);
         const bool economy=maintenance_economy_selected(meter_site,cycle_mode.mode,cycle_mode.hold_target_c);
+        const bool natural_trial=natural_trial_strategy(trial.strategy);
         // Reuse the optimizer's existing price and weather scratch. Unlike
         // the short median classifier, read the full available 24h tariff
         // horizon at each economy-control tick (no extra network requests).
-        const size_t pc=(boundary || economy) && prices && aligned &&
+        const size_t pc=(boundary || economy || natural_trial) && prices && aligned &&
             market_matches_site(ms,meter_site)?
             enevina_firmware::future_prices(prices,200,&ms):0;
-        const size_t wc=(boundary || economy) && weather?
+        const size_t wc=(boundary || economy || natural_trial) && weather?
             enevina_firmware::future_weather(weather,64):0;
         MaintenanceTariffAdvice tariff{};
         size_t tariff_n=0;
@@ -2698,7 +2850,7 @@ static void optimizer_worker(void*) {
                 tariff_input->model.plausible=false;
         }
         xSemaphoreGive(lock_data);
-        if(economy && tariff_input && pc && aligned && valid_temperature(ts,now) &&
+        if((economy || natural_trial) && tariff_input && pc && aligned && valid_temperature(ts,now) &&
            known_heating_mode(request) && ms.clock_trusted && ms.current_price_valid &&
            ms.last_fetch_utc<=now && ms.last_fetch_utc>=now-36*3600 &&
            ms.valid_until_utc>now && mode_comfort_limits_fit(meter_site,cycle_mode)) {
@@ -2734,6 +2886,14 @@ static void optimizer_worker(void*) {
             tariff_input->target_c=target;tariff_input->lower_c=std::max(5.0,owner_lo);
             tariff_input->storage_ceiling_c=maintenance_cycle_ceiling(target,owner_hi,2);
             tariff_input->cycle_ceiling_c=maintenance_cycle_ceiling(target,owner_hi,old_candidate);
+            tariff_input->natural_cycle_start_only=natural_trial;
+            if(natural_trial) {
+                tariff_input->lower_c=trial.lower;
+                // Model the approved independent-room limit, not a short
+                // 12 C charge or a change to the pump's native setpoint.
+                tariff_input->storage_ceiling_c=trial.upper;
+                tariff_input->cycle_ceiling_c=trial.upper;
+            }
             tariff_input->outside_c=outside;tariff_input->price_scale=currency_limit_scale(ms.currency);
             tariff_input->heating=request.mode==enevina::PumpRoomMode::Heat;
             tariff_input->minutes_in_mode=request.mode_minutes;
@@ -2746,8 +2906,55 @@ static void optimizer_worker(void*) {
         model_in_use=mpc_plan.has_plan && mpc_plan.maintenance_storage &&
             mpc_energy_in_kwh && mpc_plan.first_utc==slot_start;
         xSemaphoreGive(lock_data);
+        HeatPhaseSample phase_sample{};
+        phase_sample.generation=request.request_generation;
+        phase_sample.endpoint=request.endpoint_generation;
+        phase_sample.link=request.link_generation;
+        phase_sample.heat=known_heating_mode(request) && request.mode==enevina::PumpRoomMode::Heat;
+        phase_sample.off=known_heating_mode(request) && request.mode==enevina::PumpRoomMode::Off;
+        phase_sample.defrost=phase_sample.heat && defrost_view.defer_write &&
+            defrost_view.state!=CN105DefrostState::Recovery;
+        phase_sample.recovery=phase_sample.heat && defrost_view.state==CN105DefrostState::Recovery;
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        const bool verified_phase=current_cycle_pump_proof(now,request);
+        if(verified_phase) {
+            phase_sample.utc=pump.evidence.source_utc;
+            phase_sample.hz=pump.compressor_hz;
+            phase_sample.pump_room=pump.indoor_c;
+            phase_sample.setpoint=pump.setpoint_c;
+            phase_sample.fault=pump.fault==true;
+            phase_sample.defrost=phase_sample.defrost || pump.defrost==true;
+            phase_sample.clear_of_defrost=pump.defrost==false;
+        } else if(current_adapter_phase(now,request)) {
+            phase_sample.utc=request.evidence.source_utc;
+            phase_sample.hz=request.compressor_hz.value_or(NAN);
+            phase_sample.pump_room=request.indoor_c;
+            phase_sample.setpoint=request.setpoint_c;
+            phase_sample.outdoor=request.outdoor_c;
+            phase_sample.fault=request.fault==true;
+            phase_sample.defrost=request.defrosting==true;
+            phase_sample.clear_of_defrost=request.defrosting==false;
+        }
+        xSemaphoreGive(lock_data);
+        if(valid_temperature(ts,now))phase_sample.room=ts.indoor_c;
+        if(!std::isfinite(phase_sample.outdoor) && ws.available && ws.fetched_utc>0 && ws.fetched_utc<=now && ws.valid_until_utc>now)
+            phase_sample.outdoor=ws.next_temperature_c;
+        if(valid_shelly(meter,now,30) && meter_relay && current_meter_scope &&
+           std::llabs(meter.captured_utc-phase_sample.utc)<=45) {
+            if(shared_id && meter.source_identity==shared_id && baseload_current(base,shared_id,now))
+                phase_sample.watts=std::max(0.0,meter.watts-base.watts);
+            else if(meter_id && meter.meter_identity==meter_id)
+                phase_sample.watts=meter.watts;
+        }
+        const auto phase=phase_observer.observe(phase_sample);
         MaintenanceCycleSample cycle_sample{};
         cycle_sample.utc=meter.captured_utc;
+        cycle_sample.strategy=trial.strategy;
+        cycle_sample.trial_revision=trial.revision;
+        cycle_sample.trial_lower=trial.approved_lower;
+        cycle_sample.trial_upper=trial.approved_upper;
+        cycle_sample.phase=phase;
+        cycle_sample.phase_stop_command=control_last_dispatched_phase_stop.load();
         cycle_sample.room_c=ts.indoor_c;cycle_sample.outdoor_c=ws.next_temperature_c;
         cycle_sample.total_wh=meter.total_wh;cycle_sample.base_w=base.watts;
         cycle_sample.meter_id=meter.source_identity;cycle_sample.base_revision=base.revision;
@@ -2789,10 +2996,12 @@ static void optimizer_worker(void*) {
         const double working_floor=meter_site.comfort_min_c>0?
             std::min(target-0.5,meter_site.comfort_min_c+
                 profile_tuning(meter_site.profile).limit_margin_c):target-0.5;
-        cycle_sample.tariff_adjusted=price_shift ||
+        cycle_sample.tariff_adjusted=natural_trial?
+            (tariff.action!=MaintenanceTariffAction::None || previous_tariff_shift):price_shift ||
             (costly && (old_candidate!=0 || working_floor<target-0.5-0.001)) ||
             (short_class==PriceClass::Unknown && old_candidate!=0);
-        const bool cycle_scope_ok=economy && current_meter_scope &&
+        const bool collect_cycles=economy || trial.strategy!=CycleStrategy::Existing;
+        const bool cycle_scope_ok=collect_cycles && current_meter_scope &&
             active_control_armed(midea) && meter.received && meter_relay && meter.source_identity==shared_id &&
             baseload_current(base,shared_id,now) && ws.available &&
             ws.fetched_utc>0 && ws.fetched_utc<=now && ws.valid_until_utc>now &&
@@ -2800,12 +3009,11 @@ static void optimizer_worker(void*) {
             request.protocol==enevina::PumpRoomProtocol::Cn105EspHome &&
             known_heating_mode(request) && !request.write_in_progress &&
             request.evidence.received_utc>0 && now>=request.evidence.received_utc &&
-            now-request.evidence.received_utc<=30 &&
             (!cycle_sample.heat || std::fabs(request.setpoint_c-16.0)<=0.001) &&
             site_settings_generation()==optimizer_site_generation &&
             c23_config_generation()==optimizer_config_generation;
         const bool cycle_measurements_ok=valid_temperature(ts,now) && valid_shelly(meter,now,30) &&
-            std::llabs(meter.captured_utc-request.evidence.received_utc)<=30;
+            now-request.evidence.received_utc<=30 && std::llabs(meter.captured_utc-request.evidence.received_utc)<=30;
         cycle_sample.valid=cycle_scope_ok && cycle_measurements_ok;
         cycle_sample.measurement_gap_only=cycle_scope_ok && !cycle_measurements_ok;
         const MaintenanceCycleKey cycle_key{
@@ -2834,8 +3042,13 @@ static void optimizer_worker(void*) {
                     optimizer_config_generation,cycle_sample,*cycle_image))++cycle_restore_failures;
             else if(read==CheckpointRead::Read && used!=sizeof(*cycle_image))++cycle_restore_failures;
         }
-        auto cycle_report=maintenance_cycles?maintenance_cycles->observe(economy,shared_id,
-            optimizer_site_generation,optimizer_config_generation,cycle_mode.hold_target_c,cycle_sample):
+        // Retain completed trial observations between runs in the same
+        // configuration, even when the ordinary profile is not Saving.
+        const bool keep_trial_evidence=maintenance_cycles && maintenance_cycles->has_trial_results(now);
+        auto cycle_report=maintenance_cycles?(ota_installing?
+            maintenance_cycles->report(cycle_sample.outdoor_c):
+            maintenance_cycles->observe(collect_cycles || keep_trial_evidence,shared_id,
+                optimizer_site_generation,optimizer_config_generation,cycle_mode.hold_target_c,cycle_sample)):
             MaintenanceCycleReport{};
         // Write at most once per ten minutes, and only after new complete
         // evidence or a material background-regime invalidation. Failure is
@@ -2855,7 +3068,7 @@ static void optimizer_worker(void*) {
         cycle_report.restore_failures=cycle_restore_failures;
         cycle_report.checkpoint_writes=cycle_checkpoint_writes;
         cycle_report.checkpoint_failures=cycle_checkpoint_failures;
-        if(tariff.valid && tariff_input && cycle_report.candidate!=old_candidate) {
+        if(!natural_trial && tariff.valid && tariff_input && cycle_report.candidate!=old_candidate) {
             tariff_input->cycle_ceiling_c=maintenance_cycle_ceiling(cycle_mode.hold_target_c,
                 tariff_input->storage_ceiling_c,cycle_report.candidate);
             tariff=maintenance_tariff_decision(*tariff_input);
@@ -2866,12 +3079,12 @@ static void optimizer_worker(void*) {
         // start is inferred from a failed/unconfirmed command.
         const bool heating_now=known_heating_mode(request) &&
             request.mode==enevina::PumpRoomMode::Heat;
-        if(!economy || !tariff.valid || preheat_site!=optimizer_site_generation ||
+        if(natural_trial || !economy || !tariff.valid || preheat_site!=optimizer_site_generation ||
            preheat_config!=optimizer_config_generation) {
             previous_preheat=false;preheat_latched=false;
         }
         if(!heating_now)preheat_latched=false;
-        if(heating_now && tariff.valid && previous_preheat) {
+        if(!natural_trial && heating_now && tariff.valid && previous_preheat) {
             preheat_latched=true;
             preheat_latched_ceiling=previous_preheat_ceiling;
         }
@@ -2881,15 +3094,22 @@ static void optimizer_worker(void*) {
             tariff.ceiling_c=std::clamp(preheat_latched_ceiling,
                 tariff_input->target_c,tariff_input->storage_ceiling_c);
         }
-        previous_preheat=tariff.action==MaintenanceTariffAction::Preheat;
+        previous_preheat=!natural_trial && tariff.action==MaintenanceTariffAction::Preheat;
         previous_preheat_ceiling=tariff.ceiling_c;
         preheat_site=optimizer_site_generation;preheat_config=optimizer_config_generation;
         tariff.site_generation=optimizer_site_generation;
         tariff.config_generation=optimizer_config_generation;
         tariff.price_revision=ms.cache_revision;tariff.region_generation=ms.region_generation;
+        tariff.trial_revision=natural_trial?trial.revision:0;
+        tariff.meter_identity=shared_id;
         previous_tariff_shift=tariff.action!=MaintenanceTariffAction::None;
         xSemaphoreTake(lock_data,portMAX_DELAY);
         maintenance_cycle_snapshot=cycle_report;
+        cycle_phase=phase;
+        cycle_phase_utc=phase_sample.utc;
+        cycle_phase_request=request.request_generation;
+        cycle_phase_endpoint=request.endpoint_generation;
+        cycle_phase_link=request.link_generation;
         maintenance_tariff_snapshot=tariff;
         xSemaphoreGive(lock_data);
         if(boundary) {
@@ -3153,11 +3373,53 @@ static void optimizer_worker(void*) {
             slot.energy_source_identity=meter.source_identity;
             slot.baseload=base;
         }
+        const uint32_t ota_request=ota_learning_request.load();
+        if(ota_request!=ota_learning_reply.load()) {
+            bool saved=!reset_unpersisted &&
+                site_settings_generation()==optimizer_site_generation &&
+                c23_config_generation()==optimizer_config_generation;
+            if(id && saved) {
+                const auto learned=id->report(now);
+                if(learned.samples && learned.revision!=saved_revision) {
+                    if(!epoch_known)epoch_known=load_model_epoch(model_store,model_epoch);
+                    const auto stored=epoch_known?identifier_store(*id,
+                        model_store_identity(identity,model_epoch)):ModelStore::Failed;
+                    saved=stored==ModelStore::Stored || stored==ModelStore::StoredFile;
+                    if(saved)saved_revision=learned.revision;
+                }
+            }
+            if(saved && maintenance_cycles && maintenance_cycles->checkpoint_dirty()) {
+                saved=cycle_image && !reset_unpersisted && cycle_key.valid() &&
+                    maintenance_cycles->save(cycle_key,*cycle_image) &&
+                    enevina_firmware::history_maintenance_write(
+                        reinterpret_cast<const uint8_t*>(cycle_image),sizeof(*cycle_image));
+                if(saved){maintenance_cycles->checkpoint_saved();++cycle_checkpoint_writes;}
+                else ++cycle_checkpoint_failures;
+            }
+            if(saved) {
+                BaseloadCheckpoint durable{};
+                const uint32_t model_key=epoch_known?model_store_identity(identity,model_epoch):0;
+                baseload_learner.checkpoint(model_key,now,durable);
+                // If no fresh OFF reading has arrived since last boot, do
+                // not overwrite the previously saved qualified regime.
+                if(!durable.meter && base_restore_pending &&
+                   pending_base.model_key==model_key && pending_base.meter==observed_id &&
+                   pending_base.schema==1 && pending_base.observed_utc>0 &&
+                   now>=pending_base.observed_utc && now-pending_base.observed_utc<=7200 &&
+                   pending_base.crc==history_crc16(reinterpret_cast<const uint8_t*>(&pending_base),
+                       offsetof(BaseloadCheckpoint,crc)))
+                    durable=pending_base;
+                saved=enevina_firmware::history_baseload_write(
+                    reinterpret_cast<const uint8_t*>(&durable),sizeof(durable));
+            }
+            ota_learning_saved.store(saved);
+            ota_learning_reply.store(ota_request);
+        }
         // Recompute on quarter-hour boundary, retries every minute when offline.
         const time_t t=time(nullptr);
         int sleep_s=clock_ok()?static_cast<int>(900-(t%900)):60;
         if(sleep_s>60)sleep_s=60; // Allows freshness monitoring during long slots.
-        vTaskDelay(pdMS_TO_TICKS(std::max(5,sleep_s)*1000));
+        ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(std::max(5,sleep_s)*1000));
     }
 }
 static void add_control_phase(cJSON* root,const char* key,const MitsubishiCommandPhase& phase) {
@@ -3203,9 +3465,32 @@ static void status_endpoint() {
     double total=0;
     const bool valid_total=price.current_price_valid && market_matches_site(price,site_settings_snapshot()) &&
         site_slot_total_price((now/900)*900,price.current_spot_eur_per_kwh,total);
-    const BootstrapDecision bootstrap=bootstrap_preview(now,selected,optimizer_pump_state(now,cottage_midea_selected()).heating);
-    cJSON* root=cJSON_CreateObject();
     const bool midea=cottage_midea_selected();
+    const auto request=optimizer_pump_state(now,midea);
+    const BootstrapDecision bootstrap=bootstrap_preview(now,selected,request.heating);
+    cJSON* root=cJSON_CreateObject();
+    xSemaphoreTake(lock_data,portMAX_DELAY);
+    const auto trial=current_cycle_trial(now,request,site_settings_generation(),c23_config_generation())?
+        cycle_trial:CycleTrial{};
+    const bool timely_phase=cycle_phase_request==request.request_generation &&
+        cycle_phase_endpoint==request.endpoint_generation && cycle_phase_link==request.link_generation;
+    const auto phase=timely_phase && cycle_phase_utc>0 && now>=cycle_phase_utc &&
+        now-cycle_phase_utc<=90 && (current_cycle_pump_proof(now,request) || current_adapter_phase(now,request))?
+            cycle_phase:request.mode==enevina::PumpRoomMode::Off?HeatPhase::Off:HeatPhase::Unknown;
+    xSemaphoreGive(lock_data);
+    const auto phase_report=cn105_defrost_view();
+    const auto display_phase=request.mode==enevina::PumpRoomMode::Heat && phase_report.defer_write?
+        phase_report.state==CN105DefrostState::Recovery?HeatPhase::Recovery:HeatPhase::Defrost:phase;
+    cJSON_AddStringToObject(root,"cycle_strategy",cycle_strategy_name(trial.strategy));
+    cJSON_AddStringToObject(root,"cycle_phase",heat_phase_name(display_phase));
+    if(current_adapter_phase(now,request) && request.compressor_hz)
+        cJSON_AddNumberToObject(root,"cycle_compressor_hz",*request.compressor_hz);
+    if(trial.strategy!=CycleStrategy::Existing) {
+        cJSON_AddNumberToObject(root,"cycle_trial_expires_utc",trial.expires_utc);
+        cJSON_AddNumberToObject(root,"cycle_trial_lower_c",trial.approved_lower);
+        cJSON_AddNumberToObject(root,"cycle_trial_upper_c",trial.approved_upper);
+    }
+
     const bool armed=active_control_armed(midea);
     cJSON_AddStringToObject(root,"mode",armed?
         (midea?"MIDEA_AUTOMAATIO_KAYTOSSA":cottage_gree_selected()?
@@ -3272,13 +3557,15 @@ static void status_endpoint() {
             const uint32_t sg=site_settings_generation(),cg=c23_config_generation();
             xSemaphoreTake(lock_data,portMAX_DELAY);
             const auto& v=maintenance_tariff_snapshot;
-            const bool fresh=v.valid && v.site_generation==sg && v.config_generation==cg &&
+            const bool fresh=v.valid && v.trial_revision==(natural_trial_strategy(trial.strategy)?trial.revision:0) &&
+                v.site_generation==sg && v.config_generation==cg &&
                 v.price_revision==price.cache_revision && v.region_generation==price.region_generation &&
                 now>=v.computed_utc && now-v.computed_utc<=90 && now/900==v.computed_utc/900 &&
                 now<v.price_end_utc;
             cJSON_AddBoolToObject(a,"valid",fresh);
             cJSON_AddStringToObject(a,"action",maintenance_tariff_name(fresh?v.action:MaintenanceTariffAction::None));
             cJSON_AddBoolToObject(a,"model_based",fresh&&v.model_based);
+            cJSON_AddBoolToObject(a,"natural_cycle_start_only",fresh&&v.trial_revision!=0);
             cJSON_AddBoolToObject(a,"cost_priority",true);
             cJSON_AddBoolToObject(a,"exploration_deferred",fresh&&v.avoid_exploration);
             if(fresh) {
@@ -3293,9 +3580,57 @@ static void status_endpoint() {
             }
             xSemaphoreGive(lock_data);
         }
-        MaintenanceCycleReport cycle;
-        xSemaphoreTake(lock_data,portMAX_DELAY);cycle=maintenance_cycle_snapshot;xSemaphoreGive(lock_data);
-        if(auto* c=cJSON_AddObjectToObject(root,"maintenance_cycles")) {
+    } else cJSON_AddNullToObject(root,"maintenance_ceiling_c");
+    // Keep the expanded report off the bounded Arduino web-loop stack.
+    std::unique_ptr<MaintenanceCycleReport,decltype(&heap_caps_free)> cycle_copy(
+        static_cast<MaintenanceCycleReport*>(heap_caps_malloc(sizeof(MaintenanceCycleReport),
+            MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)),heap_caps_free);
+    if(cycle_copy) {
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        const auto& cycle=*new(cycle_copy.get()) MaintenanceCycleReport(maintenance_cycle_snapshot);
+        xSemaphoreGive(lock_data);
+        const bool show_cycle_data=bootstrap.maintenance_storage ||
+            (cycle.site_generation==site_settings_generation() && cycle.config_generation==c23_config_generation() &&
+             (trial.strategy!=CycleStrategy::Existing ||
+              std::any_of(cycle.trials.begin(),cycle.trials.end(),
+                  [now](const auto& t){return t.cycle.valid && now>=t.cycle.end_utc &&
+                      now-t.cycle.end_utc<=MaintenanceCycleLearner::record_max_age_s;})));
+        if(auto* c=show_cycle_data?cJSON_AddObjectToObject(root,"maintenance_cycles"):nullptr) {
+            if(auto* trials=cJSON_AddArrayToObject(c,"trial_results"))
+                for(size_t i=0;i<cycle.trials.size();++i)if(cycle.trials[i].cycle.valid) {
+                    const auto& t=cycle.trials[i];
+                    auto* v=cJSON_CreateObject();
+                    if(!v)break;
+                    cJSON_AddItemToArray(trials,v);
+                    cJSON_AddStringToObject(v,"strategy",cycle_strategy_name(static_cast<CycleStrategy>(i+1)));
+                    cJSON_AddNumberToObject(v,"cycles",cycle.trial_counts[i]);
+                    cJSON_AddNumberToObject(v,"matched_cycles",cycle.trial_matched[i]);
+                    if(cycle.trial_matched[i])
+                        cJSON_AddNumberToObject(v,"matched_estimated_cost_per_hour",cycle.trial_cost_per_hour[i]);
+                    cJSON_AddNumberToObject(v,"whole_building_kwh",t.total_kwh);
+                    cJSON_AddNumberToObject(v,"pump_kwh",t.cycle.energy_kwh);
+                    cJSON_AddNumberToObject(v,"baseload_kwh",t.baseload_kwh);
+                    cJSON_AddNumberToObject(v,"loss_degree_hours",t.loss_degree_hours);
+                    if(t.cycle.cost_valid) {
+                        cJSON_AddNumberToObject(v,"whole_building_estimated_cost",t.total_cost);
+                        cJSON_AddNumberToObject(v,"pump_estimated_cost",t.cycle.cost);
+                    }
+                    cJSON_AddNumberToObject(v,"heat_request_hours",t.run_hours);
+                    cJSON_AddNumberToObject(v,"off_request_hours",t.off_hours);
+                    cJSON_AddNumberToObject(v,"min_room_c",t.min_room_c);
+                    cJSON_AddNumberToObject(v,"max_room_c",t.cycle.peak_c);
+                    cJSON_AddNumberToObject(v,"mean_room_c",t.cycle.mean_room_c);
+                    cJSON_AddNumberToObject(v,"mean_outdoor_c",t.cycle.outdoor_c);
+                    cJSON_AddNumberToObject(v,"start_room_c",t.cycle.start_room_c);
+                    cJSON_AddNumberToObject(v,"end_room_c",t.cycle.end_room_c);
+                    cJSON_AddNumberToObject(v,"lower_c",t.lower);
+                    cJSON_AddNumberToObject(v,"upper_c",t.upper);
+                    if(t.startup_seen)cJSON_AddNumberToObject(v,"observed_startup_kwh",t.startup_kwh);
+                    if(t.defrost_seen)cJSON_AddNumberToObject(v,"reported_defrost_kwh",t.reported_defrost_kwh);
+                    cJSON_AddBoolToObject(v,"phase_end_seen",t.phase_end_seen);
+                    cJSON_AddBoolToObject(v,"equal_thermal_endpoints",t.equal_thermal_endpoints);
+                    cJSON_AddBoolToObject(v,"tariff_advice_seen",t.tariff_advice_seen);
+                }
             cJSON_AddNumberToObject(c,"candidate",cycle.candidate);
             cJSON_AddNumberToObject(c,"completed",cycle.completed);
             cJSON_AddNumberToObject(c,"tariff_completed",cycle.tariff_completed);
@@ -3315,6 +3650,7 @@ static void status_endpoint() {
                 if(cycle.last_tariff.cost_valid)cJSON_AddNumberToObject(v,"estimated_cost",cycle.last_tariff.cost);
             }
             cJSON_AddNumberToObject(c,"rejected",cycle.rejected);
+            cJSON_AddNumberToObject(c,"transition_waits",cycle.transition_waits);
             if(auto* a=cJSON_AddArrayToObject(c,"comparison"))for(unsigned i=0;i<maintenance_cycle_candidates;++i) {
                 if(auto* r=cJSON_CreateObject()) {
                     cJSON_AddItemToArray(a,r);
@@ -3334,7 +3670,7 @@ static void status_endpoint() {
                 if(cycle.last.cost_valid)cJSON_AddNumberToObject(c,"last_cost",cycle.last.cost);
             }
         }
-    } else cJSON_AddNullToObject(root,"maintenance_ceiling_c");
+    }
     cJSON_AddNumberToObject(root,"bootstrap_mode_dwell_minutes",
         low_temperature_cycle(bootstrap)?cn105_low_temperature_dwell_minutes:
             mitsubishi_min_mode_dwell_ms/60000u);
@@ -3404,7 +3740,7 @@ static void status_endpoint() {
     cJSON_AddNumberToObject(root,"cn105_defrost_action_starts",defrost.action_starts);
     cJSON_AddNumberToObject(root,"cn105_defrost_action_ends",defrost.action_ends);
     cJSON_AddNumberToObject(root,"cn105_defrost_action_last_duration_s",defrost.action_last_duration_s);
-    cJSON_AddBoolToObject(root,"cn105_defrost_uart_verified",false);
+    cJSON_AddBoolToObject(root,"cn105_defrost_uart_verified",defrost.source_verified);
     cJSON_AddBoolToObject(root,"cn105_sse_climate_received",observed_climate);
     cJSON_AddBoolToObject(root,"cn105_sse_compressor_received",observed_compressor);
     cJSON_AddBoolToObject(root,"cn105_sse_climate_recent",
@@ -3513,6 +3849,7 @@ static void status_endpoint() {
         cJSON_AddStringToObject(root,"calibration_state",calibration_state_name(cal.state));
         cJSON_AddStringToObject(root,"calibration_block",calibration_block_name(cal.block));
         cJSON_AddStringToObject(root,"control_source",proposal_source_name(arb.source));
+        cJSON_AddStringToObject(root,"control_proposal_reason",bootstrap_reason_name(arb.proposal.reason));
         // Presentation only: this is a fresh observed request, NOT proof
         // that the compressor is running. Covers all common adapters.
         if(inputs.pump_state_known)
@@ -3631,6 +3968,10 @@ static void status_endpoint() {
                            cottage_ota_network_maintenance());
     cJSON_AddNumberToObject(root,"ota_downloaded_bytes",
                             cottage_ota_downloaded_bytes());
+    cJSON_AddNumberToObject(root,"ota_expected_bytes",cottage_ota_expected_bytes());
+    cJSON_AddNumberToObject(root,"ota_resume_count",cottage_ota_resume_count());
+    cJSON_AddNumberToObject(root,"ota_durable_bytes",cottage_ota_durable_bytes());
+    cJSON_AddBoolToObject(root,"ota_reconnecting",cottage_ota_reconnecting());
     cJSON_AddNumberToObject(root,"ota_programmed_bytes",
                             cottage_ota_programmed_bytes());
     cJSON_AddNumberToObject(root,"ota_chunk_count",
@@ -4484,19 +4825,95 @@ void setup() {
             "default-src 'self'; connect-src 'self'; img-src 'self' data:; "
             "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
             "frame-ancestors 'none'; base-uri 'none'");
-        // Compression happens at build time. Same HTML and bounded writer,
-        // no runtime compressor, allocation or additional route.
-        web.sendHeader("Vary","Accept-Encoding");
-        if(web.acceptsGzip()) {
-            web.sendHeader("Content-Encoding","gzip");
-            web.send_P(200,"text/html; charset=utf-8",
-                reinterpret_cast<PGM_P>(premium_dashboard_gzip),sizeof(premium_dashboard_gzip));
-        } else {
-        web.send_P(200,"text/html; charset=utf-8",premium_dashboard_html);
-        }
+        // One compressed flash asset; identity-only clients receive its
+        // bounded PSRAM decompression and nonblocking deferred delivery.
+        cottage_send_dashboard(web);
     });
     web.on("/api/status",HTTP_GET,[](){
         if(cottage_wifi_require_home_lan(web))status_endpoint();
+    });
+    web.on("/api/control/cycle-trial",HTTP_POST,[](){
+        if(!cottage_wifi_require_home_lan(web))return;
+        if(!web.hasArg("token") || !c23_authorize_local_setting(web.arg("token").c_str())) {
+            web.send(403,"application/json","{\"saved\":false}");
+            return;
+        }
+        const String strategy=web.arg("strategy");
+        if(strategy=="existing") {
+            xSemaphoreTake(lock_data,portMAX_DELAY);
+            cycle_trial={};
+            xSemaphoreGive(lock_data);
+            web.send(200,"application/json","{\"saved\":true}");
+            return;
+        }
+        const auto parse=[](const String& arg,double& value) {
+            const char* begin=arg.c_str();
+            char* end=nullptr;
+            value=strtod(begin,&end);
+            return end!=begin && *end=='\0' && std::isfinite(value);
+        };
+        CycleTrial trial{};
+        if(strategy=="short")trial.strategy=CycleStrategy::Short;
+        if(strategy=="thermostat")trial.strategy=CycleStrategy::Thermostat;
+        if(strategy=="modulation")trial.strategy=CycleStrategy::Modulation;
+        if(strategy=="forecast" || strategy=="automatic")trial.strategy=CycleStrategy::Forecast;
+        double minutes=0;
+        if(trial.strategy==CycleStrategy::Existing || !parse(web.arg("minutes"),minutes) ||
+           minutes<=0 || minutes>7*24*60 || std::floor(minutes)!=minutes ||
+           !parse(web.arg("lower_c"),trial.lower) || !parse(web.arg("upper_c"),trial.upper) ||
+           !valid_comfort_limits(trial.lower,trial.upper) || trial.lower<=0 || trial.upper<=0) {
+            web.send(400,"application/json","{\"saved\":false,\"error\":\"INVALID_TRIAL\"}");
+            return;
+        }
+        const auto now=time(nullptr);
+        const bool midea=cottage_midea_selected();
+        trial.site=site_settings_generation();
+        trial.config=c23_config_generation();
+        trial.authorization=control_permission_generation.load();
+        const auto mode=c23_mode_config();
+        const auto site=site_settings_snapshot();
+        const auto state=optimizer_pump_state(now,midea);
+        const auto room=selected_room_sample(now);
+        const auto native=state.heating.quantized(state.heating.minimum_c);
+        if(!clock_ok() || !active_control_armed(midea) || mode.mode!=CottageMode::Hold ||
+           !known_heating_mode(state) || !valid_temperature(room,now) || !state.heating.off ||
+           !std::isfinite(native) || mode.hold_target_c>=native ||
+           trial.lower>mode.hold_target_c-0.5 || trial.upper<=mode.hold_target_c ||
+           room.indoor_c<trial.lower || room.indoor_c>trial.upper ||
+           (site.comfort_min_c>0 && trial.lower<site.comfort_min_c) ||
+           (site.comfort_max_c>0 && trial.upper>site.comfort_max_c) ||
+           trial.site!=site_settings_generation() || trial.config!=c23_config_generation() ||
+           trial.authorization!=control_permission_generation.load()) {
+            web.send(409,"application/json","{\"saved\":false,\"error\":\"TRIAL_NOT_READY\"}");
+            return;
+        }
+        // Optional phase proof refines a stop during the trial. A standard
+        // bridge still supports the room-bounded heat request and metering.
+        if(strategy=="automatic") {
+            xSemaphoreTake(lock_data,portMAX_DELAY);
+            const bool phase_supported=(current_cycle_pump_proof(now,state) && pump.defrost.has_value()) ||
+                (current_adapter_phase(now,state) && state.compressor_hz.has_value() && state.defrosting.has_value());
+            const auto& compare=maintenance_cycle_snapshot;
+            if(compare.site_generation==trial.site && compare.config_generation==trial.config)
+                trial.strategy=select_observed_cycle_strategy(compare,trial.lower,trial.upper,phase_supported);
+            xSemaphoreGive(lock_data);
+        }
+        trial.started_utc=now;
+        trial.expires_utc=now+static_cast<int64_t>(minutes)*60;
+        trial.expires_ms=cycle_monotonic_ms()+static_cast<uint64_t>(minutes)*60000;
+        trial.endpoint=state.endpoint_generation;
+        trial.link=state.link_generation;
+        // Act inside the approved envelope using the existing profile's
+        // response margin, leaving room for residual heat after OFF.
+        const double margin=profile_tuning(site.profile).limit_margin_c;
+        trial.approved_lower=trial.lower;trial.approved_upper=trial.upper;
+        trial.lower=std::min(mode.hold_target_c-0.5,trial.lower+margin);
+        trial.upper=std::max(mode.hold_target_c,trial.upper-margin);
+        xSemaphoreTake(lock_data,portMAX_DELAY);
+        trial.revision=++next_cycle_trial_revision;
+        cycle_trial=trial;
+        xSemaphoreGive(lock_data);
+        web.send(200,"application/json","{\"saved\":true}");
     });
     web.on("/api/ota/install",HTTP_POST,[](){
         // Reuse the existing local settings authorisation and reject open

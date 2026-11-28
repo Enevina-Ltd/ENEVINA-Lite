@@ -10,6 +10,7 @@
 #include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
 #include <cstring>
+#include <strings.h>
 #include <cstdio>
 #include <cstdlib>
 #include <atomic>
@@ -17,6 +18,7 @@
 #include <memory>
 #include <ctime>
 #include "cottage_secure_ota.hpp"
+#include "cottage_history.hpp"
 #include "cottage_network_budget.hpp"
 #include "cottage_tls_memory.hpp"
 #include "cottage/ota_runtime_policy.hpp"
@@ -67,7 +69,7 @@ enum class OtaProblemReason : uint8_t {None=0, MutexBusy=1, LowMemory=2,
                                       FlashWriteFailed=13, WrongLength=14,
                                       DigestMismatch=15, FlashEndFailed=16,
                                       ImageShaFailed=17, NvsWriteFailed=18,
-                                      BootSelectFailed=19, PsramUnavailable=20, TransferDeadline=21, RetryRequiresRequest=22};
+                                      BootSelectFailed=19, PsramUnavailable=20, TransferDeadline=21, RetryRequiresRequest=22, RangeMismatch=23, HistoryFlushFailed=24, LearningFlushFailed=25};
 std::atomic<uint8_t> ota_problem_stage{0}, ota_problem_reason{0};
 std::atomic<uint32_t> ota_problem_free{0}, ota_problem_largest{0};
 std::atomic<uint32_t> ota_image_attempts{0};
@@ -92,6 +94,8 @@ OtaProblemReason ota_budget_reason(enevina_firmware::NetworkBudgetFailure failur
 std::atomic<bool> pause_readers{false};
 std::atomic<uint32_t> ota_written_bytes{0}; // downloaded into PSRAM
 std::atomic<uint32_t> ota_programmed_bytes{0};
+std::atomic<uint32_t> ota_expected_bytes{0}, ota_resume_count{0}, ota_durable_bytes{0};
+std::atomic<bool> ota_reconnecting{false};
 std::atomic<uint32_t> ota_completed_chunks{0};
 std::atomic<uint32_t> ota_flash_yields{0};
 // Dashboard requests schedule the existing signed worker. No HTTP upload and
@@ -103,6 +107,27 @@ std::atomic<uint32_t> ota_last_checked_utc{0};
 namespace ota=enevina::cottage::ota;
 #if ENEVINA_SIGNED_OTA_AVAILABLE
 constexpr char kAttemptedVersionKey[]="attempted";
+constexpr char kRetryIdentityKey[]="retry_v1";
+bool read_retry_identity(nvs_handle_t h,ota::SpoolIdentity& id) {
+    size_t n=sizeof(id);
+    return nvs_get_blob(h,kRetryIdentityKey,&id,&n)==ESP_OK && n==sizeof(id) && ota::spool_valid(id);
+}
+bool retry_identity_matches(uint32_t attempted,const ota::SpoolIdentity& wanted) {
+    nvs_handle_t h;
+    if(nvs_open("c24_ota",NVS_READONLY,&h)!=ESP_OK)return false;
+    ota::SpoolIdentity saved{};
+    const bool match=read_retry_identity(h,saved)&&ota::spool_retry_allowed(attempted,saved,wanted);
+    nvs_close(h);return match;
+}
+bool clear_retry_identity() {
+    nvs_handle_t h;
+    if(nvs_open("c24_ota",NVS_READWRITE,&h)!=ESP_OK)return false;
+    const esp_err_t e=nvs_erase_key(h,kRetryIdentityKey);
+    size_t size=0;
+    const bool ok=(e==ESP_OK||e==ESP_ERR_NVS_NOT_FOUND)&&nvs_commit(h)==ESP_OK &&
+        nvs_get_blob(h,kRetryIdentityKey,nullptr,&size)==ESP_ERR_NVS_NOT_FOUND;
+    nvs_close(h);return ok;
+}
 bool read_attempted_version(uint32_t& attempted) {
     nvs_handle_t h;
     if(nvs_open("c24_ota",NVS_READONLY,&h)!=ESP_OK)return false;
@@ -111,18 +136,26 @@ bool read_attempted_version(uint32_t& attempted) {
     nvs_close(h);
     return err==ESP_OK || err==ESP_ERR_NVS_NOT_FOUND;
 }
-bool remember_image_attempt(uint32_t version,bool explicit_request) {
+bool remember_image_attempt(const ota::SpoolIdentity& identity,bool explicit_request) {
+    const uint32_t version=identity.version;
     nvs_handle_t h;
     if(nvs_open("c24_ota",NVS_READWRITE,&h)!=ESP_OK)return false;
     uint32_t previous=0;
     const esp_err_t err=nvs_get_u32(h,kAttemptedVersionKey,&previous);
     bool ok=(err==ESP_OK || err==ESP_ERR_NVS_NOT_FOUND) &&
         ota::image_attempt_allowed(version,previous,explicit_request);
-    if(ok && version>previous) {
-        ok=nvs_set_u32(h,kAttemptedVersionKey,version)==ESP_OK &&
-           nvs_commit(h)==ESP_OK;
+    if(ok) {
+        // Persist the exact authenticated transfer intent before the legacy
+        // attempted high-water mark. A reset at either write may re-fetch
+        // this identity, but not auto-retry a different rejected release.
+        ota::SpoolIdentity saved{};
+        if(!read_retry_identity(h,saved)||!ota::spool_matches(saved,identity))
+            ok=nvs_set_blob(h,kRetryIdentityKey,&identity,sizeof(identity))==ESP_OK && nvs_commit(h)==ESP_OK;
+        if(ok && version>previous)
+            ok=nvs_set_u32(h,kAttemptedVersionKey,version)==ESP_OK && nvs_commit(h)==ESP_OK;
         uint32_t durable=0;
-        ok=ok && nvs_get_u32(h,kAttemptedVersionKey,&durable)==ESP_OK && durable==version;
+        ok=ok && nvs_get_u32(h,kAttemptedVersionKey,&durable)==ESP_OK && durable>=version &&
+            read_retry_identity(h,saved)&&ota::spool_matches(saved,identity);
     }
     nvs_close(h);
     return ok;
@@ -248,34 +281,34 @@ bool verify_manifest(char* data,size_t length,Release& out) {
     return hex_bytes(digesthex,64,out.digest,sizeof(out.digest));
 }
 
-esp_http_client_handle_t open_https(const char* url,int expected_length) {
-    esp_http_client_config_t cfg{};
-    cfg.url=url;
-    cfg.cert_pem=COTTAGE_OTA_LOCAL_ROOT_CA;
-    // Bound the HTTPS read; flash programming happens only after TLS closes.
-    // Short manifests still use the original short timeout.
-    cfg.timeout_ms=expected_length>512 ? 20000 : 8500;
-    cfg.disable_auto_redirect=true;
-    cfg.buffer_size=1024;
-    cfg.buffer_size_tx=512;
-    esp_http_client_handle_t client=esp_http_client_init(&cfg);
-    if(!client)return nullptr;
-    if(esp_http_client_open(client,0)!=ESP_OK) {
-        esp_http_client_cleanup(client);
-        return nullptr;
-    }
-    const int length=esp_http_client_fetch_headers(client);
-    if(esp_http_client_get_status_code(client)!=200 || length!=expected_length) {
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return nullptr;
-    }
-    return client;
+// Exact ETag and Content-Range are required for every bounded range. TLS
+// authenticates the peer; the signed manifest pins the whole image digest.
+struct RangeHeaders {
+    char etag[67]{}, range[80]{};
+    bool invalid=false;
+};
+esp_err_t range_header_event(esp_http_client_event_t* event) {
+    if(event->event_id!=HTTP_EVENT_ON_HEADER)return ESP_OK;
+    auto& h=*static_cast<RangeHeaders*>(event->user_data);
+    const char* key=event->header_key;
+    const char* value=event->header_value;
+    if(!key||!value){h.invalid=true;return ESP_OK;}
+    auto capture=[&](char* dest,size_t cap) {
+        const size_t n=std::strlen(value);
+        if(dest[0]||n>=cap)h.invalid=true;
+        else std::memcpy(dest,value,n+1);
+    };
+    if(strcasecmp(key,"ETag")==0)capture(h.etag,sizeof(h.etag));
+    if(strcasecmp(key,"Content-Range")==0)capture(h.range,sizeof(h.range));
+    if(strcasecmp(key,"Content-Encoding")==0 && strcasecmp(value,"identity")!=0)
+        h.invalid=true;
+    return ESP_OK;
 }
 void close_https(esp_http_client_handle_t client) {
     if(client){esp_http_client_close(client);esp_http_client_cleanup(client);}
 }
-bool fetch_manifest(Release& out) {
+enum class ManifestResult {Valid,Unavailable,NotOffered,Rejected};
+ManifestResult fetch_manifest(Release& out) {
     enevina_firmware::PublicTlsMemoryScope tls_memory(enevina_firmware::PublicTlsSource::Ota);
     // HTTP status/content-length and TLS certificate must all validate.
     esp_http_client_config_t cfg{};
@@ -285,11 +318,12 @@ bool fetch_manifest(Release& out) {
     cfg.disable_auto_redirect=true;
     cfg.buffer_size=1024;
     esp_http_client_handle_t client=esp_http_client_init(&cfg);
-    if(!client)return false;
-    bool success=false;
+    if(!client)return ManifestResult::Unavailable;
+    ManifestResult result=ManifestResult::Unavailable;
     if(esp_http_client_open(client,0)==ESP_OK) {
         const int len=esp_http_client_fetch_headers(client);
-        if(esp_http_client_get_status_code(client)==200 && len>145 && len<512) {
+        const int status=esp_http_client_get_status_code(client);
+        if(status==200 && len>145 && len<512) {
             char body[512]{};
             int n=0,waits=0;
             while(n<len && waits<12) {
@@ -298,22 +332,20 @@ bool fetch_manifest(Release& out) {
                 if(read==0){waits++;vTaskDelay(pdMS_TO_TICKS(50));continue;}
                 n+=read;
             }
-            if(n==len)success=verify_manifest(body,n,out);
-        }
+            if(n==len)result=verify_manifest(body,n,out)?ManifestResult::Valid:ManifestResult::Rejected;
+        } else if(status==404)result=ManifestResult::NotOffered;
+        else if(status==200 && len>=0)result=ManifestResult::Rejected;
+        else if(status>=400 && status<500 && status!=408 && status!=429)
+            result=ManifestResult::Rejected;
     }
     close_https(client);
-    return success;
+    return result;
 }
 // The OTA worker stack is internal RAM. Never pass a PSRAM pointer to a
 // flash driver that may disable the external-memory cache during writes.
-bool ota_transfer_ready(OtaProblemStage stage,uint32_t started_ms) {
-    if(WiFi.status()!=WL_CONNECTED) {
+bool ota_transfer_ready(OtaProblemStage stage) {
+    if(stage==OtaProblemStage::Transport && WiFi.status()!=WL_CONNECTED) {
         ota_record_problem(stage,OtaProblemReason::WifiDuringImage);
-        return false;
-    }
-    if(stage==OtaProblemStage::Transport &&
-       static_cast<uint32_t>(millis()-started_ms)>=enevina::cottage::ota_download_deadline_ms) {
-        ota_record_problem(stage,OtaProblemReason::TransferDeadline);
         return false;
     }
     uint32_t internal_free=static_cast<uint32_t>(
@@ -335,54 +367,131 @@ bool ota_transfer_ready(OtaProblemStage stage,uint32_t started_ms) {
         ota_record_problem(stage,OtaProblemReason::InflightLowMemory,actual);
         return false;
     }
-    if(WiFi.status()!=WL_CONNECTED) {
+    if(stage==OtaProblemStage::Transport && WiFi.status()!=WL_CONNECTED) {
         ota_record_problem(stage,OtaProblemReason::WifiDuringImage);
-        return false;
-    }
-    if(stage==OtaProblemStage::Transport &&
-       static_cast<uint32_t>(millis()-started_ms)>=enevina::cottage::ota_download_deadline_ms) {
-        ota_record_problem(stage,OtaProblemReason::TransferDeadline);
         return false;
     }
     return true;
 }
-struct ImageSource {
-    esp_http_client_handle_t client;
-    const Release& release;
-    uint32_t started_ms;
-    mbedtls_sha256_context& sha;
-    bool ready(){return ota_transfer_ready(OtaProblemStage::Transport,started_ms);}
-    int read(uint8_t* dst,size_t len){
-        return esp_http_client_read(client,reinterpret_cast<char*>(dst),static_cast<int>(len));
+enum class RangeResult {Advanced,Retry,Reject};
+using OtaImage=ota::SegmentedImage<enevina::cottage::ota_range_bytes,
+    max_image_size/enevina::cottage::ota_range_bytes>;
+void* alloc_ota_psram(size_t n){return heap_caps_malloc(n,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);}
+RangeResult download_range(const Release& release,OtaImage& image,uint8_t* data,
+                           size_t capacity,uint32_t& done,uint32_t& last_progress) {
+    using namespace enevina::cottage;
+    // Reserve TLS memory only for one bounded range. Other network users
+    // get a scheduling window before the next connection.
+    enevina_firmware::NetworkBudgetLease lease(1200,ota_image_min_internal_bytes,
+        ota_min_contiguous_internal_bytes);
+    ota_image_attempts.fetch_add(1);
+    if(!lease.held()) {
+        ota_record_problem(OtaProblemStage::ImageLease,
+            ota_budget_reason(lease.diagnostic().failure),lease.diagnostic());
+        return RangeResult::Retry;
     }
-    bool hash(const uint8_t* data,size_t len){return mbedtls_sha256_update_ret(&sha,data,len)==0;}
-    bool complete(){return esp_http_client_is_complete_data_received(client);}
-    ota::StageResult verify(){
-        uint8_t digest[32]{};
-        if(mbedtls_sha256_finish_ret(&sha,digest)!=0)return ota::StageResult::HashError;
-        return std::memcmp(digest,release.digest,32)!=0?
-            ota::StageResult::DigestMismatch:ota::StageResult::Complete;
+    if(!ota_transfer_ready(OtaProblemStage::Transport))return RangeResult::Retry;
+    const uint32_t lease_started=millis();
+    const uint32_t begin=done;
+    const uint32_t end=begin+std::min(ota_range_bytes,release.size-begin)-1;
+    char etag[67]{};
+    etag[0]='"';
+    for(unsigned i=0;i<32;++i)
+        std::snprintf(etag+1+2*i,3,"%02x",static_cast<unsigned>(release.digest[i]));
+    etag[65]='"';etag[66]=0;
+    char range[64]{},expected[80]{};
+    std::snprintf(range,sizeof(range),"bytes=%lu-%lu",
+        static_cast<unsigned long>(begin),static_cast<unsigned long>(end));
+    std::snprintf(expected,sizeof(expected),"bytes %lu-%lu/%lu",
+        static_cast<unsigned long>(begin),static_cast<unsigned long>(end),
+        static_cast<unsigned long>(release.size));
+    RangeHeaders headers{};
+    esp_http_client_config_t cfg{};
+    cfg.url=COTTAGE_OTA_FIRMWARE_URL;cfg.cert_pem=COTTAGE_OTA_LOCAL_ROOT_CA;
+    cfg.timeout_ms=12000;cfg.disable_auto_redirect=true;
+    cfg.buffer_size=1024;cfg.buffer_size_tx=512;
+    cfg.event_handler=range_header_event;cfg.user_data=&headers;
+    enevina_firmware::PublicTlsMemoryScope tls_memory(enevina_firmware::PublicTlsSource::Ota);
+    auto client=esp_http_client_init(&cfg);
+    if(!client)return RangeResult::Retry;
+    struct Close {esp_http_client_handle_t client;~Close(){close_https(client);}} closer{client};
+    if(esp_http_client_set_header(client,"Range",range)!=ESP_OK ||
+       esp_http_client_set_header(client,"If-Match",etag)!=ESP_OK ||
+       esp_http_client_set_header(client,"Accept-Encoding","identity")!=ESP_OK ||
+       esp_http_client_open(client,0)!=ESP_OK) {
+        ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::HttpOpen);
+        return RangeResult::Retry;
     }
-    void wait(){vTaskDelay(pdMS_TO_TICKS(30));}
-    void progress(size_t done){
+    const int64_t length=esp_http_client_fetch_headers(client);
+    const int status=esp_http_client_get_status_code(client);
+    if(length<0 || status>=500 || status==0 || status==404 || status==408 || status==429) {
+        ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::HttpOpen);
+        return RangeResult::Retry;
+    }
+    if(!ota::range_response_matches(status,headers.invalid,headers.etag,etag,
+       headers.range,expected,length,end-begin+1) ||
+       esp_http_client_is_chunked_response(client)) {
+        ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::RangeMismatch);
+        return RangeResult::Reject;
+    }
+    while(done<=end) {
+        // A trickling peer must not monopolize the TLS lease. The next
+        // Range starts at done, including a partially consumed response.
+        if(done>begin && static_cast<uint32_t>(millis()-lease_started)>=ota_range_lease_slice_ms)
+            return RangeResult::Advanced;
+        if(ota_progress_expired(millis(),last_progress) ||
+           !ota_transfer_ready(OtaProblemStage::Transport))return RangeResult::Retry;
+        const size_t want=std::min<size_t>(capacity,end-done+1);
+        const int got=esp_http_client_read(client,reinterpret_cast<char*>(data),want);
+        if(got<=0) {
+            ota_record_problem(OtaProblemStage::Transport,got<0?
+                OtaProblemReason::HttpReadError:OtaProblemReason::HttpReadTimeout);
+            return RangeResult::Retry;
+        }
+        if(static_cast<size_t>(got)>want) {
+            ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::WrongLength);
+            return RangeResult::Reject;
+        }
+        // Header identity is pinned, but no byte is trusted for flashing
+        // until the full signed SHA-256 matches. Retain even partial ranges.
+        if(!image.write(done,data,static_cast<size_t>(got))) {
+            ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::WrongLength);
+            return RangeResult::Reject;
+        }
+        done+=static_cast<uint32_t>(got);
+        last_progress=millis();
         ota_written_bytes.store(static_cast<uint32_t>(done));
-        // A real idle tick between chunks, without flash operations or
-        // artificial throttling in the HTTPS publisher.
+        ota_reconnecting.store(false);
         vTaskDelay(1);
     }
-};
-OtaProblemReason stage_problem(ota::StageResult result) {
-    switch(result) {
-        case ota::StageResult::ReadError:return OtaProblemReason::HttpReadError;
-        case ota::StageResult::Stalled:return OtaProblemReason::HttpReadTimeout;
-        case ota::StageResult::WrongLength:return OtaProblemReason::WrongLength;
-        case ota::StageResult::HashError:return OtaProblemReason::ShaFailed;
-        case ota::StageResult::DigestMismatch:return OtaProblemReason::DigestMismatch;
-        default:return OtaProblemReason::ImageFailed;
+    if(!esp_http_client_is_complete_data_received(client)) {
+        ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::WrongLength);
+        return RangeResult::Reject;
+    }
+    return RangeResult::Advanced;
+}
+bool retryable_image_failure() {
+    switch(static_cast<OtaProblemReason>(ota_problem_reason.load())) {
+        case OtaProblemReason::MutexBusy:
+        case OtaProblemReason::LowMemory:
+        case OtaProblemReason::WifiLost:
+        case OtaProblemReason::HttpOpen:
+        case OtaProblemReason::WifiDuringImage:
+        case OtaProblemReason::InflightLowMemory:
+        case OtaProblemReason::HttpReadError:
+        case OtaProblemReason::HttpReadTimeout:
+        case OtaProblemReason::PsramUnavailable:
+        case OtaProblemReason::TransferDeadline:
+            return true;
+        default:return false; // integrity, flash and activation failures require a new request
     }
 }
 bool update_app(const Release& release) {
     ota_written_bytes.store(0);
+    ota_expected_bytes.store(release.size);
+    ota_resume_count.store(0);
+    ota_durable_bytes.store(0);
+    ota_reconnecting.store(false);
     ota_programmed_bytes.store(0);
     ota_completed_chunks.store(0);
     ota_flash_yields.store(0);
@@ -402,40 +511,93 @@ bool update_app(const Release& release) {
         ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::PsramUnavailable);
         return false;
     }
-    std::unique_ptr<uint8_t,decltype(&heap_caps_free)> image(
-        static_cast<uint8_t*>(heap_caps_malloc(release.size,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)),
-        &heap_caps_free);
-    if(!image) {
+    OtaImage image(alloc_ota_psram,heap_caps_free);
+    if(!image.reserve(release.size)) {
         ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::PsramUnavailable);
         return false;
     }
     uint8_t data[enevina::cottage::ota_flash_chunk_bytes]{};
-    const uint32_t started_ms=millis();
-    enevina_firmware::PublicTlsMemoryScope tls_memory(enevina_firmware::PublicTlsSource::Ota);
-    auto client=open_https(COTTAGE_OTA_FIRMWARE_URL,static_cast<int>(release.size));
-    if(!client) {
-        ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::HttpOpen);
-        return false;
+    const auto identity=ota::spool_identity(release.version,release.size,release.digest);
+    static_assert(ota::spool_block_bytes==enevina::cottage::ota_range_bytes,"stage block mismatch");
+    uint32_t received=0,committed=0;
+    bool spool=enevina_firmware::history_ota_spool_prepare(identity);
+    if(spool) {
+        // Scan only a contiguous, CRC-verified prefix belonging to this
+        // signed identity. A torn or corrupt block is downloaded again.
+        while(received<release.size) {
+            size_t n=ota::spool_payload(identity,received);
+            auto* span=image.span(received,n);
+            if(!span||!n||!enevina_firmware::history_ota_spool_read(identity,received,span))break;
+            received+=static_cast<uint32_t>(n);
+            ota_durable_bytes.store(received);ota_written_bytes.store(received);
+            vTaskDelay(1);
+        }
+        committed=received;
     }
+    uint32_t last_progress=millis();
+    while(received<release.size) {
+        if(enevina::cottage::ota_progress_expired(millis(),last_progress)) {
+            ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::TransferDeadline);
+            ota_reconnecting.store(false);
+            return false;
+        }
+        const auto result=download_range(release,image,data,sizeof(data),received,last_progress);
+        if(result==RangeResult::Reject) {ota_reconnecting.store(false);return false;}
+        // TLS is closed and the transfer lease released here. Persist only
+        // complete blocks, before advancing the durable byte count.
+        while(spool && committed<received) {
+            size_t n=ota::spool_payload(identity,committed);
+            auto* span=image.span(committed,n);
+            if(!span||!n||n>received-committed)break;
+            if(!enevina_firmware::history_ota_spool_store(identity,committed,span)) {
+                spool=false;break; // never take capacity from history
+            }
+            committed+=static_cast<uint32_t>(n);ota_durable_bytes.store(committed);
+            vTaskDelay(1);
+        }
+        if(result==RangeResult::Retry) {
+            ota_reconnecting.store(true);ota_resume_count.fetch_add(1);
+            vTaskDelay(pdMS_TO_TICKS(enevina::cottage::ota_retry_delay_ms));
+        } else {
+            ota_problem_stage.store(0);ota_problem_reason.store(0);
+            vTaskDelay(pdMS_TO_TICKS(enevina::cottage::ota_reader_window_ms));
+        }
+    }
+    ota_reconnecting.store(false);
+    uint8_t digest[32]{};
     mbedtls_sha256_context sha;
     mbedtls_sha256_init(&sha);
-    ImageSource source{client,release,started_ms,sha};
-    const auto received=mbedtls_sha256_starts_ret(&sha,0)==0?
-        ota::stage_image(image.get(),release.size,release.size,data,sizeof(data),source):
-        ota::StageResult::HashError;
-    mbedtls_sha256_free(&sha);
-    close_https(client);
-    tls_memory.end();
-    if(received!=ota::StageResult::Complete) {
-        if(ota_problem_stage.load()==0)
-            ota_record_problem(OtaProblemStage::Transport,stage_problem(received));
-        return false; // no erase, no flash write, no boot selection
+    int hash_result=mbedtls_sha256_starts_ret(&sha,0);
+    for(uint32_t pos=0;hash_result==0 && pos<release.size;) {
+        size_t n=release.size-pos;
+        const auto* span=image.span(pos,n);
+        if(!span||!n){hash_result=-1;break;}
+        hash_result=mbedtls_sha256_update_ret(&sha,span,n);
+        pos+=static_cast<uint32_t>(n);vTaskDelay(1);
     }
-
-    // Transport and flash are strictly disjoint. At this point the full
-    // signed image hash and exact HTTP length are verified, and TLS buffers
-    // have been freed. Retain the original memory/link gates during flash.
-    if(!ota_transfer_ready(OtaProblemStage::Flash,started_ms))return false;
+    if(hash_result==0)hash_result=mbedtls_sha256_finish_ret(&sha,digest);
+    mbedtls_sha256_free(&sha);
+    if(hash_result!=0) {
+        ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::ShaFailed);return false;
+    }
+    if(std::memcmp(digest,release.digest,32)!=0) {
+        ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::DigestMismatch);return false;
+    }
+    // Only installation needs maintenance. TLS is closed before flash.
+    // Exclude competing TLS/BLE allocations while the flash driver runs;
+    // Wi-Fi loss cannot invalidate a fully authenticated staged image.
+    pause_readers.store(true);
+    vTaskDelay(pdMS_TO_TICKS(enevina::cottage::ota_readers_release_ms));
+    { // Only flash I/O owns the shared network-memory lease.
+    enevina_firmware::NetworkBudgetLease flash_lease(5000,
+        enevina::cottage::ota_image_min_internal_bytes,
+        enevina::cottage::ota_min_contiguous_internal_bytes);
+    if(!flash_lease.held()) {
+        ota_record_problem(OtaProblemStage::Flash,
+            ota_budget_reason(flash_lease.diagnostic().failure),flash_lease.diagnostic());
+        return false;
+    }
+    if(!ota_transfer_ready(OtaProblemStage::Flash))return false;
     esp_ota_handle_t handle=0;
     if(esp_ota_begin(target,OTA_WITH_SEQUENTIAL_WRITES,&handle)!=ESP_OK) {
         ota_record_problem(OtaProblemStage::Flash,OtaProblemReason::FlashBegin);
@@ -443,12 +605,15 @@ bool update_app(const Release& release) {
     }
     uint32_t done=0;
     while(done<release.size) {
-        if(!ota_transfer_ready(OtaProblemStage::Flash,started_ms)) {
+        if(!ota_transfer_ready(OtaProblemStage::Flash)) {
             esp_ota_abort(handle);
             return false;
         }
         const uint32_t chunk=std::min<uint32_t>(sizeof(data),release.size-done);
-        std::memcpy(data,image.get()+done,chunk);
+        if(!image.read(done,data,chunk)) {
+            ota_record_problem(OtaProblemStage::Flash,OtaProblemReason::WrongLength);
+            esp_ota_abort(handle);return false;
+        }
         if(esp_ota_write(handle,data,chunk)!=ESP_OK) {
             ota_record_problem(OtaProblemStage::Flash,OtaProblemReason::FlashWriteFailed);
             esp_ota_abort(handle);
@@ -461,7 +626,7 @@ bool update_app(const Release& release) {
         ota_flash_yields.fetch_add(1);
     }
     image.reset();
-    if(!ota_transfer_ready(OtaProblemStage::Flash,started_ms)) {
+    if(!ota_transfer_ready(OtaProblemStage::Flash)) {
         esp_ota_abort(handle);
         return false;
     }
@@ -469,6 +634,7 @@ bool update_app(const Release& release) {
         ota_record_problem(OtaProblemStage::Flash,OtaProblemReason::FlashEndFailed);
         return false;
     } // app image verified by IDF
+    } // Release before asking the optimizer to checkpoint its state.
     ota::Transaction tx{};
     tx.version=release.version;
     tx.source_address=active->address;
@@ -480,6 +646,16 @@ bool update_app(const Release& release) {
     // recovery to this flashed candidate, even across power loss.
     if(esp_partition_get_sha256(target,tx.target_image_sha256)!=ESP_OK){
         ota_record_problem(OtaProblemStage::Flash,OtaProblemReason::ImageShaFailed);
+        return false;
+    }
+#ifndef COTTAGE_BENCH_MODE
+    if(!cottage_ota_checkpoint_learning()) {
+        ota_record_problem(OtaProblemStage::Storage,OtaProblemReason::LearningFlushFailed);
+        return false;
+    }
+#endif
+    if(!enevina_firmware::history_flush_for_ota()) {
+        ota_record_problem(OtaProblemStage::Storage,OtaProblemReason::HistoryFlushFailed);
         return false;
     }
     Preferences p;
@@ -513,6 +689,7 @@ bool update_app(const Release& release) {
             Serial.println("C24_OTA_RECOVERY: activation armed marker deferred");
         armed.end();
     }
+    enevina_firmware::history_ota_spool_discard();
     return true;
 }
 #endif // ENABLED
@@ -751,7 +928,10 @@ const char* cottage_ota_problem_reason() {
         case OtaProblemReason::NvsWriteFailed:return "nvs_transaction_write_failed";
         case OtaProblemReason::BootSelectFailed:return "ota_boot_selection_failed";
         case OtaProblemReason::PsramUnavailable:return "ota_psram_staging_unavailable";
-        case OtaProblemReason::TransferDeadline:return "ota_image_deadline";
+        case OtaProblemReason::TransferDeadline:return "ota_no_progress";
+        case OtaProblemReason::RangeMismatch:return "ota_range_identity_mismatch";
+        case OtaProblemReason::HistoryFlushFailed:return "ota_history_flush_failed";
+        case OtaProblemReason::LearningFlushFailed:return "ota_learning_flush_failed";
         case OtaProblemReason::RetryRequiresRequest:return "retry_requires_request";
         default:return "none";
     }
@@ -762,13 +942,17 @@ uint32_t cottage_ota_image_lease_attempts(){return ota_image_attempts.load();}
 uint32_t cottage_ota_inflight_memory_waits(){return ota_inflight_memory_waits.load();}
 bool cottage_ota_network_maintenance(){return pause_readers.load();}
 uint32_t cottage_ota_downloaded_bytes(){return ota_written_bytes.load();}
+uint32_t cottage_ota_expected_bytes(){return ota_expected_bytes.load();}
+uint32_t cottage_ota_resume_count(){return ota_resume_count.load();}
+uint32_t cottage_ota_durable_bytes(){return ota_durable_bytes.load();}
+bool cottage_ota_reconnecting(){return ota_reconnecting.load();}
 uint32_t cottage_ota_programmed_bytes(){return ota_programmed_bytes.load();}
 uint32_t cottage_ota_chunk_count(){return ota_completed_chunks.load();}
 uint32_t cottage_ota_idle_yields(){return ota_flash_yields.load();}
 bool cottage_ota_request_immediate() {
     const auto task=ota_worker_task.load();
     if(!cottage_ota_configured() || cottage_ota_confirmation_pending() ||
-       !task || pause_readers.load())return false;
+       !task || pause_readers.load() || last_status.load()==5 || last_status.load()==6)return false;
     // Repeated clicks are idempotent until the worker begins the check.
     if(!ota_manual_pending.exchange(true))xTaskNotifyGive(task);
     return true;
@@ -802,26 +986,37 @@ void cottage_ota_worker(void*) {
         // Every exit path from an attempted update restores reader activity.
         cottage_ota_initialize();
         if(WiFi.status()!=WL_CONNECTED || time(nullptr)<1700000000) {
+            if(explicit_request)ota_manual_pending.store(true);
             last_status.store(2);
         } else {
             enevina_firmware::NetworkBudgetDiagnostic manifest_diag{};
-            if(!enevina_firmware::network_budget_acquire(200,
+            if(!enevina_firmware::network_budget_acquire(5000,
                     enevina::cottage::ota_manifest_min_internal_bytes,
                     enevina::cottage::ota_min_contiguous_internal_bytes,&manifest_diag)) {
                 ota_record_problem(OtaProblemStage::ManifestLease,
                                    ota_budget_reason(manifest_diag.failure),manifest_diag);
                 last_status.store(3);
+                if(explicit_request)ota_manual_pending.store(true);
+                // Preserve the single user request across temporary resource contention.
                 // The original control flow expects the lock only when
                 // acquired. Continue at the same bounded 60-second cadence.
                 ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(60000));
                 continue;
             }
             Release r{};
-            const bool valid=fetch_manifest(r);
-            if(!valid) {
-                last_status.store(4);
+            const auto manifest=fetch_manifest(r);
+            if(manifest!=ManifestResult::Valid) {
+                if(manifest==ManifestResult::Unavailable) {
+                    if(explicit_request)ota_manual_pending.store(true);
+                    last_status.store(2);
+                } else if(manifest==ManifestResult::NotOffered) {
+                    last_candidate.store(0);
+                    ota_reconnecting.store(false);
+                    last_status.store(0);
+                } else last_status.store(4);
             } else {
                 last_candidate.store(r.version);
+                const auto identity=ota::spool_identity(r.version,r.size,r.digest);
                 Preferences p;
                 uint32_t good=0,bad=0,pending=0,attempted=0;
                 bool store_ready=p.begin("c24_ota",true);
@@ -834,13 +1029,14 @@ void cottage_ota_worker(void*) {
                     p.end();
                     store_ready=read_attempted_version(attempted);
                 }
+                const bool retry=store_ready && retry_identity_matches(attempted,identity);
                 if(!store_ready) {
                     ota_record_problem(OtaProblemStage::Storage,
                                        OtaProblemReason::NvsUnavailable);
                     last_status.store(3);
                 } else if(!ota::signed_version_eligible(r.version,good,bad,pending!=0)) {
                     last_status.store(0);
-                } else if(!ota::image_attempt_allowed(r.version,attempted,explicit_request)) {
+                } else if(!ota::image_attempt_allowed(r.version,attempted,explicit_request||retry)) {
                     ota_record_problem(OtaProblemStage::Transport,
                                        OtaProblemReason::RetryRequiresRequest);
                     last_status.store(4);
@@ -849,69 +1045,45 @@ void cottage_ota_worker(void*) {
                     // Release its shared network lock before allowing readers
                     // to drain: SSE may hold a separate, persistent socket.
                     enevina_firmware::network_budget_release();
-                    pause_readers.store(true);
-                    vTaskDelay(pdMS_TO_TICKS(
-                        enevina::cottage::ota_readers_release_ms));
-                    bool applied=false;
-                    bool image_lease=false;
-                    enevina_firmware::NetworkBudgetDiagnostic image_diag{};
-                    // A single BLE scan or previous TLS reader must not
-                    // starve a signed update. Retry only while readers are
-                    // paused and never relax the memory safety thresholds.
-                    for(unsigned attempt=1;
-                        attempt<=enevina::cottage::ota_image_lease_max_attempts;
-                        ++attempt) {
-                        ota_image_attempts.store(attempt);
-                        if(WiFi.status()!=WL_CONNECTED)break;
-                        image_diag={};
-                        if(enevina_firmware::network_budget_acquire(1200,
-                             enevina::cottage::ota_image_min_internal_bytes,
-                             enevina::cottage::ota_min_contiguous_internal_bytes,
-                             &image_diag)) {
-                            image_lease=true;break;
-                        }
-                        if(attempt<enevina::cottage::ota_image_lease_max_attempts)
-                            vTaskDelay(pdMS_TO_TICKS(
-                                enevina::cottage::ota_image_lease_retry_delay_ms));
-                    }
-                    if(!image_lease) {
-                        ota_record_problem(OtaProblemStage::ImageLease,
-                           WiFi.status()!=WL_CONNECTED?
-                           OtaProblemReason::WifiLost:
-                           ota_budget_reason(image_diag.failure),image_diag);
-                        last_status.store(3);
-                    } else if(!remember_image_attempt(r.version,explicit_request)) {
-                        // Do not start image I/O if the attempt marker could not
-                        // be persisted; a reset must not silently rearm retries.
+                    bool applied=false,transient=false;
+                    if(!remember_image_attempt(identity,explicit_request||retry)) {
                         ota_record_problem(OtaProblemStage::Storage,
                                            OtaProblemReason::NvsWriteFailed);
                         last_status.store(3);
-                        enevina_firmware::network_budget_release();
                     } else {
                         last_status.store(5);
                         applied=update_app(r);
                         if(!applied && ota_problem_stage.load()==0)
-                            ota_record_problem(OtaProblemStage::Transport,
-                                               OtaProblemReason::ImageFailed);
-                        last_status.store(applied?6:4);
-                        enevina_firmware::network_budget_release();
-                        // A duplicate click queued before maintenance began is
-                        // not permission to retry an attempt that just failed.
+                            ota_record_problem(OtaProblemStage::Transport,OtaProblemReason::ImageFailed);
+                        transient=!applied&&retryable_image_failure();
+                        if(applied || !transient) {
+                            const bool cleared=clear_retry_identity();
+                            if(!cleared)Serial.println("C24_OTA: retry marker cleanup failed");
+                            const auto problem=static_cast<OtaProblemReason>(ota_problem_reason.load());
+                            // Keep a fully verified cache across local storage
+                            // failures. A rejected payload may never be reused.
+                            if(!applied && (problem==OtaProblemReason::RangeMismatch ||
+                               problem==OtaProblemReason::WrongLength || problem==OtaProblemReason::DigestMismatch))
+                                enevina_firmware::history_ota_spool_discard();
+                        }
+                        ota_reconnecting.store(transient);
+                        // Consume only the attempt's old notification while
+                        // status=5 still rejects a new dashboard request.
                         ota_manual_pending.exchange(false);
                         ulTaskNotifyTake(pdTRUE,0);
+                        last_status.store(applied?6:(transient?2:4));
                     }
+                    if(!applied)enevina_firmware::history_resume_after_ota();
                     pause_readers.store(false);
                     if(applied) {
                         Serial.println("C24_SIGNED_OTA_VERIFIED: rebooting into standby partition");
                         vTaskDelay(pdMS_TO_TICKS(500));
                         esp_restart();
                     }
-                    // A failed image stays non-authoritative. Keep current
-                    // firmware and settings. The durable attempted-version
-                    // marker prevents unattended retries of the same release,
-                    // even after a reboot. A newer signed release or a fresh
-                    // explicit dashboard request can pass the unchanged gates.
-                    ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(10*60*1000));
+                    // Only a transient failure of this exact signed identity
+                    // may retry autonomously. A digest/signature/activation
+                    // failure remains blocked; the old app always runs.
+                    ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(transient?60000u:10*60*1000u));
                     continue;
                 }
             }

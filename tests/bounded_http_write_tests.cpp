@@ -14,6 +14,11 @@
 
 using namespace enevina::cottage;
 int main(){
+    static_assert(!web_asset_expired(179999,0,179998));
+    static_assert(web_asset_expired(180000,0,179999));
+    static_assert(web_asset_expired(10000,0,0));
+    static_assert(!web_asset_expired(10,UINT32_MAX-10,UINT32_MAX-5));
+    static_assert(web_asset_expired(9994,UINT32_MAX-10,UINT32_MAX-5));
     std::string payload(450000,'x'); // full-sized dashboard, not just a short JSON status
     uint32_t clock=100;
     unsigned calls=0;

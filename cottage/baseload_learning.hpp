@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include "pump/pump_adapter.hpp"
 #include "cottage/telemetry.hpp"
+#include "cottage/history_persist.hpp"
 
 namespace enevina::cottage {
 
@@ -28,6 +29,18 @@ inline bool baseload_current(const BaseloadEstimate& b,uint32_t identity,int64_t
         now>=b.observed_utc && now-b.observed_utc<=2*3600;
 }
 
+// Durable qualified OFF regime. Never serialize an incomplete sample window
+// or carry request generations across a firmware reboot.
+struct BaseloadCheckpoint {
+    uint32_t schema=1,model_key=0,meter=0,revision=0;
+    int64_t observed_utc=0;
+    double watts=0,spread_w=0,counter_wh=0;
+    uint16_t crc=0;
+    uint8_t reserved[6]{};
+};
+static_assert(offsetof(BaseloadCheckpoint,crc)==48 && sizeof(BaseloadCheckpoint)==56,
+              "baseload checkpoint layout");
+enum class BaseloadRestore {Pending,Rejected,Restored};
 // Bounded, allocation-free robust median of seven independent samples
 // within an uninterrupted OFF request. Ignore the first four minutes of
 // OFF (fan overrun/afterheat), defrost, stale reads, replay and source
@@ -155,6 +168,40 @@ public:
             }
         }
         return snapshot(identity,now);
+    }
+    void checkpoint(uint32_t model_key,int64_t now,BaseloadCheckpoint& out) const {
+        out=BaseloadCheckpoint{};out.model_key=model_key;
+        if(model_key && baseload_current(estimate_,estimate_.identity,now)) {
+            out.meter=estimate_.identity;out.revision=estimate_.revision;
+            out.observed_utc=estimate_.observed_utc;out.watts=estimate_.watts;
+            out.spread_w=estimate_.spread_w;out.counter_wh=last_total_wh_;
+        }
+        out.crc=history_crc16(reinterpret_cast<const uint8_t*>(&out),offsetof(BaseloadCheckpoint,crc));
+    }
+    // Only after observe() qualified a new fresh OFF reading from the same
+    // meter and counter. A stored estimate is NOT a fresh observation.
+    BaseloadRestore restore_checkpoint(const BaseloadCheckpoint& saved,uint32_t model_key,
+                                       uint32_t meter,int64_t now) {
+        if(saved.schema!=1 || !model_key || !meter || saved.model_key!=model_key ||
+           saved.meter!=meter || saved.crc!=history_crc16(
+               reinterpret_cast<const uint8_t*>(&saved),offsetof(BaseloadCheckpoint,crc)) ||
+           !saved.revision || saved.observed_utc<=0 || now<saved.observed_utc ||
+           now-saved.observed_utc>7200 || !std::isfinite(saved.watts) || saved.watts<0 ||
+           saved.watts>20000 || !std::isfinite(saved.spread_w) || saved.spread_w<0 ||
+           saved.spread_w>baseload_tolerance_w(saved.watts) ||
+           !std::isfinite(saved.counter_wh) || saved.counter_wh<0 ||
+           std::any_of(std::begin(saved.reserved),std::end(saved.reserved),[](uint8_t x){return x!=0;}))
+            return BaseloadRestore::Rejected;
+        if(baseload_current(estimate_,meter,now))return BaseloadRestore::Rejected;
+        if(estimate_.identity!=meter || !have_window_ || !count_ ||
+           last_meter_utc_<=saved.observed_utc)return BaseloadRestore::Pending;
+        const auto& newest=window_[(head_+required_samples-1)%required_samples];
+        if(last_total_wh_<saved.counter_wh || now-newest.utc>30 ||
+           std::fabs(newest.watts-saved.watts)>baseload_tolerance_w(saved.watts))
+            return BaseloadRestore::Rejected;
+        estimate_={meter,saved.revision,last_meter_utc_,saved.watts,saved.spread_w,
+                   required_samples,true};
+        return BaseloadRestore::Restored;
     }
     BaseloadEstimate snapshot(uint32_t identity,int64_t now) const {
         auto e=estimate_;

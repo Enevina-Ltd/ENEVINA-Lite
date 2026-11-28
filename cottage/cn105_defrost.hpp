@@ -7,7 +7,7 @@ namespace enevina::cottage {
 // A positive report can conservatively defer a normal automatic write.
 // Missing/unknown data never proves that defrost is over.
 enum class CN105DefrostSignal : uint8_t { Unknown, Other, Defrost };
-enum class CN105DefrostSource : uint8_t { SubMode, ClimateAction };
+enum class CN105DefrostSource : uint8_t { SubMode, ClimateAction, VerifiedPoll };
 enum class CN105DefrostState : uint8_t { Unknown, ReportedOther, ReportedDefrost, SignalLost, Recovery, Overdue };
 
 inline CN105DefrostSignal cn105_submode_signal(const char* s) {
@@ -50,6 +50,7 @@ struct CN105DefrostView {
     CN105DefrostState state=CN105DefrostState::Unknown;
     bool defer_write=false;
     bool ever_reported_defrost=false;
+    bool source_verified=false;
     uint32_t reports=0; // boot-local positive observations, not episode count
     uint32_t generation=0; // new positive episodes, including each source
     uint32_t submode_starts=0,submode_ends=0,action_starts=0,action_ends=0;
@@ -66,7 +67,8 @@ public:
     static constexpr uint64_t recent_ms=180000, lost_grace_ms=720000, recovery_ms=60000;
     void note(CN105DefrostSource source,CN105DefrostSignal signal,uint64_t ms,uint32_t endpoint) {
         if(!bound_ || endpoint!=endpoint_) {
-            channels_[0]={};channels_[1]={};endpoint_=endpoint;bound_=true;
+            for(auto& channel:channels_)channel={};
+            endpoint_=endpoint;bound_=true;
         }
         auto& c=channels_[static_cast<unsigned>(source)];
         if(c.seen && ms<c.observed_ms)return;
@@ -104,11 +106,13 @@ public:
         v.submode_last_duration_s=channels_[0].last_duration_s;
         v.action_last_duration_s=channels_[1].last_duration_s;
         bool active=false,lost=false,recovering=false,other=false,overdue=false;
-        for(unsigned i=0;i<2;++i) {
+        for(unsigned i=0;i<3;++i) {
             const auto& c=channels_[i];
             v.ever_reported_defrost|=c.positive_seen;
             if(!c.seen || ms<c.observed_ms)continue;
             const uint64_t age=ms-c.observed_ms;
+            if(i==static_cast<unsigned>(CN105DefrostSource::VerifiedPoll) &&
+               c.signal!=CN105DefrostSignal::Unknown && age<=recent_ms)v.source_verified=true;
             if(c.signal==CN105DefrostSignal::Defrost) {
                 if(ms<c.first_positive_ms || ms-c.first_positive_ms>lost_grace_ms)
                     overdue=true;
@@ -119,7 +123,7 @@ public:
                 // Generic action is not a capability declaration. A
                 // Sub Mode non-empty value is only a reported other state.
                 other|=c.signal==CN105DefrostSignal::Other &&
-                    age<=recent_ms && (i==0 || c.positive_seen);
+                    age<=recent_ms && (i!=static_cast<unsigned>(CN105DefrostSource::ClimateAction) || c.positive_seen);
             }
         }
         v.state=active?CN105DefrostState::ReportedDefrost:
@@ -135,7 +139,7 @@ private:
         uint64_t observed_ms=0,recover_until=0,first_positive_ms=0;
         uint32_t starts=0,ends=0,last_duration_s=0;
     };
-    Channel channels_[2]{};
+    Channel channels_[3]{};
     uint32_t endpoint_=0,reports_=0,generation_=0;
     bool bound_=false;
 };

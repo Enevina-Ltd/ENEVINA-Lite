@@ -1,6 +1,7 @@
 #ifndef COTTAGE_BENCH_MODE
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <esp_littlefs.h>
 #include "cottage_bounded_web.hpp"
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -25,7 +26,7 @@ using namespace enevina::cottage;
 constexpr char tag[]="enevina_hist";
 constexpr char kRecordsPath[]="/hist.bin";
 constexpr char kEventsPath[]="/events.bin";
-constexpr uint32_t kFlushIntervalMs=60UL*60*1000;      // hourly: bounded flash wear
+constexpr uint32_t kFlushIntervalMs=60UL*60*1000;      // hourly fallback for event/repair work
 constexpr uint32_t kEventFlushMinMs=10UL*60*1000;       // new events: at most every 10 min
 
 // LittleFS-backed file with a streamed atomic replace (temp file + rename).
@@ -50,25 +51,52 @@ public:
     bool append(const void* data,size_t n) override {
         File f=LittleFS.open(path_,"a");
         if(!f) return false;
+        const size_t offset=f.size();
         const bool ok=f.write(static_cast<const uint8_t*>(data),n)==n;
-        f.close();
-        return ok;
+        f.flush();f.close();
+        if(!ok || size()!=offset+n)return false;
+        // Arduino File::close/flush cannot report all lower-layer errors.
+        uint8_t check[128];
+        const auto* bytes=static_cast<const uint8_t*>(data);
+        for(size_t i=0;i<n;) {
+            const size_t k=std::min(sizeof(check),n-i);
+            if(!read(offset+i,check,k)||std::memcmp(check,bytes+i,k)!=0)return false;
+            i+=k;
+        }
+        return true;
     }
     bool replace_begin() override {
         if(open_) abort_file();
         LittleFS.remove(tmp_);                       // stale temp from an earlier power cut
         tmpf_=LittleFS.open(tmp_,"w");
         open_=static_cast<bool>(tmpf_);
+        replace_size_=0;replace_hash_=14695981039346656037ULL;
         return open_;
     }
     bool replace_write(const void* data,size_t n) override {
-        return open_ && tmpf_.write(static_cast<const uint8_t*>(data),n)==n;
+        if(!open_ || tmpf_.write(static_cast<const uint8_t*>(data),n)!=n)return false;
+        hash_bytes(replace_hash_,static_cast<const uint8_t*>(data),n);
+        replace_size_+=n;return true;
     }
     bool replace_commit() override {
         if(!open_) return false;
-        tmpf_.close();open_=false;
+        tmpf_.flush();tmpf_.close();open_=false;
+        // Verify the closed temporary file before replacing the old file.
+        File verify=LittleFS.open(tmp_,"r");
+        bool ok=verify && verify.size()==replace_size_;
+        uint8_t chunk[128];
+        uint64_t hash=14695981039346656037ULL;
+        size_t remaining=replace_size_;
+        while(ok&&remaining) {
+            const size_t n=std::min(remaining,sizeof(chunk));
+            ok=verify.read(chunk,n)==n;
+            if(ok)hash_bytes(hash,chunk,n);
+            remaining-=n;
+        }
+        verify.close();
         // littlefs rename over an existing file is atomic: old or new, never half.
-        if(LittleFS.rename(tmp_,path_)) return true;
+        if(ok && hash==replace_hash_ && LittleFS.rename(tmp_,path_))
+            return size()==replace_size_;
         LittleFS.remove(tmp_);
         return false;
     }
@@ -79,6 +107,11 @@ private:
         if(open_) {tmpf_.close();open_=false;}
         LittleFS.remove(tmp_);
     }
+    static void hash_bytes(uint64_t& hash,const uint8_t* p,size_t n) {
+        for(size_t i=0;i<n;++i){hash^=p[i];hash*=1099511628211ULL;}
+    }
+    size_t replace_size_=0;
+    uint64_t replace_hash_=0;
     const char* path_;
     char tmp_[24];
     File tmpf_;
@@ -93,6 +126,9 @@ constexpr char kFixedModelPath[]="/model1.bin",kVariableModelPath[]="/model2.bin
 LfsFile fixed_model_file(kFixedModelPath),variable_model_file(kVariableModelPath);
 constexpr char kMaintenancePath[]="/maint1.bin";
 LfsFile maintenance_file(kMaintenancePath);
+LfsFile open_slot_file("/histopen1.bin"),baseload_file("/base1.bin");
+struct OpenSlotFile {HistoryOpenSlot slot;uint16_t crc;};
+bool ota_history_frozen=false; // protected by guard
 HistoryPersistence* persistence=nullptr;
 HistoryRecorder recorder;
 bool persistent=false;
@@ -103,6 +139,46 @@ constexpr uint32_t kRetryIntervalMs=10UL*60*1000;
 uint64_t events_total_at_flush=0;
 size_t last_load_records=0;
 std::atomic<uint32_t> history_busy_reads{0};
+constexpr char kOtaSpoolPath[]="/ota-stage1.bin";
+using ota::SpoolIdentity;
+using ota::SpoolBlock;
+class SpoolLock {
+public:
+    SpoolLock():held_(persistent && guard && xSemaphoreTake(guard,pdMS_TO_TICKS(1000))==pdTRUE){}
+    ~SpoolLock(){if(held_)xSemaphoreGive(guard);}
+    explicit operator bool()const{return held_;}
+private:
+    bool held_;
+};
+bool spool_header(File& file,const SpoolIdentity& id) {
+    SpoolIdentity actual{};
+    return file && file.seek(0) && file.read(reinterpret_cast<uint8_t*>(&actual),sizeof(actual))==sizeof(actual) &&
+        ota::spool_matches(actual,id);
+}
+bool spool_has_space(size_t extra) {
+    size_t total=0,used=0;
+    if(esp_littlefs_info("spiffs",&total,&used)!=ESP_OK)return false;
+    // Leave room for the bounded history compaction, model files, events
+    // and LittleFS metadata even when a large release cannot fit in full.
+    return total>=used && total-used>=ota::spool_history_reserve+extra+8192u;
+}
+bool spool_read_locked(const SpoolIdentity& id,uint32_t offset,uint8_t* data,const uint32_t* expected_crc=nullptr) {
+    File file=LittleFS.open(kOtaSpoolPath,"r");
+    SpoolBlock block{};
+    if(!spool_header(file,id)||!file.seek(ota::spool_position(offset))||
+       file.read(reinterpret_cast<uint8_t*>(&block),sizeof(block))!=sizeof(block)||
+       !ota::spool_block_matches(id,block,offset))return false;
+    uint8_t scratch[1024];uint32_t crc=0xffffffffu;
+    for(size_t pos=0;pos<block.size;) {
+        const size_t n=std::min(sizeof(scratch),size_t(block.size)-pos);
+        if(file.read(scratch,n)!=n)return false;
+        crc=ota::spool_crc_update(crc,scratch,n);
+        if(data)std::memcpy(data+pos,scratch,n);
+        pos+=n;
+    }
+    return ~crc==block.crc && (!expected_crc||block.crc==*expected_crc);
+}
+
 } // namespace
 
 void history_initialize() {
@@ -137,10 +213,16 @@ void history_initialize() {
     records_file.remove_stale_temp();
     events_file.remove_stale_temp();
     maintenance_file.remove_stale_temp();
+    open_slot_file.remove_stale_temp();
+    baseload_file.remove_stale_temp();
     persistence=new(std::nothrow) HistoryPersistence(records_file,events_file);
     if(!persistence) {persistent=false;return;}
     const LoadResult r=persistence->load(*store,events);
     last_load_records=r.records;
+    OpenSlotFile open{};
+    if(open_slot_file.size()==sizeof(open) && open_slot_file.read(0,&open,sizeof(open)) &&
+       open.crc==history_crc16(reinterpret_cast<const uint8_t*>(&open.slot),sizeof(open.slot)))
+        recorder.restore_open(open.slot,*store); // stale or already finalized is rejected
     // Migrate an already-durable UpdateConfirmed event into the independent
     // NVS summary. This includes legacy installs where hist_done was written
     // before hist_last existed: pending_ota is then zero, but the event is
@@ -162,14 +244,62 @@ void history_initialize() {
              static_cast<unsigned>(r.events),r.record_tail_cut?" (torn tail will be repaired)":"");
 }
 
+bool history_ota_spool_prepare(const SpoolIdentity& id) {
+    if(!ota::spool_valid(id))return false;
+    SpoolLock lock;if(!lock)return false;
+    File existing=LittleFS.open(kOtaSpoolPath,"r");
+    const bool same=spool_header(existing,id);existing.close();
+    if(same)return true;
+    // A new signed identity must never inherit an old prefix.
+    if(LittleFS.exists(kOtaSpoolPath)&&!LittleFS.remove(kOtaSpoolPath))return false;
+    if(!spool_has_space(sizeof(id)))return false;
+    File file=LittleFS.open(kOtaSpoolPath,"w");
+    if(!file)return false;
+    const bool ok=file.write(reinterpret_cast<const uint8_t*>(&id),sizeof(id))==sizeof(id);
+    file.flush();file.close();
+    File readback=LittleFS.open(kOtaSpoolPath,"r");
+    return ok&&spool_header(readback,id);
+}
+bool history_ota_spool_read(const SpoolIdentity& id,uint32_t offset,uint8_t* data) {
+    SpoolLock lock;
+    return lock&&data&&spool_read_locked(id,offset,data);
+}
+bool history_ota_spool_store(const SpoolIdentity& id,uint32_t offset,const uint8_t* data) {
+    SpoolLock lock;
+    const size_t count=ota::spool_payload(id,offset);
+    if(!lock||!data||!count||!spool_has_space(count+sizeof(SpoolBlock)))return false;
+    const uint32_t crc=ota::spool_crc(data,count);
+    const SpoolBlock block{offset,static_cast<uint32_t>(count),crc};
+    // Overwrite a torn tail at its deterministic offset. No truncate or
+    // filesystem-wide cleanup; old blocks remain reusable for this identity.
+    File file=LittleFS.open(kOtaSpoolPath,"r+");
+    if(!spool_header(file,id)||!file.seek(ota::spool_position(offset))||
+       file.write(reinterpret_cast<const uint8_t*>(&block),sizeof(block))!=sizeof(block))return false;
+    uint8_t scratch[1024];
+    for(size_t pos=0;pos<count;) {
+        const size_t n=std::min(sizeof(scratch),count-pos);
+        // Never supply PSRAM to a flash-writing driver with cache disabled.
+        std::memcpy(scratch,data+pos,n);
+        if(file.write(scratch,n)!=n)return false;
+        pos+=n;
+    }
+    file.flush();file.close();
+    return spool_read_locked(id,offset,nullptr,&crc);
+}
+void history_ota_spool_discard() {
+    SpoolLock lock;
+    if(lock && LittleFS.exists(kOtaSpoolPath))LittleFS.remove(kOtaSpoolPath);
+}
+
 void history_observe(const HistoryInputs& inputs) {
     if(!guard||!store) return;
     xSemaphoreTake(guard,portMAX_DELAY);
-    recorder.observe(inputs,*store,events);
+    if(ota_history_frozen){xSemaphoreGive(guard);return;}
+    const bool finalized=recorder.observe(inputs,*store,events);
     const uint32_t now=millis();
     const bool hourly=now-last_flush_ms>=kFlushIntervalMs;
     const bool new_events=events.total()!=events_total_at_flush && now-last_flush_ms>=kEventFlushMinMs;
-    if(persistent&&persistence&&(hourly||new_events)&&
+    if(persistent&&persistence&&(finalized||hourly||new_events)&&
        (persistence_healthy||now-last_attempt_ms>=kRetryIntervalMs)) {
         // Keep retrying (at most every 10 min after failure), but do NOT mark
         // history durable or advance success bookkeeping on a failed write.
@@ -200,6 +330,34 @@ void history_observe(const HistoryInputs& inputs) {
     xSemaphoreGive(guard);
 }
 
+// OTA must never select a new boot partition while completed records are
+// known to be RAM-only. Same mutex and persistence transaction as recorder.
+bool history_flush_for_ota() {
+    if(!guard||!store||!persistent||!persistence)return false;
+    if(xSemaphoreTake(guard,pdMS_TO_TICKS(10000))!=pdTRUE)return false;
+    bool ok=persistence->flush(*store,events);
+    OpenSlotFile open{};
+    recorder.snapshot_open(open.slot);
+    open.crc=history_crc16(reinterpret_cast<const uint8_t*>(&open.slot),sizeof(open.slot));
+    if(ok)ok=write_model_checkpoint(open_slot_file,reinterpret_cast<const uint8_t*>(&open),sizeof(open));
+    persistence_healthy=ok;
+    last_attempt_ms=millis();
+    if(ok){
+        last_flush_ms=last_attempt_ms;events_total_at_flush=events.total();
+        // Stop new history observations only for the short activation/reboot
+        // interval. The stored accumulator carries the unfinished quarter.
+        ota_history_frozen=true;
+    }
+    xSemaphoreGive(guard);
+    return ok;
+}
+
+void history_resume_after_ota() {
+    if(!guard)return;
+    xSemaphoreTake(guard,portMAX_DELAY);
+    ota_history_frozen=false;
+    xSemaphoreGive(guard);
+}
 bool history_last_event(uint8_t kind,uint32_t& utc,uint32_t& arg) {
     if(!guard||!store) return false;
     bool found=false;
@@ -267,6 +425,18 @@ bool history_maintenance_write(const uint8_t* data,size_t used) {
     xSemaphoreGive(guard);return ok;
 }
 
+CheckpointRead history_baseload_read(uint8_t* data,size_t cap,size_t& used) {
+    used=0;
+    if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)
+        return CheckpointRead::Error;
+    const auto result=read_model_checkpoint(baseload_file,data,cap,used);
+    xSemaphoreGive(guard);return result;
+}
+bool history_baseload_write(const uint8_t* data,size_t used) {
+    if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)return false;
+    const bool ok=write_model_checkpoint(baseload_file,data,used);
+    xSemaphoreGive(guard);return ok;
+}
 bool history_maintenance_present() {
     if(!persistent || !guard || xSemaphoreTake(guard,pdMS_TO_TICKS(1000))!=pdTRUE)return true;
     const bool present=maintenance_file.exists();

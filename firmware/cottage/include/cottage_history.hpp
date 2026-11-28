@@ -1,9 +1,10 @@
 #pragma once
 // 30-day history (15-minute records) and event log: PSRAM ring, LittleFS
-// persistence on the otherwise unused "spiffs" partition, hourly batched
+// persistence on the otherwise unused "spiffs" partition, quarter-hour
 // flushes, GET /api/history. See cottage/history_store.hpp for the rules.
 #include "cottage/history_store.hpp"
 #include "cottage/model_checkpoint.hpp"
+#include "cottage/ota_image_staging.hpp"
 class CottageWebServer;
 
 namespace enevina_firmware {
@@ -12,6 +13,15 @@ namespace enevina_firmware {
 // was saved. If anything fails the history keeps working in RAM only and the
 // API says so; no other storage (NVS, OTA, settings) is touched.
 void history_initialize();
+// Flush and freeze the recorder only for final activation.
+bool history_flush_for_ota();
+void history_resume_after_ota();
+// OTA staging uses only its own LittleFS file and the existing history guard.
+// No filesystem formatting, history eviction, or app-slot write occurs.
+bool history_ota_spool_prepare(const enevina::cottage::ota::SpoolIdentity& id);
+bool history_ota_spool_read(const enevina::cottage::ota::SpoolIdentity& id,uint32_t offset,uint8_t* data);
+bool history_ota_spool_store(const enevina::cottage::ota::SpoolIdentity& id,uint32_t offset,const uint8_t* data);
+void history_ota_spool_discard();
 // Every ~15 s from one worker task.
 void history_observe(const enevina::cottage::HistoryInputs& inputs);
 void history_http(CottageWebServer& web);
@@ -29,5 +39,7 @@ bool history_model_present(bool variable); // true also when absence cannot be v
 // The fixed-model reset also erases this file or advances its bound epoch.
 enevina::cottage::CheckpointRead history_maintenance_read(uint8_t* data,size_t cap,size_t& used);
 bool history_maintenance_write(const uint8_t* data,size_t used);
+enevina::cottage::CheckpointRead history_baseload_read(uint8_t* data,size_t cap,size_t& used);
+bool history_baseload_write(const uint8_t* data,size_t used);
 bool history_maintenance_present(); // true if absence cannot be verified
 }

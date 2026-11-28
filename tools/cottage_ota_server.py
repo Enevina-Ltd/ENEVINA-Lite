@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only HTTPS OTA distribution. No POST, PUT, upload or credential endpoint."""
-import argparse,ssl,ipaddress,http.server
+import argparse,ssl,ipaddress,http.server,hashlib,re
 from pathlib import Path
 class Handler(http.server.BaseHTTPRequestHandler):
     directory=Path(".")
@@ -16,17 +16,44 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except ValueError: self.send_error(403);return
         path=self.directory/name
         if not path.is_file() or path.is_symlink(): self.send_error(404);return
-        size=path.stat().st_size
-        if size<1 or size>(512 if name=="manifest.txt" else 0x640000):
-            self.send_error(500);return
         try:
+            # Read one bounded immutable snapshot: a concurrent publication
+            # cannot mix the identity/header of one image with another body.
+            limit=512 if name=="manifest.txt" else 0x640000
             with path.open("rb") as body:
-                self.send_response(200)
-                self.send_header("Content-Length",str(size))
-                self.send_header("Content-Type","text/plain" if name=="manifest.txt" else "application/octet-stream")
-                self.send_header("Cache-Control","no-store")
-                self.end_headers()
-                while chunk:=body.read(8192): self.wfile.write(chunk)
+                payload=body.read(limit+1)
+            size=len(payload)
+            if not 1<=size<=limit:
+                self.send_error(500);return
+            start,end=0,size-1
+            ranged=False
+            etag='"'+hashlib.sha256(payload).hexdigest()+'"'
+            condition=self.headers.get("If-Match")
+            if condition is not None and condition!=etag:
+                self.send_error(412);return
+            requested=self.headers.get("Range")
+            if requested is not None:
+                # Only the explicit, bounded single-range form used by Lite.
+                match=re.fullmatch(r"bytes=([0-9]{1,10})-([0-9]{1,10})",requested)
+                if name!="firmware.bin" or not match:
+                    self.send_error(416);return
+                start,end=map(int,match.groups())
+                if not 0<=start<=end<size:
+                    self.send_response(416)
+                    self.send_header("Content-Range",f"bytes */{size}")
+                    self.send_header("Content-Length","0")
+                    self.end_headers();return
+                ranged=True
+            self.send_response(206 if ranged else 200)
+            self.send_header("Content-Length",str(end-start+1))
+            self.send_header("Content-Type","text/plain" if name=="manifest.txt" else "application/octet-stream")
+            self.send_header("Cache-Control","no-store")
+            self.send_header("ETag",etag)
+            if name=="firmware.bin": self.send_header("Accept-Ranges","bytes")
+            if ranged: self.send_header("Content-Range",f"bytes {start}-{end}/{size}")
+            self.end_headers()
+            for pos in range(start,end+1,8192):
+                self.wfile.write(payload[pos:min(pos+8192,end+1)])
         except (OSError,ConnectionResetError,BrokenPipeError):
             self.close_connection=True
     def do_POST(self): self.send_error(405)

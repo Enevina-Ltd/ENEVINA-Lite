@@ -67,7 +67,7 @@ struct ArbiterInput {
     bool pump_gateway_request=false;
     bool pump_heat=false;
     bool pump_defrost_hold=false;
-    uint32_t defrost_reports=0;
+    uint32_t defrost_reports=0,cycle_trial_revision=0;
     double pump_setpoint_c=0;
     PumpHeatingLimits pump_limits{};
     // The pump readback confirmed THIS plan's first decision in its own slot

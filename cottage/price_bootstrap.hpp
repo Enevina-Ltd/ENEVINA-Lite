@@ -44,7 +44,8 @@ enum class BootstrapAction : uint8_t { Unavailable, HeatSetpoint, Off, Hold };
 enum class BootstrapReason : uint8_t {
     MissingTemperature, MissingPrices, NoHeatingRequested, TemperatureLow, TemperatureHigh,
     CheapWindow, ExpensiveWindow, ThermostatWithoutPrices, NeutralPriceWindow,
-    DeadbandHold, LowTargetReached, PumpCapabilitiesUnknown
+    DeadbandHold, LowTargetReached, PumpCapabilitiesUnknown,
+    NaturalCycleHold, ThermostatCycleEnd, ModulationCycleEnd, TrialRoomLimit
 };
 // CN105 HEAT cannot request a setpoint below 16 C. A lower room target
 // requires an external room thermostat, not a continuous HEAT request.
@@ -110,6 +111,7 @@ struct BootstrapDecision {
     double heat_setpoint_c=0; // only valid for HeatSetpoint; on the adapter's grid
     // Physical commands NEVER originate in this model-free module.
     bool executable=false;
+    uint32_t cycle_trial_revision=0;
     bool low_temperature_cycle=false; // scoped live room-maintenance policy
     bool below_native_minimum_cycle=false;
     bool maintenance_storage=false;
@@ -343,6 +345,10 @@ inline const char* bootstrap_reason_name(BootstrapReason reason) {
     case BootstrapReason::NeutralPriceWindow:return "NEUTRAL_COST_WINDOW";
     case BootstrapReason::DeadbandHold:return "HOLD_IN_DEADBAND";
     case BootstrapReason::LowTargetReached:return "LOW_TARGET_REACHED";
+    case BootstrapReason::TrialRoomLimit:return "TRIAL_ROOM_LIMIT";
+    case BootstrapReason::NaturalCycleHold:return "NATURAL_CYCLE_HOLD";
+    case BootstrapReason::ThermostatCycleEnd:return "THERMOSTAT_CYCLE_END";
+    case BootstrapReason::ModulationCycleEnd:return "MODULATION_CYCLE_END";
     case BootstrapReason::PumpCapabilitiesUnknown:return "PUMP_CAPABILITIES_UNKNOWN";
     }
     return "UNKNOWN";
@@ -352,7 +358,7 @@ inline bool low_temperature_cycle(const BootstrapDecision& d) {
 }
 inline bool low_temperature_stop(const BootstrapDecision& d) {
     return low_temperature_cycle(d) && d.action==BootstrapAction::Off &&
-        d.reason==BootstrapReason::LowTargetReached;
+        (d.reason==BootstrapReason::LowTargetReached || d.reason==BootstrapReason::TrialRoomLimit);
 }
 inline const char* bootstrap_action_name(BootstrapAction action) {
     switch(action) {

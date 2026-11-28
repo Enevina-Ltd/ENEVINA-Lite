@@ -885,7 +885,31 @@ static void room_temperature_history_preserves_the_source_change() {
     CHECK(store.get(T0/900+1)->indoor_c100==2200);
 }
 
+static void ota_open_slot_restores_samples_without_bridging_reboot() {
+    HistoryStore store;EventLog events;HistoryRecorder before;
+    before.observe(meter_reading(T0+10,1000,1),store,events);
+    before.observe(meter_reading(T0+70,1000,1),store,events);
+    HistoryOpenSlot state{};before.snapshot_open(state);
+    CHECK(store.empty());
+    HistoryRecorder after;
+    CHECK(after.restore_open(state,store));
+    // Replay from the old meter must not be counted again.
+    auto old=meter_reading(T0+100,1000,1);old.power_sample_utc=T0+70;
+    after.observe(old,store,events);
+    after.observe(meter_reading(T0+150,1000,1),store,events);
+    after.observe(meter_reading(T0+210,1000,1),store,events);
+    CHECK(after.observe(sample(T0+901),store,events));
+    const auto* r=store.get(T0/900);
+    CHECK(r&&r->power_w==1000&&history_power_coverage_minutes(r->flags)==2);
+    HistoryRecorder stale;
+    CHECK(!stale.restore_open(state,store));
+    HistoryStore empty;HistoryRecorder bad;
+    state.counts[0]=state.samples+1;
+    CHECK(!bad.restore_open(state,empty));
+}
+
 int main() {
+    ota_open_slot_restores_samples_without_bridging_reboot();
     room_temperature_history_preserves_the_source_change();
     legacy_event_log_migration_preserves_old_entries();
     mount_failure_never_formats_nonblank_partition();

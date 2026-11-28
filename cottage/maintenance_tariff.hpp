@@ -25,7 +25,7 @@ struct MaintenanceTariffAdvice {
     MaintenanceTariffAction action=MaintenanceTariffAction::None;
     bool valid=false,model_based=false,avoid_exploration=false;
     int64_t computed_utc=0,alternative_utc=0,deadline_utc=0,price_end_utc=0,next_start_utc=0;
-    uint32_t site_generation=0,config_generation=0,price_revision=0,region_generation=0;
+    uint32_t site_generation=0,config_generation=0,price_revision=0,region_generation=0,trial_revision=0,meter_identity=0;
     double current_price=0,alternative_price=0,ceiling_c=0,required_room_c=0;
 };
 // One shared optimizer-owned PSRAM workspace; no HTTP-stack allocation.
@@ -40,7 +40,7 @@ struct MaintenanceTariffInput {
     int64_t now=0;
     double room_c=0,target_c=0,lower_c=0,storage_ceiling_c=0,cycle_ceiling_c=0;
     double outside_c=0,price_scale=1;
-    bool heating=false;
+    bool heating=false,natural_cycle_start_only=false;
     unsigned minutes_in_mode=0;
     MaintenanceTariffScratch* scratch=nullptr;
     const enevina::OutdoorPoint* weather=nullptr;
@@ -242,7 +242,7 @@ inline bool tariff_schedule(const MaintenanceTariffInput& in,size_t count,
                 advantage=std::isfinite(best.later)?best.later-best.best:0;
             }
         }
-    } else if(remaining==0 && in.room_c>in.lower_c+0.2 &&
+    } else if(!in.natural_cycle_start_only && remaining==0 && in.room_c>in.lower_c+0.2 &&
               in.room_c<in.cycle_ceiling_c) {
         const auto full=solver.charge(0,static_cast<float>(in.room_c),true);
         const auto stop=solver.off(0,static_cast<float>(in.room_c)+solver.afterheat,3);
@@ -271,7 +271,7 @@ inline MaintenanceTariffAdvice maintenance_tariff_decision(const MaintenanceTari
        in.price_scale<1 || in.price_scale>12 ||
        in.lower_c<5 || in.lower_c>in.target_c-0.5 ||
        in.cycle_ceiling_c<in.target_c || in.storage_ceiling_c<in.cycle_ceiling_c ||
-       in.storage_ceiling_c>maintenance_model_ceiling_c)return out;
+       in.storage_ceiling_c>(in.natural_cycle_start_only?26.0:maintenance_model_ceiling_c))return out;
     const auto* p=in.prices;
     if(p[0].utc!=in.now/900*900)return out;
     size_t n=0;
@@ -291,7 +291,8 @@ inline MaintenanceTariffAdvice maintenance_tariff_decision(const MaintenanceTari
     }
     const double floor=in.lower_c;
     const double max_c=in.storage_ceiling_c;
-    if(in.room_c<=floor || in.room_c>=max_c)return out; // real temperature wins
+    if(in.room_c<=floor || in.room_c>=max_c ||
+       (in.natural_cycle_start_only && in.heating))return out; // real temperature wins; never interrupt a natural charge
     const auto& m=in.model;
     const bool model=in.samples>=16 && in.off_samples>=4 && m.plausible &&
         std::isfinite(m.tau_h)&&std::isfinite(m.tau_std_h)&&m.tau_h>=0.5&&m.tau_h<=48 &&

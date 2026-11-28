@@ -152,8 +152,18 @@ class MpcControlWiring(unittest.TestCase):
         self.assertIn('pi.defrost_reports=defrost.generation', WORKER)
         self.assertIn('in.pump_defrost_hold=cn105_defrost_defer_write', MAIN)
         self.assertIn('p.defrost_reports!=in.defrost_reports', ARB)
-        self.assertIn('cn105_defrost_uart_verified",false', MAIN)
+        self.assertIn('cn105_defrost_uart_verified",defrost.source_verified', MAIN)
+        self.assertIn('cn105_defrost.note(CN105DefrostSource::VerifiedPoll,', MAIN)
+        self.assertIn("verified.defrost.has_value()", MAIN)
+        self.assertIn("maintenance_cycles->observe(collect_cycles || keep_trial_evidence", WORKER)
         self.assertIn('mitsubishi_min_mode_dwell_ms', POST)
+
+    def test_explicit_cycle_trial_accepts_a_standard_gateway(self):
+        route = MAIN.split('web.on("/api/control/cycle-trial"', 1)[1].split('web.on("/api/ota/install"', 1)[0]
+        self.assertIn('if(strategy=="automatic")', route)
+        self.assertNotIn('PUMP_PHASE_UNVERIFIED', route)
+        self.assertIn('valid_temperature(room,now)', route)
+        self.assertIn('const bool still_at_cycle_end=!phase_stop ||', POST)
 
     def test_panasonic_requires_explicit_pump_bus_evidence(self):
         source = (ROOT / "firmware/cottage/src/cottage_panasonic_service.cpp").read_text(encoding="utf-8")

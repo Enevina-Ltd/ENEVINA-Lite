@@ -62,3 +62,58 @@ cannot authorise a long-range shift; an imminent material price rise can
 use the conservative near-target fallback. During a material expensive
 period, completed qualified energy comparisons take priority over exploration.
 Price-directed cycles are excluded from the temperature-only comparison.
+
+## Time-limited strategy comparison
+
+The local controller can run a time-limited comparison in armed Hold mode
+below the adapter's minimum heating setpoint. The owner supplies the same
+lower and upper room limits and the trial duration for each strategy. The
+pump is commanded at its own supported minimum heating setpoint. The
+controller uses the current profile's existing response margin inside the
+supplied limits. A trial can run for up to seven days and expires on the
+earlier of the wall-clock and monotonic deadlines. Reboot starts the usual
+policy. Changes of site, pump link or control authorization invalidate a trial.
+The existing supervisor and command readback govern dispatch.
+
+| Strategy | Policy |
+| --- | --- |
+| Short | Existing narrow Hold swing, with the approved limits. |
+| Thermostat | Hold the heat request past the room target. Consider OFF after two distinct, stable, pump-origin observations of compressor stop near the pump's setpoint. |
+| Modulation | Also consider OFF when sustained pump-relative compressor and measured electrical demand drops agree with slowing room warming. |
+| Forecast | Use the existing price and thermal planner within the approved envelope; degrade to the temperature policy where those inputs are insufficient. |
+
+A standard bridge can heat through the pump's own setpoint and collect
+complete-cycle data under the approved room limit. When pump phase is
+unknown, the trial holds the native heat request until the approved working
+upper threshold. A limit-triggered stop is reported separately and provides
+no evidence of a thermostat or modulation stop. A CN105 ESPHome receiver accepts optional Boolean
+`defrost` and `fault` fields only in the proven UART poll envelope. The
+producer must tie each populated field to a decoded reply in that poll.
+A missing field remains unknown. A cached SSE value or climate GET cannot
+authorize a phase-based stop. A positive defrost report blocks a change
+during defrost and recovery through the normal supervision path. If the
+pump keeps running in cold weather the phase engine can identify sustained
+modulation, continue the heat request or reach the approved upper threshold.
+
+The local endpoint POST `/api/control/cycle-trial` uses the existing settings
+token and accepts form fields `strategy`, `lower_c`, `upper_c`, and integer
+`minutes`. Strategies are `short`, `thermostat`, `modulation`, `forecast`,
+and `automatic`. Send `strategy=existing` to end the trial immediately.
+Automatic selects on activation from recent matched cycles, requiring two
+comparable cycles for both the short benchmark and any chosen alternative.
+Forecast is the fallback until comparable data exists.
+
+Per-trial comparisons reuse the existing shared-meter cycle learner, with
+fresh meter, stable measured background load and confirmed HEAT/OFF
+transitions. Whole-building energy comes from the meter counter. Pump energy
+is estimated by subtracting the qualified baseline. Tariff costs use
+interval estimates. Startup and reported-defrost energy are only shown
+where those operating phases were available. Indoor-minus-outdoor degree
+hours describe the thermal exposure. They do not measure heat flow in kWh.
+A cycle with different thermal endpoints or excursions beyond the approved
+limits is excluded. A phase-based cycle that stopped at a temperature limit
+can be displayed but cannot qualify as evidence for the phase-based strategy.
+Trial evidence is RAM-only. The existing maintenance checkpoint format and
+persistent thermal calibration are retained. Field savings require
+equal-envelope, repeated measurements in comparable weather and tariff
+conditions, with adequate coverage of each strategy.

@@ -64,6 +64,14 @@ public:
     virtual void close(){_currentStatus=HC_NONE;}
     void attach(int fd,std::function<void()> cb){_server.attach(fd);route_.fn=std::move(cb);}
     void startChunks(){_chunked=true;}
+    void setContentLength(size_t size){_contentLength=size;}
+    void send(int code,const char* type,const char* body){
+        auto size=_contentLength==CONTENT_LENGTH_NOT_SET?std::strlen(body):_contentLength;
+        std::string head="HTTP/1.1 "+std::to_string(code)+" Response\r\nContent-Type: "+type+
+            "\r\nContent-Length: "+std::to_string(size)+"\r\nConnection: close\r\n\r\n";
+        _currentClientWrite(head.data(),head.size());
+        if(*body)_currentClientWrite(body,std::strlen(body));
+    }
     size_t header(const char* bytes){return _currentClientWrite(bytes,std::strlen(bytes));}
     size_t flash(const char* bytes,size_t size){return _currentClientWrite_P(bytes,size);}
     String uri()const{return _currentUri;}

@@ -40,6 +40,23 @@ int main() {
     }
     assert(b.samples==7 && b.watts==169 && b.spread_w==8);
     const auto original=b;
+    BaseloadCheckpoint saved{};
+    f.learner.checkpoint(123,f.now,saved);
+    Fixture rebooted;
+    rebooted.now=f.now;rebooted.meter.total_wh=f.meter.total_wh;
+    assert(rebooted.learner.restore_checkpoint(saved,123,rebooted.id,rebooted.now)==BaseloadRestore::Pending);
+    assert(!rebooted.step(170).ready);
+    assert(rebooted.learner.restore_checkpoint(saved,123,rebooted.id,rebooted.now)==BaseloadRestore::Restored);
+    assert(rebooted.learner.snapshot(rebooted.id,rebooted.now).watts==169);
+    Fixture wrong;
+    wrong.now=f.now;wrong.meter.total_wh=f.meter.total_wh;
+    assert(!wrong.step(300).ready);
+    assert(wrong.learner.restore_checkpoint(saved,123,wrong.id,wrong.now)==BaseloadRestore::Rejected);
+    assert(wrong.learner.restore_checkpoint(saved,124,wrong.id,wrong.now)==BaseloadRestore::Rejected);
+    auto bad=saved;bad.crc^=1;
+    assert(wrong.learner.restore_checkpoint(bad,123,wrong.id,wrong.now)==BaseloadRestore::Rejected);
+    assert(wrong.learner.restore_checkpoint(saved,123,wrong.id,wrong.now+7201)==BaseloadRestore::Rejected);
+
     // No replay, or a repeated meter sample, can advance a window.
     b=f.learner.observe(f.id,f.now,f.request,f.meter,true,false);
     assert(b.revision==original.revision && b.observed_utc==original.observed_utc);
